@@ -50,11 +50,20 @@ function fail(id, error) {
 }
 
 // --- CDP ---
+const attaching = new Map(); // tabId -> in-flight attach promise (prevents concurrent double-attach)
 async function ensureAttached(tabId) {
   if (attached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, "1.3");
-  attached.set(tabId, { domains: new Set() });
-  // deviceScaleFactor:1 so screenshot pixels match Input.dispatch coordinates regardless of DPI.
+  if (attaching.has(tabId)) return attaching.get(tabId);
+  const p = (async () => {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    attached.set(tabId, { domains: new Set() });
+    await applyDeviceMetrics(tabId);
+  })();
+  attaching.set(tabId, p);
+  try { await p; } finally { attaching.delete(tabId); }
+}
+// deviceScaleFactor:1 so screenshot pixels match Input.dispatch coordinates regardless of DPI.
+async function applyDeviceMetrics(tabId) {
   const tab = await chrome.tabs.get(tabId);
   const win = await chrome.windows.get(tab.windowId);
   await chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
@@ -225,9 +234,18 @@ async function pressKey(tabId, combo) {
   } else {
     key = KEY_MAP[parts[0]] || combo;
   }
-  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key, modifiers });
-  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key, modifiers });
+  const code = keyCode(key);
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
   await sleep(20);
+}
+// Best-effort DOM `code` for a resolved key, so pages that branch on event.code / keyCode work.
+function keyCode(key) {
+  if (key.length === 1) {
+    if (/[a-zA-Z]/.test(key)) return "Key" + key.toUpperCase();
+    if (/[0-9]/.test(key)) return "Digit" + key;
+  }
+  return key; // named keys (Enter, Tab, ArrowUp, ...) use the key name as their code
 }
 function waitForLoad(tabId) {
   return new Promise((resolve) => {
@@ -372,9 +390,12 @@ const handlers = {
   async find(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
     const r = await content(a.tabId, { type: "find", query: a.query });
-    const results = (r && r.result) || [];
+    const data = (r && r.result) || { results: [] };
+    const results = data.results || [];
     if (!results.length) return text(`No elements matching "${a.query}".`);
-    return text(`Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n"));
+    let out = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
+    if (data.more) out += "\n(more than 20 matches; refine your query for the rest)";
+    return text(out);
   },
   async form_input(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
@@ -418,6 +439,14 @@ const handlers = {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
     const tab = await chrome.tabs.get(a.tabId);
     await chrome.windows.update(tab.windowId, { width: a.width, height: a.height });
+    // Refresh the device-metrics override for every attached tab in this window so screenshots
+    // and input coordinates track the new viewport.
+    for (const tabId of attached.keys()) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (t.windowId === tab.windowId) await applyDeviceMetrics(tabId);
+      } catch { /* tab gone */ }
+    }
     return text(`Resized window to ${a.width}x${a.height}.`);
   },
   async update_plan(a) {

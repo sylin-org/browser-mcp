@@ -166,24 +166,24 @@
   function find(query) {
     const q = (query || "").toLowerCase();
     const results = [];
+    let more = false;
     for (const el of collectAll(document)) {
-      if (results.length >= 20) break;
       if (!visible(el)) continue;
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) continue;
       const hay = `${role(el) || ""} ${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.type || ""} ${tag}`.toLowerCase();
-      if (hay.includes(q)) {
-        const rect = el.getBoundingClientRect();
-        results.push({
-          ref: refFor(el),
-          role: role(el) || tag,
-          name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
-          x: Math.round(rect.x + rect.width / 2),
-          y: Math.round(rect.y + rect.height / 2),
-        });
-      }
+      if (!hay.includes(q)) continue;
+      if (results.length >= 20) { more = true; break; }
+      const rect = el.getBoundingClientRect();
+      results.push({
+        ref: refFor(el),
+        role: role(el) || tag,
+        name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
+        x: Math.round(rect.x + rect.width / 2),
+        y: Math.round(rect.y + rect.height / 2),
+      });
     }
-    return results;
+    return { results, more };
   }
 
   // --- Form input (shadow-DOM traversal + native setter so framework inputs register) ---
@@ -212,7 +212,12 @@
       const opt = Array.from(target.options).find((o) => o.value === String(value) || o.textContent.trim() === String(value));
       target.value = opt ? opt.value : String(value);
     } else if (type === "checkbox" || type === "radio") {
-      const want = typeof value === "boolean" ? value : value === "true";
+      const want = typeof value === "boolean" ? value
+        : typeof value === "number" ? value !== 0
+        : value === "true" || value === "1";
+      if (type === "radio" && !want) {
+        return { error: "cannot uncheck a radio button; set another radio in the same group instead" };
+      }
       if (target.checked !== want) target.click();
       return { success: true, checked: target.checked };
     } else if (target.isContentEditable) {
