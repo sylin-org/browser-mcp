@@ -3,6 +3,10 @@
 // Policy-free DOM mechanism: accessibility-tree generation, element-ref mapping (WeakRef), text
 // extraction, element finding, and form input with shadow-DOM traversal. Runs in the page; the
 // service worker calls in via chrome.tabs.sendMessage. No governance here.
+//
+// Safety mechanism (not policy): values of sensitive fields (passwords, one-time codes, payment
+// data) are redacted to "[value redacted]" and sensitive <select> options are suppressed, so
+// credentials never enter the accessibility tree or find results.
 
 (function () {
   if (window.__browserMcpLoaded) return;
@@ -47,6 +51,12 @@
     return TAG_ROLE[tag] || null;
   }
   function accessibleName(el) {
+    // A non-sensitive <select> names itself by its selected option so the model sees the choice.
+    // Sensitive selects fall through (their option text may be private) and get a label instead.
+    if (el.tagName.toLowerCase() === "select" && !sensitive(el)) {
+      const sel = el.querySelector("option[selected]") || (el.options && el.options[el.selectedIndex]);
+      if (sel && sel.textContent && sel.textContent.trim()) return sel.textContent.trim();
+    }
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel) return ariaLabel.trim();
     const labelledBy = el.getAttribute("aria-labelledby");
@@ -89,6 +99,29 @@
     return s.display !== "none" && s.visibility !== "hidden";
   }
 
+  // --- Sensitive fields: never emit their values into the tree ---
+  // Gate on the input type and on the sensitive `autocomplete` tokens the platform defines for
+  // credentials, one-time codes, and payment data. Matches the official extension's redaction set.
+  const SENSITIVE_AUTOCOMPLETE = [
+    "current-password", "new-password", "one-time-code",
+    "cc-number", "cc-csc", "cc-exp", "cc-exp-month", "cc-exp-year",
+  ];
+  function sensitiveAttrs(el) {
+    const t = (el.getAttribute("type") || "").toLowerCase();
+    if (t === "password" || t === "hidden") return true;
+    const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+    return SENSITIVE_AUTOCOMPLETE.some((s) => ac.indexOf(s) !== -1);
+  }
+  function sensitive(el) {
+    if (sensitiveAttrs(el)) return true;
+    // An <option> (or anything) inside a sensitive <select> inherits its sensitivity.
+    if (el.closest) {
+      const sel = el.closest("select");
+      if (sel && sel !== el && sensitiveAttrs(sel)) return true;
+    }
+    return false;
+  }
+
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
   function accessibilityTree(options) {
     options = options || {};
@@ -123,14 +156,35 @@
         if (n) line += ` "${n.slice(0, 100)}"`;
         line += ` [${refFor(el)}]`;
         if (tag === "a" && el.href) line += ` href="${el.href}"`;
-        if (["input", "textarea"].includes(tag) && el.value) line += ` value="${String(el.value).slice(0, 80)}"`;
+        if (["input", "textarea"].includes(tag) && el.value) {
+          const v = sensitive(el) ? "[value redacted]" : String(el.value).slice(0, 80);
+          line += ` value="${v}"`;
+        }
         if (tag === "input") line += ` type="${el.type || "text"}"`;
+        const placeholder = el.getAttribute && el.getAttribute("placeholder");
+        if (placeholder) line += ` placeholder="${placeholder}"`;
         if (el.disabled) line += " disabled";
         if (!add(line + "\n")) return;
+        // Emit <select> options as child lines so the model can see the available choices.
+        // Suppressed for sensitive selects, whose option text may carry private data.
+        if (tag === "select" && !sensitive(el)) {
+          for (const opt of el.options) {
+            const otext = (opt.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
+            let ol = indent + "  option";
+            if (otext) ol += ` "${otext}"`;
+            if (opt.selected) ol += " (selected)";
+            if (opt.value && opt.value !== otext) ol += ` value="${opt.value}"`;
+            if (!add(ol + "\n")) return;
+          }
+        }
       }
-      const nextIndent = show ? indent + "  " : indent;
-      if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, depth + 1, nextIndent);
-      for (const c of el.children) walk(c, depth + 1, nextIndent);
+      // A <select> is a leaf in the tree: its <option>s are emitted above (or deliberately
+      // suppressed when sensitive), so we never descend into them.
+      if (tag !== "select") {
+        const nextIndent = show ? indent + "  " : indent;
+        if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, depth + 1, nextIndent);
+        for (const c of el.children) walk(c, depth + 1, nextIndent);
+      }
     }
     let root = document.body;
     if (options.ref_id) {
@@ -178,7 +232,7 @@
       results.push({
         ref: refFor(el),
         role: role(el) || tag,
-        name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
+        name: (accessibleName(el) || (sensitive(el) ? "" : el.textContent) || "").trim().slice(0, 80),
         x: Math.round(rect.x + rect.width / 2),
         y: Math.round(rect.y + rect.height / 2),
       });

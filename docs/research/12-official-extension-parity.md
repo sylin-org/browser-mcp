@@ -112,14 +112,20 @@ which has agent-internal placeholders). Line refs below are into the beautified 
 ### B. Extension behavior/technique adoptions -- `extension/content.js`, `extension/service-worker.js`
 
 read_page / accessibility engine (content.js):
-- **[HIGH] Emit `<select>` option children** with `(selected)` + `value="..."` -- "single most
+- **[HIGH] [DONE]** **Emit `<select>` option children** with `(selected)` + `value="..."` -- "single most
   load-bearing content gap"; without it the model is blind to dropdown choices (official a11y 157-162).
-- **[HIGH, SECURITY] Redact sensitive values** -- gate on `type=password`/`hidden` + sensitive
+- **[HIGH, SECURITY] [DONE]** **Redact sensitive values** -- gate on `type=password`/`hidden` + sensitive
   autocomplete (cc-number, cc-csc, one-time-code, new/current-password...) -> emit "[value redacted]",
-  and suppress select options when redacted. OURS currently emits raw `input.value` unconditionally,
-  **leaking passwords/OTP/CC into the a11y tree** (official 37-43,89,92 vs content.js:126). Prioritize.
-- **[MED] select accessible-name = selected option text** (official 65-67).
-- **[MED] Emit inline `placeholder` attr** on element lines (official 156).
+  and suppress select options when redacted. OURS previously emitted raw `input.value` unconditionally,
+  **leaking passwords/OTP/CC into the a11y tree** (official 37-43,89,92 vs old content.js:126). Fixed via a
+  lean `sensitive()` gate (also ancestor-aware: options of a sensitive `<select>` inherit sensitivity).
+  Verified with a jsdom harness (passwords/OTP/hidden/CC redacted; non-sensitive values + select options
+  preserved). RESIDUAL (low sev, pre-existing): `find` still names unlabeled CONTAINER elements by their
+  aggregate `textContent`, which can include a sensitive select's option LABELS (never a secret VALUE or
+  the user's selection -- input values are not in textContent). Goes away with the deferred find redesign.
+- **[MED] [DONE]** **select accessible-name = selected option text** (official 65-67); sensitive selects
+  fall through to a label instead.
+- **[MED] [DONE]** **Emit inline `placeholder` attr** on element lines (official 156).
 - get_page_text: **[MED] use `element.innerText`** (not cloned textContent), richer selector list
   (article-body/entry-content/content-body variants), pick LARGEST-innerText candidate, label
   "Source element: <tag>", return actionable over-limit / <10-char errors (official 22140-22182).
@@ -205,9 +211,10 @@ Plan (reimplement the CONCEPT leanly; do NOT copy Anthropic's overlay code):
 
 ### Sequencing
 
-1. Schema corrections (A) + re-baseline `tests/tool_schema_fidelity.rs` golden fixture. Pure Rust; the
-   fidelity test is the guard -- update the fixture to the official surface and keep the tests passing.
-2. Extension redaction (B, security) + `<select>` options -- highest user/safety value.
+1. [DONE, commit 60bf334] Schema corrections (A) + re-baseline `tests/tool_schema_fidelity.rs` golden
+   fixture. Pure Rust; the fidelity test is the guard -- update the fixture to the official surface and
+   keep the tests passing.
+2. [DONE] Extension redaction (B, security) + `<select>` options -- highest user/safety value.
 3. **UI visual cursor + agent-active indicator (D)** -- user-facing parity + "watching" delight;
    pairs naturally with the coordinate work since both concern dispatch coordinates.
 4. Screenshot token-budget + coordinate-model decision (B) -- the big one; decide keep-ours vs adopt
