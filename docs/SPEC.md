@@ -69,7 +69,7 @@ MCP Client ←—stdio—→ Binary ←—native messaging—→ Extension ←�
    (1)                  (2)                          (3)            (4)
 ```
 
-Three processes, two protocol boundaries. Compare to the reference implementation's five processes and four protocol boundaries (MCP Client → stdio → Node MCP server → TCP → Node native host → native messaging → Extension → CDP → Browser).
+**Process reality (corrected in Phase 0).** The Binary is a *single executable* but runs as **two instances**: because Chrome spawns its own native-messaging host process on `connectNative`, one instance plays the **mcp-server role** (launched by the MCP client over stdio) and another plays the **native-host role** (launched by Chrome), bridged by a local IPC -- a named pipe on Windows, a Unix domain socket elsewhere. This is still a major simplification over the reference's five processes / four boundaries (one Rust executable instead of two Node processes; a local pipe instead of a localhost-TCP relay), but it is not literally a single process. The first instance to acquire the IPC endpoint owns the browser; a second concurrent session is rejected (single active session -- see sec 10).
 
 | Component | Runtime | Responsibility |
 |---|---|---|
@@ -82,7 +82,7 @@ Three processes, two protocol boundaries. Compare to the reference implementatio
 
 **Binary ↔ MCP Client:** MCP over stdio. JSON-RPC 2.0 per the MCP specification. The binary is launched as a subprocess by the MCP client.
 
-**Binary ↔ Extension:** Chromium Native Messaging. 4-byte little-endian length prefix + UTF-8 JSON payload. The browser launches the binary as a native messaging host when the extension connects. The binary serves both roles simultaneously: native messaging host (for the extension) and MCP server (for the client on stdio). This is the key architectural simplification — a single process at the center of the star.
+**Binary ↔ Extension:** Chromium Native Messaging. 4-byte little-endian length prefix + UTF-8 JSON payload. The browser launches the binary as a native-messaging host when the extension connects, so the same executable plays both roles -- native-messaging host (for the extension) and MCP server (for the client on stdio) -- as **two instances bridged by a local IPC** (named pipe / Unix domain socket), not a single process (Chrome always spawns its own host process). The simplification over the reference is one Rust executable and a local pipe in place of two Node processes and a localhost-TCP relay.
 
 **Extension ↔ Browser:** Chrome DevTools Protocol via `chrome.debugger` API. The extension attaches to target tabs and dispatches CDP commands.
 
@@ -99,7 +99,7 @@ Three processes, two protocol boundaries. Compare to the reference implementatio
 
 ### 2.4. Extension Design
 
-The extension is deliberately thin. It is a CDP executor and event buffer, not a policy engine.
+The extension is **policy-free**: it holds mechanism (CDP execution, DOM reads via a content script, event buffering) but makes **no access decisions**. All policy, tool classification, and audit live in the binary. "Policy-free" is the invariant -- not "minimal": the extension may carry real mechanism (e.g. the content script that builds the accessibility tree and does shadow-DOM form input), but it never governs.
 
 **Responsibilities:**
 - Maintain a debugger attachment to target tabs (with `Emulation.setDeviceMetricsOverride` for coordinate normalization).
@@ -137,12 +137,13 @@ Tools that read browser state without modifying application state.
 | `navigate` | Navigate to URL, back, forward | Primary policy enforcement point. Domain checked pre- and post-navigation. |
 | `computer` (action: `screenshot`) | Capture visible page | JPEG only. Quality 55, fallback to 30 if > 500KB. |
 | `computer` (action: `wait`) | Wait for specified duration | Passive. No state change. |
+| `computer` (action: `zoom`) | Screenshot of a region for inspection | Returns a screenshot; observe. |
 | `read_page` | Accessibility tree with element refs | Returns interactive elements and their ref IDs. |
 | `get_page_text` | Extract article/main text content | Text-only extraction. |
 | `find` | Find elements by text/attributes | Read-only DOM query. |
 | `read_console_messages` | Console output (filtered) | Buffered event replay. |
 | `read_network_requests` | Network activity | Buffered event replay. |
-| `tabs_context` | Get tab group context | Session metadata. |
+| `tabs_context_mcp` | Get tab group context | Session metadata. Exact reference name (note the `_mcp` suffix). |
 
 #### Mutate Tier
 
@@ -150,10 +151,10 @@ Tools that change browser or application state. Only available when the grant sp
 
 | Tool | Description | Notes |
 |---|---|---|
-| `computer` (actions: `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`) | Mouse, keyboard, scroll interactions | The `computer` tool is a single MCP tool with an `action` parameter. Classification is per-action, enforced in the binary. |
+| `computer` (mutate actions: `left_click`, `right_click`, `double_click`, `triple_click`, `type`, `key`, `scroll`, `hover`, `left_click_drag`, `scroll_to`) | Mouse, keyboard, scroll interactions | The `computer` tool is a single MCP tool with an `action` parameter (13 actions total). Classification is per-action, enforced in the binary. See sec 3.3. |
 | `form_input` | Set form values by element ref | Shadow DOM traversal for web components. |
 | `javascript_tool` | Execute JS in page context | Always Mutate. No exceptions. Requires explicit grant. |
-| `tabs_create` | Create new tab | Opens a URL; subject to domain check. |
+| `tabs_create_mcp` | Create new tab | Opens a tab in the MCP group. Exact reference name (`_mcp` suffix). |
 
 #### Manage Tier
 
@@ -174,14 +175,16 @@ The following tools from the reference implementation are excluded:
 | `shortcuts_list` | Stub. |
 | `shortcuts_execute` | Stub. |
 | `switch_browser` | Stub. |
-| `upload_image` | Niche. Can be added in a future version if demand warrants. |
+| `upload_image` | Non-functional stub in the reference (returns guidance text, never sets files). Niche; can be added later if demand warrants. |
 
 ### 3.3. The `computer` Tool Split
 
 The `computer` tool presents a classification challenge: it is a single MCP tool with an `action` parameter that spans both Observe and Mutate behaviors. The binary enforces classification per-action:
 
-- **Observe actions:** `screenshot`, `wait`
-- **Mutate actions:** `left_click`, `right_click`, `double_click`, `type`, `key`, `scroll`, `hover`, `drag`
+The `computer` enum has **13 actions** (verified in Phase 0): `left_click`, `right_click`, `double_click`, `triple_click`, `type`, `screenshot`, `wait`, `scroll`, `key`, `left_click_drag`, `zoom`, `scroll_to`, `hover`.
+
+- **Observe actions:** `screenshot`, `wait`, `zoom` (return a screenshot or nothing; no input dispatched).
+- **Mutate actions:** `left_click`, `right_click`, `double_click`, `triple_click`, `type`, `key`, `scroll`, `hover`, `left_click_drag`, `scroll_to` (dispatch input or move the viewport)
 
 `scroll` is classified as Mutate despite not modifying application state, because it is an input action dispatched via CDP `Input.dispatchMouseEvent`. Splitting `computer` sub-actions across tiers at the MCP schema level would break the trained tool interface. Instead, the binary inspects the `action` parameter and applies tier enforcement internally. If the current domain's grant is Observe-only, a `computer` call with `action: "left_click"` is denied; a `computer` call with `action: "screenshot"` is permitted.
 
@@ -539,7 +542,7 @@ The following are explicitly out of scope for v1:
 |---|---|
 | **Built-in IdP integration** (OIDC, SAML, LDAP) | Identity resolution happens at deployment time (manifest push), not runtime. Adding IdP integration would introduce a network dependency and require credential management in the binary. |
 | **Remote policy service** | A manifest fetched via HTTP on every tool call adds a network dependency and a failure mode. Manifest changes propagate via the deployment channel (Intune refresh cycle). |
-| **Multi-user multiplexing** | One binary, one identity, one manifest, one browser profile. Shared machines use separate profiles. |
+| **Multi-user / multi-session multiplexing** | One binary, one identity, one manifest, one browser profile, one active session. Shared machines use separate profiles. Unlike the reference (which shares one browser across sessions via a primary/client TCP relay), a second concurrent session is **rejected cleanly** ('another session owns the browser'); primary/client sharing is deferred. |
 | **Content inspection / DLP** | Semantic analysis of page content is a different tool with different expertise requirements. |
 | **Manifest signing / attestation** | Adds key management complexity. Enterprise deployments use `chrome.storage.managed` (tamper-resistant by design). Signing is a v2 enhancement for file-based manifests. |
 | **Cross-browser support** | v1 targets Chromium-based browsers only (Chrome, Edge, Brave, Arc). Firefox uses a different extension API and native messaging model. |
