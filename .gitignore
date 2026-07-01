@@ -1,0 +1,10 @@
+# Third-party reference implementation — cloned study material, NOT part of this project.
+# Our analysis lives in reference/ANALYSIS.md (tracked); the cloned source is ignored.
+/reference/open-claude-in-chrome/
+
+# Rust build output
+/target/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
