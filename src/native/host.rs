@@ -73,7 +73,10 @@ mod tests {
         let msg = br#"{"jsonrpc":"2.0","method":"ping"}"#;
         let framed = encode(msg).unwrap();
         let mut reader: &[u8] = &framed;
-        assert_eq!(read_message(&mut reader).await.unwrap().as_deref(), Some(&msg[..]));
+        assert_eq!(
+            read_message(&mut reader).await.unwrap().as_deref(),
+            Some(&msg[..])
+        );
     }
 
     #[tokio::test]
@@ -83,13 +86,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_but_present_message_is_some_not_none() {
+        // A zero-length message (Some(vec![])) must be distinguished from clean EOF (None).
+        let framed = encode(b"").unwrap();
+        let mut reader: &[u8] = &framed;
+        assert_eq!(
+            read_message(&mut reader).await.unwrap().as_deref(),
+            Some(&b""[..])
+        );
+        assert!(read_message(&mut reader).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn reads_two_consecutive_messages_then_eof() {
         let mut buf = Vec::new();
         buf.extend(encode(b"one").unwrap());
         buf.extend(encode(b"two").unwrap());
         let mut reader: &[u8] = &buf;
-        assert_eq!(read_message(&mut reader).await.unwrap().as_deref(), Some(&b"one"[..]));
-        assert_eq!(read_message(&mut reader).await.unwrap().as_deref(), Some(&b"two"[..]));
+        assert_eq!(
+            read_message(&mut reader).await.unwrap().as_deref(),
+            Some(&b"one"[..])
+        );
+        assert_eq!(
+            read_message(&mut reader).await.unwrap().as_deref(),
+            Some(&b"two"[..])
+        );
         assert!(read_message(&mut reader).await.unwrap().is_none());
     }
 

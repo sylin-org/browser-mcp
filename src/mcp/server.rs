@@ -8,7 +8,7 @@
 
 use crate::dispatch;
 use crate::mcp::tools::TOOLS_JSON;
-use crate::mcp::types::{text_content, JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::types::{text_content, JsonRpcResponse};
 use crate::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,15 +26,7 @@ pub async fn run() -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<JsonRpcRequest>(line) {
-            Ok(req) => handle(&req),
-            Err(e) => {
-                // The id is unknown, so per JSON-RPC we cannot address a response; drop and log.
-                tracing::warn!(error = %e, "dropping unparseable JSON-RPC line");
-                None
-            }
-        };
-        if let Some(resp) = response {
+        if let Some(resp) = handle_line(line) {
             let mut buf = serde_json::to_string(&resp)?;
             buf.push('\n');
             stdout.write_all(buf.as_bytes()).await?;
@@ -44,17 +36,51 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Dispatch one request. Returns `None` for notifications (no `id`), which get no response.
-fn handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
-    match req.method.as_str() {
-        "initialize" => Some(JsonRpcResponse::success(req.id.clone(), initialize_result())),
-        "tools/list" => Some(JsonRpcResponse::success(req.id.clone(), tools_list_result())),
-        "tools/call" => Some(handle_tools_call(req)),
-        "ping" => Some(JsonRpcResponse::success(req.id.clone(), json!({}))),
-        method if method.starts_with("notifications/") => None,
-        _ if req.is_notification() => None,
+/// Parse and route one JSON-RPC line.
+///
+/// Returns `Some(response)` for requests (an `id` member is present, even if `null`) and `None` for
+/// notifications (no `id` member) and for lines we cannot parse at all (no addressable `id`). We
+/// read fields from a raw [`Value`] rather than a typed struct so that a structurally invalid but
+/// id-bearing request (e.g. missing `method`) still gets an addressable `-32600`.
+fn handle_line(line: &str) -> Option<JsonRpcResponse> {
+    let raw: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            // The id is unrecoverable from unparseable JSON, so there is no one to answer.
+            tracing::warn!(error = %e, "dropping unparseable JSON-RPC line");
+            return None;
+        }
+    };
+
+    // Per JSON-RPC 2.0 a request omits `id` iff it is a notification; `id: null` is a legal (if
+    // discouraged) request whose id must be echoed back as null.
+    let is_notification = raw.get("id").is_none();
+    let id = raw.get("id").cloned();
+
+    let Some(method) = raw.get("method").and_then(Value::as_str) else {
+        return if is_notification {
+            tracing::debug!("dropping malformed notification (no method)");
+            None
+        } else {
+            Some(JsonRpcResponse::error(
+                id,
+                -32600,
+                "Invalid Request: missing or non-string 'method'",
+            ))
+        };
+    };
+
+    match method {
+        "initialize" => Some(JsonRpcResponse::success(id, initialize_result())),
+        "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
+        "tools/call" => Some(handle_tools_call(id, raw.get("params"))),
+        "ping" => Some(JsonRpcResponse::success(id, json!({}))),
+        _ if is_notification => {
+            tracing::debug!(method, "ignoring unknown notification");
+            None
+        }
         other => Some(JsonRpcResponse::error(
-            req.id.clone(),
+            id,
             -32601,
             format!("Method not found: {other}"),
         )),
@@ -75,13 +101,9 @@ fn tools_list_result() -> Value {
     serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid")
 }
 
-fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
-    let Some(name) = req.params.get("name").and_then(Value::as_str) else {
-        return JsonRpcResponse::error(
-            req.id.clone(),
-            -32602,
-            "tools/call requires a string 'name'",
-        );
+fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> JsonRpcResponse {
+    let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
+        return JsonRpcResponse::error(id, -32602, "tools/call requires a string 'name'");
     };
     // v1.0 engine: the policy and audit seams are no-ops (all-open). The v1.5 overlay slots in here
     // without touching this code (see src/dispatch.rs).
@@ -91,5 +113,5 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
     let result = text_content(format!(
         "[stub] tool '{name}' accepted by the v1.0 engine; extension execution lands in Phase 2."
     ));
-    JsonRpcResponse::success(req.id.clone(), result)
+    JsonRpcResponse::success(id, result)
 }

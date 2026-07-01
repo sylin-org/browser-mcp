@@ -36,7 +36,12 @@ fn tools() -> Vec<Value> {
 fn advertises_exactly_the_thirteen_preserved_tools_in_order() {
     let names: Vec<String> = tools()
         .iter()
-        .map(|t| t["name"].as_str().expect("name must be a string").to_string())
+        .map(|t| {
+            t["name"]
+                .as_str()
+                .expect("name must be a string")
+                .to_string()
+        })
         .collect();
     assert_eq!(
         names, EXPECTED,

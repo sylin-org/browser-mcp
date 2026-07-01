@@ -1,28 +1,14 @@
-//! MCP JSON-RPC 2.0 message types and small result builders.
+//! MCP JSON-RPC 2.0 response type and small result builders.
+//!
+//! Requests are parsed field-by-field from a raw `serde_json::Value` in `server::handle_line` (so
+//! a structurally invalid but id-bearing request still gets an addressable error), so there is no
+//! typed request struct here -- only the response and result builders.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
-/// A JSON-RPC 2.0 request from the MCP client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<Value>,
-    pub method: String,
-    #[serde(default)]
-    pub params: Value,
-}
-
-impl JsonRpcRequest {
-    /// True when this is a notification (no `id`), so no response is expected.
-    pub fn is_notification(&self) -> bool {
-        self.id.is_none()
-    }
-}
-
 /// A JSON-RPC 2.0 response to the MCP client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,7 +20,7 @@ pub struct JsonRpcResponse {
 }
 
 impl JsonRpcResponse {
-    /// A success response carrying `result`.
+    /// A success response carrying `result`. `id` is echoed as-is (including a present `null`).
     pub fn success(id: Option<Value>, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".into(),

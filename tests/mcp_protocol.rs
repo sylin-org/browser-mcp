@@ -1,13 +1,11 @@
-//! End-to-end MCP protocol check: spawn the binary as an mcp-server and drive `initialize` +
-//! `tools/list` + a stub `tools/call` over stdio, asserting the advertised surface equals the
-//! sacred fixture and notifications get no response.
+//! End-to-end MCP protocol checks: spawn the binary as an mcp-server and drive it over stdio.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
-#[test]
-fn initialize_tools_list_and_stub_call_over_stdio() {
+/// Spawn the binary, send each request as a line, close stdin, and collect the response lines.
+fn drive(requests: &[Value]) -> Vec<Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_browser-mcp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -15,22 +13,14 @@ fn initialize_tools_list_and_stub_call_over_stdio() {
         .spawn()
         .expect("spawn browser-mcp");
 
-    let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // a notification -- must produce no response
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
-    ];
-
-    // Write every request, then close stdin so the server loop ends on EOF.
     let mut stdin = child.stdin.take().expect("stdin");
-    for req in &requests {
-        let line = serde_json::to_string(req).unwrap();
-        stdin.write_all(line.as_bytes()).unwrap();
+    for req in requests {
+        stdin
+            .write_all(serde_json::to_string(req).unwrap().as_bytes())
+            .unwrap();
         stdin.write_all(b"\n").unwrap();
     }
-    drop(stdin);
+    drop(stdin); // EOF -> the server loop ends
 
     let stdout = child.stdout.take().expect("stdout");
     let responses: Vec<Value> = BufReader::new(stdout)
@@ -38,9 +28,23 @@ fn initialize_tools_list_and_stub_call_over_stdio() {
         .map(|l| serde_json::from_str(&l.unwrap()).expect("each stdout line is JSON"))
         .collect();
     child.wait().expect("wait for child");
+    responses
+}
 
-    // Three requests carry an id; the notification does not -> exactly three responses, in order.
-    assert_eq!(responses.len(), 3, "expected 3 responses, got {responses:?}");
+#[test]
+fn initialize_tools_list_and_stub_call_over_stdio() {
+    let responses = drive(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}), // no response
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
+    ]);
+
+    assert_eq!(
+        responses.len(),
+        3,
+        "expected 3 responses, got {responses:?}"
+    );
 
     let init = &responses[0];
     assert_eq!(init["id"], 1);
@@ -54,12 +58,41 @@ fn initialize_tools_list_and_stub_call_over_stdio() {
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.
     let fixture: Value = serde_json::from_str(browser_mcp::mcp::tools::TOOLS_JSON).unwrap();
-    assert_eq!(list["result"], fixture, "tools/list must equal the sacred fixture");
+    assert_eq!(
+        list["result"], fixture,
+        "tools/list must equal the sacred fixture"
+    );
 
     let call = &responses[2];
     assert_eq!(call["id"], 3);
     let text = call["result"]["content"][0]["text"]
         .as_str()
         .expect("stub call returns a text block");
-    assert!(text.contains("navigate"), "stub confirms the tool name: {text}");
+    assert!(
+        text.contains("navigate"),
+        "stub confirms the tool name: {text}"
+    );
+}
+
+#[test]
+fn malformed_method_and_null_id_follow_jsonrpc_rules() {
+    let responses = drive(&[
+        json!({"jsonrpc":"2.0","id":7,"params":{}}), // id present, method missing
+        json!({"jsonrpc":"2.0","id":null,"method":"ping"}), // legal null-id request
+        json!({"method":"notifications/initialized"}), // notification -> no response
+    ]);
+
+    // The notification yields nothing; the other two are addressable.
+    assert_eq!(responses.len(), 2, "got {responses:?}");
+
+    // Missing method, but the id is recoverable -> -32600 addressed to id 7.
+    assert_eq!(responses[0]["id"], 7);
+    assert_eq!(responses[0]["error"]["code"], -32600);
+
+    // id: null is a legal request; the response must echo the id as null (present, not omitted).
+    assert!(
+        responses[1].as_object().unwrap().contains_key("id"),
+        "a null-id request must get an id back, not an omitted field"
+    );
+    assert_eq!(responses[1]["id"], Value::Null);
 }
