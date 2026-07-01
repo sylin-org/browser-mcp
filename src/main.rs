@@ -2,6 +2,12 @@
 //!
 //! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0
 //! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
+//!
+//! The same executable runs in two roles, selected at startup by launch context:
+//! - **mcp-server** (default) -- launched by the MCP client over stdio; runs the JSON-RPC loop.
+//! - **native-host** -- launched by Chrome via `connectNative`; Chrome passes the calling
+//!   extension's origin (`chrome-extension://<id>/`) as an argument. Phase 2 bridges it to the
+//!   mcp-server instance over the local IPC.
 
 use anyhow::Result;
 use clap::Parser;
@@ -18,12 +24,22 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
     browser_mcp::init_tracing();
+
+    // Role detection must precede clap: Chrome launches the native-messaging host with extra
+    // positional args (the calling extension origin) that clap would reject.
+    if std::env::args().any(|a| a.starts_with("chrome-extension://")) {
+        tracing::info!("browser-mcp starting (native-host role, launched by the browser)");
+        // Phase 2 bridges Chrome native messaging <-> the mcp-server instance over the local IPC.
+        // Until the extension exists there is nothing to serve; exit cleanly.
+        return Ok(());
+    }
+
+    let cli = Cli::parse();
     tracing::info!(
         manifest = ?cli.manifest,
-        "browser-mcp starting (v1.0 engine -- all-open, no governance overlay)"
+        "browser-mcp starting (mcp-server role; v1.0 engine -- all-open, no governance overlay)"
     );
-    // Role detection (mcp-server vs native-host) and the startup sequence are wired in Phase 1.
+    browser_mcp::mcp::server::run().await?;
     Ok(())
 }
