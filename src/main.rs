@@ -4,12 +4,16 @@
 //! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
 //!
 //! The same executable runs in two roles, selected at startup by launch context:
-//! - **mcp-server** (default) -- launched by the MCP client over stdio; runs the JSON-RPC loop.
-//! - **native-host** -- launched by Chrome via `connectNative`; Chrome passes the calling
-//!   extension's origin (`chrome-extension://<id>/`) as an argument. Phase 2 bridges it to the
-//!   mcp-server instance over the local IPC.
+//! - **mcp-server** (default) -- launched by the MCP client over stdio. Owns the browser IPC
+//!   endpoint, serves the native-host, and runs the JSON-RPC loop, forwarding tool calls to the
+//!   extension via a shared [`Browser`](browser_mcp::browser::Browser) handle.
+//! - **native-host** -- launched by Chrome via `connectNative` (Chrome passes the calling
+//!   extension's origin, `chrome-extension://<id>/`, as an argument). Connects to the mcp-server
+//!   endpoint and relays native-messaging frames to/from the extension.
 
 use anyhow::Result;
+use browser_mcp::browser::Browser;
+use browser_mcp::native::ipc;
 use clap::Parser;
 
 /// Browser MCP -- the user's own authenticated browser, for AI agents.
@@ -30,8 +34,7 @@ async fn main() -> Result<()> {
     // positional args (the calling extension origin) that clap would reject.
     if std::env::args().any(|a| a.starts_with("chrome-extension://")) {
         tracing::info!("browser-mcp starting (native-host role, launched by the browser)");
-        // Phase 2 bridges Chrome native messaging <-> the mcp-server instance over the local IPC.
-        // Until the extension exists there is nothing to serve; exit cleanly.
+        ipc::relay_native_host(&ipc::default_endpoint()).await?;
         return Ok(());
     }
 
@@ -40,6 +43,25 @@ async fn main() -> Result<()> {
         manifest = ?cli.manifest,
         "browser-mcp starting (mcp-server role; v1.0 engine -- all-open, no governance overlay)"
     );
-    browser_mcp::mcp::server::run().await?;
+
+    // Own the browser IPC endpoint and serve the native-host in the background; run the stdio MCP
+    // loop in the foreground. Both share the Browser handle.
+    let browser = Browser::new();
+    let endpoint = ipc::default_endpoint();
+    tokio::spawn({
+        let browser = browser.clone();
+        async move {
+            match ipc::serve(browser, &endpoint).await {
+                Ok(()) => {}
+                Err(browser_mcp::Error::SessionBusy) => tracing::warn!(
+                    "another browser-mcp session already owns the browser; tool calls in this \
+                     session will report the extension as unavailable"
+                ),
+                Err(e) => tracing::error!(error = %e, "browser IPC endpoint failed"),
+            }
+        }
+    });
+
+    browser_mcp::mcp::server::run(browser).await?;
     Ok(())
 }

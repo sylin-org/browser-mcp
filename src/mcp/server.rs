@@ -2,10 +2,10 @@
 //!
 //! Reads newline-delimited JSON-RPC from stdin, handles `initialize` / `tools/list` / `tools/call`,
 //! and writes responses to stdout (one compact JSON object per line). `tools/call` routes through
-//! [`crate::dispatch`] (the v1.0 no-op policy/audit seams). In v1.0 there is no extension wired yet,
-//! so `tools/call` returns a stub confirmation -- real execution lands in Phase 2. stdout is
-//! reserved for the protocol stream; operational logs go to stderr.
+//! [`crate::dispatch`] (the v1.0 no-op policy/audit seams) and then forwards to the extension via
+//! the [`Browser`] handle. stdout is reserved for the protocol stream; operational logs go to stderr.
 
+use crate::browser::Browser;
 use crate::dispatch;
 use crate::mcp::tools::TOOLS_JSON;
 use crate::mcp::types::{text_content, JsonRpcResponse};
@@ -16,8 +16,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// MCP protocol version this server speaks.
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Run the stdio MCP server loop until stdin closes.
-pub async fn run() -> Result<()> {
+/// Run the stdio MCP server loop until stdin closes. `browser` is the (shared) handle to the
+/// extension; tool calls are forwarded through it.
+pub async fn run(browser: Browser) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
 
@@ -26,7 +27,7 @@ pub async fn run() -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        if let Some(resp) = handle_line(line) {
+        if let Some(resp) = handle_line(&browser, line).await {
             let mut buf = serde_json::to_string(&resp)?;
             buf.push('\n');
             stdout.write_all(buf.as_bytes()).await?;
@@ -39,21 +40,17 @@ pub async fn run() -> Result<()> {
 /// Parse and route one JSON-RPC line.
 ///
 /// Returns `Some(response)` for requests (an `id` member is present, even if `null`) and `None` for
-/// notifications (no `id` member) and for lines we cannot parse at all (no addressable `id`). We
-/// read fields from a raw [`Value`] rather than a typed struct so that a structurally invalid but
-/// id-bearing request (e.g. missing `method`) still gets an addressable `-32600`.
-fn handle_line(line: &str) -> Option<JsonRpcResponse> {
+/// notifications (no `id` member) and for lines we cannot parse at all. Fields are read from a raw
+/// [`Value`] so a structurally invalid but id-bearing request still gets an addressable `-32600`.
+async fn handle_line(browser: &Browser, line: &str) -> Option<JsonRpcResponse> {
     let raw: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
-            // The id is unrecoverable from unparseable JSON, so there is no one to answer.
             tracing::warn!(error = %e, "dropping unparseable JSON-RPC line");
             return None;
         }
     };
 
-    // Per JSON-RPC 2.0 a request omits `id` iff it is a notification; `id: null` is a legal (if
-    // discouraged) request whose id must be echoed back as null.
     let is_notification = raw.get("id").is_none();
     let id = raw.get("id").cloned();
 
@@ -73,7 +70,7 @@ fn handle_line(line: &str) -> Option<JsonRpcResponse> {
     match method {
         "initialize" => Some(JsonRpcResponse::success(id, initialize_result())),
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
-        "tools/call" => Some(handle_tools_call(id, raw.get("params"))),
+        "tools/call" => Some(handle_tools_call(browser, id, raw.get("params")).await),
         "ping" => Some(JsonRpcResponse::success(id, json!({}))),
         _ if is_notification => {
             tracing::debug!(method, "ignoring unknown notification");
@@ -101,17 +98,34 @@ fn tools_list_result() -> Value {
     serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid")
 }
 
-fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> JsonRpcResponse {
+async fn handle_tools_call(
+    browser: &Browser,
+    id: Option<Value>,
+    params: Option<&Value>,
+) -> JsonRpcResponse {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return JsonRpcResponse::error(id, -32602, "tools/call requires a string 'name'");
     };
+    let args = params
+        .and_then(|p| p.get("arguments"))
+        .cloned()
+        .unwrap_or(Value::Null);
+
     // v1.0 engine: the policy and audit seams are no-ops (all-open). The v1.5 overlay slots in here
     // without touching this code (see src/dispatch.rs).
     let _decision = dispatch::policy_check(name);
     dispatch::audit(name);
-    // Phase 1: no extension is wired yet, so we acknowledge without executing.
-    let result = text_content(format!(
-        "[stub] tool '{name}' accepted by the v1.0 engine; extension execution lands in Phase 2."
-    ));
-    JsonRpcResponse::success(id, result)
+
+    match browser.call(name, &args).await {
+        // The extension returns an MCP result object (`{ content: [...] }`); pass it through.
+        Ok(result) => JsonRpcResponse::success(id, result),
+        // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
+        Err(e) => {
+            let mut result = text_content(format!("Error: {e}"));
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("isError".into(), json!(true));
+            }
+            JsonRpcResponse::success(id, result)
+        }
+    }
 }

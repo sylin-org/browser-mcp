@@ -12,6 +12,7 @@
 //! the **mcp-server** role (launched by the MCP client over stdio) and the **native-host** role
 //! (launched by Chrome via `connectNative`). They bridge over a named pipe / Unix domain socket.
 
+pub mod browser;
 pub mod dispatch;
 pub mod error;
 pub mod mcp;

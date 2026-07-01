@@ -1,12 +1,26 @@
 //! End-to-end MCP protocol checks: spawn the binary as an mcp-server and drive it over stdio.
+//!
+//! No extension/native-host is connected here, so `tools/call` returns an MCP tool error result
+//! (the request/response bridge itself is covered by the `browser` and `ipc` unit tests). Each
+//! spawned binary gets a unique IPC endpoint so the tests never contend for one.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Spawn the binary, send each request as a line, close stdin, and collect the response lines.
+static SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Spawn the binary (with an isolated IPC endpoint), send each request as a line, close stdin, and
+/// collect the response lines.
 fn drive(requests: &[Value]) -> Vec<Value> {
+    let endpoint = format!(
+        "browser-mcp-it-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     let mut child = Command::new(env!("CARGO_BIN_EXE_browser-mcp"))
+        .env("BROWSER_MCP_ENDPOINT", &endpoint)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -32,7 +46,7 @@ fn drive(requests: &[Value]) -> Vec<Value> {
 }
 
 #[test]
-fn initialize_tools_list_and_stub_call_over_stdio() {
+fn initialize_tools_list_and_tool_call_over_stdio() {
     let responses = drive(&[
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}), // no response
@@ -63,14 +77,16 @@ fn initialize_tools_list_and_stub_call_over_stdio() {
         "tools/list must equal the sacred fixture"
     );
 
+    // No extension is connected, so the tool call returns an MCP tool error result (isError).
     let call = &responses[2];
     assert_eq!(call["id"], 3);
+    assert_eq!(call["result"]["isError"], true, "no extension -> isError");
     let text = call["result"]["content"][0]["text"]
         .as_str()
-        .expect("stub call returns a text block");
+        .expect("error result carries a text block");
     assert!(
-        text.contains("navigate"),
-        "stub confirms the tool name: {text}"
+        text.contains("not connected"),
+        "error explains the extension is unavailable: {text}"
     );
 }
 
