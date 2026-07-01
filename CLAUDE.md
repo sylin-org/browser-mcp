@@ -169,17 +169,16 @@ The tool schemas must be extracted verbatim from the reference implementation. E
 In the Rust code, define tool schemas as const string literals (the raw JSON) rather than building them programmatically. This prevents accidental drift.
 
 ### Screenshot Behavior
-Follow the official Claude in Chrome behavior, NOT the reference implementation:
-- Return screenshots only on `computer` action `screenshot` and `scroll`.
-- Do NOT return screenshots on `click`, `type`, `key`, `hover`, `drag`.
-- For non-screenshot actions, return a text confirmation of the action.
+Return screenshots only on `computer` actions that produce one: `screenshot`, `scroll`, and `zoom`.
+- For all other actions (`left_click`, `type`, `key`, `hover`, `left_click_drag`, `scroll_to`, etc.), return a text confirmation of the action.
 - This reduces context consumption ~10x in multi-step workflows.
+- Phase 0 note: the reference implementation ALREADY does this (screenshots only on screenshot/scroll/zoom; JPEG quality 55 with a fallback to 30 above 500KB; `deviceScaleFactor: 1` normalization). An earlier version of this section said to follow the official behavior "NOT the reference" -- that was inaccurate; we align with the reference here.
 
 ### Extension Design Principle
-The extension is a thin, dumb CDP executor. All intelligence lives in the binary:
-- The extension receives a command ("execute CDP method X with params Y on tab Z") and returns the result.
-- The extension does NOT check domains, classify tools, generate audit records, or make policy decisions.
-- The extension DOES manage: debugger attachment, tab group lifecycle, keepalive alarms, console/network event buffering, and service worker state recovery.
+The extension is **policy-free**: it holds mechanism but makes no access decisions. All policy, tool classification, and audit live in the binary.
+- The extension executes CDP commands and runs DOM reads (accessibility tree, `find`, `form_input` with shadow-DOM traversal) in a content script -- so it is *policy-free*, not necessarily *minimal* (Phase 0 decision; the reference does the same).
+- The extension does NOT check domains, classify tools, generate audit records, or make any policy decision.
+- The extension DOES manage: debugger attachment, tab group lifecycle, keepalive alarms, console/network event buffering, DOM-read mechanism, and service worker state recovery.
 
 ## Code Style
 - Rust 2021 edition.
