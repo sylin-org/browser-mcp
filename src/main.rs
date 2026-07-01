@@ -17,6 +17,7 @@
 
 use anyhow::Result;
 use browser_mcp::browser::Browser;
+use browser_mcp::debug::DebugSink;
 use browser_mcp::install::{DoctorOptions, InstallOptions, Selection, UninstallOptions};
 use browser_mcp::native::ipc;
 use clap::{Args, Parser, Subcommand};
@@ -32,6 +33,11 @@ struct Cli {
     /// Absent = all-open (the v1.0 default).
     #[arg(long, value_name = "SOURCE")]
     manifest: Option<String>,
+
+    /// (server role) Enable observability: verbose tracing + a live state/event log that
+    /// `browser-mcp status` reads. Equivalent to setting `BROWSER_MCP_DEBUG=1`.
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -42,6 +48,8 @@ enum Command {
     Uninstall(UninstallArgs),
     /// Report browser + client detection and current registration state.
     Doctor(DoctorArgs),
+    /// Show the running server's live inner state (needs a server started with --debug).
+    Status(StatusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -67,6 +75,9 @@ struct InstallArgs {
     /// Add only to this client id (repeatable): claude-code, claude-desktop, cursor, vscode.
     #[arg(long = "client", value_name = "ID", conflicts_with = "all_clients")]
     clients: Vec<String>,
+    /// Register the server to run in debug mode (sets BROWSER_MCP_DEBUG=1 in its env).
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Debug, Args)]
@@ -98,6 +109,13 @@ struct DoctorArgs {
     verbose: bool,
 }
 
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Print the raw debug-state.json instead of the formatted report.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Resolve a `Selection` from `--<thing>` (Only) / `--all-<things>` (ForceAll) / default (All).
 fn selection(only: Vec<String>, force_all: bool) -> Selection {
     if !only.is_empty() {
@@ -117,6 +135,7 @@ impl From<InstallArgs> for InstallOptions {
             system: a.system,
             browsers: selection(a.browsers, a.all_browsers),
             clients: selection(a.clients, a.all_clients),
+            debug: a.debug,
         }
     }
 }
@@ -139,7 +158,11 @@ impl From<DoctorArgs> for DoctorOptions {
 }
 
 fn main() -> Result<()> {
-    browser_mcp::init_tracing();
+    // Debug mode can come from the flag (any position) or the env; detect it before clap so tracing
+    // verbosity is set for every role, including the native-host relay.
+    let debug_env = std::env::var_os("BROWSER_MCP_DEBUG").is_some();
+    let debug = debug_env || std::env::args().any(|a| a == "--debug");
+    browser_mcp::init_tracing(debug);
 
     // Role detection must precede clap: Chrome launches the native-messaging host with an extra
     // positional arg (the calling extension origin) that clap would reject.
@@ -161,11 +184,28 @@ fn main() -> Result<()> {
             ..
         } => browser_mcp::install::run_doctor(args.into())?,
         Cli {
+            command: Some(Command::Status(args)),
+            ..
+        } => run_status(args),
+        Cli {
             command: None,
             manifest,
-        } => run_server(manifest)?,
+            debug: debug_flag,
+        } => run_server(manifest, debug_flag || debug_env)?,
     }
     Ok(())
+}
+
+/// `browser-mcp status`: read and print the running server's live inner state.
+fn run_status(args: StatusArgs) {
+    if args.json {
+        match browser_mcp::debug::raw_state() {
+            Some(s) => print!("{s}"),
+            None => println!("no debug state found (start the server with --debug)"),
+        }
+    } else {
+        println!("{}", browser_mcp::debug::status_report());
+    }
 }
 
 /// Native-host role: relay native-messaging frames between Chrome (stdio) and the mcp-server (IPC).
@@ -178,14 +218,16 @@ fn run_native_host_role() -> Result<()> {
 
 /// mcp-server role: own the browser IPC endpoint + serve the native-host in the background, run the
 /// stdio MCP JSON-RPC loop in the foreground. Both share the [`Browser`] handle.
-fn run_server(manifest: Option<String>) -> Result<()> {
+fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     tracing::info!(
         ?manifest,
+        debug_mode = debug_on,
         "browser-mcp starting (mcp-server role; v1.0 engine -- all-open, no governance overlay)"
     );
+    let sink = build_debug_sink(debug_on);
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let browser = Browser::new();
+        let browser = Browser::with_debug(sink.clone());
         let endpoint = ipc::default_endpoint();
         tokio::spawn({
             let browser = browser.clone();
@@ -200,7 +242,31 @@ fn run_server(manifest: Option<String>) -> Result<()> {
                 }
             }
         });
-        browser_mcp::mcp::server::run(browser).await
+        let result = browser_mcp::mcp::server::run(browser).await;
+        sink.flush(); // final snapshot after stdin closes
+        result
     })?;
     Ok(())
+}
+
+/// Build the observability sink for the server. Debug-off yields a no-op sink; if the log directory
+/// cannot be prepared we warn and continue without observability rather than failing the server.
+fn build_debug_sink(debug: bool) -> DebugSink {
+    if !debug {
+        return DebugSink::disabled();
+    }
+    let Some(dir) = browser_mcp::debug::log_dir() else {
+        tracing::warn!("no log directory available; running without debug observability");
+        return DebugSink::disabled();
+    };
+    match DebugSink::enabled(&dir) {
+        Ok(sink) => {
+            tracing::info!(dir = %dir.display(), "debug mode on: state + event log under this dir");
+            sink
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not enable debug sink; continuing without it");
+            DebugSink::disabled()
+        }
+    }
 }

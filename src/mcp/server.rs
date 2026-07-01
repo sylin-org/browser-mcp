@@ -29,6 +29,11 @@ pub async fn run(browser: Browser) -> Result<()> {
         }
         if let Some(resp) = handle_line(&browser, line).await {
             let mut buf = serde_json::to_string(&resp)?;
+            if browser.debug().is_enabled() {
+                // Use the already-typed id (do not re-parse the whole -- possibly large -- body).
+                let id = resp.id.as_ref().map(Value::to_string).unwrap_or_default();
+                browser.debug().mcp_response(&id, &buf);
+            }
             buf.push('\n');
             stdout.write_all(buf.as_bytes()).await?;
             stdout.flush().await?;
@@ -66,6 +71,11 @@ async fn handle_line(browser: &Browser, line: &str) -> Option<JsonRpcResponse> {
             ))
         };
     };
+
+    if browser.debug().is_enabled() {
+        let id_str = id.as_ref().map(Value::to_string).unwrap_or_default();
+        browser.debug().mcp_request(method, &id_str, line);
+    }
 
     match method {
         "initialize" => Some(JsonRpcResponse::success(id, initialize_result())),

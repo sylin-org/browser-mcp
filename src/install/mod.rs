@@ -45,6 +45,8 @@ pub struct InstallOptions {
     pub system: bool,
     pub browsers: Selection,
     pub clients: Selection,
+    /// Register the server to run in debug mode (adds `BROWSER_MCP_DEBUG=1` to its env).
+    pub debug: bool,
 }
 #[derive(Debug, Clone)]
 pub struct UninstallOptions {
@@ -305,7 +307,12 @@ fn plan_install(opts: &InstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>> {
     // --- MCP clients ---
     // Per-client planning is infallible: a malformed/unreadable config blocks *that* client only
     // (an `Op::Blocked` action), never the whole run -- preserving the independent-failure contract.
-    let entry = clients::server_entry(&ctx.current_exe);
+    let mut entry = clients::server_entry(&ctx.current_exe);
+    if opts.debug {
+        entry
+            .env
+            .insert("BROWSER_MCP_DEBUG".to_string(), "1".to_string());
+    }
     for c in selected_clients(&opts.clients, ctx) {
         actions.push(plan_client_install(c, ctx, &entry));
     }
@@ -402,10 +409,13 @@ fn shell_single_quote(s: &str) -> String {
 }
 
 fn vscode_add_json(entry: &merge::ServerEntry) -> String {
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "name": entry.name, "command": entry.command, "args": entry.args, "type": "stdio"
-    })
-    .to_string()
+    });
+    if !entry.env.is_empty() {
+        obj["env"] = serde_json::json!(entry.env);
+    }
+    obj.to_string()
 }
 
 // --- Plan: uninstall ---

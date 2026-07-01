@@ -10,6 +10,7 @@
 //! `{ "id", "type": "tool_response", "result" }` or `{ "id", "type": "tool_error", "error" }`.
 //! Messages without an `id` (events, heartbeats) are ignored here (Phase 3 buffers events).
 
+use crate::debug::DebugSink;
 use crate::native::host;
 use crate::{Error, Result};
 use serde_json::{json, Value};
@@ -34,16 +35,29 @@ pub struct Browser {
     pending: Pending,
     /// `Some` when a native-host (and thus the extension) is connected; `None` otherwise.
     outgoing: Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
+    /// Observability sink (no-op unless debug mode is on).
+    debug: DebugSink,
 }
 
 impl Browser {
-    /// Create a handle with no extension connected yet.
+    /// Create a handle with no extension connected yet and debug disabled.
     pub fn new() -> Self {
+        Self::with_debug(DebugSink::disabled())
+    }
+
+    /// Create a handle wired to an observability sink.
+    pub fn with_debug(debug: DebugSink) -> Self {
         Self {
             next_id: Arc::new(AtomicU64::new(1)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             outgoing: Arc::new(Mutex::new(None)),
+            debug,
         }
+    }
+
+    /// The observability sink (used by the mcp-server to record the MCP boundary).
+    pub fn debug(&self) -> &DebugSink {
+        &self.debug
     }
 
     /// True while a native-host / extension is connected.
@@ -59,6 +73,7 @@ impl Browser {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
+        self.debug.tool_begin(&id, tool);
 
         let request = json!({ "id": id, "type": "tool_request", "tool": tool, "args": args });
         let framed = host::encode(&serde_json::to_vec(&request)?)?;
@@ -74,12 +89,14 @@ impl Browser {
         };
         if !sent {
             self.pending.lock().unwrap().remove(&id);
+            self.debug.tool_end(&id, false, "extension not connected");
             return Err(Error::NativeMessaging(
                 "browser extension is not connected".into(),
             ));
         }
+        self.debug.frame_out();
 
-        match tokio::time::timeout(TOOL_TIMEOUT, rx).await {
+        let outcome = match tokio::time::timeout(TOOL_TIMEOUT, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(msg))) => Err(Error::NativeMessaging(msg)),
             Ok(Err(_closed)) => Err(Error::NativeMessaging(
@@ -89,7 +106,12 @@ impl Browser {
                 self.pending.lock().unwrap().remove(&id);
                 Err(Error::NativeMessaging("tool request timed out".into()))
             }
+        };
+        match &outcome {
+            Ok(v) => self.debug.tool_end(&id, true, &v.to_string()),
+            Err(e) => self.debug.tool_end(&id, false, &e.to_string()),
         }
+        outcome
     }
 
     /// Attach a connected native-host stream: spawn a writer draining outgoing frames to it and run
@@ -102,6 +124,7 @@ impl Browser {
         let (mut read_half, mut write_half) = tokio::io::split(stream);
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         *self.outgoing.lock().unwrap() = Some(tx);
+        self.debug.set_connected(true);
 
         let writer = tokio::spawn(async move {
             while let Some(frame) = rx.recv().await {
@@ -114,10 +137,12 @@ impl Browser {
 
         // Route replies until the stream closes (Ok(None)) or errors.
         while let Ok(Some(payload)) = host::read_message(&mut read_half).await {
+            self.debug.frame_in();
             self.route_reply(&payload);
         }
 
         *self.outgoing.lock().unwrap() = None;
+        self.debug.set_connected(false);
         writer.abort();
         for (_, tx) in self.pending.lock().unwrap().drain() {
             let _ = tx.send(Err("extension disconnected".to_string()));

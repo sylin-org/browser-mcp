@@ -13,6 +13,7 @@
 //! (launched by Chrome via `connectNative`). They bridge over a named pipe / Unix domain socket.
 
 pub mod browser;
+pub mod debug;
 pub mod dispatch;
 pub mod error;
 pub mod install;
@@ -27,9 +28,12 @@ pub use error::{Error, Result};
 ///
 /// This is `tracing`-based debug/operational logging, deliberately distinct from the audit
 /// subsystem (a v1.5 governance-overlay concern). stdout is reserved for the MCP JSON-RPC stream.
-pub fn init_tracing() {
+///
+/// `verbose` (debug mode) lifts the default level to `debug`; an explicit `RUST_LOG` always wins.
+pub fn init_tracing(verbose: bool) {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let default = if verbose { "debug" } else { "info" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
