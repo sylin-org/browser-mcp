@@ -1,0 +1,17 @@
+[package]
+name = "browser-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Governed browser automation over the user's own authenticated Chromium session -- for AI coding agents."
+publish = false
+# license: TBD (intended open-source) -- see docs/SPEC.md.
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync", "time", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+anyhow = "1"
