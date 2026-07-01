@@ -5,6 +5,10 @@
 # Rust build output
 /target/
 
+# Extension signing key (private). The manifest "key" (public) pins a stable dev extension id;
+# this private half is only needed to pack a .crx and must never be committed.
+/extension/.dev-key.pem
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
