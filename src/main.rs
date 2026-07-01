@@ -212,8 +212,17 @@ fn run_status(args: StatusArgs) {
 fn run_native_host_role() -> Result<()> {
     tracing::info!("browser-mcp starting (native-host role, launched by the browser)");
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async { ipc::relay_native_host(&ipc::default_endpoint()).await })?;
-    Ok(())
+    let result = rt.block_on(async { ipc::relay_native_host(&ipc::default_endpoint()).await });
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "native-host relay ended with error");
+    }
+    // The relay has ended (the mcp-server or the extension went away). Exit the process directly
+    // instead of returning: tokio's stdin reader parks a blocking thread in a ReadFile on Chrome's
+    // still-open stdin, and dropping the runtime would hang forever trying to join it. This role is
+    // a stateless relay with nothing to flush, so an immediate exit is correct -- and it lets Chrome
+    // observe the disconnect and reconnect to the next mcp-server session (no zombie).
+    tracing::info!("native-host relay ended; exiting");
+    std::process::exit(0);
 }
 
 /// mcp-server role: own the browser IPC endpoint + serve the native-host in the background, run the
