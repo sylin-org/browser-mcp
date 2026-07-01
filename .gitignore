@@ -6,8 +6,9 @@
 /target/
 
 # Extension signing key (private). The manifest "key" (public) pins a stable dev extension id;
-# this private half is only needed to pack a .crx and must never be committed.
-/extension/.dev-key.pem
+# this private half is only needed to pack a .crx and must never be committed. It must NOT live
+# inside extension/ -- Chrome loads that whole dir and warns about a bundled key file.
+.dev-key.pem
 
 # OS / editor cruft
 .DS_Store
