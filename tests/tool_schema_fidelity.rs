@@ -193,6 +193,12 @@ fn descriptions_reference_bare_tab_tool_names() {
     }
 
     // The two renamed tab tools must still carry the `_mcp` suffix on their `name` field.
-    assert_eq!(tool("tabs_context_mcp")["name"].as_str(), Some("tabs_context_mcp"));
-    assert_eq!(tool("tabs_create_mcp")["name"].as_str(), Some("tabs_create_mcp"));
+    assert_eq!(
+        tool("tabs_context_mcp")["name"].as_str(),
+        Some("tabs_context_mcp")
+    );
+    assert_eq!(
+        tool("tabs_create_mcp")["name"].as_str(),
+        Some("tabs_create_mcp")
+    );
 }

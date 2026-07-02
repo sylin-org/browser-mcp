@@ -388,7 +388,9 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
                     match browser.attach(stream).await {
                         AttachOutcome::Detached => tracing::info!("native-host disconnected"),
                         AttachOutcome::AlreadyAttached => {
-                            tracing::debug!("dropped a stray connection; a session is already attached")
+                            tracing::debug!(
+                                "dropped a stray connection; a session is already attached"
+                            )
                         }
                     }
                 });
