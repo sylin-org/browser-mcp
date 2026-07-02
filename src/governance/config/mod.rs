@@ -381,7 +381,7 @@ pub const KEYS: &[KeyDef] = &[
     },
     KeyDef {
         key: AUDIT_DESTINATION,
-        description: "Where audit records are written. Takes effect on restart.",
+        description: "Where audit records are written.",
         constraint: KeyConstraint::EnumVariants(&["file", "stderr"]),
         default_fully_open: KeyValue::Enum("file"),
         default_safe: KeyValue::Enum("file"),
@@ -389,7 +389,7 @@ pub const KEYS: &[KeyDef] = &[
     },
     KeyDef {
         key: AUDIT_FILE_PATH,
-        description: "Audit file path; empty means the platform default location. Takes effect on restart.",
+        description: "Audit file path; empty means the platform default location.",
         constraint: KeyConstraint::EmptyOrAbsolutePath,
         default_fully_open: KeyValue::Str(""),
         default_safe: KeyValue::Str(""),

@@ -10,9 +10,11 @@
 //! spawned call -- funnels through a single writer task that owns stdout, so lines are never
 //! interleaved mid-write.
 
-use crate::browser::{pattern, redact};
+use crate::browser::{classify, pattern, redact};
+use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::Governance;
+use crate::governance::ports::AuditSink;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -36,7 +38,27 @@ pub async fn run(browser: Browser) -> Result<()> {
     // to stage 1.
     let store = ConfigStore::load_initial(pattern::is_valid_pattern)?;
     store.clone().spawn_watcher();
-    let governance = Arc::new(Governance::all_open());
+
+    // The audit flight recorder (ADR-0018 step 1) is orthogonal to the governance mode: it
+    // records under all-open too, gated only by audit.enabled (shared format doc section 4.5).
+    // Its destination is live (RECONCILIATION.md section 3): a config-change watcher re-opens
+    // the sink whenever audit.enabled / audit.destination / audit.file.path changes.
+    let recorder = Arc::new(Recorder::from_config(&store.current()));
+    tokio::spawn({
+        let recorder = Arc::clone(&recorder);
+        let mut changes = store.subscribe();
+        async move {
+            while changes.changed().await.is_ok() {
+                let config = changes.borrow().clone();
+                recorder.reload(&config);
+            }
+        }
+    });
+
+    let governance = Arc::new(Governance::all_open(
+        recorder as Arc<dyn AuditSink>,
+        classify::classify,
+    ));
 
     let (tx, mut rx) = mpsc::unbounded_channel::<JsonRpcResponse>();
 
@@ -136,6 +158,9 @@ async fn handle_line(
                     browser.debug().set_client(&ident);
                 }
             }
+            // Capture the same clientInfo into the audit recorder's client field (shared
+            // format doc section 6.1), first-wins for the whole session.
+            capture_client_info(governance, raw.get("params"));
             // Warm the extension channel while the client finishes its handshake. The extension
             // side initiates the connection (Chrome spawns the native-host, which dials the
             // endpoint this process has served since startup), so there is nothing to dial from
@@ -187,6 +212,18 @@ async fn handle_line(
     }
 }
 
+/// Capture `clientInfo` from the MCP `initialize` params into the audit recorder (shared
+/// format doc section 6.1 `client` field). Both `name` and `version` must be strings;
+/// otherwise the session's records carry `client: null`.
+fn capture_client_info(governance: &Governance, params: Option<&Value>) {
+    let info = params.and_then(|p| p.get("clientInfo"));
+    let name = info.and_then(|i| i.get("name")).and_then(Value::as_str);
+    let version = info.and_then(|i| i.get("version")).and_then(Value::as_str);
+    if let (Some(name), Some(version)) = (name, version) {
+        governance.set_client(name, version);
+    }
+}
+
 fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
@@ -231,11 +268,21 @@ async fn handle_tools_call(
         return JsonRpcResponse::success(id, error_result(err));
     }
 
-    // Inbound governance decision at the single dispatch chokepoint (the PEP). Under all-open
-    // (no manifest, default config) this is a literal STEP-0 short-circuit to Allow that queries no
-    // port and resolves no resource, so behavior is byte-identical to the ungoverned engine. Acting
-    // on a Deny (enforcement) and emitting the audit record attach here in later stage-2 tasks.
+    // Dispatch chokepoint. The decision seam is a literal STEP-0 short-circuit to Allow under
+    // all-open (no manifest, default config) that queries no port and resolves no resource, so
+    // behavior is byte-identical to the ungoverned engine; acting on a Deny (enforcement)
+    // attaches here in later stage-2 tasks. The audit seam records every call (ADR-0018 step 1)
+    // after it resolves, so the record carries the real duration and completion timestamp.
+    let dispatch_started = Instant::now();
     let _decision = governance.decide(name);
+    // The only tool-call argument ever read for audit purposes: the computer sub-action
+    // (shared format doc section 6.2 sensitive-parameter omission; no other argument is read,
+    // logged, or stored).
+    let action = if name == "computer" {
+        args.get("action").and_then(Value::as_str)
+    } else {
+        None
+    };
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
     // Wait briefly for the channel instead of failing a healthy session (also covers calls
@@ -258,7 +305,11 @@ async fn handle_tools_call(
         }
     }
 
-    match browser.call(name, &args).await {
+    let outcome = browser.call(name, &args).await;
+    let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    governance.record_call(name, action, duration_ms);
+
+    match outcome {
         // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
         // read_page carries secret field values under a `secret_value=` marker; the governance
         // overlay rewrites that marker here (redacting per `content.security.secrets.redact`) before
@@ -303,5 +354,138 @@ fn append_wait_note(result: &mut Value, waited: Duration) {
     );
     if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
         content.push(json!({ "type": "text", "text": note }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::governance::config::Config;
+
+    fn temp_audit_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "browser-mcp-server-audit-test-{}-{tag}.jsonl",
+            std::process::id()
+        ))
+    }
+
+    fn read_lines(path: &std::path::Path) -> Vec<Value> {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        content
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is a JSON object"))
+            .collect()
+    }
+
+    fn assert_wellformed_event_id_and_ts(rec: &Value) {
+        let event_id = rec["event_id"].as_str().expect("event_id is a string");
+        assert_eq!(event_id.len(), 36, "event_id: {event_id}");
+        for offset in [8, 13, 18, 23] {
+            assert_eq!(event_id.as_bytes()[offset], b'-', "event_id: {event_id}");
+        }
+        let ts = rec["ts"].as_str().expect("ts is a string");
+        assert_eq!(ts.len(), 24, "ts: {ts}");
+        assert!(ts.ends_with('Z'), "ts: {ts}");
+        chrono::DateTime::parse_from_rfc3339(ts).expect("ts parses as rfc3339");
+    }
+
+    /// Test 10 (g06 spec section 6, adapted to the post-A3/A5 architecture): drives the real
+    /// `handle_line` dispatch for `initialize` (proving `capture_client_info` is wired at the
+    /// real chokepoint, not just callable in isolation) and `handle_tools_call` for a
+    /// `navigate` call, then asserts the resulting audit line end to end.
+    #[tokio::test]
+    async fn tools_call_produces_one_audit_record_with_client_identity() {
+        let path = temp_audit_path("basic");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        let (tx, _rx) = mpsc::unbounded_channel::<JsonRpcResponse>();
+
+        let init_line = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "clientInfo": { "name": "test-client", "version": "9.9.9" } },
+        })
+        .to_string();
+        handle_line(&browser, &store, &governance, &init_line, &tx).await;
+
+        let params = json!({ "name": "navigate", "arguments": {} });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block")
+            .to_string();
+        assert!(text.contains("not connected"), "unexpected text: {text}");
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1, "exactly one audit record");
+        let rec = &lines[0];
+        assert_eq!(rec["tool"], "navigate");
+        assert!(rec["action"].is_null());
+        assert_eq!(rec["rw"], "mutate");
+        assert_eq!(rec["decision"], "allow");
+        assert_eq!(rec["client"]["name"], "test-client");
+        assert_eq!(rec["client"]["version"], "9.9.9");
+        for field in ["identity", "domain", "grant_id", "denial_id", "manifest"] {
+            assert!(rec[field].is_null(), "{field} must be null");
+        }
+        assert_wellformed_event_id_and_ts(rec);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Test 11: a `computer` call with `action: "screenshot"` records that action and the
+    /// observe class.
+    #[tokio::test]
+    async fn computer_call_records_action_and_observe_class() {
+        let path = temp_audit_path("computer");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+
+        let params = json!({ "name": "computer", "arguments": { "action": "screenshot" } });
+        let _ =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1, "exactly one audit record");
+        assert_eq!(lines[0]["action"], "screenshot");
+        assert_eq!(lines[0]["rw"], "observe");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Test 12: a `tools/call` whose params lack `name` returns the `-32602` error and never
+    /// reaches the dispatch chokepoint, so no audit file is created.
+    #[tokio::test]
+    async fn invalid_tools_call_without_name_records_nothing() {
+        let path = temp_audit_path("no-name");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+
+        let params = json!({ "arguments": {} });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        assert_eq!(resp.error.as_ref().expect("error present")["code"], -32602);
+        assert!(!path.exists(), "no audit file must be created");
     }
 }

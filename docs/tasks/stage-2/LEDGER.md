@@ -13,8 +13,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
   landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
-  identity) landed.
-- NEXT TASK: Phase B, task `g06` (`docs/tasks/stage-2/g06-audit-recorder.md`).
+  identity), `g06` (audit flight recorder) landed.
+- NEXT TASK: Phase C, task `g07` (`docs/tasks/stage-2/g07-domain-matcher.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -584,6 +584,159 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   every touched/new file.
 - Browser checks queued: none (pure identity computation + doctor text; no browser-facing
   behavior).
+
+### g06 audit flight recorder (JSONL records at the dispatch chokepoint) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `Cargo.toml` (+`uuid = { version = "1", features = ["v4"] }`, +`chrono =
+  { version = "0.4", default-features = false, features = ["clock", "std"] }`, the two
+  sanctioned dependencies) and its `Cargo.lock`; `src/governance/ports.rs` (`AuditRecord`
+  grown from A2's single-field placeholder to the full 13-field shape, new `Identity`/
+  `ClientInfo` structs, a `sample_audit_record` test helper, 3 new tests); new
+  `src/governance/audit/mod.rs` + `src/governance/audit/destinations.rs` (the `Recorder`);
+  `src/governance/mod.rs` (`pub mod audit;`); `src/governance/config/mod.rs` (dropped
+  "Takes effect on restart" from the `AUDIT_DESTINATION`/`AUDIT_FILE_PATH` descriptions);
+  `src/governance/config/reload.rs` (new crate-visible test constructor
+  `ConfigStore::for_test_with_config`); `src/governance/dispatch.rs` (`Governance` grown:
+  `audit`/`classify`/`client` fields, `set_client`/`record_call` methods, a
+  `CapturingAuditSink` test double, 3 new/strengthened tests); `src/transport/mcp/server.rs`
+  (recorder construction + config-change watcher in `run`, `capture_client_info` helper
+  wired into the `initialize` arm, timing + `record_call` at the dispatch chokepoint in
+  `handle_tools_call`, 3 new server-wiring tests); `tests/all_open_golden.rs` (updated for
+  the new `Governance::all_open` signature); `tests/golden/config-schema.json` +
+  `tests/golden/config-keys.md` (regenerated: only the two description-string changes);
+  new `tests/audit_recorder.rs`.
+- Summary: every `tools/call` now produces exactly one audit JSON-Lines record (shared
+  format doc section 6), written by `Recorder` to `file` (default
+  `%LOCALAPPDATA%\browser-mcp\audit.jsonl` via `dirs::data_local_dir()`, or
+  `audit.file.path` if set) or `stderr`, gated by `audit.enabled` (Minimal default: true).
+  `Governance::record_call` builds the record: `event_id` (uuid v4), `ts` (RFC 3339 UTC,
+  millisecond precision), `client` (captured once from the MCP `initialize` request's
+  `clientInfo`, first-wins), `tool`/`action` (the `computer` sub-action only, no other
+  argument ever read), `rw` (via the injected `classify` fn, a classification miss falling
+  to `Mutate` -- never presented as harmless observation), `decision: "allow"` (no
+  enforcement yet), and `identity`/`domain`/`grant_id`/`denial_id`/`manifest` all `None`
+  until later tasks. `handle_tools_call` times the call (`dispatch_started` to completion)
+  and records after the outcome resolves, so the record carries the real duration and
+  covers both success and tool-execution-failure paths alike (an execution failure is
+  still `decision: "allow"`; the field is about policy, not outcome). The early `-32602`
+  return for a missing tool name records nothing.
+- Deviations from the g-doc per RECONCILIATION.md (the largest deviation set so far; g06's
+  own doc predates A1/A3/A5 and assumes a flat `src/audit/` + `src/dispatch.rs` +
+  `src/mcp/server.rs` + `src/policy/mod.rs` tree):
+  1. **Placement.** RECONCILIATION.md section 1 maps the whole audit subsystem to
+     `governance/` ("audit record + recorder + sinks (g06) -> governance/"), not a
+     sibling top-level `src/audit/`. Landed as `governance/audit/{mod.rs,destinations.rs}`,
+     with the dispatch wiring in the already-existing `governance/dispatch.rs` (A3) and
+     the server wiring in `transport/mcp/server.rs` (post-A1 path), not the doc's stale
+     `src/dispatch.rs`/`src/mcp/server.rs`.
+  2. **`AuditRecord`/`Identity`/`ClientInfo` land in `governance/ports.rs`, not a new
+     `governance/audit/record.rs`.** A2 already owns the shared seam-contract types file;
+     rather than split the record type across two files (ports.rs holding the placeholder,
+     audit/record.rs holding the grown version), grew it in place in `ports.rs` and had
+     `governance/audit/mod.rs` import it directly. Keeps one definition site for every
+     governance-core wire type.
+  3. **`rw: RwClass`, not `rw: &'static str`.** The doc's literal `AuditRecord` spec types
+     `rw` as a bare `&'static str` (`"observe"`/`"mutate"`, hand-set by the recorder).
+     Reusing A2's `RwClass` (already `snake_case`-renamed to serialize as exactly those two
+     strings, per g05's `as_str()` addition) avoids a second, unsynchronized copy of the
+     observe/mutate vocabulary; `record_call` builds `RwClass` directly from `classify`'s
+     `Option<RwClass>` result with `.unwrap_or(RwClass::Mutate)` and lets serde render it.
+  4. **`manifest: Option<ManifestIdentity>` reuses G09's type**, not a second
+     `{name, version, hash}` struct as the doc's literal spec defines locally. One shape,
+     one type, per the same "don't duplicate an existing primitive" principle G09 itself
+     used for the org-policy path. Consequence: `AuditRecord` dropped `Deserialize` (kept
+     only `Serialize`) since G09's `ManifestIdentity` does not derive `Deserialize` and
+     retrofitting it was out of this task's scope (no test here needs record
+     deserialization; a later task can add it if it turns out to).
+  5. **Architecture gap found and fixed in A3's `Governance` facade.** A3's original
+     design nested the audit sink only inside `Mode::Governed` (`GovernedState.audit`), so
+     an all-open session (no manifest) had nowhere to record to. Shared format doc section
+     4.5 is explicit that the flight recorder must record even under all-open, gated only
+     by `audit.enabled`. Fixed by moving `audit: Arc<dyn AuditSink>` to be a direct field
+     of `Governance` itself (both `all_open()` and `governed()` now take it as a
+     constructor parameter), which is why `tests/all_open_golden.rs` and every existing
+     `Governance` construction site needed updating alongside this task's own new code.
+  6. **`classify` injected as a function pointer**, the same "known integration point"
+     shape as `domain_pattern_valid` (G01/G02/A5/G03): `governance/dispatch.rs` cannot
+     name `browser::classify::classify` directly (the a7 arch-test forbids a
+     `governance -> browser` edge), so `Governance::all_open`/`governed` take
+     `classify: fn(&str, Option<&str>) -> Option<RwClass>` and
+     `transport/mcp/server.rs` (the composition root) supplies the real
+     `browser::classify::classify` at construction.
+  7. **Live reload of the audit sink, overriding g06's own stated out-of-scope note.**
+     g06's doc explicitly lists "no reload... one synchronous open-append-close per
+     record" as out of scope. RECONCILIATION.md section 3 explicitly earmarks this exact
+     scenario -- `audit.destination`/`audit.file.path` becoming live once A5 (hot-reload)
+     and G06 (the sink to reload) both exist -- as the trigger point for implementing
+     live reopen-on-change, and per BOOTSTRAP's authority order RECONCILIATION overrides a
+     conflicting g-doc scope note. Implemented `Recorder::reload(&Config)` (re-resolves
+     the destination and swaps it in; a file sink is already open-per-record, so "reopen"
+     is just re-deriving the path/destination) plus a `tokio::spawn`'d config-change
+     watcher in `transport/mcp/server.rs::run` that calls it on every `ConfigStore`
+     change signal, and dropped "Takes effect on restart" from the `AUDIT_DESTINATION`/
+     `AUDIT_FILE_PATH` key descriptions (now simply truthful again) -- which required
+     regenerating `tests/golden/config-schema.json`/`config-keys.md` (reviewed by hand:
+     diff showed exactly those two description strings changed, nothing else).
+  8. **Test items 6-8 and 13 adapted from `Recorder` methods to `Governance` methods.**
+     The doc's test list assumes `Recorder` itself has `set_client`/`record_call` (test 6:
+     `client_info_is_captured_once_first_wins`; test 7:
+     `classification_miss_records_mutate`; test 8:
+     `computer_action_classification_flows_into_rw`; test 13, the `tests/audit_recorder.rs`
+     integration test). In this architecture those methods live on `Governance` (per
+     deviation 5 above: `Recorder` implements only the bare `AuditSink::record`), so the
+     equivalent coverage lands in `governance::dispatch::tests` (a new `CapturingAuditSink`
+     test double, plus `set_client_first_capture_wins`, the strengthened
+     `classification_miss_records_mutate`, and the new
+     `computer_action_classification_flows_into_rw`) and in `tests/audit_recorder.rs`
+     (built via `Governance::all_open` wrapping `Recorder::to_file`, not a bare
+     `Recorder`).
+  9. **Test items 10-12 (server-wiring tests) needed a `ConfigStore`, which post-dates the
+     doc.** `handle_line`/`handle_tools_call` take `&Arc<ConfigStore>` (A5), not a bare
+     `Config` as the doc's literal signatures assume. The existing `#[cfg(test)]
+     ConfigStore::for_test` constructor takes a private `LastGoodInputs` type not visible
+     outside `governance/config/reload.rs`, so it could not be called from
+     `transport::mcp::server`'s own test module. Added a second, crate-visible test
+     constructor, `pub(crate) fn for_test_with_config(config: Config) -> Arc<ConfigStore>`
+     (still `#[cfg(test)]`-gated, zero production cost), which seeds empty last-good
+     inputs internally. All 3 server-wiring tests (`tools_call_produces_one_audit_record
+     _with_client_identity`, `computer_call_records_action_and_observe_class`,
+     `invalid_tools_call_without_name_records_nothing`) land in a new `#[cfg(test)] mod
+     tests` in `transport/mcp/server.rs`, driving the real private `handle_line`/
+     `handle_tools_call` functions with `Browser::new()` unconnected (so `browser.call`
+     fails fast with no extension, exactly as the doc's own test 10 anticipates).
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green (172 lib unit tests, up from 159: +3 in `governance::ports
+  ::tests` -- field-order, null-presence, single-line; +2 net in `governance::dispatch
+  ::tests` -- `classification_miss_records_mutate` strengthened to assert `RwClass::Mutate`
+  via the new `CapturingAuditSink` rather than just calling record_call, plus the new
+  `computer_action_classification_flows_into_rw`, plus `set_client_first_capture_wins`
+  strengthened to also assert the recorded client field; +4 in `governance::audit::tests`
+  -- file-append, disabled-writes-nothing, default-path-shape, reload-reopens-the-sink;
+  +3 in `transport::mcp::server::tests`, new this task; +1 new `tests/audit_recorder.rs`
+  integration test; all other suites unchanged and green: `tests/all_open_golden.rs` 3
+  (updated for the new `Governance::all_open` signature, still passing),
+  `tests/architecture.rs` 4 -- confirms `governance/audit/**` and the grown
+  `governance/dispatch.rs`/`governance/ports.rs` introduce zero forbidden edges despite
+  the new `uuid`/`chrono` dependencies, `tests/config_schema_golden.rs` 5 -- both goldens
+  regenerated via `cargo run --quiet -- config schema`/`config docs` and hand-reviewed
+  before overwriting, `tests/mcp_protocol.rs` 4 unchanged, `tests/peer_death.rs` 1
+  unchanged, `tests/tool_schema_fidelity.rs` 6 unchanged). `git status --short` confirmed
+  the touched-file set matches this entry's list exactly (adjusted for the post-A1 module
+  paths per deviation 1); `src/transport/mcp/schemas/tools.json` and everything under
+  `extension/` show no diff. ASCII scan (`rg -n "[^\x00-\x7F]"`) clean on every touched/new
+  file, confirmed via the Grep tool.
+- Browser checks queued: none appended to `BROWSER-TESTS.md` (this task needs no browser at
+  all -- the recorder writes to a file/stderr regardless of any extension connection). The
+  task's own Verification step 6 (manual smoke: rebuild, restart the MCP client, run one
+  live tool call, confirm the default audit file gained one plausible line) was NOT run in
+  this pass: doing so would mean rebuilding and replacing the very `browser-mcp.exe` this
+  live unattended session's own Claude Code connection is running against, risking
+  disruption of the session mid-run for a check that is not itself browser-dependent. The
+  new `tests/audit_recorder.rs` integration test and the 3 new server-wiring tests exercise
+  the identical code path (real `Recorder` writing real JSONL files, driven through the
+  real `Governance`/`handle_tools_call` chokepoint) end to end without that risk; the live
+  rebuild-and-restart smoke is left for a human's routine post-session verification, not
+  BROWSER-TESTS.md (which is reserved for checks that need a live browser/extension).
 
 ## Reminders before running BROWSER-TESTS.md
 

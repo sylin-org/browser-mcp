@@ -81,13 +81,64 @@ pub struct Denial {
     pub reason: String,
 }
 
-/// One audit record: the flight-recorder line for a single tool call. Placeholder: g06
-/// fleshes out the full record (identity, client, tool, action, rw, domain, decision,
-/// timing). Only `tool` is defined now so `AuditSink` has a concrete argument type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The `identity` object of an audit record: `{ "principal": ..., "resolved_by": ... }`,
+/// from the active manifest's `identity` block (shared format doc section 6.1). Always
+/// `None` on [`AuditRecord`] until the manifest task (g12) lands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Identity {
+    pub principal: String,
+    pub resolved_by: String,
+}
+
+/// The `client` object of an audit record: `{ "name": ..., "version": ... }` from the MCP
+/// `initialize` request's `clientInfo` (shared format doc section 6.1). Captured once per
+/// session, first-wins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+/// One audit record: exactly one JSON line per tool call (shared format doc section 6.1).
+/// Field ORDER is part of the format; `serde_json` is built with `preserve_order`. Grown by
+/// g06 from A2's single-field placeholder to the full shape; reused unchanged by `policy
+/// simulate`, the activity ledger, and session recap (later tasks).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AuditRecord {
-    /// The tool that was called.
+    /// UUID v4, lowercase, hyphenated. Unique per record.
+    pub event_id: String,
+    /// RFC 3339 UTC timestamp, millisecond precision, e.g. `2026-07-02T14:32:15.003Z`.
+    pub ts: String,
+    /// From the active manifest's `identity` block; always `None` until the manifest task
+    /// (g12) lands.
+    pub identity: Option<Identity>,
+    /// MCP client identity from the `initialize` request's `clientInfo`; `None` if the client
+    /// did not provide it. Captured once per session.
+    pub client: Option<ClientInfo>,
+    /// MCP tool name as received.
     pub tool: String,
+    /// The `computer` sub-action (e.g. `left_click`); `None` for every other tool.
+    pub action: Option<String>,
+    /// `Observe` or `Mutate` (shared format doc section 8; serializes as `"observe"` /
+    /// `"mutate"` via `RwClass`'s own `snake_case` rename, so the record never hand-rolls a
+    /// second copy of that vocabulary).
+    pub rw: RwClass,
+    /// Parser-normalized host of the current tab at decision time; always `None` until the
+    /// enforcement task introduces current-tab tracking.
+    pub domain: Option<String>,
+    /// `"allow"`, `"deny"`, or `"shadow_deny"`. Always `"allow"` until enforcement (g13) and
+    /// shadow mode (g15) land.
+    pub decision: &'static str,
+    /// Grant id that resolved the decision; always `None` until grants exist.
+    pub grant_id: Option<String>,
+    /// Stable denial id; always `None` until denials exist.
+    pub denial_id: Option<String>,
+    /// Wall time from dispatch entry to result, in milliseconds.
+    pub duration_ms: u64,
+    /// Active manifest identity; always `None` until the manifest task (g12) wires it in.
+    /// Reuses [`crate::governance::manifest::identity::ManifestIdentity`] (g09) rather than a
+    /// second `{name, version, hash}` shape.
+    pub manifest: Option<crate::governance::manifest::identity::ManifestIdentity>,
 }
 
 // --- The core decision types (serde is load-bearing) ---
@@ -266,12 +317,87 @@ mod tests {
         }
     }
 
+    /// A minimal, otherwise-null `AuditRecord` for tests that only need a concrete value to
+    /// pass to `AuditSink::record`, not to inspect the record's own fields.
+    fn sample_audit_record(tool: &str) -> AuditRecord {
+        AuditRecord {
+            event_id: "00000000-0000-4000-8000-000000000000".to_string(),
+            ts: "2026-07-02T00:00:00.000Z".to_string(),
+            identity: None,
+            client: None,
+            tool: tool.to_string(),
+            action: None,
+            rw: RwClass::Mutate,
+            domain: None,
+            decision: "allow",
+            grant_id: None,
+            denial_id: None,
+            duration_ms: 0,
+            manifest: None,
+        }
+    }
+
     #[test]
     fn null_sink_record_is_a_noop() {
         let sink = NullSink;
-        sink.record(&AuditRecord {
-            tool: "navigate".to_string(),
-        });
+        sink.record(&sample_audit_record("navigate"));
+    }
+
+    #[test]
+    fn record_serializes_all_fields_in_shared_format_order() {
+        let record = sample_audit_record("navigate");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+        let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                "event_id",
+                "ts",
+                "identity",
+                "client",
+                "tool",
+                "action",
+                "rw",
+                "domain",
+                "decision",
+                "grant_id",
+                "denial_id",
+                "duration_ms",
+                "manifest",
+            ]
+        );
+    }
+
+    #[test]
+    fn absent_values_serialize_as_null_not_omitted() {
+        let record = sample_audit_record("navigate");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+        for field in [
+            "identity",
+            "client",
+            "action",
+            "domain",
+            "grant_id",
+            "denial_id",
+            "manifest",
+        ] {
+            assert!(v.get(field).is_some(), "{field} must be present");
+            assert!(
+                v[field].is_null(),
+                "{field} must be null, got {:?}",
+                v[field]
+            );
+        }
+    }
+
+    #[test]
+    fn serialized_record_is_a_single_line() {
+        let mut record = sample_audit_record("navigate");
+        record.tool = "navigate\nwith embedded newline".to_string();
+        let line = serde_json::to_string(&record).unwrap();
+        assert!(!line.contains('\n'), "must contain no raw LF: {line}");
     }
 
     #[test]
@@ -288,9 +414,7 @@ mod tests {
     #[test]
     fn audit_sink_is_object_safe() {
         let sink: Box<dyn AuditSink> = Box::new(NullSink);
-        sink.record(&AuditRecord {
-            tool: "read_page".to_string(),
-        });
+        sink.record(&sample_audit_record("read_page"));
     }
 
     #[test]

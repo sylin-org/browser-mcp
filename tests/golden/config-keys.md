@@ -48,7 +48,7 @@ Record one audit line per tool call (the flight recorder).
 
 ## `audit.destination`
 
-Where audit records are written. Takes effect on restart.
+Where audit records are written.
 
 - Type: enum
 - Constraints: one of: file, stderr
@@ -58,7 +58,7 @@ Where audit records are written. Takes effect on restart.
 
 ## `audit.file.path`
 
-Audit file path; empty means the platform default location. Takes effect on restart.
+Audit file path; empty means the platform default location.
 
 - Type: string
 - Constraints: empty string, or an absolute path

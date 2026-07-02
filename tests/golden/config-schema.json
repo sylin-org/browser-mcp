@@ -46,7 +46,7 @@
           "default": true
         },
         "audit.destination": {
-          "description": "Where audit records are written. Takes effect on restart.",
+          "description": "Where audit records are written.",
           "type": "string",
           "enum": [
             "file",
@@ -55,7 +55,7 @@
           "default": "file"
         },
         "audit.file.path": {
-          "description": "Audit file path; empty means the platform default location. Takes effect on restart.",
+          "description": "Audit file path; empty means the platform default location.",
           "type": "string",
           "default": ""
         },

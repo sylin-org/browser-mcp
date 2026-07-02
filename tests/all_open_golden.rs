@@ -5,12 +5,14 @@
 //!   1. tools/list byte-stability -- the advertised tool surface is the same 13 tools in
 //!      the same order, and `is_known_tool` still resolves them.
 //!   2. facade decide round-trip -- `Governance::all_open()` resolves every call to
-//!      `Decision::Allow { grant_id: None }` without touching any port.
+//!      `Decision::Allow { grant_id: None }` without touching any decision port (audit is
+//!      orthogonal to all-open, shared format doc section 4.5, so the facade still carries an
+//!      audit sink).
 //!   3. `read_page` secret redaction is still wired at the chokepoint (governed by the
 //!      unchanged `content.security.secrets.redact` key), exercised end-to-end over stdio.
 
 use browser_mcp::governance::dispatch::Governance;
-use browser_mcp::governance::ports::Decision;
+use browser_mcp::governance::ports::{AuditRecord, AuditSink, Decision};
 use browser_mcp::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -56,19 +58,29 @@ fn tools_list_is_byte_stable_through_the_move() {
     assert!(!is_known_tool("bogus_tool"), "unknown tools stay unknown");
 }
 
+/// A sink that drops every record; enough to construct an all-open facade for this test
+/// without pulling in the real file/stderr recorders.
+struct NullAuditSink;
+impl AuditSink for NullAuditSink {
+    fn record(&self, _record: &AuditRecord) {}
+}
+
+fn no_classification(
+    _tool: &str,
+    _action: Option<&str>,
+) -> Option<browser_mcp::governance::ports::RwClass> {
+    None
+}
+
 #[test]
 fn facade_decide_is_all_open_after_the_move() {
-    let governance = Governance::all_open();
+    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink), no_classification);
     for name in GOLDEN_TOOL_NAMES {
         assert!(
             matches!(governance.decide(name), Decision::Allow { grant_id: None }),
             "{name} must be allowed in the all-open engine"
         );
     }
-    assert!(
-        governance.audit_sink().is_none(),
-        "all-open holds no audit sink"
-    );
 }
 
 /// Proves the facade change at the dispatch chokepoint did not disturb the `read_page`

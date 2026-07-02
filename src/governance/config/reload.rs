@@ -500,6 +500,20 @@ fn settle(prev: &PathWatch, current: Fingerprint) -> (PathWatch, bool) {
 
 #[cfg(test)]
 impl ConfigStore {
+    /// Crate-visible test constructor for other modules' test suites (for example
+    /// `transport::mcp::server`'s server-wiring tests): seeds a store at `config` with empty
+    /// last-good inputs, touching no filesystem. `LastGoodInputs` stays private to this module,
+    /// so this is the seam other modules use instead.
+    pub(crate) fn for_test_with_config(config: Config) -> Arc<ConfigStore> {
+        Self::for_test(
+            config,
+            LastGoodInputs {
+                org: OrgConfig::default(),
+                user: serde_json::Map::new(),
+            },
+        )
+    }
+
     /// Test-only constructor: seeds the store without touching the filesystem.
     fn for_test(initial: Config, last_good: LastGoodInputs) -> Arc<ConfigStore> {
         let config = Arc::new(initial);
