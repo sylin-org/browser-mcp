@@ -619,6 +619,7 @@ const handlers = {
     const host = hostOf(tab.url || "");
     tabHost.set(a.tabId, host);
     const buf = bufferFor(consoleBuffer, a.tabId, host);
+    const total = buf.items.length;
     let msgs = buf.items;
     if (a.onlyErrors) msgs = msgs.filter((m) => ["error", "exception"].includes(m.level));
     if (a.pattern) {
@@ -627,7 +628,11 @@ const handlers = {
     }
     msgs = msgs.slice(-(a.limit || 100));
     if (a.clear) consoleBuffer.set(a.tabId, { host, items: [] });
-    return text(msgs.length ? msgs.map((m) => `[${m.level}] ${m.text}`).join("\n") : "No console messages matching the pattern.");
+    if (msgs.length) return text(msgs.map((m) => `[${m.level}] ${m.text}`).join("\n"));
+    const primary = total
+      ? `${total} console message(s) recorded for this tab, but none matched your filter.`
+      : "No console messages recorded for this tab.";
+    return text(`${primary}\nNote: console tracking begins when this tool is first used on a tab. Reload the page to capture messages emitted during page load.`);
   },
   async read_network_requests(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
@@ -637,11 +642,16 @@ const handlers = {
     const host = hostOf(tab.url || "");
     tabHost.set(a.tabId, host);
     const buf = bufferFor(networkBuffer, a.tabId, host);
+    const total = buf.items.length;
     let reqs = buf.items;
     if (a.urlPattern) reqs = reqs.filter((r) => r.url.includes(a.urlPattern));
     reqs = reqs.slice(-(a.limit || 100));
     if (a.clear) networkBuffer.set(a.tabId, { host, items: [] });
-    return text(reqs.length ? reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" + r.errorText + ")" : "") : "(pending)"}`).join("\n") : "No network requests matching the pattern.");
+    if (reqs.length) return text(reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" + r.errorText + ")" : "") : "(pending)"}`).join("\n"));
+    const primary = total
+      ? `${total} network request(s) recorded for this tab, but none matched your filter.`
+      : "No network requests recorded for this tab.";
+    return text(`${primary}\nNote: network tracking begins when this tool is first used on a tab. Reload the page to capture requests made during page load, or interact with the page to trigger new requests.`);
   },
   async resize_window(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);

@@ -579,3 +579,79 @@ Steps:
    endpoint could have responded or failed.
 Expect: a line of the form `GET https://httpbin.org/delay/10 (pending)` (no `->`, no status,
 unchanged wording), alongside the T14-1/T14-2/T14-3 lines.
+
+## T15-1: Fresh tab, first call to read_console_messages shows the buffer-empty variant
+Changed: the zero-result string for `read_console_messages` now distinguishes "buffer never
+populated" from "buffer has entries but none matched the filter," and always adds a note
+explaining that tracking starts on first use. Extension-only change; reload the extension at
+chrome://extensions, no MCP client restart, no binary rebuild.
+Steps:
+1. Open a brand-new tab and add it to the group (navigate it into scope, e.g. to
+   https://example.com), but do not call `read_console_messages` yet.
+2. Call `read_console_messages` with only `tabId` set (no `pattern`, no `onlyErrors`).
+Expect: the result text is exactly two lines:
+   No console messages recorded for this tab.
+   Note: console tracking begins when this tool is first used on a tab. Reload the page to capture messages emitted during page load.
+
+## T15-2: Reloading the page after the first call captures load-time console output
+Changed: same as T15-1; confirms tracking now active (unchanged buffering behavior from T12/T13),
+and non-empty output format is byte-identical to before this task.
+Steps:
+1. Continuing from T15-1, reload the page (e.g. navigate to a page that logs on load, such as
+   https://example.com or any page you control that runs `console.log("hello")` in an inline
+   script) and call `read_console_messages` again.
+Expect: if the page logged anything during load, the result shows normal `[level] text` lines
+(one per message, no note appended); if the page logged nothing, the T15-1 buffer-empty variant
+repeats (total is still 0).
+
+## T15-3: Non-matching pattern shows the buffer-has-entries variant with the correct count
+Changed: same as T15-1.
+Steps:
+1. Continuing from T15-2 (buffer now has at least one message; if not, run
+   `javascript_tool` with text `console.log("t15 probe"); "logged"` first, then call
+   `read_console_messages` once with no pattern to confirm it appears).
+2. Call `read_console_messages` with `pattern` set to `"zzz_no_such_pattern"`.
+Expect: the result text is exactly two lines:
+   N console message(s) recorded for this tab, but none matched your filter.
+   Note: console tracking begins when this tool is first used on a tab. Reload the page to capture messages emitted during page load.
+   where N is the buffered total from step 1 (a plain integer, no pluralization change to the
+   literal `(s)` suffix).
+
+## T15-4: read_network_requests fresh-tab and non-matching-filter variants
+Changed: same shape as T15-1/T15-3, network wording.
+Steps:
+1. Open another brand-new tab into the group and, without calling `read_network_requests` yet,
+   call it once with only `tabId` set.
+Expect: exactly two lines:
+   No network requests recorded for this tab.
+   Note: network tracking begins when this tool is first used on a tab. Reload the page to capture requests made during page load, or interact with the page to trigger new requests.
+2. Navigate that tab to https://example.com (or reload it) so at least one request is buffered,
+   then call `read_network_requests` with `urlPattern` set to a string that cannot match (for
+   example `"zzz_no_such_url"`).
+Expect: exactly two lines:
+   N network request(s) recorded for this tab, but none matched your filter.
+   Note: network tracking begins when this tool is first used on a tab. Reload the page to capture requests made during page load, or interact with the page to trigger new requests.
+   where N is the buffered total (a plain integer).
+
+## T15-5: clear still empties the buffer on a zero-match call
+Changed: confirms `clear` fires even when the filtered result is empty (unchanged clear
+mechanics; only the returned text changed).
+Steps:
+1. Continuing from T15-4 (buffer has at least one network request), call
+   `read_network_requests` with `urlPattern` set to a non-matching string AND `clear: true`.
+2. Immediately call `read_network_requests` again with only `tabId` (no filter).
+Expect: step 1 shows the "N network request(s) recorded... but none matched your filter." variant
+(clear happens after the filtered-zero result is computed, so N still reflects the pre-clear
+total). Step 2 shows the buffer-empty variant ("No network requests recorded for this tab."),
+confirming the buffer was actually emptied by step 1's `clear: true`.
+
+## T15-6: Non-empty results are unchanged
+Changed: confirms this task touched no formatting on the non-empty branch of either tool.
+Steps:
+1. With console messages present (from T15-2/T15-3), call `read_console_messages` with no
+   pattern.
+2. With network requests present (from T15-4/T15-5), call `read_network_requests` with no
+   urlPattern.
+Expect: step 1 shows `[level] text` lines exactly as before this task (no note appended, no
+change to per-line format). Step 2 shows `<METHOD> <URL> -> <STATUS>` (or `(pending)` /
+`-> <STATUS> (<errorText>)` per T14) lines exactly as before this task (no note appended).

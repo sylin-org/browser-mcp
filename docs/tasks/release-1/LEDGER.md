@@ -10,9 +10,9 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T15 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14 are done.
+- Current task: T08 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T14 Network.loadingFailed marks requests failed (this run)
+- Last commit: feat(extension): T15 Empty-result guidance notes (this run)
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
@@ -36,7 +36,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 7 | T12 | Per-domain console/network buffer reset | - | done |
 | 8 | T13 | Runtime.exceptionThrown capture | - | done |
 | 9 | T14 | Network.loadingFailed status | - | done |
-| 10 | T15 | Empty-result guidance notes | - | pending |
+| 10 | T15 | Empty-result guidance notes | - | done |
 | 11 | T08 | type via real keyDown/keyUp | - | pending |
 | 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | pending |
 | 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | pending |
@@ -916,3 +916,110 @@ Append one entry per task using this template. Newest at the bottom.
     already behaved. No new domain-enable call was added anywhere.
 - Browser checks queued: T14-1, T14-2, T14-3, T14-4 in docs/tasks/release-1/BROWSER-TESTS.md
   (appended after T13-3, preserving task order).
+
+### T15 Empty-result guidance notes for read_console_messages and read_network_requests -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T15 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - Full diff review confirming the change is scoped to exactly the two zero-result return paths:
+    in each handler, `const total = buf.items.length;` was inserted immediately after
+    `const buf = bufferFor(...)` (the point where the buffer is first read, before any filter),
+    the `let msgs = buf.items;` / `let reqs = buf.items;` line and every filter/limit/clear line
+    below it are byte-identical to before this task (confirmed via `git diff` hunk boundaries --
+    no lines between the `total` insertion and the final `return` were touched except the return
+    itself); the single ternary `return text(...)` was replaced with an early `if (msgs.length)
+    return text(...)` (non-empty branch's inner expression byte-identical to before, including the
+    `errorText`/`(pending)` ternary in the network renderer) followed by a `primary` local (ternary
+    on `total`) and a final `return text(`${primary}\nNote: ...`)`.
+  - Traced the `clear` interaction by hand: `if (a.clear) ...Buffer.set(a.tabId, { host, items: []
+    });` executes unconditionally before the `if (msgs.length)` / `if (reqs.length)` check, exactly
+    as before this task -- `clear` still empties the buffer even on a zero-match call, satisfying
+    Required-behavior's explicit requirement and the task's own T15-5 browser-check scenario.
+  - Compared every one of the six required exact strings (two primary-line pairs, two note lines)
+    character-for-character against the prompt's Required-behavior section: `"No console messages
+    recorded for this tab."`, `` `${total} console message(s) recorded for this tab, but none
+    matched your filter.` ``, `"Note: console tracking begins when this tool is first used on a
+    tab. Reload the page to capture messages emitted during page load."`, `"No network requests
+    recorded for this tab."`, `` `${total} network request(s) recorded for this tab, but none
+    matched your filter.` ``, `"Note: network tracking begins when this tool is first used on a
+    tab. Reload the page to capture requests made during page load, or interact with the page to
+    trigger new requests."` -- all six match verbatim, joined as `${primary}\nNote: ...` (exactly
+    one `\n` between the two lines, no trailing newline), matching the prompt's two worked
+    examples byte for byte.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("no Rust rebuild is needed").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: the prompt's "Current behavior" section describes the pre-T12 buffer shape
+  (`consoleBuffer`/`networkBuffer` as bare `tabId -> array` Maps, reading
+  `consoleBuffer.get(a.tabId) || []` / `networkBuffer.get(a.tabId) || []` directly) and cites line
+  numbers (512-536) that predate T12/T13/T14 landing. T12 (earlier in the fixed sequence) had
+  already changed both buffers to `tabId -> { host, items: [...] }` with a `bufferFor` choke point,
+  and the actual handlers (at lines 613-655 before this task's edit) read `buf.items` via
+  `bufferFor(consoleBuffer, a.tabId, host)` / `bufferFor(networkBuffer, a.tabId, host)`, not the
+  prompt's stale `.get(a.tabId) || []` snippet. T14 had also already changed the network renderer's
+  non-empty branch to include the optional `(errorText)` suffix, which the prompt's own "Current
+  behavior" quote for `read_network_requests` (line 42) does not show. Reconciled by: (1) capturing
+  `total` from `buf.items.length` (the actual pre-filter source of truth in the current code) at
+  the same conceptual point the prompt specifies ("where the buffer is first read, before any
+  filter or limit"), rather than the prompt's literal `.get(a.tabId) || []` line, which no longer
+  exists; (2) leaving the non-empty branch's inner expression (including T14's `errorText` suffix)
+  completely untouched, since the prompt's Required behavior explicitly says "the non-empty
+  branches ... must not change in any way" and only describes the zero-result path. Both T13's and
+  T14's own "Notes for later tasks" entries had already flagged this exact handoff (this task
+  "touches the same ... zero-entries string ... but does not modify" the non-empty format), which
+  matched what was found in the actual code.
+- Decisions made:
+  - Captured `total` as `const total = buf.items.length;` immediately after `const buf =
+    bufferFor(...)`, one line before the pre-existing `let msgs = buf.items;` / `let reqs =
+    buf.items;` line -- this is the literal "point where the buffer is first read" in the current
+    (post-T12) code, satisfying the prompt's instruction without needing to reinterpret which line
+    counts as "first read" now that the code no longer matches the prompt's cited line 517/531.
+  - Did not add a shared helper function for the two-line assembly (the prompt explicitly allowed
+    either choice: "a small shared function ... is acceptable; a copy in each handler is also
+    acceptable"). Chose the inline-copy option: the two note strings differ (console vs network
+    wording) and the two primary-line pairs differ, so a shared helper would need 4 string
+    parameters for marginal benefit inside a single ~90-line handlers object; duplicating four short
+    lines per handler was judged lower-risk and easier to verify against the prompt's exact-string
+    requirement than threading four parameters through a new function.
+  - Used an early `if (msgs.length) return text(...);` (guard-clause style) instead of keeping a
+    single top-level ternary that now has three branches -- not mandated by the prompt, but the
+    lowest-risk way to keep the non-empty branch's inner expression textually identical to the
+    pre-task code (a straight cut of the original ternary's true-branch, unmodified) while adding
+    the two-variant zero-result logic below it without deeply nesting a ternary-of-ternaries on one
+    line.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03/T12/T13/T14's logs already
+    described.
+- Notes for later tasks:
+  - The zero-result contract (six exact strings: two primary-line pairs keyed on whether `total` is
+    0, and two note lines) is now a byte-exact contract at the same tier as T01's marker-line
+    formats, T02's Note line, T03's get_page_text contract, T06's `[hop: ...]` contract, T13's
+    exception-text format, and T14's network per-line format -- do not reword any of the six
+    strings in a later task without updating this note and the T15 BROWSER-TESTS.md entries.
+  - `total` in both handlers is a local `const` scoped to that one call, computed once from
+    `buf.items.length` right after the buffer lookup and never mutated; it does not persist across
+    calls and has no relationship to the 1000-entry cap in `pushCapped` (a tab with more than 1000
+    buffered items would still report `total` as (at most) 1000, since `pushCapped` itself caps the
+    array -- this task did not change that cap and the prompt's Out-of-scope section explicitly
+    excludes touching it).
+  - No remaining release-1 task (per BOOTSTRAP.md's fixed sequence: T08, T09, T10, T11, T18, T16,
+    T17, T05) touches `read_console_messages` or `read_network_requests` again; this concludes the
+    T12/T13/T14/T15 chain of changes to those two handlers and their shared buffers.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `read_console_messages`/`read_network_requests`
+    schemas were left untouched, per this task's Constraints section.
+- Browser checks queued: T15-1, T15-2, T15-3, T15-4, T15-5, T15-6 in
+  docs/tasks/release-1/BROWSER-TESTS.md (appended after T14-4, preserving task order).
