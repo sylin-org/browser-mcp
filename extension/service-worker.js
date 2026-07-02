@@ -13,6 +13,7 @@ let groupId = null;
 const attached = new Map(); // tabId -> { domains: Set<string> }
 const consoleBuffer = new Map(); // tabId -> [{ level, text }]
 const networkBuffer = new Map(); // tabId -> [{ requestId, method, url, status, mimeType }]
+const screenshotCtx = new Map(); // tabId -> { vpW, vpH, shotW, shotH } (set on each screenshot)
 
 // A rejected promise must not tear down the service worker.
 self.addEventListener("unhandledrejection", (e) => e.preventDefault());
@@ -57,21 +58,58 @@ async function ensureAttached(tabId) {
   const p = (async () => {
     await chrome.debugger.attach({ tabId }, "1.3");
     attached.set(tabId, { domains: new Set() });
-    await applyDeviceMetrics(tabId);
   })();
   attaching.set(tabId, p);
   try { await p; } finally { attaching.delete(tabId); }
 }
-// deviceScaleFactor:1 so screenshot pixels match Input.dispatch coordinates regardless of DPI.
-async function applyDeviceMetrics(tabId) {
-  const tab = await chrome.tabs.get(tabId);
-  const win = await chrome.windows.get(tab.windowId);
-  await chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
-    width: win.width,
-    height: win.height,
-    deviceScaleFactor: 1,
-    mobile: false,
+// Coordinate model (harvest step 4, official v1.0.78): NO device-metrics override. Each screenshot
+// probes the CSS viewport + DPR, captures at native resolution, downscales to a token budget, and
+// records a per-tab ScreenshotContext. Model coordinates (read off that downscaled image) are then
+// rescaled back to CSS viewport pixels before Input dispatch. ref-derived coordinates are already
+// CSS px and are NOT rescaled.
+const PX_PER_TOKEN = 28, MAX_TOKENS = 1568, MAX_SIDE = 1568, MAX_SCREENSHOT_B64 = 1100000;
+
+async function probeViewport(tabId) {
+  const r = await cdp(tabId, "Runtime.evaluate", {
+    expression: "({w:innerWidth,h:innerHeight,d:window.devicePixelRatio||1})",
+    returnByValue: true,
   });
+  const v = r && r.result && r.result.value;
+  if (!v || !v.w || !v.h) throw new Error("failed to probe viewport");
+  return { vpW: v.w, vpH: v.h, dpr: v.d || 1 };
+}
+// Target screenshot dimensions (derived from the CSS viewport) under the token + longest-side budget.
+function targetDims(vpW, vpH) {
+  let w = vpW, h = vpH;
+  const tokens = Math.ceil(w / PX_PER_TOKEN) * Math.ceil(h / PX_PER_TOKEN);
+  if (tokens > MAX_TOKENS) { const s = Math.sqrt(MAX_TOKENS / tokens); w = Math.round(w * s); h = Math.round(h * s); }
+  const longest = Math.max(w, h);
+  if (longest > MAX_SIDE) { const s = MAX_SIDE / longest; w = Math.round(w * s); h = Math.round(h * s); }
+  return { w: Math.max(1, w), h: Math.max(1, h) };
+}
+function bytesFromBase64(b64) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function base64FromBytes(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+async function encodeJpeg(bitmap, w, h, quality) {
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+  return base64FromBytes(new Uint8Array(await blob.arrayBuffer()));
+}
+// Map a model-provided coordinate (read off the downscaled screenshot) back to CSS viewport px.
+// Passthrough when no screenshot has been taken for the tab (nothing to map against).
+function rescaleCoord(tabId, x, y) {
+  const c = screenshotCtx.get(tabId);
+  if (!c || !c.shotW || !c.shotH) return [Math.round(x), Math.round(y)];
+  return [Math.round((x * c.vpW) / c.shotW), Math.round((y * c.vpH) / c.shotH)];
 }
 async function cdp(tabId, method, params) {
   await ensureAttached(tabId);
@@ -91,6 +129,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
   consoleBuffer.delete(tabId);
   networkBuffer.delete(tabId);
+  screenshotCtx.delete(tabId);
 });
 chrome.debugger.onDetach.addListener((src) => attached.delete(src.tabId));
 
@@ -172,15 +211,23 @@ function textImage(t, base64) {
   return { content: [{ type: "text", text: t }, { type: "image", data: base64, mimeType: "image/jpeg" }] };
 }
 
-// --- Screenshot pipeline (JPEG quality 55, fall back to 30 above ~500KB) ---
+// --- Screenshot pipeline: capture native, downscale to the token budget, record ScreenshotContext ---
 async function screenshot(tabId) {
   await ensureAttached(tabId);
-  const opts = { format: "jpeg", quality: 55, optimizeForSpeed: true, captureBeyondViewport: false };
-  let r = await cdp(tabId, "Page.captureScreenshot", opts);
-  if (r.data.length > 500000) {
-    r = await cdp(tabId, "Page.captureScreenshot", { ...opts, quality: 30 });
-  }
-  return r.data;
+  const { vpW, vpH, dpr } = await probeViewport(tabId);
+  const cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false });
+  const { w, h } = targetDims(vpW, vpH);
+  // Default to the raw native capture (dims = CSS viewport * DPR) if canvas downscaling is unavailable.
+  let base64 = cap.data, shotW = Math.round(vpW * dpr), shotH = Math.round(vpH * dpr);
+  try {
+    const bitmap = await createImageBitmap(new Blob([bytesFromBase64(cap.data)], { type: "image/jpeg" }));
+    base64 = await encodeJpeg(bitmap, w, h, 0.55);
+    if (base64.length > MAX_SCREENSHOT_B64) base64 = await encodeJpeg(bitmap, w, h, 0.3);
+    shotW = w; shotH = h;
+    if (bitmap.close) bitmap.close();
+  } catch { /* OffscreenCanvas/createImageBitmap unavailable: keep the raw native capture */ }
+  screenshotCtx.set(tabId, { vpW, vpH, shotW, shotH });
+  return base64;
 }
 
 // --- Input helpers ---
@@ -213,7 +260,9 @@ async function click(tabId, x, y, opts) {
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount, modifiers });
 }
 async function resolveCoords(tabId, args) {
-  if (args.coordinate) return args.coordinate;
+  // Model-provided coordinates are read off the (downscaled) screenshot -> rescale to CSS px.
+  if (args.coordinate) return rescaleCoord(tabId, args.coordinate[0], args.coordinate[1]);
+  // ref coordinates come from getBoundingClientRect (already CSS viewport px) -> do NOT rescale.
   if (args.ref) {
     const r = await content(tabId, { type: "refCoordinates", ref: args.ref });
     if (r && r.result) return [r.result.x, r.result.y];
@@ -327,8 +376,9 @@ async function computer(a) {
     }
     case "left_click_drag": {
       if (!a.start_coordinate || !a.coordinate) return text("start_coordinate and coordinate are required.");
-      const [sx, sy] = a.start_coordinate;
-      const [ex, ey] = a.coordinate;
+      // Both endpoints are model-provided (read off the screenshot) -> rescale to CSS px.
+      const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
+      const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers });
       await sleep(40);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers });
@@ -441,12 +491,12 @@ const handlers = {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
     const tab = await chrome.tabs.get(a.tabId);
     await chrome.windows.update(tab.windowId, { width: a.width, height: a.height });
-    // Refresh the device-metrics override for every attached tab in this window so screenshots
-    // and input coordinates track the new viewport.
+    // The viewport changed; drop any stale ScreenshotContext for this window's tabs so the next
+    // screenshot re-establishes the coordinate mapping.
     for (const tabId of attached.keys()) {
       try {
         const t = await chrome.tabs.get(tabId);
-        if (t.windowId === tab.windowId) await applyDeviceMetrics(tabId);
+        if (t.windowId === tab.windowId) screenshotCtx.delete(tabId);
       } catch { /* tab gone */ }
     }
     return text(`Resized window to ${a.width}x${a.height}.`);

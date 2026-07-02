@@ -136,17 +136,24 @@ read_page / accessibility engine (content.js):
   coords in the result (useful; official omits them).
 
 computer / screenshot pipeline (service-worker.js) -- biggest technique divergence:
-- **[HIGH] Token-budget screenshot downscale** -- official caps to `ceil(w/28)*ceil(h/28)<=1568`
+- **[HIGH] [DONE]** **Token-budget screenshot downscale** -- official caps to `ceil(w/28)*ceil(h/28)<=1568`
   tokens and <=1568px longest side (canvas), then steps JPEG quality 0.75 -> 0.10 by 0.05 until under
-  ~1.05MB base64. OURS captures the raw viewport (q55, single 30 fallback >500KB) with **NO pixel cap**
-  -> on 4K/hi-DPI a huge image + coordinates that don't map back (official 13887-13910,19973-20059).
-- **[HIGH, decide] Coordinate model** -- official NEVER uses `Emulation.setDeviceMetricsOverride`; it
-  probes `innerWidth/innerHeight/devicePixelRatio` per screenshot, captures at native DPR, stores a
-  per-tab ScreenshotContext, and rescales model coords via `Mv()=round(v*viewport/screenshot)` before
-  dispatch (official 14079-14101,19874-19963,20730-20734). OURS forces `deviceScaleFactor:1` + feeds
-  raw coords (CLAUDE.md pinned this as deliberate). If we adopt token-budget downscaling (above) we
-  MUST also rescale coords, which is the official model -- so decide the pair together. Adopting the
-  official model also removes our `resize_window` device-metrics refresh.
+  ~1.05MB base64. OURS previously captured the raw viewport (q55, single 30 fallback >500KB) with **NO
+  pixel cap** (official 13887-13910,19973-20059). Fixed: capture native (jpeg q80) -> downscale to the
+  same token/longest-side budget via OffscreenCanvas in the service worker -> encode jpeg 0.55 (0.30
+  fallback if >1.1MB b64).
+- **[HIGH, DECIDED -> full official model, user-approved 2026-07-01] [DONE]** **Coordinate model** --
+  official NEVER uses `Emulation.setDeviceMetricsOverride`; it probes `innerWidth/innerHeight/
+  devicePixelRatio` per screenshot, captures at native DPR, stores a per-tab ScreenshotContext, and
+  rescales model coords via `Mv()=round(v*viewport/screenshot)` before dispatch (official
+  14079-14101,19874-19963,20730-20734). We removed `deviceScaleFactor:1`/device-metrics override
+  entirely: `probeViewport` (CDP Runtime.evaluate) + per-tab `screenshotCtx {vpW,vpH,shotW,shotH}` +
+  `rescaleCoord` applied to model-provided coords (a.coordinate / start_coordinate / drag / scroll);
+  ref-derived coords (getBoundingClientRect) are NOT rescaled (they are already CSS px). Removed the
+  `resize_window` device-metrics refresh (now just invalidates stale ScreenshotContext). Rescale math
+  verified numerically (corner->corner, center->center; longest side <=1568). CLAUDE.md updated.
+  RESIDUAL: `zoom` still returns a full (downscaled) screenshot rather than cropping `region` -- that
+  is a step-5 item; the model-coord region would rescale via the same context when implemented.
 - **[MED] real `zoom`** -- ours ignores `a.region` and returns a full-viewport jpeg, so zoom does not
   zoom; official crops the region on a PNG canvas (official 21086-21174).
 - **[MED] double/triple click** send an incrementing `clickCount` sequence (not a lone clickCount:2/3);
@@ -216,9 +223,11 @@ Plan (reimplement the CONCEPT leanly; do NOT copy Anthropic's overlay code):
    keep the tests passing.
 2. [DONE] Extension redaction (B, security) + `<select>` options -- highest user/safety value.
 3. **UI visual cursor + agent-active indicator (D)** -- user-facing parity + "watching" delight;
-   pairs naturally with the coordinate work since both concern dispatch coordinates.
-4. Screenshot token-budget + coordinate-model decision (B) -- the big one; decide keep-ours vs adopt
-   (note: the visual cursor must use the SAME rescaled CSS-px coordinate the input dispatch uses).
+   pairs naturally with the coordinate work since both concern dispatch coordinates. NEXT. The cursor
+   must render at the SAME rescaled CSS-px coordinate `rescaleCoord()` produces for the dispatch.
+4. [DONE] Screenshot token-budget + coordinate-model decision (B) -- DECIDED: full official model
+   (probe viewport/DPR, downscale to budget, ScreenshotContext, rescale model coords). Done before 3
+   so the cursor consumes the rescaled dispatch coord.
 5. The remaining MED technique adoptions (zoom, click/type/key, network loadingFailed/exception,
    domain-reset, empty-result guidance).
 6. Reload the unpacked extension in Chrome to test each behavior change (Rust side unaffected).
