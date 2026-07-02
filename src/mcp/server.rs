@@ -22,8 +22,9 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 pub async fn run(browser: Browser) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
-    // Governance config in force. The policy engine is parked, so this is the built-in "Minimal"
-    // preset (safe-by-default). When the manifest engine lands it resolves this per session.
+    // Governance config in force. The policy engine ships in a later stage, so this is the
+    // built-in "Minimal" preset (safe-by-default). When the manifest engine lands it resolves
+    // this per session.
     let config = Config::default();
 
     while let Some(line) = lines.next_line().await? {

@@ -30,10 +30,12 @@ so tool code carries zero policy logic (`src/lib.rs` documents this layering).
 
 With no manifest the engine is all-open, a first-class supported mode, not
 "enterprise minus governance." The manifest/policy engine (SPEC sec 4-5 grants,
-domain matching, five enforcement points) is scaffolded but parked: `src/policy/`
-holds only the typed config-key registry with a safe-by-default "Minimal" preset,
-awaiting the v1.5 overlay that will resolve values from a manifest and thread
-them through dispatch without touching tool code.
+domain matching, five enforcement points) is scaffolded and staged for the next
+release: `src/policy/` holds the typed config-key registry with a safe-by-default
+"Minimal" preset, and the v1.5 overlay will resolve values from a manifest and
+thread them through dispatch without touching tool code. The staging is
+deliberate sequencing, not deferral: the engine must be stable first so that
+governance bugs and engine bugs are never debugged through each other.
 
 ## Consequences
 
@@ -44,7 +46,7 @@ them through dispatch without touching tool code.
   efficiency and correctness live in the engine, not sourced from tool-filtering.
 - Negative: the invariant depends on discipline. Tool code must never make
   access decisions, and the dispatch seam must remain the sole chokepoint.
-- Negative: the parked engine is unfinished; `PolicyDecision` has no `Deny`
+- Negative: the staged engine is unfinished; `PolicyDecision` has no `Deny`
   variant yet, so denial formatting and enforcement arrive only with v1.5.
 - Follow-up: v1.5 replaces the no-op hooks with manifest-driven enforcement;
   SPEC sec 5.3 STEP 0 short-circuits to Allow when no manifest is present, so

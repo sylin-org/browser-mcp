@@ -1,7 +1,9 @@
 //! Governance configuration -- the central registry of policy keys.
 //!
 //! The full policy engine (manifest parsing, grants, per-call enforcement; SPEC sec 4-5) is
-//! **parked**. The design stance this module encodes:
+//! **staged**: engine correctness ships and stabilizes first, then the governance layer lands on a
+//! proven engine, so the two layers are never debugged at the same time. The design stance this
+//! module encodes:
 //!
 //! - The **engine is always truthful.** The extension and tools return raw page content; they make
 //!   no access or redaction decisions (SPEC sec 9.5: the binary governs *structurally*, not by
