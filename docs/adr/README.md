@@ -24,10 +24,13 @@ history live here.
 | [0014](0014-v1-scope-exclusions.md) | v1 scope exclusions | Accepted |
 | [0015](0015-idempotent-merge-installer.md) | Self-registering installer via idempotent value-level JSON merge | Accepted |
 | [0016](0016-debug-mode-pinned-extension-id.md) | Debug/observability mode + pinned dev extension id | Accepted |
+| [0017](0017-release-1-engine-hardening.md) | Release 1 engine hardening | Accepted |
+| [0018](0018-governance-observe-then-enforce.md) | Governance ships observe-then-enforce | Accepted |
+| [0019](0019-layered-configuration-model.md) | Layered configuration: typed key registry, presets, org locks | Proposed |
 
 ## Conventions
 
 - Filenames: `NNNN-kebab-title.md`, zero-padded, monotonically increasing.
-- Status is one of `Accepted`, `Superseded by ADR-XXXX`, or `Supersedes ADR-YYYY`.
+- Status is one of `Proposed`, `Accepted`, `Superseded by ADR-XXXX`, or `Supersedes ADR-YYYY`.
 - A decision that changes an earlier one gets a **new** ADR; the old one is marked Superseded rather
   than rewritten. History is preserved, not edited.
