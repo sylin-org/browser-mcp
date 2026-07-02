@@ -710,3 +710,111 @@ Steps:
 3. `javascript_tool` to read `JSON.stringify(window.__ev)`.
 Expect: exactly one Enter keydown/keyup pair appears between the events for `a` and `b` (not
 two), confirming the `\r` before a `\n` is skipped rather than producing a second Enter press.
+
+## T09-1: double_click on a word selects it (real clickCount 1 then 2)
+Changed: `click()` in `extension/service-worker.js` now dispatches N press/release pairs with
+clickCount incrementing 1..N instead of one pair carrying clickCount=N; every mouse event also
+carries an explicit `buttons` bitmask and `force`. Extension-only change; reload the extension at
+chrome://extensions, no MCP client restart needed.
+Steps:
+1. `navigate` to https://en.wikipedia.org/wiki/Cat (or any text-heavy article page).
+2. `javascript_tool` to install a click-detail probe on the page and report a word's coordinates:
+   ```js
+   window.__clicks = [];
+   for (const t of ["mousedown", "mouseup", "click", "dblclick"]) {
+     document.addEventListener(t, (e) => window.__clicks.push(
+       t + "|detail=" + e.detail + "|button=" + e.button + "|buttons=" + e.buttons), true);
+   }
+   const p = document.querySelector("#mw-content-text p");
+   const r = p.getBoundingClientRect();
+   JSON.stringify({ x: Math.round(r.left + 40), y: Math.round(r.top + 10) });
+   ```
+3. `computer` with `{ "action": "double_click", "coordinate": [x, y] }` using the coordinates
+   from step 2 (screenshot first if a fresh screenshot-space coordinate is preferred instead).
+4. `javascript_tool` to read `JSON.stringify({ sel: window.getSelection().toString(),
+   ev: window.__clicks })`.
+Expect: `sel` is a non-empty single word (the word under the click point is selected -- this only
+happens when the page observes a real click (detail=1) immediately followed by a second click
+(detail=2) on the same target, which is how browsers compute word-select). `ev` shows, in order:
+`mousedown|detail=1|...|buttons=1`, `mouseup|detail=1|...|buttons=0`, `click|detail=1|...`,
+`mousedown|detail=2|...|buttons=1`, `mouseup|detail=2|...|buttons=0`, `click|detail=2|...`,
+`dblclick|detail=2|...`. No entry has detail=0 for a press/release.
+
+## T09-2: triple_click on a paragraph selects the whole line/paragraph
+Changed: same rework as T09-1.
+Steps:
+1. Continuing on the same page/probe as T09-1 (clear `window.__clicks = [];` first, and clear
+   the previous selection with `window.getSelection().removeAllRanges()`).
+2. `computer` with `{ "action": "triple_click", "coordinate": [x, y] }` on the same paragraph
+   coordinates as T09-1.
+3. `javascript_tool` to read `JSON.stringify({ sel: window.getSelection().toString().length,
+   ev: window.__clicks })`.
+Expect: `sel` is much larger than one word (the whole line or paragraph is selected -- this only
+happens when the page sees three sequential clicks with detail 1, then 2, then 3 on the same
+target). `ev` shows three mousedown/mouseup/click cycles with detail=1, detail=2, detail=3 in
+that order (never a pair whose first detail is 2 or 3), and a final `dblclick|detail=2` plus (per
+the browser's own triple-click semantics) no separate "tripleclick" DOM event -- what matters is
+that the three detail values appear in strict 1, 2, 3 order, not 1, 1, 1 or a single detail=3
+pair.
+
+## T09-3: left_click is a single normal activation with no accidental double-click side effects
+Changed: same rework as T09-1; this exercises the plain (N=1) path, which now runs through the
+same incrementing loop but with a single iteration.
+Steps:
+1. `navigate` to https://example.com.
+2. `javascript_tool` to install a probe on the "More information..." link:
+   ```js
+   window.__clicks = [];
+   const a = document.querySelector("a");
+   for (const t of ["mousedown", "mouseup", "click", "dblclick"]) {
+     a.addEventListener(t, (e) => window.__clicks.push(
+       t + "|detail=" + e.detail + "|buttons=" + e.buttons));
+   }
+   const r = a.getBoundingClientRect();
+   JSON.stringify({ x: Math.round(r.left + 5), y: Math.round(r.top + 5) });
+   ```
+3. `computer` with `{ "action": "left_click", "coordinate": [x, y] }` using the coordinates from
+   step 2.
+4. `javascript_tool` to read `JSON.stringify(window.__clicks)` (do this before any navigation
+   the click may have triggered finishes, or check history/back if the page already navigated).
+Expect: exactly one mousedown/mouseup/click cycle, all with detail=1 (`buttons=1` on mousedown,
+`buttons=0` on mouseup/click). No `dblclick` event fires. The link activates normally (a real
+navigation occurs, or the click event's default was not prevented).
+
+## T09-4: right_click carries buttons=2 while pressed
+Changed: same rework as T09-1; the right-click path now sets `buttons: BUTTON_BITS.right` (2) on
+`mousePressed` instead of omitting `buttons` entirely.
+Steps:
+1. `navigate` to https://example.com.
+2. `javascript_tool` to install a probe: `window.__rc = []; document.addEventListener("mousedown",
+   (e) => window.__rc.push("button=" + e.button + "|buttons=" + e.buttons)); document
+   .addEventListener("contextmenu", (e) => window.__rc.push("contextmenu"));
+   JSON.stringify("ok")`.
+3. `computer` with `{ "action": "right_click", "coordinate": [100, 100] }`.
+4. `javascript_tool` to read `JSON.stringify(window.__rc)`.
+Expect: a `mousedown` entry with `button=2|buttons=2`, followed by a `contextmenu` entry (the
+page's native context-menu handling still fires, unaffected by this change).
+
+## T09-5: left_click_drag creates a selection and reports buttons=1 throughout
+Changed: `left_click_drag` in `extension/service-worker.js` now sets `buttons: 0, force: 0` on
+its opening `mouseMoved`, `buttons: BUTTON_BITS.left, force: 0.5` on `mousePressed` and every
+interpolated `mouseMoved`, and `buttons: 0, force: 0` on the final `mouseReleased`. No
+`clickCount` was added to the press/release events (unchanged from before).
+Steps:
+1. `navigate` to https://en.wikipedia.org/wiki/Cat (or any text-heavy article page).
+2. `javascript_tool` to install a probe and read a paragraph's start/end drag coordinates:
+   ```js
+   window.__drag = [];
+   document.addEventListener("mousemove", (e) => { if (e.buttons) window.__drag.push(e.buttons); });
+   const p = document.querySelector("#mw-content-text p");
+   const r = p.getBoundingClientRect();
+   JSON.stringify({ sx: Math.round(r.left + 5), sy: Math.round(r.top + 10),
+     ex: Math.round(r.left + 200), ey: Math.round(r.top + 10) });
+   ```
+3. `computer` with `{ "action": "left_click_drag", "start_coordinate": [sx, sy],
+   "coordinate": [ex, ey] }` using the coordinates from step 2.
+4. `javascript_tool` to read `JSON.stringify({ sel: window.getSelection().toString().length,
+   drag: window.__drag })`.
+Expect: `sel` is greater than 0 (a text selection was created by the drag). Every value recorded
+in `drag` is `1` (every `mousemove` observed while dragging reports `buttons=1`, matching a real
+held left-button drag); no `0` values appear among the interpolated move samples.

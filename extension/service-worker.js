@@ -345,6 +345,10 @@ const KEY_MAP = {
   arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
   home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown",
 };
+// DOM MouseEvent.buttons bitmask per button name.
+const BUTTON_BITS = { left: 1, right: 2, middle: 4 };
+// Delay between press and release, and between click iterations, matching this file's rhythm.
+const CLICK_GAP_MS = 40;
 function modifierBits(str) {
   let bits = 0;
   for (const p of (str || "").toLowerCase().split("+").map((x) => x.trim())) {
@@ -357,11 +361,17 @@ function modifierBits(str) {
 }
 async function click(tabId, x, y, opts) {
   const modifiers = opts.modifiers || 0, button = opts.button || "left", clickCount = opts.clickCount || 1;
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
-  await sleep(40);
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount, modifiers });
-  await sleep(40);
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount, modifiers });
+  const bit = BUTTON_BITS[button] || 0;
+  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers, buttons: 0, force: 0 });
+  await sleep(CLICK_GAP_MS);
+  // Real N-clicks are N press/release pairs with clickCount incrementing 1..N, not one pair with
+  // clickCount set to N.
+  for (let i = 1; i <= clickCount; i++) {
+    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: i, modifiers, buttons: bit, force: 0.5 });
+    await sleep(CLICK_GAP_MS);
+    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: i, modifiers, buttons: 0, force: 0 });
+    if (i < clickCount) await sleep(CLICK_GAP_MS);
+  }
 }
 async function resolveCoords(tabId, args) {
   // Model-provided coordinates are read off the (downscaled) screenshot -> rescale to CSS px.
@@ -573,16 +583,16 @@ async function computer(a) {
       const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
       const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
       await moveCursor(tabId, sx, sy);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers });
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers, buttons: 0, force: 0 });
       await sleep(40);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers });
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
       await sleep(40);
       for (let i = 1; i <= 10; i++) {
-        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx + ((ex - sx) * i) / 10, y: sy + ((ey - sy) * i) / 10, modifiers });
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx + ((ex - sx) * i) / 10, y: sy + ((ey - sy) * i) / 10, modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
         await sleep(16);
       }
       await moveCursor(tabId, ex, ey);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: ex, y: ey, button: "left", modifiers });
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: ex, y: ey, button: "left", modifiers, buttons: 0, force: 0 });
       return text(`Dragged (${sx}, ${sy}) -> (${ex}, ${ey}).`);
     }
     default:

@@ -10,9 +10,10 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T09 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08 are done.
+- Current task: T10 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09 are
+  done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T08 type via real keyDown/keyUp events (this run)
+- Last commit: feat(extension): T09 mouse click fidelity (this run)
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
@@ -38,7 +39,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 9 | T14 | Network.loadingFailed status | - | done |
 | 10 | T15 | Empty-result guidance notes | - | done |
 | 11 | T08 | type via real keyDown/keyUp | - | done |
-| 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | pending |
+| 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | done |
 | 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | pending |
 | 14 | T11 | Real zoom region crop + coordinate-context update | - | pending |
 | 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | pending |
@@ -1157,3 +1158,109 @@ Append one entry per task using this template. Newest at the bottom.
     this task's Constraints section.
 - Browser checks queued: T08-1, T08-2, T08-3 in docs/tasks/release-1/BROWSER-TESTS.md (appended
   after T15-6, preserving task order).
+
+### T09 Mouse click fidelity: incrementing clickCount sequence, buttons bitmask, force -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T09 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - Full diff review confirming the change is scoped to exactly three spots: the two new
+    module-level constants (`BUTTON_BITS`, `CLICK_GAP_MS`) placed directly after `KEY_MAP`; the
+    body of `click(tabId, x, y, opts)`, whose signature, `opts.modifiers`/`opts.button`/
+    `opts.clickCount` reads, and the surrounding functions (`modifierBits`, `resolveCoords`) are
+    byte-identical to before this task; and the four `Input.dispatchMouseEvent` call sites inside
+    the `left_click_drag` case, where only the params object gained `buttons`/`force` fields --
+    coordinate rescaling, `moveCursor` calls, the 10-step interpolation loop bounds/formula, the
+    16ms/40ms sleeps, and the `` `Dragged (${sx}, ${sy}) -> (${ex}, ${ey}).` `` result text are
+    all untouched (confirmed via `git diff` hunk boundaries).
+  - Traced the new `click()` loop by hand for N=1, 2, 3: one `mouseMoved` (buttons:0, force:0),
+    then N press/release pairs with `clickCount` taking the values 1, then 1-2, then 1-2-3 in
+    order (never a pair whose first clickCount is 2 or 3), each `mousePressed` carrying
+    `buttons: bit, force: 0.5` and each `mouseReleased` carrying `buttons: 0, force: 0`, with a
+    `CLICK_GAP_MS` sleep after the leading move, after every press, after every release, and
+    between iterations (but not after the final release) -- matching the prompt's five-step
+    algorithm exactly. Confirmed the call site in `computer()`'s click branch (`click(tabId, c[0],
+    c[1], { button, clickCount, modifiers })`, where `clickCount` is 2 for `double_click` and 3
+    for `triple_click`) was not touched, so `click()` still receives N and now expands it into the
+    loop itself, as required.
+  - Confirmed `BUTTON_BITS` is read via `BUTTON_BITS[button] || 0` inside `click()` (falls back to
+    0 for an unrecognized button name, matching the file's existing lookup-table style elsewhere
+    in this same file, e.g. `VK_NAMED[key] || 0`) and via the literal `BUTTON_BITS.left` in the
+    three drag dispatch sites that always use the left button.
+  - Grepped the diff for `clickCount` inside the `left_click_drag` case: zero matches, confirming
+    the drag press/release events still omit `clickCount` entirely (CDP defaults it to 0), per the
+    prompt's explicit "do not add clickCount to the drag path" instruction.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("the Rust binary is not rebuilt for this
+    task").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: only line-number drift, exactly as the prompt itself warned ("all facts below
+  were verified... 568 lines" -- earlier tasks in this run, especially T08, had already landed and
+  grown the file to 740 lines before this task's edits). The prompt cited `sleep(ms)` at lines
+  242-244, `modifierBits` at 260-269, `click()` at 270-277, the click branch of `computer(a)` at
+  373-389, `left_click_drag` at 422-439, and the scroll `mouseWheel` dispatch at line 412; the
+  actual working tree had these at `sleep` 330-332, `modifierBits` 348-357, `click()` 358-365,
+  `computer(a)`'s click branch 495-511, `left_click_drag` 570-587, and the `mouseWheel` dispatch at
+  553. In every case the function bodies, exact event sequences (`mouseMoved`, `sleep(40)`,
+  `mousePressed`, `sleep(40)`, `mouseReleased` for `click()`; the ten-step interpolation for
+  `left_click_drag`), and field lists the prompt described (button/clickCount/modifiers only, no
+  buttons/force) matched the working tree verbatim -- no logic-level drift, only line numbers.
+- Decisions made:
+  - Placed `BUTTON_BITS` and `CLICK_GAP_MS` immediately after the `KEY_MAP` object literal (before
+    `modifierBits`), matching the prompt's "near KEY_MAP" placement instruction literally while
+    keeping both new declarations in the same "Input helpers" section as `sleep`, `modifierBits`,
+    and `click` itself.
+  - Kept the local variable name `clickCount` in `click(tabId, x, y, opts)` unchanged (still read
+    from `opts.clickCount || 1`) and reused it directly as the loop's upper bound (`for (let i = 1;
+    i <= clickCount; i++)`), rather than renaming it to `n`/`N` -- the prompt's own instruction was
+    "keep reading... clickCount... from opts as today", and the loop variable `i` (the per-pair
+    clickCount value dispatched on the wire) is kept distinct from the outer `clickCount` (the
+    requested total), so there is no naming ambiguity: `clickCount` is always "how many pairs to
+    send", `i` is always "this pair's CDP clickCount value".
+  - Added exactly one comment (a two-line `//` note directly above the `for` loop) explaining that
+    real N-clicks are N pairs with incrementing clickCount, matching constraint 7's guidance ("One
+    short comment explaining the incrementing clickCount loop... is appropriate; do not comment
+    each field"); no comment was added on the `bit` computation, the four field additions inside
+    the loop, or any of the four drag dispatch sites (their `buttons`/`force` fields are read as
+    self-explanatory next to the existing `button: "left"` field, matching the file's general
+    preference for code-as-documentation over inline prose).
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03/T12/T13/T14/T15/T08's logs
+    already described.
+- Notes for later tasks:
+  - `BUTTON_BITS` and `CLICK_GAP_MS` are now module-level constants available to any later task in
+    this file. `BUTTON_BITS.middle` (4) exists as a constant only -- no middle-click action,
+    parameter, or dispatch path was added anywhere, per the prompt's explicit out-of-scope note;
+    a later task must not wire it in without its own task prompt requiring it.
+  - `click()`'s new event-count behavior (1 pair for a single click, 2 pairs for double, 3 for
+    triple, each with incrementing `clickCount`, plus `buttons`/`force` on every event) and the
+    `left_click_drag` path's new `buttons`/`force` fields are now a byte-exact behavioral contract
+    at the same tier as T08's type-dispatch contract, T01's marker-line formats, T02's Note line,
+    T03's get_page_text contract, T06's `[hop: ...]` contract, T13's exception-text format, T14's
+    network per-line format, and T15's zero-result strings -- do not rework the event sequence,
+    field values, or timing in a later task without updating this note and the T09 BROWSER-TESTS.md
+    entries.
+  - The hover branch (`case "hover"` inside the click-family switch arm, still a bare `mouseMoved`
+    with no `buttons`/`force`), the scroll `mouseWheel` dispatch (T10's target), and
+    `resolveCoords`/`rescaleCoord` were all confirmed untouched, per this task's own out-of-scope
+    list; T10 (scroll verify + scrollable-ancestor fallback) is the next task and touches the
+    scroll/scroll_to cases of the same `computer()` switch, adjacent to but disjoint from this
+    task's changes.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `computer` schema (whose click-action
+    descriptions do not describe implementation detail, only behavior) was left untouched, per this
+    task's Constraints section.
+- Browser checks queued: T09-1, T09-2, T09-3, T09-4, T09-5 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T08-3, preserving task order).
