@@ -1074,3 +1074,59 @@ Steps:
 Expect: no errors logged in the service worker console during any of the background-capture
 actions above (a caught-and-handled clipped-path failure that leads to the fallback is expected
 and does not log to console; only an uncaught exception would be a failure here).
+
+## T16-1: Plain expression and last-expression-value semantics (regression + new)
+Changed: `javascript_tool` now calls `Runtime.evaluate` with `replMode: true` on its first
+attempt. This is an extension-only change; reload the extension at chrome://extensions, no MCP
+client restart needed.
+Steps:
+1. On any normal web page tab in the group, `javascript_tool` `{ "tabId": <id>, "text": "1 + 1" }`.
+2. `javascript_tool` `{ "tabId": <id>, "text": "const a = { x: 1 }; a.x + 41" }`.
+3. `javascript_tool` `{ "tabId": <id>, "text": "document.title" }`.
+Expect: step 1 returns `2`. Step 2 returns `42` (last-expression value, proving `replMode`
+completion-value semantics work with a `const` declaration on the same line). Step 3 returns the
+page's title string (regression check for the plain path).
+
+## T16-2: Top-level await now works
+Changed: `replMode: true` makes top-level `await` compile in `Runtime.evaluate` (previously a
+SyntaxError).
+Steps:
+1. On the same tab, `javascript_tool`
+   `{ "tabId": <id>, "text": "await new Promise(r => setTimeout(() => r(\"done\"), 100))" }`.
+Expect: returns `"done"` after roughly 100ms (top-level await ran to completion; no
+`Error: ... SyntaxError` about illegal await).
+
+## T16-3: Illegal top-level return triggers the one-shot async-IIFE fallback
+Changed: when the first attempt's `exceptionDetails` mentions "Illegal return statement", the
+handler retries exactly once with the code wrapped in `(async () => { ... })()`, with no
+`replMode` on the retry, and no note about the retry in the returned text.
+Steps:
+1. On the same tab, `javascript_tool` `{ "tabId": <id>, "text": "return 7" }`.
+Expect: returns exactly `7`, with no extra note or mention of a retry/fallback in the output text
+(the fallback is silent by design; only genuine failures surface through the `Error: ` channel).
+
+## T16-4: 50KB output cap truncates with the exact marker
+Changed: a successful result longer than 51200 UTF-16 code units is truncated to 51200 chars
+plus a trailing marker.
+Steps:
+1. On the same tab, `javascript_tool` `{ "tabId": <id>, "text": "\"x\".repeat(200000)" }`.
+Expect: the returned text is about 51.2K characters (the JSON-stringified string, truncated) and
+ends with exactly `\n[OUTPUT TRUNCATED: Exceeded 50KB limit]` (newline then the bracketed marker,
+verbatim).
+
+## T16-5: Exception path unchanged
+Changed: nothing about the exception-result text itself; confirms the `Error: ` channel still
+fires for a genuine runtime error (not an illegal-return retry case).
+Steps:
+1. On the same tab, `javascript_tool` `{ "tabId": <id>, "text": "nosuchvariable.foo" }`.
+Expect: returns a message starting with `Error: ` (mentioning `nosuchvariable is not defined` or
+similar; exact wording depends on V8, but the `Error: ` prefix and no truncation marker are the
+pass criteria).
+
+## T16-6: No console errors during javascript_tool calls
+Steps:
+1. Open chrome://extensions, find the Browser MCP dev extension, click "Inspect views: service
+   worker" to open its console.
+2. Repeat T16-1 through T16-5.
+Expect: no errors logged in the service worker console during any of the above (the illegal-
+return retry in T16-3 is expected internal control flow, not a logged error).

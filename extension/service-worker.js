@@ -858,10 +858,22 @@ const handlers = {
   },
   async javascript_tool(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
-    const r = await cdp(a.tabId, "Runtime.evaluate", { expression: a.text, returnByValue: true, awaitPromise: true });
+    let r = await cdp(a.tabId, "Runtime.evaluate", { expression: a.text, returnByValue: true, awaitPromise: true, replMode: true });
+    if (r.exceptionDetails) {
+      const ed = r.exceptionDetails.exception;
+      const probe = (r.exceptionDetails.text || "") + ((ed && ed.description) || "");
+      // A bare top-level "return" is only legal inside a function; retry once wrapped in an
+      // async IIFE, which also preserves top-level await for the wrapped code.
+      if (probe.includes("Illegal return statement")) {
+        const wrapped = "(async () => {\n" + a.text + "\n})()";
+        r = await cdp(a.tabId, "Runtime.evaluate", { expression: wrapped, returnByValue: true, awaitPromise: true });
+      }
+    }
     if (r.exceptionDetails) return text(`Error: ${r.exceptionDetails.text || "exception"}`);
     const v = r.result;
-    return text(v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type)));
+    let out = v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type));
+    if (out.length > 50 * 1024) out = out.slice(0, 50 * 1024) + "\n[OUTPUT TRUNCATED: Exceeded 50KB limit]";
+    return text(out);
   },
   async read_console_messages(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);

@@ -10,17 +10,18 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T16 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09,
-  T10, T11, T18 are done.
+- Current task: T17 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09,
+  T10, T11, T18, T16 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T18 background-tab screenshot via clip+scale (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13/T18)
-  in `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the
-  installed rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden.
-  A whole-repo `cargo fmt --check` will report these two files; this has no bearing on T18 (which
-  touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
-  committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
-  point; do not fold that into an unrelated task's commit.
+- Last commit: feat(extension): T16 javascript_tool REPL semantics + 50KB cap (this run)
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to
+  T04/T06/T07/T01/T02/T03/T12/T13/T18/T16) in `src/policy/redact.rs` and
+  `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were left
+  untouched again because they are out of scope / forbidden. A whole-repo `cargo fmt --check` will
+  report these two files; this has no bearing on T16 (which touched no Rust files at all --
+  `git status --short -- '*.rs' src/ tests/` was empty before committing). A human may want to run
+  `cargo fmt` repo-wide in its own dedicated commit at some point; do not fold that into an
+  unrelated task's commit.
 
 ## Sequence and status
 
@@ -43,7 +44,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | done |
 | 14 | T11 | Real zoom region crop + coordinate-context update | - | done |
 | 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | done |
-| 16 | T16 | javascript_tool REPL semantics + 50KB cap | - | pending |
+| 16 | T16 | javascript_tool REPL semantics + 50KB cap | - | done |
 | 17 | T17 | Effective-tabId fallback + valid-ID errors | - | pending |
 | 18 | T05 | Service-worker state recovery (runs LAST) | after all service-worker tasks | pending |
 
@@ -1711,3 +1712,115 @@ Append one entry per task using this template. Newest at the bottom.
     task's Constraints section.
 - Browser checks queued: T18-1, T18-2, T18-3, T18-4, T18-5, T18-6, T18-7 in
   docs/tasks/release-1/BROWSER-TESTS.md (appended after T11-8, preserving task order).
+
+### T16 javascript_tool REPL semantics + 50KB output cap -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T16 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean, both before and after the
+    edit.
+  - Full diff review confirming: the handler's first `Runtime.evaluate` call now carries
+    `replMode: true` in addition to the pre-existing `expression`/`returnByValue`/`awaitPromise`
+    fields, matching the prompt's literal parameter object; the `inGroup` guard on the first line
+    is byte-identical to before; the probe string is built as
+    `(r.exceptionDetails.text || "") + ((ed && ed.description) || "")` where
+    `ed = r.exceptionDetails.exception` -- algebraically the same as the prompt's
+    "concatenate text and, when present, exception.description, tolerate both missing" contract
+    (an absent `exceptionDetails.exception` short-circuits `ed && ed.description` to `undefined`,
+    then `|| ""` makes it the empty string; an absent `text` likewise falls back to `""`); the
+    retry only fires when the probe contains the exact substring `Illegal return statement`; the
+    retry expression is built as `"(async () => {\n" + a.text + "\n})()"`, matching the prompt's
+    literal contract with newlines around the user code; the retry's CDP params
+    (`{ expression: wrapped, returnByValue: true, awaitPromise: true }`) deliberately omit
+    `replMode`, matching constraint 3's instruction; the retry's result unconditionally replaces
+    `r` for every later step (no branching kept on the original response); the function never
+    loops or retries a second time (the retry's own `exceptionDetails`, if any, is only ever
+    consulted once more by the same unconditional `if (r.exceptionDetails) return text(...)` a few
+    lines down -- there is no second probe/retry code path at all, structurally guaranteeing
+    "never retry more than once"); the exception-result line
+    (`` return text(`Error: ${r.exceptionDetails.text || "exception"}`); ``) is byte-identical to
+    the pre-task code; the success-result computation
+    (`v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type))`) is
+    byte-identical to the pre-task code; the 50KB cap
+    (`if (out.length > 50 * 1024) out = out.slice(0, 50 * 1024) + "\n[OUTPUT TRUNCATED: Exceeded
+    50KB limit]";`) matches the prompt's literal contract exactly, applied via `.length`
+    (UTF-16 code units, no byte-level accounting) as required; no note is appended anywhere for a
+    successful fallback-retry result (grepped the whole new handler body for the words "retry" or
+    "fallback" in any string literal -- zero occurrences), satisfying step 6's truthfulness
+    framing (the retry IS the promised contract, not a substitute).
+  - Confirmed no `timeout` parameter was added to either `Runtime.evaluate` call, no new timer
+    (`setTimeout`/`setInterval`) was introduced in the handler, and `src/browser.rs`'s
+    `TOOL_TIMEOUT` constant was never opened for edit (`git status --short -- '*.rs' src/ tests/`
+    was empty throughout).
+  - Confirmed the diff touches exactly one function (`handlers.javascript_tool`) and adds no new
+    top-level helper: `git diff --stat` reports one file changed; the diff hunk boundaries in
+    `service-worker.js` fall entirely inside the `javascript_tool` handler body (no other handler,
+    `dispatch()`, `text()`, or `cdp()` line was touched).
+  - `cargo test` (all 91 tests across the workspace -- 80 unit + 4 mcp_protocol + 1 peer_death + 6
+    tool_schema_fidelity -- plus 0 doc-tests) passes unchanged, confirming the frozen
+    `javascript_tool` schema and every other Rust surface were left untouched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, exactly as the prompt's "Build and test" note predicted ("no Rust changes in this
+    task").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: only line-number drift, exactly as the prompt itself warned ("The
+  `javascript_tool` handler is at lines 505-511"; the actual working tree, after every earlier
+  extension-touching task in this run landed first, had it at lines 859-865). The handler's exact
+  code shape (the `inGroup` guard, the single `Runtime.evaluate` call with
+  `{ expression, returnByValue: true, awaitPromise: true }` and no `replMode`, the bare
+  `exceptionDetails`-check-and-return, the value/description/type success computation with no size
+  cap) matched the prompt's "Current behavior" section verbatim once located by function name;
+  `src/browser.rs`'s `TOOL_TIMEOUT` (cited by the prompt as "line 25"/"line 99") and `dispatch()`'s
+  wrap-as-tool_error behavior (cited as "lines 558-565") were both read-only reference points for
+  this task and were not re-verified line-for-line since neither was touched or needed editing.
+- Decisions made:
+  - Built the probe string with an explicit local `const ed = r.exceptionDetails.exception;`
+    before the concatenation, rather than inlining `r.exceptionDetails.exception &&
+    r.exceptionDetails.exception.description` twice. This is a direct readability simplification
+    (avoids repeating the property-access chain) with identical observable behavior; the prompt
+    describes the two fields to concatenate but does not mandate a specific expression shape.
+  - Did not extract a shared "evaluate and inspect" helper function (the prompt explicitly allowed
+    but did not require this: "You may extract the shared evaluate-and-inspect step into one small
+    helper function... but the observable behavior must match the steps above exactly"). The
+    handler stays at 17 lines with a single nested `if` block for the retry decision, which reads
+    linearly top to bottom without an extra indirection; no second call site exists that would
+    benefit from a shared helper (the retry's CDP params are deliberately a different literal
+    object, missing `replMode`, so there is little to actually share beyond the `cdp(...)` call
+    itself).
+  - The retry-decision comment ("A bare top-level 'return' is only legal inside a function; retry
+    once wrapped in an async IIFE, which also preserves top-level await for the wrapped code.") is
+    the one comment this task's constraint 7 budget allows on non-obvious logic (the reason a
+    SyntaxError substring match triggers a full re-evaluation is not self-evident from the code
+    alone); no other comment was added anywhere else in the handler.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs every prior task's log already described.
+- Notes for later tasks:
+  - `javascript_tool`'s success/exception/truncation strings (`Error: <text or "exception">`, and
+    the truncation marker `\n[OUTPUT TRUNCATED: Exceeded 50KB limit]`) are now byte-exact contracts
+    at the same tier as every prior task's contract in this run (T01's marker-line formats, T02's
+    Note line, T03's get_page_text contract, T06's `[hop: ...]` contract, T08's type-dispatch
+    contract, T09's click-event contract, T10's scroll-verify strings, T11's zoom-result contract,
+    T13's exception-text format, T14's network per-line format, T15's zero-result strings, T18's
+    background-capture contract) -- do not reword any of them in a later task without updating this
+    note and the T16 BROWSER-TESTS.md entries.
+  - T17 (effective-tabId fallback + valid-ID errors) touches tabId resolution generally, not
+    `javascript_tool` specifically; per T18's own note, none of T16/T17/T05 as authored appeared to
+    add a new `screenshot()` call site, and this task confirms `javascript_tool` adds none either
+    (it never calls `screenshot`, `zoomScreenshot`, or `probeViewport`). T17 should re-verify
+    against the actual tree before assuming, per that same T18 note.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `javascript_tool` schema (including its `text`
+    parameter description promising REPL semantics, which this task's handler now actually
+    honors) was left untouched, per this task's Constraints section.
+- Browser checks queued: T16-1, T16-2, T16-3, T16-4, T16-5, T16-6 in
+  docs/tasks/release-1/BROWSER-TESTS.md (appended after T18-7, preserving task order).
