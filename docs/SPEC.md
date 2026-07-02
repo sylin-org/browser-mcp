@@ -167,15 +167,15 @@ Session housekeeping. Always available regardless of access tier.
 
 ### 3.2. Excluded Tools
 
-The following tools from the reference implementation are excluded:
+The following tools are excluded from v1 (see [ADR-0014](adr/0014-v1-scope-exclusions.md)):
 
 | Tool | Reason |
 |---|---|
-| `gif_creator` | Stub in reference implementation. No functional code. |
-| `shortcuts_list` | Stub. |
-| `shortcuts_execute` | Stub. |
-| `switch_browser` | Stub. |
-| `upload_image` | Non-functional stub in the reference (returns guidance text, never sets files). Niche; can be added later if demand warrants. |
+| `gif_creator` | Deferred as niche. The phantom-cursor + agent-active indicator already cover the "watching" delight more cheaply. |
+| `shortcuts_list` | Product-bound to the official extension's saved-prompt store + side-panel agent; no analog in a client-agnostic MCP surface. |
+| `shortcuts_execute` | Coupled to the official's side-panel agent loop, not the browser-automation surface. |
+| `switch_browser` | Stub in the community reference; out of scope. |
+| `upload_image` | Deferred as niche; addable later without schema changes. (The official implements it fully; the earlier "non-functional stub" rationale referred to the community reference and is superseded.) |
 
 ### 3.3. The `computer` Tool Split
 
@@ -384,15 +384,13 @@ All screenshots use JPEG format. PNG is never used (a single Retina PNG can be 5
 2. If the base64 result exceeds `defaults.screenshot_max_bytes`: recapture with `quality: [defaults.screenshot_fallback_quality]`.
 3. Return the compressed result.
 
-### 6.2. Coordinate Normalization
+### 6.2. Coordinate Model
 
-On debugger attachment, the binary instructs the extension to call `Emulation.setDeviceMetricsOverride` with `deviceScaleFactor: 1`. This normalizes the coordinate space so that screenshot pixel dimensions match CDP input dispatch coordinates, regardless of display DPI.
+No device-metrics override. On each screenshot the extension probes the CSS viewport (`innerWidth`/`innerHeight`) and `devicePixelRatio`, captures at native resolution, and downscales to a token budget (`ceil(w/28)*ceil(h/28) <= 1568` tokens, longest side `<= 1568` px) via `OffscreenCanvas`. A per-tab ScreenshotContext records the CSS viewport and final screenshot pixel dimensions; model-provided coordinates are rescaled back to CSS viewport px via `round(v * viewportDim / screenshotDim)` before Input dispatch. Coordinates derived from the page (`getBoundingClientRect`) are already CSS px and are not rescaled. See [ADR-0010](adr/0010-coordinate-model-official.md) (and [ADR-0009](adr/0009-coordinate-model-devicescale.md) for the superseded `deviceScaleFactor:1` approach).
 
 ### 6.3. Screenshot-per-Action Policy
 
-The reference implementation returns a screenshot after every `computer` action (click, type, key, etc.). The official Claude in Chrome extension does *not* — it only returns screenshots on explicit `screenshot` and `scroll` actions.
-
-This binary follows the official behavior: screenshots are returned only on `screenshot` and `scroll` actions. For other `computer` actions, the tool returns a text confirmation of the action taken, and the agent can request a screenshot separately. This reduces context consumption by approximately 10x in multi-step workflows.
+Screenshots are returned only on the `computer` actions that produce one -- `screenshot`, `scroll`, and `zoom`. Every other `computer` action returns a short text confirmation, and the agent requests a screenshot separately when it needs one. This reduces context consumption by roughly 10x in multi-step workflows.
 
 ---
 
@@ -469,9 +467,13 @@ Three artifacts, all pushed through existing IT channels:
 4. Add to MCP client: `claude mcp add browser-mcp -- /path/to/browser-mcp`
 5. No manifest needed. The binary defaults to `unlisted_domains: "observe"`, audit to stderr.
 
-### 8.3. Claude Code Integration
+### 8.3. MCP Client Integration
 
-The binary is an MCP server launched as a subprocess. Claude Code configuration:
+The binary is a standard MCP server (JSON-RPC 2.0 over stdio), launched as a subprocess. It is
+**client-agnostic**: any MCP client works — Claude Code, Cursor, Zed, Cline, and others. Point the
+client at the binary; the same governed engine serves whatever agent connects. The config shape is
+the common `mcpServers` map (Claude Code / Cursor / Cline share it; other clients use their own
+equivalent stdio-server config with the same command + args + env):
 
 ```json
 {

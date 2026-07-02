@@ -2,7 +2,7 @@
 
 ## Project Identity
 
-This project builds a governed browser automation MCP server: a single Rust binary + thin Chromium extension that gives AI coding agents (Claude Code, Cursor, etc.) controlled access to the user's authenticated browser session, with identity-bound access control, tool-level r/w classification, and structured audit logging.
+This project builds a governed browser automation MCP server: a single Rust binary + thin Chromium extension that gives any MCP client (Claude Code, Cursor, Zed, Cline, and others) controlled access to the user's authenticated browser session, with identity-bound access control, tool-level r/w classification, and structured audit logging.
 
 The authoritative design specification is `docs/SPEC.md`. Read it fully before writing any code. Every implementation decision should trace back to a section in the spec.
 
@@ -172,8 +172,8 @@ In the Rust code, define tool schemas as const string literals (the raw JSON) ra
 Return screenshots only on `computer` actions that produce one: `screenshot`, `scroll`, and `zoom`.
 - For all other actions (`left_click`, `type`, `key`, `hover`, `left_click_drag`, `scroll_to`, etc.), return a text confirmation of the action.
 - This reduces context consumption ~10x in multi-step workflows.
-- Phase 0 note: the reference implementation ALREADY does this (screenshots only on screenshot/scroll/zoom; JPEG quality 55 with a fallback to 30 above 500KB; `deviceScaleFactor: 1` normalization). An earlier version of this section said to follow the official behavior "NOT the reference" -- that was inaccurate; we align with the reference here.
-- Coordinate model UPDATE (harvest step 4, user-approved 2026-07-01; see docs/research/12 section B): the earlier `deviceScaleFactor: 1` / `Emulation.setDeviceMetricsOverride` normalization is REPLACED by the official Claude-in-Chrome v1.0.78 model. No device-metrics override. Each screenshot probes the CSS viewport + DPR, captures at native resolution, and downscales to a token budget (`ceil(w/28)*ceil(h/28) <= 1568` tokens, longest side `<= 1568`px) via OffscreenCanvas in the service worker. A per-tab ScreenshotContext records the CSS viewport dims and final screenshot pixel dims; model-provided coordinates (read off the downscaled image) are rescaled back to CSS viewport px via `round(v * viewportDim / screenshotDim)` before Input dispatch. ref-derived coordinates (from `getBoundingClientRect`) are already CSS px and are NOT rescaled. This fixes the uncapped-image blowup on large/hi-DPI windows.
+- JPEG quality 55, falling back to 30 above the size budget.
+- Coordinate model: no device-metrics override. Each screenshot probes the CSS viewport + DPR, captures at native resolution, and downscales to a token budget (`ceil(w/28)*ceil(h/28) <= 1568` tokens, longest side `<= 1568`px) via OffscreenCanvas. A per-tab ScreenshotContext records the CSS viewport and final screenshot pixel dims; model-provided coordinates are rescaled back to CSS viewport px via `round(v * viewportDim / screenshotDim)` before Input dispatch (`getBoundingClientRect`-derived coordinates are already CSS px and are not rescaled). See ADR-0010 (and ADR-0009 for the superseded `deviceScaleFactor:1` approach).
 
 ### Extension Design Principle
 The extension is **policy-free**: it holds mechanism but makes no access decisions. All policy, tool classification, and audit live in the binary.

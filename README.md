@@ -8,14 +8,20 @@ real, authenticated browser session**. It drives the browser you're already logg
 agent can observe and act on the web apps you already use, under access control you can turn all
 the way off, dial in yourself, or have set for you by policy.
 
-> **Status: design phase.** There is no implementation yet. This repository currently holds the
-> authoritative specification and the discovery research behind it. See
-> [docs/SPEC.md](docs/SPEC.md).
+> **Status: working engine; governance overlay in progress.** A live-verified automation engine
+> drives your real browser today — the full 13-tool surface at byte-parity with the official
+> Claude-in-Chrome, governed screenshots with coordinate mapping, secret-value redaction, and an
+> on-page agent cursor. The governance/manifest engine and the audit subsystem are scaffolded and
+> in progress. See [docs/SPEC.md](docs/SPEC.md) and the decision history in [docs/adr/](docs/adr/).
 
 ---
 
 ## What makes it different
 
+- **Bring your own agent.** It speaks the Model Context Protocol, so it works with *any* MCP client
+  — Claude Code, Cursor, Zed, Cline, and more — against the browser you already use. You are not
+  locked into one vendor's app or cloud; the same governed engine serves whatever agent you point
+  at it.
 - **It's your session, not a clean-room browser.** The value *is* the user's own authenticated
   context — real cookies, real SSO, real tabs. We never relocate your work to a cloud or
   freshly-launched browser to gain a technical property. (See
@@ -56,8 +62,9 @@ thin, dumb CDP executor; **all** capability, policy, and audit live in the binar
 | Doc | What it is |
 |---|---|
 | [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. Start with §1. |
+| [docs/adr/](docs/adr/) | Architecture Decision Records — the *why* behind the design, and how it evolved. |
 | [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md) | Governing design principles (engine-vs-overlay, layered delight, user-context sacred). |
-| [docs/research/](docs/research/) | Pre-implementation discovery: prior-art and user-delight research feeding the spec. |
+| [docs/research/](docs/research/) | Pre-implementation discovery: prior-art and user-delight research feeding the spec (historical). |
 
 ## Positioning & prior art
 
