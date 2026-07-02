@@ -12,8 +12,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
-  landed. Phase A (foundations) is COMPLETE.
-- NEXT TASK: Phase B, task `g05` (`docs/tasks/stage-2/g05-rw-classification.md`).
+  landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification) landed.
+- NEXT TASK: Phase B, task `g09` (`docs/tasks/stage-2/g09-manifest-identity.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -481,6 +481,49 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   clean on every touched/new file including both golden files.
 - Browser checks queued: none (pure registry introspection; needs no browser, no file I/O
   outside the two golden files this commit already carries).
+
+### g05 read/write classification table -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/ports.rs` (added `RwClass::as_str()`, no new type -- A2
+  already created `RwClass` with `Observe`/`Mutate` variants); new `src/browser/classify.rs`
+  (`TOOL_CLASSES`, `COMPUTER_ACTION_CLASSES`, `classify()`); `src/browser/mod.rs`
+  (`pub mod classify;`).
+- Summary: `classify(tool, action) -> Option<RwClass>` is the authoritative observe/mutate
+  classification of the 13-tool sacred surface: 12 tools classified directly via
+  `TOOL_CLASSES` (`computer` deliberately excluded), plus the 13 `computer` sub-actions via
+  `COMPUTER_ACTION_CLASSES`, both authored in tools.json advertised/enum order and pinned
+  call-by-call against the shared-format-doc section 8 table. Pure linear-scan lookup, no
+  policy decision -- `None` is a classification miss, consumed by later tasks (G06 audit,
+  grant enforcement), not acted on here.
+- Deviations from the g-doc per RECONCILIATION.md (significant placement split, not carried
+  from prior precedent): g05's own doc (written before A1/A2) puts BOTH the `RwClass` type
+  AND the classification tables in one new file `src/policy/classify.rs`. RECONCILIATION.md
+  section 1 explicitly splits this: "r/w classification TABLE (g05) -> browser/ (the 13-tool
+  table) behind the Classifier port; the observe/mutate axis type in governance/ -- table is
+  the plugin, axis is core." Since A2 already created `RwClass` (with the RECONCILIATION-
+  corrected `Observe`/`Mutate` naming) inside `governance/ports.rs` as part of the
+  `DomainPolicy::classify` port contract, this task did NOT create a new `RwClass` type (that
+  would duplicate A2's); it added only the `as_str()` method g05 specifies (the audit-
+  vocabulary accessor) to the EXISTING core type, then placed the tables and `classify()`
+  function in `browser/classify.rs` -- the plugin implementation of `DomainPolicy::classify`
+  (no concrete `impl DomainPolicy` exists yet; that composition lands with a later task, e.g.
+  G07/G12/G13, which will wire this function in). This is the first task where a g-doc's own
+  file-placement instruction is fully overridden by RECONCILIATION rather than merely
+  adjusted for the post-A1 path (contrast G01-G04, A5, which all landed in `governance/config/`
+  as g05's doc's own analogues would have predicted once translated to the new tree).
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo test` green (151 lib unit tests, up from 146: +5 new in `browser::classify::tests`
+  covering exhaustive cross-checks against the live sacred fixture in both directions
+  (`tool_table_matches_the_sacred_surface`, `computer_action_table_matches_the_sacred_enum`),
+  the full call-by-call pin against the shared-format table, the `None`-on-miss cases, and
+  the `as_str()` vocabulary; all other suites unchanged and green: `tests/all_open_golden.rs`
+  3, `tests/architecture.rs` 4 -- confirms `browser/classify.rs`'s import of
+  `crate::governance::ports::RwClass` is a legal browser-depends-on-core edge and introduces
+  no forbidden `governance -> browser` edge, `tests/mcp_protocol.rs` 4,
+  `tests/peer_death.rs` 1, `tests/tool_schema_fidelity.rs` 6 -- the sacred surface this
+  task's own tests parse against). ASCII scan clean on every touched/new file.
+- Browser checks queued: none (pure classification lookup; nothing wired into dispatch or
+  audit yet, no runtime-observable behavior change).
 
 ## Reminders before running BROWSER-TESTS.md
 

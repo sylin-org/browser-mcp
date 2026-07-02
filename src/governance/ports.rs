@@ -26,6 +26,19 @@ pub enum RwClass {
     Mutate,
 }
 
+impl RwClass {
+    /// The audit `rw` field vocabulary (shared format doc section 6.1): exactly `"observe"`
+    /// or `"mutate"`. Matches the `#[serde(rename_all = "snake_case")]` wire form but is
+    /// provided directly so callers (the audit recorder, g06) do not need to round-trip
+    /// through `serde_json` just to get the bare string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RwClass::Observe => "observe",
+            RwClass::Mutate => "mutate",
+        }
+    }
+}
+
 /// The effective enforcement mode for a call (g15 resolves it: per-grant > manifest >
 /// `governance.mode`). `Observe` records a shadow denial but allows; `Enforce` blocks.
 /// Wire names are `observe` / `enforce`, matching the `governance.mode` config enum.
