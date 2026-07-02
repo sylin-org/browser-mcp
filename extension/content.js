@@ -99,6 +99,12 @@
     const s = getComputedStyle(el);
     return s.display !== "none" && s.visibility !== "hidden";
   }
+  // getBoundingClientRect is viewport-relative for every element, so this is correct at any
+  // scroll position and for position:fixed elements without special cases.
+  function intersectsViewport(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+  }
 
   // --- Sensitive fields: mark (do not hide) their values so the binary's policy overlay can act ---
   // Gate on the input type and on the sensitive `autocomplete` tokens the platform defines for
@@ -128,6 +134,7 @@
     const maxDepth = options.depth || 15;
     const maxChars = options.max_chars || 50000;
     const MAX_ELEMENTS = 10000;
+    let culled = false; // true once the viewport test removes an element that would otherwise show
 
     // Pass 1: measure. Same entry guards, same show computation, same recursion order as a
     // single-pass walk would use; the only difference is that each visited node returns a
@@ -143,7 +150,9 @@
       const isVisible = visible(el);
       const isContainer = el.children.length > 0;
       if (filter === "interactive" && !isInteractive && !isContainer) return null;
-      const show = ((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible;
+      const wouldShow = ((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible;
+      const show = wouldShow && (filter === "all" || intersectsViewport(el));
+      if (wouldShow && !show) culled = true;
       let unit = "";
       let ref = null;
       if (show) {
@@ -260,7 +269,11 @@
     if (omitted > 0) {
       out += `[showing ${shown} of ${total} elements; expand a collapsed subtree with ref_id, or narrow with filter="interactive" or a smaller depth]\n`;
     }
-    return out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+    let result = out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+    if (culled) {
+      result += "\nNote: interactive results are limited to the current viewport; scroll or use filter=all for the full document.";
+    }
+    return result;
   }
 
   // --- Page text ---

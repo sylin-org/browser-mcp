@@ -321,3 +321,48 @@ Expect: the result text is exactly
 `Error: ref_id "ref_99999" not found or was garbage-collected.`
 (no markers, no summary line, no viewport trailer -- this is a plain string return, unchanged from
 before this task).
+
+## T02-1: filter=interactive only shows on-screen elements, with the Note line
+Changed: `read_page` with `filter: "interactive"` now culls elements whose bounding rect does not
+intersect the current viewport (via `getBoundingClientRect`), and appends one extra trailer line
+when culling removed anything.
+Steps:
+1. With the extension reloaded, navigate a grouped tab to
+   https://en.wikipedia.org/wiki/Web_browser (a long page, scrolled to the top).
+2. Call `read_page` with `filter: "interactive"` (defaults for everything else).
+Expect: every emitted element line corresponds to something currently visible on screen (no
+off-screen links/buttons from far down the article). The very last line of the output is exactly
+"Note: interactive results are limited to the current viewport; scroll or use filter=all for the
+full document." (this line comes after the "Viewport: WxH" line).
+
+## T02-2: Scrolling changes which interactive elements appear
+Changed: same as T02-1; exercises that culling is scroll-position-relative, not a one-time compute.
+Steps:
+1. Same tab as T02-1, already scrolled to the top with a prior `filter: "interactive"` result
+   recorded.
+2. Call `computer` with action `scroll` to scroll down several screens (e.g. scroll down by a
+   large amount, or use `scroll_to` on a ref far down the page from a `filter: "all"` call).
+3. Call `read_page` with `filter: "interactive"` again on the same tab.
+Expect: the set of `ref_N` interactive elements returned in step 3 differs from the set returned in
+step 2's precursor (T02-1) -- new links/buttons that are now on screen appear, and elements that
+were on screen before but have scrolled off no longer appear. The trailing Note line is still
+present (still a long page with more off-screen content).
+
+## T02-3: filter=all is unaffected -- no Note line, full document
+Changed: nothing observable for `filter=all`; regression check that culling never applies there.
+Steps:
+1. Same tab as T02-1/T02-2 (any scroll position).
+2. Call `read_page` with `filter: "all"` (or omit `filter` entirely -- "all" is the default).
+Expect: the output includes off-screen elements from elsewhere in the document (not just what is
+currently on screen), and the output ends with the "Viewport: WxH" line with nothing after it --
+no "Note: interactive results are limited..." line, regardless of scroll position.
+
+## T02-4: A short page that fits the viewport produces no Note line
+Changed: same mechanism as T02-1; exercises the "nothing was culled" branch of the new note logic.
+Steps:
+1. Navigate a grouped tab to a short page whose interactive elements (if any) all fit within one
+   screen without scrolling, for example https://example.com (it has exactly one link, "More
+   information...", near the top).
+2. Call `read_page` with `filter: "interactive"`.
+Expect: the output ends with the "Viewport: WxH" line and nothing after it -- no Note line, since
+nothing was off-screen to cull.

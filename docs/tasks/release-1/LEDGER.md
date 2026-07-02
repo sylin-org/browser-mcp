@@ -10,14 +10,14 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T02 (next pending). T04, T06, T07, T01 are done.
+- Current task: T03 (next pending). T04, T06, T07, T01, T02 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T01 read_page structural pagination with element and char caps
+- Last commit: feat(extension): T02 read_page viewport culling for filter=interactive
   (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01) in
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
-  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T01 (which
+  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T02 (which
   touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
   committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
   point; do not fold that into an unrelated task's commit.
@@ -32,7 +32,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 2 | T06 | Hop-attributed error reporting | T04 (binary half) | done |
 | 3 | T07 | Extend installer doctor with runtime/debug-state fusion | - | done |
 | 4 | T01 | read_page structural pagination + caps | - | done |
-| 5 | T02 | read_page viewport culling (filter=interactive) | - | pending |
+| 5 | T02 | read_page viewport culling (filter=interactive) | - | done |
 | 6 | T03 | get_page_text official semantics | - | pending |
 | 7 | T12 | Per-domain console/network buffer reset | - | pending |
 | 8 | T13 | Runtime.exceptionThrown capture | - | pending |
@@ -404,3 +404,99 @@ Append one entry per task using this template. Newest at the bottom.
     prompt's Out of scope section) were left untouched.
 - Browser checks queued: T01-1, T01-2, T01-3, T01-4, T01-5, T01-6 in
   docs/tasks/release-1/BROWSER-TESTS.md (appended after T07-6, preserving task order).
+
+### T02 read_page viewport culling for filter=interactive -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T02 ...`)
+- Files touched: extension/content.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (extension JS has no test harness per project constraints).
+  Verification performed instead:
+  - `node --check extension/content.js` (syntax only).
+  - Full re-read of the final `accessibilityTree`/`measure` function against every constraint in
+    the prompt's Verification step 2: `intersectsViewport` exists with the exact strict-inequality
+    formula given; `culled` is set only via `if (wouldShow && !show) culled = true;` (the
+    wouldShow-but-not-shown case, and no other); the note string
+    "Note: interactive results are limited to the current viewport; scroll or use filter=all for
+    the full document." matches the contract character for character; line 152's early return
+    (`if (filter === "interactive" && !isInteractive && !isContainer) return null;`) is byte-
+    identical to before this task; `visible()` (lines 97-101) is untouched; the file is pure ASCII
+    (confirmed by the BOOTSTRAP.md ASCII-scan command, empty output).
+  - Traced the short-circuit algebra by hand: `show = wouldShow && (filter === "all" ||
+    intersectsViewport(el))` -- when `filter === "all"`, the right operand short-circuits to `true`
+    without evaluating `intersectsViewport`, so `show === wouldShow` always and `culled` can never
+    become true for `filter=all` (satisfies "filter=all byte-identical, zero new
+    getBoundingClientRect calls"). When `wouldShow` is `false` (excluded by role/name, interactive-
+    ness, or `visible()`), the left operand of the outer `&&` is `false`, so JS never evaluates the
+    right operand either -- `intersectsViewport` is only ever called for elements that would
+    otherwise be shown, and `culled` is never set for any other exclusion reason.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Project context" prediction ("no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt --check` reports only the same
+    two pre-existing drifted files noted by every prior task (see Decisions made below), neither of
+    which this task touched.
+- Drift reconciled: the prompt's entire "Current behavior" section describes the PRE-T01
+  single-pass `walk()` function (a single `show` computation at "line 147", a `truncated` flag next
+  to an `out` accumulator, `add(s)` for the character budget). T01 (which runs earlier in the fixed
+  sequence and landed first) rewrote `accessibilityTree` into a two-pass `measure`/`emit` design
+  with no `walk()` and no `add()`; `truncated` no longer exists (replaced by `capped`/`stopped`/
+  `collapsed`/`omitted` in the pass-2 `emit` closure). Reconciled by mapping every required change
+  onto its structural analog in the new code: (1) the exact `show` formula the prompt describes
+  (`((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible`)
+  is verbatim present inside `measure()` (pass 1) at the equivalent point in the walk -- this is
+  where the culling logic was applied, unchanged from the prompt's literal formula. (2) `let culled
+  = false;` was declared at the top of `accessibilityTree`, immediately after `const MAX_ELEMENTS =
+  10000;` (not "next to `truncated`", which no longer exists) -- this is the earliest point in the
+  new structure where `measure()` (defined and first invoked several lines later) can close over
+  it; pass 2's own flags (`collapsed`/`stopped`/`capped`) are declared later, after pass 1 already
+  ran, so `culled` could not sit next to them and still be visible to `measure()`. (3) the note-
+  append logic was applied to the actual final `return` statement (now building `let result = out +
+  ... ; if (culled) { result += ... } return result;`), which is the exact same statement the
+  prompt calls "the return statement (currently line 191)" -- T01 did not change this statement's
+  shape (it still ends the function with `out + Viewport line`), only what feeds into `out` earlier
+  in pass 2. Every property the prompt requires of the new logic (show/culled semantics, note
+  placement outside the char budget, filter=all short-circuit, the untouched early-return prune,
+  the untouched children-descent code, the untouched `visible()`) was independently re-verified
+  against the ACTUAL two-pass code, not assumed to still hold from the prompt's stale description.
+- Decisions made:
+  - Placed the one-line comment on `intersectsViewport` ("getBoundingClientRect is viewport-
+    relative for every element, so this is correct at any scroll position and for position:fixed
+    elements without special cases") wrapped as two short lines to stay under the file's existing
+    line-length norms; this is the single comment the prompt's constraint 7 permits on the new
+    helper ("At most one short comment on the new helper... is acceptable; more is not"). No
+    comment was added at the `culled` declaration site beyond a short trailing note, and no
+    comment was added at the `wouldShow`/`show`/`culled` lines inside `measure()` (the code is
+    read as self-explanatory there, matching the prompt's own preference to express the logic in
+    code rather than prose wherever possible).
+  - Did not touch the pass-1 doc comment above `measure()` ("Same entry guards, same show
+    computation, same recursion order as a single-pass walk would use...") even though "show
+    computation" is now technically two lines (`wouldShow`/`show`) instead of one -- the comment's
+    claim (this pass reproduces what a single-pass walk would compute) remains true; rewording it
+    was not required by the prompt and would be an unrequested, unscoped comment change.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01's log already described.
+- Notes for later tasks:
+  - The `intersectsViewport(el)` helper (declared directly after `visible()`, lines ~102-107) is
+    now available to any later task in this file; it is intentionally NOT used by `find()` or
+    `pageText()` per this task's Out of scope section -- do not wire it in elsewhere without a new
+    task prompt actually requiring it.
+  - `culled` and the `wouldShow`/`show` split inside `measure()` are now part of the same render-
+    tree record shape T01 introduced (`{ unit, ref, indent, children, unitChars, subtreeChars,
+    elements, show }`); `show` in that record still reflects the POST-culling decision (i.e. the
+    viewport-aware value), so pass 2 (`emit`) automatically treats a culled element exactly like
+    any other not-shown node (skip its own line, still walk its children) with zero changes to
+    `emit` itself -- verified by inspection, not just assumed, since `emit` reads `record.show`
+    directly.
+  - The exact note string "Note: interactive results are limited to the current viewport; scroll
+    or use filter=all for the full document." is now a byte-exact contract at the same tier as
+    T01's three marker-line formats and T06's `[hop: ...]` contract -- do not reword it in a later
+    task without updating this note and the T02 BROWSER-TESTS.md entries.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `read_page` schema was left untouched, per this
+    task's Constraints section.
+- Browser checks queued: T02-1, T02-2, T02-3, T02-4 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T01-6, preserving task order).
