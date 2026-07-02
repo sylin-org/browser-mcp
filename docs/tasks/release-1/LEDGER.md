@@ -165,21 +165,19 @@ extension's own DevTools service-worker console).
   VERIFICATION of BUGFIX-01 through BUGFIX-05" at the end of the file); BUGFIX-06 (doctor pipe-busy)
   is now FIXED (Model A: accept-ahead serve loop + an atomic single-slot claim in Browser::attach --
   see the "BUGFIX-06 ... FIXED" entry at the end), clippy-clean and covered by a new lib unit test,
-  but not yet live-verified (the running server locks the binary, so the rebuild+reload is a human
-  step); BUGFIX-07 (left_click_drag coordinate scale) was re-reviewed at the code level and confirmed
+  and now LIVE-VERIFIED (6x `doctor` back-to-back during a live session, all OK, zero
+  ERROR_PIPE_BUSY 231); BUGFIX-07 (left_click_drag coordinate scale) was re-reviewed at the code level and confirmed
   NOT a code defect (both endpoints map through the same rescaleCoord() as every other click, a pure
-  identity on a tab with no screenshot context) -- it needs only a hands-off live re-test to close
-  formally, no code change. Nothing further is queued.
+  identity on a tab with no screenshot context) -- and now LIVE-CONFIRMED via a hands-off drag re-test
+  (mousedown/mouseup landed exactly on the requested coords); closed. Release-1 is complete.
 - Branch: release-1-hardening (create from main if absent).
 - Last commit: fix(extension): resolve 5 bugs found in interactive BROWSER-TESTS.md pass (22c985b);
   a follow-up commit recording the live-verification results (this update) lands next.
-- NEXT ACTION for a future call: BUGFIX-06 is fixed in code but needs a rebuild + extension reload to
-  go live (the running server locks target/debug/browser-mcp.exe, so cargo cannot relink until the
-  MCP client is stopped); after reload, re-run the doctor pipe-busy repro (repeated `browser-mcp
-  doctor` during a live session) to confirm ERROR_PIPE_BUSY 231 is gone. BUGFIX-07 needs only a
-  hands-off live re-test of left_click_drag (no code change). Otherwise release-1 is complete; do NOT
-  start docs/tasks/stage-2/ without an explicit human decision (ADR-0018). Architecture direction for
-  the family + persistent service is captured in docs/design/ghostlight-service-architecture.md.
+- NEXT ACTION for a future call: release-1 is COMPLETE -- all 7 bugs fixed/resolved AND live-verified
+  (BUGFIX-06 fixed + doctor repro clean 2026-07-02; BUGFIX-07 confirmed a non-defect + drag re-test
+  clean). Do NOT start docs/tasks/stage-2/ without an explicit human decision (ADR-0018). Architecture
+  direction for the family + persistent service is captured in
+  docs/design/ghostlight-service-architecture.md.
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to
   T04/T06/T07/T01/T02/T03/T12/T13/T18/T16/T17/T05) in `src/policy/redact.rs` and
   `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were left
@@ -2566,8 +2564,11 @@ Append one entry per task using this template. Newest at the bottom.
 - UPDATE 2026-07-02: code re-review confirms this is NOT a code defect. `left_click_drag` maps both
   endpoints through the same `rescaleCoord()` as every other click action, which is a pure identity
   (round only) on a tab with no screenshot context (service-worker.js:159-164, 883-899). No code path
-  scales by ~1.1x. Closing it formally still needs a hands-off live re-test, but no code change is
-  warranted.
+  scales by ~1.1x. LIVE-CONFIRMED 2026-07-02 (hands-off re-test): a drag (100,100)->(300,250) on a
+  no-screenshot example.com tab dispatched mousedown at exactly (100,100) and mouseup at exactly
+  (300,250) (captured in-page; all events isTrusted). Zero distortion -- the original ~1.1x reading was
+  a false positive from real mouse input contaminating the earlier interactive capture. Closed, no code
+  change.
 - Commit: n/a (no code change; investigation, no fix attempted)
 - Files touched: none
 - Summary: the original verification pass reproduced a consistent ~1.1x coordinate scale distortion
@@ -2634,10 +2635,10 @@ failing reproduction:
   `throw new Error("bugfix05 test")` now returns `Error: Error: bugfix05 test\n    at <anonymous>:1:7`.
   Neither is the old bare `Error: Uncaught`. CONFIRMED FIXED.
 
-All 5 of the fixed bugs are now confirmed working end-to-end against their original failing
-reproductions. BUGFIX-06 (doctor pipe-busy) has since been FIXED in code (see the entry below);
-BUGFIX-07 (left_click_drag coordinate scale) was re-reviewed and confirmed NOT a code defect (see its
-entry above). Nothing further is queued for this BROWSER-TESTS.md verification-and-fix pass.
+All 5 of the fixed bugs are confirmed working end-to-end against their original failing
+reproductions. BUGFIX-06 (doctor pipe-busy) has since been FIXED and LIVE-VERIFIED (see the entry
+below); BUGFIX-07 (left_click_drag coordinate scale) was confirmed NOT a code defect and LIVE-CONFIRMED
+via a hands-off drag re-test (see its entry above). All 7 bugs are resolved; release-1 is complete.
 
 ### BUGFIX-06 doctor pipe-busy -- FIXED (accept-ahead + attach single-slot gate) -- 2026-07-02
 - Files touched: src/browser.rs, src/native/ipc.rs
@@ -2655,12 +2656,13 @@ entry above). Nothing further is queued for this BROWSER-TESTS.md verification-a
 - Verification: `cargo clippy --all-targets -- -D warnings` clean; `cargo test --lib` green
   (81 passed), including a new regression test
   `a_second_attach_is_rejected_without_disturbing_the_live_session` (a second concurrent attach
-  returns AlreadyAttached, the live session stays connected, and it still round-trips a call). NOT yet
-  live-verified: the running debug server locks target/debug/browser-mcp.exe so the binary cannot be
-  relinked until the MCP client is stopped; the human step is stop client -> `cargo build` -> reload
-  -> re-run the repeated-`doctor`-during-a-live-session repro.
+  returns AlreadyAttached, the live session stays connected, and it still round-trips a call). Full suite also green after the rebuild (mcp_protocol 4; peer_death 1 -- the
+  zombie regression still holds; tool_schema_fidelity 6).
 - Doc comments corrected: `probe_endpoint`'s comment previously claimed the probe "queues behind [the
   attached connection] and is drained" (true only on Unix, false on Windows); updated on both
   platforms to describe the accept-ahead + AlreadyAttached behavior.
-- Browser checks queued: 1 (repeated `browser-mcp doctor` during a live session returns healthy, no
-  ERROR_PIPE_BUSY 231), to be run by a human after rebuild + reload.
+- LIVE-VERIFIED 2026-07-02: after killing the two stale processes holding the old exe, `cargo build`,
+  and a VS Code reopen that relaunched from the new binary (mcp-server pid 25264, extension connected),
+  ran `browser-mcp doctor` 6x back-to-back during that live session. All 6 returned `accepts
+  connections` + OK, zero ERROR_PIPE_BUSY 231 (under the old code run 2+ returned 231). CONFIRMED
+  FIXED live.
