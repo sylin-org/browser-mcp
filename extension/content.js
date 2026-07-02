@@ -116,39 +116,41 @@
   }
 
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
+  // Two-pass design: pass 1 (measure) walks the DOM once and builds a render tree with
+  // per-subtree measurements; pass 2 (emit) walks that render tree top-down and decides, node
+  // by node, whether the whole subtree fits the character budget, whether it must collapse
+  // behind a marker, or whether the budget is exhausted and the walk must stop. Output that
+  // fits the budget is byte-identical to a plain top-down serialization: markers and summary
+  // lines only appear once the budget or the element cap is actually exceeded.
   function accessibilityTree(options) {
     options = options || {};
     const filter = options.filter || "all";
     const maxDepth = options.depth || 15;
     const maxChars = options.max_chars || 50000;
-    let out = "";
-    let truncated = false;
-    function add(s) {
-      if (truncated) return false;
-      if (out.length + s.length > maxChars) {
-        out += s.slice(0, maxChars - out.length) + "\n... (truncated)";
-        truncated = true;
-        return false;
-      }
-      out += s;
-      return true;
-    }
-    function walk(el, depth, indent) {
-      if (truncated || depth > maxDepth || !el || el.nodeType !== 1) return;
-      if (el.id && el.id.indexOf("browser-mcp-") === 0) return; // our own visual-indicator overlay
+    const MAX_ELEMENTS = 10000;
+
+    // Pass 1: measure. Same entry guards, same show computation, same recursion order as a
+    // single-pass walk would use; the only difference is that each visited node returns a
+    // record (unit text plus subtree measurements) instead of appending to an output string.
+    function measure(el, depth, indent) {
+      if (depth > maxDepth || !el || el.nodeType !== 1) return null;
+      if (el.id && el.id.indexOf("browser-mcp-") === 0) return null; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
-      if (["script", "style", "noscript", "template"].includes(tag)) return;
+      if (["script", "style", "noscript", "template"].includes(tag)) return null;
       const r = role(el);
       const n = accessibleName(el);
       const isInteractive = interactive(el);
       const isVisible = visible(el);
       const isContainer = el.children.length > 0;
-      if (filter === "interactive" && !isInteractive && !isContainer) return;
+      if (filter === "interactive" && !isInteractive && !isContainer) return null;
       const show = ((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible;
+      let unit = "";
+      let ref = null;
       if (show) {
+        ref = refFor(el);
         let line = indent + (r || tag);
         if (n) line += ` "${n.slice(0, 100)}"`;
-        line += ` [${refFor(el)}]`;
+        line += ` [${ref}]`;
         if (tag === "a" && el.href) line += ` href="${el.href}"`;
         if (["input", "textarea"].includes(tag) && el.value) {
           // Truthful: always emit the raw value. Secret fields use the `secret_value` marker so the
@@ -160,7 +162,7 @@
         const placeholder = el.getAttribute && el.getAttribute("placeholder");
         if (placeholder) line += ` placeholder="${placeholder}"`;
         if (el.disabled) line += " disabled";
-        if (!add(line + "\n")) return;
+        unit = line + "\n";
         // Emit <select> options as child lines so the model can see the available choices.
         if (tag === "select") {
           for (const opt of el.options) {
@@ -169,25 +171,95 @@
             if (otext) ol += ` "${otext}"`;
             if (opt.selected) ol += " (selected)";
             if (opt.value && opt.value !== otext) ol += ` value="${opt.value}"`;
-            if (!add(ol + "\n")) return;
+            unit += ol + "\n";
           }
         }
       }
+      const children = [];
       // A <select> is a leaf in the tree: its <option>s are emitted above (or deliberately
       // suppressed when sensitive), so we never descend into them.
       if (tag !== "select") {
         const nextIndent = show ? indent + "  " : indent;
-        if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, depth + 1, nextIndent);
-        for (const c of el.children) walk(c, depth + 1, nextIndent);
+        if (el.shadowRoot) {
+          for (const c of el.shadowRoot.children) {
+            const child = measure(c, depth + 1, nextIndent);
+            if (child) children.push(child);
+          }
+        }
+        for (const c of el.children) {
+          const child = measure(c, depth + 1, nextIndent);
+          if (child) children.push(child);
+        }
       }
+      let subtreeChars = unit.length;
+      let elements = show ? 1 : 0;
+      for (const child of children) {
+        subtreeChars += child.subtreeChars;
+        elements += child.elements;
+      }
+      return { unit, ref, indent, children, unitChars: unit.length, subtreeChars, elements, show };
     }
+
     let root = document.body;
     if (options.ref_id) {
       const el = deref(options.ref_id);
       if (!el) return `Error: ref_id "${options.ref_id}" not found or was garbage-collected.`;
       root = el;
     }
-    walk(root, 0, "");
+    const rootRecord = measure(root, 0, "");
+    const total = rootRecord ? rootRecord.elements : 0;
+
+    // Pass 2: emit. Walk the render tree top-down and decide, per record, whether it fits whole,
+    // must collapse behind a marker, or the whole emit pass must halt because even a collapsed
+    // form does not fit. Once halted, no later record (at any level) is emitted: output is
+    // always a prefix of document order plus markers, never a sequence with silent gaps.
+    let out = "";
+    let remaining = maxChars;
+    let shown = 0;
+    let collapsed = false; // a collapse marker was emitted
+    let stopped = false; // the walk halted because even a collapsed form did not fit
+    let capped = false; // the element cap was reached
+    function emit(record) {
+      if (stopped || capped) return;
+      if (!record.show) {
+        // Pass-through node: it owns no line, so it cannot collapse; only its children can.
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      if (record.subtreeChars <= remaining) {
+        out += record.unit;
+        remaining -= record.unitChars;
+        shown++;
+        if (shown >= MAX_ELEMENTS) { capped = true; return; }
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      const markerLine = `${record.indent}  [subtree collapsed: ${record.elements - 1} elements; call read_page with ref_id=${record.ref} to expand]\n`;
+      if (record.unitChars + markerLine.length <= remaining) {
+        out += record.unit + markerLine;
+        remaining -= record.unitChars + markerLine.length;
+        shown++;
+        if (shown >= MAX_ELEMENTS) capped = true;
+        collapsed = true;
+        return;
+      }
+      stopped = true;
+    }
+    if (rootRecord) emit(rootRecord);
+
+    const omitted = total - shown;
+    if (capped && omitted > 0) {
+      out += `[element cap reached: output stopped after ${MAX_ELEMENTS} elements; use filter="interactive", a ref_id subtree, or a smaller depth]\n`;
+    }
+    if (omitted > 0) {
+      out += `[showing ${shown} of ${total} elements; expand a collapsed subtree with ref_id, or narrow with filter="interactive" or a smaller depth]\n`;
+    }
     return out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
   }
 

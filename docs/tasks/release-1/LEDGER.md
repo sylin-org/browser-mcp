@@ -10,20 +10,17 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T01 (next pending). T04, T06, T07 are done.
+- Current task: T02 (next pending). T04, T06, T07, T01 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(cli): T07 doctor subcommand fusing debug state into one diagnosis (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07) in `src/policy/redact.rs`
-  and `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were
-  left untouched again in T07 because they are out of scope / forbidden. A whole-repo
-  `cargo fmt --check` will report these two files; `rustfmt --check --edition 2021` on only the
-  files T07 touched (src/debug.rs, src/install/mod.rs, src/main.rs, src/mcp/server.rs,
-  src/native/ipc.rs, src/doctor.rs) is clean; src/lib.rs was excluded from that targeted check
-  because passing it to standalone `rustfmt` treats it as a crate root and pulls in every
-  `mod`-reachable file (including the two drifted ones) -- its one-line diff (adding
-  `pub mod doctor;`) was verified by inspection instead. A human may want to run `cargo fmt`
-  repo-wide in its own dedicated commit at some point; do not fold that into an unrelated task's
-  commit.
+- Last commit: feat(extension): T01 read_page structural pagination with element and char caps
+  (this run)
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01) in
+  `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
+  rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
+  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T01 (which
+  touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
+  committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
+  point; do not fold that into an unrelated task's commit.
 
 ## Sequence and status
 
@@ -34,7 +31,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 1 | T04 | Extension-channel warmup + bounded first-call wait | - | done |
 | 2 | T06 | Hop-attributed error reporting | T04 (binary half) | done |
 | 3 | T07 | Extend installer doctor with runtime/debug-state fusion | - | done |
-| 4 | T01 | read_page structural pagination + caps | - | pending |
+| 4 | T01 | read_page structural pagination + caps | - | done |
 | 5 | T02 | read_page viewport culling (filter=interactive) | - | pending |
 | 6 | T03 | get_page_text official semantics | - | pending |
 | 7 | T12 | Per-domain console/network buffer reset | - | pending |
@@ -328,3 +325,82 @@ Append one entry per task using this template. Newest at the bottom.
     the new T07 entries, restoring "in task order" top-to-bottom without altering T04-3's content.
 - Browser checks queued: T07-1, T07-2, T07-3, T07-4, T07-5, T07-6 in
   docs/tasks/release-1/BROWSER-TESTS.md.
+
+### T01 read_page structural pagination with element and char caps -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T01 ...`)
+- Files touched: extension/content.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/content.js` (syntax only).
+  - A standalone throwaway Node script (not committed) that mirrored the pass-1/pass-2
+    measure/emit algorithm in isolation (synthetic records with controlled `chars`/`show`
+    values, not the real DOM helpers) to exercise: (a) everything-fits producing no markers,
+    (b) a deep subtree overflowing and collapsing behind a marker while a LATER SIBLING at the
+    same level still gets emitted (the breadth-over-depth property), (c) a subtree so large that
+    even its own collapse marker does not fit, correctly halting the whole emit pass with no
+    partial/gap output. All three matched the spec's described behavior exactly.
+  - Full-file diff review confirming: (1) the diff is scoped entirely to lines inside
+    `accessibilityTree` (verified via `git diff` hunk headers -- only three hunks, all within
+    the function, nothing touched before or after it); (2) the per-line construction code (the
+    element-line and select-option-line builders) was moved into pass 1 character-for-character
+    unchanged, only the `add(...)` calls were replaced with direct string concatenation into
+    `unit`; (3) the literal string `"... (truncated)"` no longer appears anywhere in the file
+    (`grep -n "truncated"` returns nothing); (4) `cargo test` (all 91 tests across the workspace,
+    including `tests/tool_schema_fidelity.rs`) passes unchanged, confirming no Rust surface was
+    touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, exactly as the prompt's "Project context" predicted ("no Rust rebuild is required").
+- Drift reconciled: none. Every line number, function name, and code shape the prompt's "Current
+  behavior" section cited (accessibilityTree at lines 119-192, the `add` helper at 126-135, `walk`
+  at 136-183, the ref_id re-rooting at 184-189, the service-worker forwarding at its cited lines)
+  matched the actual working tree exactly -- this prompt's line numbers had not drifted at all
+  from T04/T06/T07 (none of those touched extension/content.js).
+- Decisions made:
+  - Added an explicit `show` boolean field to each pass-1 record (not named in the prompt's field
+    list: unit, ref, indent, children, unitChars, subtreeChars, elements) so pass 2 can branch on
+    "is this record shown" without relying on `ref !== null` as an implicit proxy. This is an
+    additive, non-observable implementation detail (does not change output), added for
+    readability/robustness; every field the prompt DID require is present with the exact
+    described semantics.
+  - Kept the `collapsed` boolean flag in pass 2 even though no trailing-line decision reads it
+    directly (only `capped` and `omitted > 0` gate the two trailing lines, per the prompt's own
+    closing note "collapsed or stopped each imply omitted > 0, so this one condition covers every
+    degraded outcome"). The prompt's Pass 2 preamble explicitly lists `collapsed` as required
+    mutable state, so it is tracked for spec fidelity even though it is presently
+    write-only; a future task could read it without restructuring the function.
+  - `measure`'s guard-failure return value is `null` (a sentinel meaning "this node and its whole
+    subtree do not exist in the render tree"), matching the original `walk`'s early-`return`
+    semantics exactly: guard failure (depth exceeded, non-element node, `browser-mcp-` id,
+    script/style/noscript/template tag, or the `filter==="interactive"` prune) skips the node AND
+    everything under it, never just suppresses its own line. This was verified against the
+    original code's control flow before writing pass 1, not assumed.
+  - Did not special-case `<select>` records in pass 2 (no `if (tag === "select") ...` branch
+    anywhere in `emit`). The "a select can never emit a marker, only stop" behavior the prompt
+    describes falls out of the general algorithm automatically: a childless record (select's
+    `children` is always `[]`, per the leaf rule preserved from pass 1) has
+    `subtreeChars === unitChars`, so whenever rule 4 (does-not-fit) is reached for it,
+    `unitChars` alone already exceeds `remaining`, which makes `unitChars + markerLine.length`
+    exceed `remaining` too -- the marker-fits branch is therefore unreachable for any childless
+    record, select or otherwise, without needing a dedicated check. Verified by direct algebraic
+    reasoning (documented in the session) rather than assumed.
+- Notes for later tasks:
+  - T02 (viewport culling, filter=interactive) touches the SAME function
+    (`accessibilityTree`/`measure` in extension/content.js) next. The `show` computation this task
+    preserved verbatim is exactly what T02 will extend with position-in-viewport logic; do not
+    reintroduce the old serialize-as-you-walk shape when adding that -- extend the `measure`
+    function's guard/show logic in place, keep the pass-1/pass-2 split intact.
+  - The three new literal line formats introduced here (`[subtree collapsed: ... to expand]`,
+    `[element cap reached: ...]`, `[showing M of T elements; ...]`) are now a byte-exact contract
+    of this file, same tier as T06's `[hop: ...]` contract in the Rust side -- do not reword them
+    in a later task without updating this note and the T01 BROWSER-TESTS.md entries.
+  - `MAX_ELEMENTS = 10000` is declared as a local `const` inside `accessibilityTree`, not at
+    module scope -- there was no existing module-scope constant section in this file to join, and
+    the prompt allowed either placement ("Declare it as a const at the top of accessibilityTree
+    (or module scope next to the function)").
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `read_page` schema and its description (which
+    still describes the now-superseded error-on-overflow behavior, deliberately -- see the
+    prompt's Out of scope section) were left untouched.
+- Browser checks queued: T01-1, T01-2, T01-3, T01-4, T01-5, T01-6 in
+  docs/tasks/release-1/BROWSER-TESTS.md (appended after T07-6, preserving task order).

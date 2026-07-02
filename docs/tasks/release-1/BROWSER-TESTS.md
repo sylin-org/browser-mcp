@@ -242,3 +242,82 @@ row), and, after the session rows, a line reading
 "  extension last seen <A> ago (native-host pid <pid>)". Separately, confirm launching Chrome
 WITHOUT `BROWSER_MCP_DEBUG=1` (the normal case) produces no native-host row and no problem line
 about its absence.
+
+## T01-1: Small page still renders byte-identical read_page output
+Changed: `accessibilityTree` in extension/content.js was rewritten from a serialize-as-you-walk
+design to a two-pass measure/emit design (structural pagination). When output fits the character
+budget the intent is byte-identical output to before this change (same lines, same order, same
+refs, no markers, no summary line). Extension-only change: requires reloading the extension at
+chrome://extensions; no MCP client restart needed.
+Steps:
+1. Reload the extension at chrome://extensions.
+2. Navigate a grouped tab to https://example.com.
+3. Call `read_page` with only `tabId` set (all other args default: filter="all", depth=15,
+   max_chars=50000).
+Expect: a short accessibility tree (heading, paragraph, link, etc.), each shown line ending in
+`[ref_N]`, no lines containing "[subtree collapsed:", no line starting with "[element cap
+reached:" or "[showing", no "... (truncated)" anywhere, and the output ends with a blank line
+then "Viewport: WxH". If you have a pre-change capture of this exact call, diff them: they should
+be identical.
+
+## T01-2: Large page triggers structural pagination with collapse markers and a summary line
+Changed: same as T01-1; this exercises the over-budget path.
+Steps:
+1. With the extension reloaded, navigate a grouped tab to
+   https://en.wikipedia.org/wiki/Web_browser.
+2. Call `read_page` with `max_chars: 2000` (defaults for everything else).
+Expect: only complete lines (no line is cut mid-word, no "... (truncated)" string anywhere), one
+or more lines matching exactly
+"<indent>  [subtree collapsed: <N> elements; call read_page with ref_id=ref_<M> to expand]"
+(N and M vary), followed near the end by a line matching exactly
+"[showing <M> of <T> elements; expand a collapsed subtree with ref_id, or narrow with
+filter=\"interactive\" or a smaller depth]" (M <= T, both plausible integers), then the usual
+"Viewport: WxH" trailer as the last line.
+
+## T01-3: Expanding a collapsed subtree via ref_id gets a fresh budget rooted there
+Changed: same as T01-1/T01-2; exercises re-rooting the walk at a collapsed subtree's ref.
+Steps:
+1. Take a `ref_<M>` value from a collapse marker line produced in T01-2 (same tab, same page,
+   same session -- refs are WeakRef-backed and only valid while the page/tab is unchanged).
+2. Call `read_page` on the same tab with `ref_id: "ref_<M>"` and default `max_chars`.
+Expect: the output is rooted at that element's subtree (its own lines and descendants, own fresh
+"[showing ...]" or unmarked output depending on its own size), not the whole page again.
+
+## T01-4: filter="interactive" and depth still shrink output as before
+Changed: none to this behavior; regression check that pagination did not disturb filter/depth
+handling (both were already honored and are explicitly out of scope for structural changes).
+Steps:
+1. On https://en.wikipedia.org/wiki/Web_browser, call `read_page` with `filter: "interactive"`
+   and default depth/max_chars.
+2. Separately, call `read_page` with `depth: 3` and default filter/max_chars.
+Expect: step 1 shows substantially fewer lines than the "all" filter, only interactive elements
+(links, buttons, inputs, etc.) and their containers. Step 2 shows a shallower tree (no lines more
+than 3 levels of indent below the root). Neither call should be required to trigger a collapse
+marker unless the shrunk output still exceeds max_chars (50000 default; unlikely at depth 3 or
+filter=interactive on this page, but not a failure if it does -- markers are correct behavior at
+any size).
+
+## T01-5 (synthetic): the 10000-element cap fires and reports an exact count
+Changed: new hard backstop (`MAX_ELEMENTS = 10000`) with a dedicated cap line ahead of the
+summary line when it fires.
+Steps:
+1. Navigate a grouped tab to any simple page (e.g. https://example.com).
+2. Call `javascript_tool` on that tab with the expression:
+   `document.body.innerHTML = Array.from({length: 12000}, (_, i) => "<span>item " + i + "</span>").join(""); "ok"`
+3. Call `read_page` on the same tab with `max_chars: 2000000` (large enough that the character
+   budget is not the limiting factor).
+Expect: exactly 10000 `span "item <n>" [ref_N]`-shaped lines, then a line reading exactly
+"[element cap reached: output stopped after 10000 elements; use filter=\"interactive\", a ref_id
+subtree, or a smaller depth]", then a line reading exactly
+"[showing 10000 of 12000 elements; expand a collapsed subtree with ref_id, or narrow with
+filter=\"interactive\" or a smaller depth]", then the "Viewport: WxH" trailer.
+
+## T01-6: Stale ref_id still returns the unchanged error string
+Changed: nothing (regression check); the stale-ref error path was explicitly preserved verbatim.
+Steps:
+1. On any grouped tab, call `read_page` with `ref_id: "ref_99999"` (a ref number that was never
+   assigned in this page session).
+Expect: the result text is exactly
+`Error: ref_id "ref_99999" not found or was garbage-collected.`
+(no markers, no summary line, no viewport trailer -- this is a plain string return, unchanged from
+before this task).
