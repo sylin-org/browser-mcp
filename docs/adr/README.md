@@ -28,6 +28,7 @@ history live here.
 | [0018](0018-governance-observe-then-enforce.md) | Governance ships observe-then-enforce | Accepted |
 | [0019](0019-layered-configuration-model.md) | Layered configuration: typed key registry, presets, org locks | Accepted |
 | [0020](0020-org-policy-experience.md) | Org policy experience: policy as code with explain, simulate, shadow | Accepted |
+| [0021](0021-ghostlight-brand-and-family.md) | Ghostlight brand and product family | Accepted |
 
 ## Conventions
 
