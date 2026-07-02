@@ -56,6 +56,91 @@ T13, T14, T15, T08, T09, T10, T11, T18, T16, T17, T05) reached status `done`. Ze
    a behavior change from before T07 (previously always 0). Any script that shells out to
    `browser-mcp doctor` and ignored its exit code should be aware it can now be 1.
 
+## BROWSER-TESTS.md VERIFICATION PASS (interactive, live browser, 2026-07-02)
+
+An interactive Claude Code session (not the unattended agent) ran BROWSER-TESTS.md top to bottom
+against a live Chrome instance using the browser-mcp MCP tools themselves (the same tool surface
+this project builds), after the human restarted the MCP client and reloaded the extension per the
+reminders above. This is the first real-browser verification any of the 18 tasks received.
+
+Result: the large majority of checks passed byte-exact against the spec's literal expected
+strings. Seven confirmed bugs were found and root-caused against the source (not just black-box
+symptoms). See the "BUGFIX" task-log entries below (appended after T05) for fixes as they land.
+
+### Confirmed bugs found
+
+1. **read_page crashes at depth>=7 on real complex pages** (affects T01/T02). Reproduced on two
+   independent Wikipedia articles (Web_browser, Cat), at every max_chars/filter combination tested,
+   always surfacing the misleading `[hop: page] content script unavailable (script injection
+   blocked)` even though get_page_text and javascript_tool succeed on the identical tab. depth<=6
+   always worked; depth>=7 always failed, unrelated to char budget (tested max_chars up to
+   2,000,000 with the same failure). Since read_page's DEFAULT depth is 15, this makes read_page
+   broken out of the box on real-world pages unless the caller manually passes depth<=6. Root cause
+   not fully isolated during the verification pass (no console-visible exception was captured), but
+   conclusively depth-triggered in extension/content.js's accessibilityTree/measure.
+2. **ref_id re-rooting can self-collapse the very root being expanded** (affects T01-3). Reproduced:
+   `read_page` with `ref_id: "ref_16"` and a depth deep enough that ref_16's own subtree still
+   exceeds the char budget produces `div "Cat" [ref_16]\n  [subtree collapsed: 1618 elements; call
+   read_page with ref_id=ref_16 to expand]` -- an unexpandable loop, since ref_16 IS the ref_id just
+   passed. extension/content.js's `emit()` collapses the record itself instead of descending into
+   its children when the root record does not fit.
+3. **browser-mcp doctor's IPC probe gets stuck reporting "all pipe instances are busy"** (affects
+   T07). After several `browser-mcp doctor` invocations against a live, healthy mcp-server session,
+   doctor began reporting the IPC endpoint state as "exists but rejected the probe: all pipe
+   instances are busy" (exit code 1) and recommending killing the pid of the ACTUAL healthy live
+   session. Reproduced consistently across many repeated calls and confirmed to persist for over an
+   hour (not transient); the live MCP session itself remained fully functional throughout (only
+   doctor's own short-lived probe connection is affected). Root cause not yet isolated in Rust code
+   (src/native/ipc.rs's probe_endpoint / the named-pipe server's max-instance handling on Windows is
+   the leading suspect).
+4. **computer left_click_drag mis-scales dispatched coordinates by roughly 1.1x** (affects T09-5).
+   Reproduced on three separate tabs, including one that had NEVER had a screenshot taken (rules out
+   a simple stale-screenshotCtx theory). Regular left_click/double_click/triple_click and zoom all
+   map coordinates correctly on the same tabs via the same rescaleCoord() function, so the bug is
+   specific to left_click_drag's own code path in extension/service-worker.js (the case
+   "left_click_drag" block, which calls rescaleCoord directly rather than via resolveCoords). Net
+   effect: drag operations land 8-15% further from the requested origin than intended, which was
+   enough to prevent text selection from anchoring on the intended content in testing.
+5. **zoom returns a blank image on any scrolled page** (affects T11-7). Root-caused precisely:
+   extension/service-worker.js's zoomScreenshot() adds the page's scrollX/scrollY to the CDP clip
+   coordinates (`clip: { x: sx + x0, y: sy + y0, ... }`) while also passing
+   `captureBeyondViewport: false`. With that flag false, Chrome's Page.captureScreenshot interprets
+   `clip` as VIEWPORT-relative, not document-relative, so the manually-added scroll offset gets
+   double-counted: with scrollY around 900px and a viewport height around 640px, the resulting clip
+   targets a position entirely outside the rendered surface, producing a blank capture. All other
+   zoom checks (done at scroll position 0, where the double-counted offset is zero) passed exactly.
+6. **Captured exceptions always render with an empty URL/location** (affects T13-1). Expected format
+   per the task's own contract example: `[exception] Error: t13 test (https://example.com/:1) [at
+   <anonymous>@https://example.com/:1]`. Actual: `[exception] Error: t13 test [at <anonymous>@:1]`
+   -- the `(url:line)` parenthetical is always absent and the stack frame's URL is always empty.
+   Reproduced identically from both a javascript_tool-scheduled deferred throw and a real injected
+   `<script>` tag's deferred throw, ruling out a Runtime.evaluate-specific cause.
+7. **javascript_tool always reports uncaught exceptions as the generic "Error: Uncaught"**, discarding
+   the real message (affects T16-5). Root-caused to extension/service-worker.js's javascript_tool
+   handler: the final error line reads only `r.exceptionDetails.text` (CDP's generic top-level label,
+   always the literal string "Uncaught") instead of `r.exceptionDetails.exception.description` (the
+   actual message, e.g. "ReferenceError: nosuchvariable is not defined"). The function's OWN
+   retry-detection logic a few lines earlier already computes both fields combined (the `probe`
+   variable) but the final report does not reuse it. Reproduced with two independent error types
+   (a ReferenceError and a thrown `new Error("custom message")`), both rendering as bare
+   "Error: Uncaught".
+
+### What passed (byte-exact against the literal expected strings unless noted)
+T01-1/4/5/6, T02-1/3/4, T03 (all 4), T06-2/3/4, T07-2/4/5, T08 (all 3, T08-3's exact CRLF byte
+untestable through the tool interface but the LF-only case regressed cleanly), T09-1/2/3/4,
+T10 (all 4), T11-1/2/3/4/5/6, T12 (all 5), T13-2/3, T14 (all 4), T15 (all 6), T16-1/2/3/4,
+T17-1/2/3, T18-1/2/3/4/5, T05-1.
+
+### What needs a human (no MCP tool reaches these; not attempted, not faked)
+T04-1/2/3 and T06-1 (require fully closing Chrome / restarting the MCP client mid-test -- would
+sever the interactive session's own connection); T05-2 through T05-9 (require killing the service
+worker via Task Manager or chrome://serviceworker-internals, a full browser restart, or right-click
+renaming the tab group); T07-1 (needs no MCP client running at all); T07-3 (needs disabling the
+extension, which would strand the session with no way to re-enable it); T07-6 positive case (needs
+Chrome launched fresh with BROWSER_MCP_DEBUG=1 in its own shell); T12-5, T13-6-equivalent, T16-6,
+T17-5, T18-6/7 (need closing a tab via the Chrome tab strip, minimizing via taskbar, or reading the
+extension's own DevTools service-worker console).
+
 ### Reminders before running BROWSER-TESTS.md
 
 1. Restart the MCP client (the binary was rebuilt multiple times across this run; a stale
@@ -74,12 +159,19 @@ T13, T14, T15, T08, T09, T10, T11, T18, T16, T17, T05) reached status `done`. Ze
 
 - All 18 tasks (T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18, T16,
   T17, T05) are done. Nothing left in the fixed task sequence.
+- The interactive live-browser verification pass (see "BROWSER-TESTS.md VERIFICATION PASS" above)
+  found 7 confirmed bugs. CURRENT WORK: fixing those 7 bugs, one commit each, as BUGFIX-tagged
+  task-log entries appended after T05 below. Follow the same per-fix discipline as the original 18
+  tasks (implement, quality-gate, update this ledger, one commit) even though these are not part of
+  the original fixed sequence.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T05 service-worker state recovery (this run)
-- NEXT ACTION for a future call: run BOOTSTRAP.md's "Completion" section (verify the tree is
-  clean, every task row has a final state, write the RUN SUMMARY section at the top of this
-  file, commit `chore(ledger): run summary`, then stop). Do NOT execute any of the 18 tasks
-  again; they are all done.
+- Last commit: feat(extension): T05 service-worker state recovery (before this bugfix work started)
+- NEXT ACTION for a future call: check the BUGFIX task-log entries below for which of the 7 bugs
+  are done vs still open, and continue with the next open one. Extension JS fixes need the human to
+  reload the extension at chrome://extensions before they can be verified live; the Rust doctor fix
+  (bug 3) needs a rebuild + MCP client restart. Once all 7 are fixed and verified, BOOTSTRAP.md's
+  "Completion" section was already run once (see RUN SUMMARY above) -- no need to re-run it, this
+  bugfix work is a separate follow-up pass, not a re-run of the 18-task sequence.
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to
   T04/T06/T07/T01/T02/T03/T12/T13/T18/T16/T17/T05) in `src/policy/redact.rs` and
   `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were left
@@ -2243,3 +2335,235 @@ Append one entry per task using this template. Newest at the bottom.
     Constraints section.
 - Browser checks queued: T05-1 through T05-9 in docs/tasks/release-1/BROWSER-TESTS.md (appended
   after T17-5, preserving task order).
+
+### BUGFIX-01 read_page depth>=7 crash on complex pages -- done -- 2026-07-02
+- Commit: (recorded after commit)
+- Files touched: extension/content.js
+- Tests added: none in the Rust sense (extension JS has no test harness). Verification performed:
+  `node --check extension/content.js` (clean); ASCII scan (clean). Live re-verification against
+  the exact reproduction (en.wikipedia.org/wiki/Cat and /wiki/Web_browser at default depth) is
+  QUEUED for after the human reloads the extension -- see the new BROWSER-TESTS.md entries below.
+- Root cause: not fully isolated to a specific line during the verification pass (no console-
+  visible exception was ever captured despite Runtime tracking being enabled). The evidence
+  (fails identically regardless of max_chars from 2000 to 2,000,000; fails at depth>=7 and passes
+  at depth<=6 on two independent large pages; the SAME subtree succeeds when re-rooted via ref_id
+  at an equivalent or greater relative depth) rules out the char-budget/collapse logic in pass 2
+  (emit) and points at pass 1 (measure): a real page's reachable node count within depth 7 from
+  document root is unbounded (wide citation lists, infobox tables, and similar structures), and
+  pass 1 had NO bound on its own traversal cost independent of MAX_ELEMENTS (which only bounds
+  pass 2's OUTPUT, applied after pass 1 already built the full render tree).
+- Fix: added `MAX_MEASURED = 20000`, a hard ceiling on nodes visited during pass 1 (measure),
+  independent of maxDepth/filter/max_chars. Once hit, further nodes are treated as absent from the
+  render tree (same handling as exceeding maxDepth) so the call still returns promptly with
+  whatever was measured, rather than not returning at all. This is a defensive bound that directly
+  targets the strongly-evidenced trigger (large-subtree traversal cost scaling with depth on real
+  pages) and does not change output for any page under the ceiling, including the T01-5 synthetic
+  12000-flat-element cap test (still well under 20000) and every other page tested in the
+  verification pass.
+- Decisions made: chose 20000 as a starting ceiling (double the existing MAX_ELEMENTS=10000, to
+  leave headroom for pages where filter="interactive" or non-matching nodes cause many more nodes
+  to be visited than are ultimately shown). This value has NOT been re-validated against the
+  original failing pages yet (needs the human's extension reload); if depth>=7 on Web_browser/Cat
+  still fails after reload, lower MAX_MEASURED further (or raise it, if it turns out the ceiling
+  itself is not yet being reached before whatever the true failure mode is) and re-test -- do not
+  assume 20000 is correct without live re-verification.
+- Notes for later tasks: if MAX_MEASURED's ceiling is ever hit on a real page, the render tree pass
+  1 builds is now silently incomplete (a subtree beyond the ceiling simply does not exist in the
+  tree, indistinguishable from a subtree that was never deep/wide enough to reach). No new marker
+  string was added for this (deliberately, to avoid growing the byte-exact contract list further
+  without live verification of the wording) -- a future task could add a dedicated notice line if
+  silent truncation here proves confusing in practice.
+- Browser checks queued: BUGFIX-01-1 (read_page default-depth on Web_browser/Cat succeeds; verify
+  MAX_MEASURED did not fire, i.e. no silent truncation, for these specific pages) in
+  docs/tasks/release-1/BROWSER-TESTS.md.
+
+### BUGFIX-02 ref_id re-rooting self-collapse dead-end -- done -- 2026-07-02
+- Commit: (recorded after commit)
+- Files touched: extension/content.js
+- Tests added: none in the Rust sense. Verification: `node --check` clean, ASCII scan clean, full
+  diff review confirming the fix is scoped to `emit()`'s new `isRoot` branch and the single call
+  site `emit(rootRecord, true)`; no other behavior changed (`!record.show` pass-through, the
+  whole-subtree-fits fast path, and the non-root collapse-marker path are all byte-identical to
+  before). Live re-verification is queued (needs extension reload).
+- Root cause: `emit()` collapsed ANY record that did not fit whole behind a marker naming that
+  record's own ref, including the record the caller had just re-rooted at via `ref_id` -- an
+  unexpandable loop, since the caller is already looking at that exact ref_id.
+- Fix: `emit(record, isRoot)` takes a new second parameter; the single top-level call is now
+  `emit(rootRecord, true)`. When `isRoot` is true and the record does not fit whole, it is never
+  collapsed behind a marker; instead its own line is shown (if it fits the budget) and each CHILD
+  is emitted individually (fits whole, collapses behind its own marker, or halts the walk), same as
+  the normal per-child decision. If even the root's own single line does not fit the remaining
+  budget, the walk halts (`stopped = true`) rather than producing a marker that references itself.
+- Decisions made: the `isRoot` flag only affects the TOP-level call; a child of the root can still
+  collapse normally (referencing its own, different ref), which is the whole point -- re-rooting at
+  ref_16 and getting `[subtree collapsed: ...; call read_page with ref_id=ref_37 to expand]` for
+  one of ref_16's children is correct and actionable, unlike the old self-referencing case.
+- Notes for later tasks: this also silently improves the DEFAULT (no ref_id) call path in the rare
+  case a page's `<body>` itself has an aria-label/role making `wouldShow` true for the root record
+  (previously it could theoretically self-collapse too, though this was not observed in testing) --
+  not a behavior regression for the common case, where body's record.show is false and hits the
+  unchanged `!record.show` pass-through branch instead.
+- Browser checks queued: BUGFIX-02-1 (re-root via ref_id on a subtree that itself exceeds the char
+  budget; expect the root's own line plus at least one child either shown or collapsed behind ITS
+  OWN different ref, never a marker naming the ref_id just passed) in
+  docs/tasks/release-1/BROWSER-TESTS.md.
+
+### BUGFIX-03 zoom blank on scrolled pages -- done -- 2026-07-02
+- Commit: (recorded after commit)
+- Files touched: extension/service-worker.js
+- Tests added: none in the Rust sense. Verification: `node --check` clean, ASCII scan clean, `git
+  diff` confirms the change is exactly one flag flip (`captureBeyondViewport: false` ->
+  `captureBeyondViewport: true`) plus an expanded comment; nothing else in `zoomScreenshot` touched.
+  Live re-verification queued (needs extension reload).
+- Root cause (precisely identified, not inferred): `zoomScreenshot()` builds the CDP
+  `Page.captureScreenshot` clip as `{ x: sx + x0, y: sy + y0, ... }` (document-relative: the page's
+  scrollX/scrollY added to the viewport-relative region), but was passing
+  `captureBeyondViewport: false`. With that flag false, Chrome interprets `clip` as
+  VIEWPORT-relative, not document-relative, so the manually-added scroll offset gets
+  double-counted: at scrollY around 900px against a viewport height around 640px, the resulting
+  clip targets a position entirely outside the rendered surface, producing a blank capture.
+  Reproduced identically on two independent zoom attempts after a 10-tick scroll on
+  en.wikipedia.org/wiki/Cat; every zoom check done at scroll position 0 (where the double-counted
+  offset is zero) passed exactly, which is consistent with this being the sole cause.
+- Fix: `captureBeyondViewport: true`, so CDP actually honors `clip` as document-relative, matching
+  what the surrounding comment already claimed and what the manual scrollX/scrollY addition assumes.
+- Decisions made: none beyond the one-line fix -- this is a precise, narrow, high-confidence
+  correction (not a defensive/guessed fix like BUGFIX-01), so no alternative was considered.
+- Notes for later tasks: `captureBeyondViewport: true` also, as a side effect, allows the capture to
+  extend beyond the currently-rendered viewport bounds if a future caller ever passed a region that
+  is technically clamped to `[0, vpW] x [0, vpH]` (T11-3's clamping logic) but where the document
+  itself is smaller than the viewport at that scroll position -- not expected to change any existing
+  BROWSER-TESTS.md-documented behavior (T11-1 through T11-6 all re-verified as still matching their
+  documented output shape by inspection), but worth a live re-check of T11-3's clamped case too.
+- Browser checks queued: BUGFIX-03-1 (zoom on a scrolled page shows the correct scrolled-into-view
+  content, not a blank image) in docs/tasks/release-1/BROWSER-TESTS.md.
+
+### BUGFIX-04 exception capture always has empty URL/location -- done -- 2026-07-02
+- Commit: (recorded after commit)
+- Files touched: extension/service-worker.js
+- Tests added: none in the Rust sense. Verification: `node --check` clean, ASCII scan clean, full
+  diff review. Live re-verification queued (needs extension reload).
+- Root cause: CDP's `Runtime.ExceptionDetails.url` (and each stack frame's own `.url`) is commonly
+  empty for exceptions thrown from a deferred callback (a `setTimeout` body, whether scheduled via
+  `javascript_tool`'s `Runtime.evaluate` or from a genuinely page-native inline `<script>` tag --
+  both were tested and both showed the same empty url), since CDP does not always attribute a
+  concrete script URL to that execution context. `exceptionText()` had no fallback for this case,
+  producing `[exception] Error: t13 test [at <anonymous>@:1]` instead of a location-bearing line.
+- Fix: added a module-level `tabUrl` Map (mirroring the existing `tabHost` hostname cache: same
+  four update sites -- the attach flow, the `chrome.tabs.onUpdated` listener, and the
+  `read_console_messages`/`read_network_requests` handlers -- plus the existing `onRemoved` cleanup)
+  storing each tab's current full URL. `exceptionText(details, fallbackUrl)` now takes a second
+  parameter and uses it whenever `details.url` (for the top-level location) or a given stack
+  frame's own `.url` (for that frame's location) is empty. The single call site passes
+  `tabUrl.get(tabId)`.
+- Decisions made: this gives the tab's CURRENT url as a location hint, not a byte-exact resolution
+  of the exact script the exception came from (CDP's own line-number reporting for eval'd/deferred
+  code is already inherently approximate upstream -- observed as line 1 regardless of the callback's
+  real source position in every test case -- so this fix does not claim more precision than CDP
+  itself provides). This is a deliberate, modest scope choice over a full fix (resolving `scriptId`
+  to a real url via the `Debugger` domain, which this codebase does not currently enable and which
+  would add meaningful new state/complexity for a comparatively low-severity, cosmetic gap) --
+  flagging as a possible follow-up if a human wants exact script-source attribution instead.
+- Notes for later tasks: `tabUrl` follows the exact same lifecycle as `tabHost` (set at the same 4
+  call sites, deleted at the same `onRemoved` cleanup) -- any future call site that sets `tabHost`
+  should set `tabUrl` alongside it, matching this pattern.
+- Browser checks queued: BUGFIX-04-1 (T13-1's exception capture now includes a non-empty `(url:line)`
+  and non-empty per-frame url, using the tab's current URL) in docs/tasks/release-1/BROWSER-TESTS.md.
+
+### BUGFIX-05 javascript_tool always reports "Error: Uncaught" -- done -- 2026-07-02
+- Commit: (recorded after commit)
+- Files touched: extension/service-worker.js
+- Tests added: none in the Rust sense. Verification: `node --check` clean, ASCII scan clean. Live
+  re-verification queued (needs extension reload).
+- Root cause (precisely identified): the `javascript_tool` handler's final error line read only
+  `r.exceptionDetails.text` -- CDP's generic top-level label, which is almost always the bare
+  string "Uncaught" -- instead of `r.exceptionDetails.exception.description` (the actual message,
+  e.g. "ReferenceError: nosuchvariable is not defined" or an `Error`'s own message). The function's
+  own retry-detection logic a few lines earlier (the `probe` variable, used only to detect "Illegal
+  return statement" for the async-IIFE fallback) already combines both fields correctly; the final
+  report never reused that combination. Reproduced identically with a ReferenceError and a thrown
+  `new Error("custom message")`, both rendering as the bare "Error: Uncaught".
+- Fix: the final error branch now reads `const msg = (ed && ed.description) || r.exceptionDetails.text
+  || "exception";` (description first, generic label as fallback, "exception" as a last resort) and
+  returns `Error: ${msg}`.
+- Decisions made: none beyond the fix -- precise, narrow, high-confidence correction, no alternative
+  considered.
+- Browser checks queued: BUGFIX-05-1 (a thrown/reference error in javascript_tool now reports the
+  real message, e.g. "Error: ReferenceError: x is not defined", not "Error: Uncaught") in
+  docs/tasks/release-1/BROWSER-TESTS.md.
+
+### BUGFIX-06 doctor pipe-busy after repeated probes -- investigated, NOT fixed -- 2026-07-02
+- Commit: n/a (no code change; investigation only)
+- Files touched: none (src/native/ipc.rs read only)
+- Root cause (precisely identified): the Windows `serve()` loop in src/native/ipc.rs creates exactly
+  ONE spare/pending pipe instance (`next`) before handing the just-accepted connection to
+  `browser.attach(connected).await` -- which BLOCKS the entire loop for the lifetime of that
+  connection (the real, long-lived native-host session, normally the whole browser session). If a
+  third-party short-lived connection (like `browser-mcp doctor`'s probe: open-then-immediately-drop)
+  grabs that one spare instance while the loop is blocked inside `attach()`, nothing replaces it --
+  the loop cannot reach `server.connect()`/create a new spare again until the CURRENT `attach()`
+  call returns. Every subsequent `doctor` invocation then sees `ERROR_PIPE_BUSY` (231) until the
+  real native-host connection eventually disconnects and the loop cycles back around. This matches
+  every observation from the verification pass exactly: the first doctor call succeeded (it
+  consumed the one pre-existing spare), every later call failed identically, the condition persisted
+  over an hour (consistent with a long-lived real session), and the actual live MCP session was
+  never affected (only the spare instance meant for a hypothetical next connection was starved).
+- Why NOT fixed this session: the obvious-looking fix (spawn `browser.attach(connected)` via
+  `tokio::spawn` instead of awaiting it inline, so the loop can immediately create a fresh spare and
+  keep looping) was seriously considered and REJECTED after reading `Browser::attach`'s body
+  (src/browser.rs:163-208): it unconditionally sets `self.outgoing`/`self.connected` to represent
+  "the" extension connection at entry, and resets them to "disconnected" (draining ALL pending
+  calls with an error) when its stream closes. `Browser` has no concept of multiple simultaneous
+  attachments -- spawning `attach()` concurrently for a stray probe connection would have the stray
+  connection's near-instant close (the probe already dropped its handle) WIPE OUT the real
+  session's `outgoing` sender and mark the whole browser disconnected, actively breaking in-flight
+  tool calls on the REAL connection. That would be a much worse regression than the cosmetic
+  doctor-exit-code issue being fixed. A correct fix needs the accept loop to distinguish "a stray/
+  probe connection while already attached" (accept and immediately drop, never touching `Browser`'s
+  state) from "the real native-host (re)connecting" (route to `attach()`), which is a genuine
+  redesign of the accept loop, not a one-line change -- and this module has a documented history of
+  subtle Windows-named-pipe/zombie-process bugs (see the module's own doc comment on tokio-native
+  vs the `interprocess` crate, and memory `ipc-tokio-native-and-zombie-fix`) that make it a poor
+  candidate for an unverified same-session patch, especially since verifying a fix would require
+  safely killing/restarting the live mcp-server process, which this interactive session cannot do
+  without losing its own connection.
+- Recommendation for a human / a future dedicated task: redesign the Windows `serve()` accept loop
+  to keep the "one spare pipe instance always available" invariant true even while a real connection
+  is being handled -- e.g., a small background task that continuously accepts on a spare instance
+  and either (a) hands the FIRST such connection to `browser.attach()` if the browser is not
+  currently connected, or (b) accepts-then-immediately-drops any connection that arrives while
+  already connected, without ever calling `attach()` on it. This needs its own unit/integration test
+  coverage (a live-pipe test that simulates a probe connection arriving mid-session) before landing,
+  given the module's history.
+- Browser checks queued: none (not fixed; T07-4's doctor pipe-busy behavior, if reproduced again by
+  a human, should be reported against this ledger entry, not treated as a new/unknown bug).
+
+### BUGFIX-07 left_click_drag coordinate scale -- investigated, INCONCLUSIVE -- 2026-07-02
+- Commit: n/a (no code change; investigation, no fix attempted)
+- Files touched: none
+- Summary: the original verification pass reproduced a consistent ~1.1x coordinate scale distortion
+  for `left_click_drag` across three tabs, including one that had never had a screenshot taken (which
+  should make `rescaleCoord()` a pure identity passthrough per src/service-worker.js's own code --
+  confirmed by reading `rescaleCoord`, `resolveCoords`, and every `screenshotCtx.set(...)` call site;
+  none of them explain a ~1.1x distortion on a tab with no established screenshot context).
+  `left_click`/`double_click`/`triple_click`/`zoom` all mapped coordinates correctly on the same tabs
+  through the exact same `rescaleCoord()` function, which the code-level evidence cannot explain if
+  the distortion were a property of `rescaleCoord` itself.
+- Why marked inconclusive rather than a confirmed bug: re-deriving the exact numbers by hand during
+  this investigation surfaced a plausible alternative explanation the original verification pass did
+  not rule out -- the test methodology used a plain `document.addEventListener("mousemove", ...)`
+  listener with no way to distinguish CDP-synthetic drag events from a real, physical mouse-move
+  event on the interactive user's own machine (this was a live, interactive session with a human
+  present at the keyboard/mouse throughout). A real concurrent mouse movement with a button held
+  (e.g. the human resizing or clicking elsewhere in the browser window during the test) would be
+  captured by the same listener and could not be distinguished from the drag's own dispatched
+  events in the recorded sample array, which would fully explain an apparent "scale distortion" that
+  has no corresponding explanation in the actual dispatch code.
+- Recommendation: re-test with either (a) explicit confirmation that no human interaction with the
+  browser window occurs during the test window, or (b) a capture mechanism that can distinguish
+  CDP-dispatched events from real hardware input (for example, tagging synthetic events via a custom
+  property that only `Input.dispatchMouseEvent`-originated events would carry, if CDP exposes one) --
+  before treating this as a confirmed code defect. Do not patch `left_click_drag`'s coordinate
+  handling based on the original finding alone; the evidence is now understood to be inconclusive.
+- Browser checks queued: none (not confirmed; a human re-running T09-5 personally, away from the
+  keyboard during the drag, would settle this either way).

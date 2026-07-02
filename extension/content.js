@@ -134,6 +134,16 @@
     const maxDepth = options.depth || 15;
     const maxChars = options.max_chars || 50000;
     const MAX_ELEMENTS = 10000;
+    // A real page's reachable node count within a given depth is unbounded (wide, deeply nested
+    // markup -- citation lists, infobox tables, and similar structures push this into the tens of
+    // thousands well before any depth/filter/char-budget limit would otherwise apply). MAX_ELEMENTS
+    // above only bounds pass 2's OUTPUT; without a bound on pass 1 itself, a single call could force
+    // an unbounded synchronous DOM walk (getComputedStyle/getBoundingClientRect per node) on a large
+    // page. MAX_MEASURED bounds pass 1's own work independent of maxDepth: once hit, deeper/further
+    // nodes are treated as absent from the render tree (same as exceeding maxDepth), so the call
+    // still returns promptly with whatever was measured rather than not returning at all.
+    const MAX_MEASURED = 20000;
+    let measured = 0;
     let culled = false; // true once the viewport test removes an element that would otherwise show
 
     // Pass 1: measure. Same entry guards, same show computation, same recursion order as a
@@ -141,6 +151,7 @@
     // record (unit text plus subtree measurements) instead of appending to an output string.
     function measure(el, depth, indent) {
       if (depth > maxDepth || !el || el.nodeType !== 1) return null;
+      if (++measured > MAX_MEASURED) return null;
       if (el.id && el.id.indexOf("browser-mcp-") === 0) return null; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) return null;
@@ -228,7 +239,7 @@
     let collapsed = false; // a collapse marker was emitted
     let stopped = false; // the walk halted because even a collapsed form did not fit
     let capped = false; // the element cap was reached
-    function emit(record) {
+    function emit(record, isRoot) {
       if (stopped || capped) return;
       if (!record.show) {
         // Pass-through node: it owns no line, so it cannot collapse; only its children can.
@@ -239,6 +250,22 @@
         return;
       }
       if (record.subtreeChars <= remaining) {
+        out += record.unit;
+        remaining -= record.unitChars;
+        shown++;
+        if (shown >= MAX_ELEMENTS) { capped = true; return; }
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      if (isRoot) {
+        // The record the caller re-rooted at (via ref_id) must never collapse behind a marker
+        // naming its own ref -- that would be an unexpandable loop (the caller is already looking
+        // at this ref_id). Show its own line if it fits, then let each child decide individually
+        // whether it fits whole, collapses behind its own marker, or halts the walk.
+        if (record.unitChars > remaining) { stopped = true; return; }
         out += record.unit;
         remaining -= record.unitChars;
         shown++;
@@ -260,7 +287,7 @@
       }
       stopped = true;
     }
-    if (rootRecord) emit(rootRecord);
+    if (rootRecord) emit(rootRecord, true);
 
     const omitted = total - shown;
     if (capped && omitted > 0) {

@@ -18,6 +18,9 @@ const consoleBuffer = new Map(); // tabId -> { host, items: [{ level, text }] }
 const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType, errorText, canceled }] }
 const screenshotCtx = new Map(); // tabId -> { vpW, vpH, shotW, shotH, offX, offY, regionW, regionH } (set on each screenshot/zoom)
 const tabHost = new Map(); // tabId -> hostname of the tab's current URL ("" when none)
+const tabUrl = new Map(); // tabId -> the tab's current full URL ("" when none); fallback location
+// context for exceptionText() when a CDP exceptionDetails/callFrame carries no url of its own
+// (routine for exceptions thrown from a deferred callback rather than a freshly-parsed script).
 // Set true by rehydrate() when a prior session was recovered; consumed (and cleared) by the next
 // successful read of the corresponding buffer, so the model is told once that tracking restarted.
 let consoleResetNotice = false;
@@ -93,6 +96,7 @@ async function ensureAttached(tabId) {
     try {
       const t = await chrome.tabs.get(tabId);
       tabHost.set(tabId, hostOf(t.url || ""));
+      tabUrl.set(tabId, t.url || "");
     } catch { /* tab gone */ }
   })();
   attaching.set(tabId, p);
@@ -182,6 +186,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   networkBuffer.delete(tabId);
   screenshotCtx.delete(tabId);
   tabHost.delete(tabId);
+  tabUrl.delete(tabId);
   persistSessionState();
 });
 chrome.debugger.onDetach.addListener((src) => attached.delete(src.tabId));
@@ -191,11 +196,14 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.url !== undefined) tabHost.set(tabId, hostOf(info.url));
+  if (info.url !== undefined) { tabHost.set(tabId, hostOf(info.url)); tabUrl.set(tabId, info.url); }
 });
 // Render an uncaught-exception CDP event as one single-line string: base message, then an
 // optional (url:line) location, then an optional compact [at frame, frame, ...] stack.
-function exceptionText(details) {
+// fallbackUrl covers exceptions whose exceptionDetails/callFrames carry no url of their own
+// (routine for a deferred callback rather than a freshly-parsed script): the tab's current URL
+// beats an empty/misleading "@:1" location.
+function exceptionText(details, fallbackUrl) {
   const exc = details.exception;
   let base;
   if (exc && typeof exc.description === "string" && exc.description) {
@@ -208,13 +216,14 @@ function exceptionText(details) {
     base = "Uncaught exception";
   }
   let out = base;
-  if (typeof details.url === "string" && details.url) {
+  const url = (typeof details.url === "string" && details.url) || fallbackUrl || "";
+  if (url) {
     // CDP line numbers are 0-based; add 1 for the human-readable line reported here.
-    out += typeof details.lineNumber === "number" ? ` (${details.url}:${details.lineNumber + 1})` : ` (${details.url})`;
+    out += typeof details.lineNumber === "number" ? ` (${url}:${details.lineNumber + 1})` : ` (${url})`;
   }
   const frames = details.stackTrace && Array.isArray(details.stackTrace.callFrames) ? details.stackTrace.callFrames : [];
   if (frames.length) {
-    const rendered = frames.slice(0, 3).map((f) => `${f.functionName || "<anonymous>"}@${f.url}:${f.lineNumber + 1}`);
+    const rendered = frames.slice(0, 3).map((f) => `${f.functionName || "<anonymous>"}@${f.url || fallbackUrl || ""}:${f.lineNumber + 1}`);
     out += ` [at ${rendered.join(", ")}]`;
   }
   return out;
@@ -229,7 +238,7 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     const text = (params.args || []).map((a) => a.value !== undefined ? a.value : (a.description || "")).join(" ");
     pushCapped(consoleBuffer, tabId, { level: params.type || "log", text });
   } else if (method === "Runtime.exceptionThrown") {
-    pushCapped(consoleBuffer, tabId, { level: "exception", text: exceptionText(params.exceptionDetails || {}) });
+    pushCapped(consoleBuffer, tabId, { level: "exception", text: exceptionText(params.exceptionDetails || {}, tabUrl.get(tabId)) });
   } else if (method === "Network.requestWillBeSent" && params.request) {
     pushCapped(networkBuffer, tabId, { requestId: params.requestId, method: params.request.method, url: params.request.url, status: 0 });
   } else if (method === "Network.responseReceived" && params.response) {
@@ -494,8 +503,11 @@ async function zoomScreenshot(tabId, region) {
     cap = await cdp(tabId, "Page.captureScreenshot", {
       format: "jpeg", quality: 80,
       // clip is document-relative CSS pixels, not viewport-relative, so the scroll offset is added.
+      // captureBeyondViewport must be true for CDP to actually honor that: with it false, Chrome
+      // treats clip as viewport-relative and the scroll offset added above gets double-counted,
+      // clipping to a position outside the rendered surface (a blank capture) on any scrolled page.
       clip: { x: sx + x0, y: sy + y0, width: w, height: h, scale: s },
-      captureBeyondViewport: false,
+      captureBeyondViewport: true,
     });
   } finally {
     sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" });
@@ -969,7 +981,13 @@ const handlers = {
         r = await cdp(tabId, "Runtime.evaluate", { expression: wrapped, returnByValue: true, awaitPromise: true });
       }
     }
-    if (r.exceptionDetails) return text(`Error: ${r.exceptionDetails.text || "exception"}`);
+    if (r.exceptionDetails) {
+      // r.exceptionDetails.text is CDP's generic top-level label (almost always the bare string
+      // "Uncaught"); the actual message lives on the exception object's own description.
+      const ed = r.exceptionDetails.exception;
+      const msg = (ed && ed.description) || r.exceptionDetails.text || "exception";
+      return text(`Error: ${msg}`);
+    }
     const v = r.result;
     let out = v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type));
     if (out.length > 50 * 1024) out = out.slice(0, 50 * 1024) + "\n[OUTPUT TRUNCATED: Exceeded 50KB limit]";
@@ -983,6 +1001,7 @@ const handlers = {
     const tab = await chrome.tabs.get(tabId);
     const host = hostOf(tab.url || "");
     tabHost.set(tabId, host);
+    tabUrl.set(tabId, tab.url || "");
     const buf = bufferFor(consoleBuffer, tabId, host);
     const total = buf.items.length;
     let msgs = buf.items;
@@ -1015,6 +1034,7 @@ const handlers = {
     const tab = await chrome.tabs.get(tabId);
     const host = hostOf(tab.url || "");
     tabHost.set(tabId, host);
+    tabUrl.set(tabId, tab.url || "");
     const buf = bufferFor(networkBuffer, tabId, host);
     const total = buf.items.length;
     let reqs = buf.items;

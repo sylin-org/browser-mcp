@@ -1313,3 +1313,86 @@ Steps:
 Expect: no errors logged in the service worker console during any of the above (an adopted
 "already attached" recovery in T05-5, and any internal `rehydrate()`/`persistSessionState()`
 try/catch swallow, are expected control flow, not logged errors).
+
+---
+
+The entries below verify the BUGFIX-01 through BUGFIX-05 fixes made after the first live
+BROWSER-TESTS.md pass (see LEDGER.md's "BROWSER-TESTS.md VERIFICATION PASS" section and the
+BUGFIX-0N task-log entries for full root-cause detail). BUGFIX-06 (doctor pipe-busy) and BUGFIX-07
+(left_click_drag coordinate scale) were investigated but not fixed -- see their ledger entries for
+why -- and have no entries here.
+
+## BUGFIX-01-1: read_page no longer crashes at default depth on complex real pages
+Changed: `accessibilityTree`'s pass 1 (measure) now bounds its own traversal cost at 20000 visited
+nodes (MAX_MEASURED), independent of maxDepth/filter/max_chars, so a large real page's reachable
+node count within the requested depth can no longer force an unbounded synchronous walk.
+Steps:
+1. Reload the extension at chrome://extensions.
+2. Navigate a grouped tab to https://en.wikipedia.org/wiki/Web_browser.
+3. Call `read_page` with only `tabId` set (all defaults: filter="all", depth=15, max_chars=50000).
+4. Repeat on https://en.wikipedia.org/wiki/Cat.
+Expect: both calls return a normal accessibility tree (no `[hop: page] content script unavailable`
+error). If either call's output ends with a summary line showing `showing <M> of <T> elements`
+where `M` looks suspiciously round (near 20000) and much smaller than a plausible true count, the
+MAX_MEASURED ceiling fired for that page -- note this and consider raising MAX_MEASURED further (see
+BUGFIX-01's ledger entry). If the call still produces the old "script injection blocked" error,
+this fix did not resolve the crash; report back with the exact depth/page and check the service
+worker console (Inspect views: service worker) for any newly-visible exception, since 20000 nodes
+visited synchronously may still be slow enough to matter -- lowering MAX_MEASURED is the next step.
+
+## BUGFIX-02-1: ref_id re-rooting no longer produces a self-referencing dead loop
+Changed: `emit()`'s new `isRoot` handling means the record you re-rooted at via `ref_id` never
+collapses behind a marker naming its own ref; it shows its own line and lets each child decide
+individually.
+Steps:
+1. With the extension reloaded, navigate a grouped tab to https://en.wikipedia.org/wiki/Cat.
+2. Call `read_page` with only `tabId` set, `max_chars: 2000` (or any value producing at least one
+   `[subtree collapsed: ...]` marker), and note a `ref_N` from one of the collapse markers.
+3. Call `read_page` again with `ref_id: "ref_N"` (the noted ref) and a `max_chars` small enough that
+   ref_N's own subtree still does not fit whole (start with the same `max_chars: 2000`, or smaller).
+Expect: the output's first line is ref_N's own element line (NOT a `[subtree collapsed: ...; call
+read_page with ref_id=ref_N to expand]` marker referencing ref_N itself). Any collapse markers that
+DO appear reference a DIFFERENT ref (one of ref_N's children), each independently expandable.
+
+## BUGFIX-03-1: zoom on a scrolled page shows real content, not a blank image
+Changed: `zoomScreenshot`'s CDP capture now passes `captureBeyondViewport: true`, so the
+scrollX/scrollY already added to the clip coordinates are actually honored as document-relative
+instead of being double-counted against an implicitly viewport-relative clip.
+Steps:
+1. With the extension reloaded, navigate a grouped tab to https://en.wikipedia.org/wiki/Cat.
+2. `computer` `{ "action": "scroll", "scroll_direction": "down", "scroll_amount": 10,
+   "coordinate": [400, 300] }` to scroll well down the page.
+3. `computer` `{ "action": "screenshot" }` to see what's currently visible, note a small element's
+   pixel coordinates in that screenshot (for example the "Scientific classification" infobox
+   header, or any visible bold text).
+4. `computer` `{ "action": "zoom", "region": [x0, y0, x1, y1] }` around that element, using the
+   coordinates read off the screenshot from step 3.
+Expect: the zoomed image shows that same element, magnified -- NOT a blank/empty image. This is the
+exact scenario (T11-7) that previously always returned blank.
+
+## BUGFIX-04-1: exception capture now includes a real url/location
+Changed: `exceptionText()` falls back to the tab's current URL (tracked in a new `tabUrl` map)
+whenever CDP's own `exceptionDetails.url` or a stack frame's `url` is empty, which is the routine
+case for exceptions thrown from a deferred callback.
+Steps:
+1. With the extension reloaded, navigate a grouped tab to https://example.com.
+2. Call `read_console_messages` once for that tab (enables the Runtime domain).
+3. Call `javascript_tool` with text: `setTimeout(() => { throw new Error("bugfix04 test"); }, 0);
+   "scheduled"`.
+4. Call `read_console_messages` with `onlyErrors: true`.
+Expect: the result contains a line starting `[exception] Error: bugfix04 test` followed by a
+non-empty `(https://example.com/:N)` location (N is whatever line CDP reports; do not expect a
+specific value) and a non-empty `[at <anonymous>@https://example.com/:N]` stack frame -- neither
+the location parenthetical nor the frame's `@` should be followed by an empty/missing URL as it
+was before this fix.
+
+## BUGFIX-05-1: javascript_tool reports the real exception message
+Changed: the final error branch now prefers `exceptionDetails.exception.description` (the actual
+message) over `exceptionDetails.text` (CDP's generic "Uncaught" label).
+Steps:
+1. With the extension reloaded, on any tab in the group, `javascript_tool` `{ "tabId": <id>,
+   "text": "nosuchvariable.foo" }`.
+2. `javascript_tool` `{ "tabId": <id>, "text": "throw new Error(\"bugfix05 test\")" }`.
+Expect: step 1 returns a message starting `Error: ` and containing `nosuchvariable is not defined`
+(or the V8-specific equivalent wording) -- NOT the bare `Error: Uncaught`. Step 2 returns a message
+starting `Error: ` and containing `bugfix05 test` -- NOT the bare `Error: Uncaught`.
