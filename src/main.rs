@@ -52,7 +52,7 @@ enum Command {
     Doctor(DoctorArgs),
     /// Show the running server's live inner state (needs a server started with --debug).
     Status(StatusArgs),
-    /// Inspect and edit the layered configuration (list / get / set).
+    /// Inspect and edit the layered configuration (list / get / set / schema / docs).
     Config(ConfigArgs),
 }
 
@@ -79,6 +79,10 @@ enum ConfigAction {
         /// string list: a JSON array, e.g. ["example.com","*.example.com"]).
         value: String,
     },
+    /// Print the JSON Schema (draft 2020-12) for the user configuration file.
+    Schema,
+    /// Print the markdown key reference generated from the key registry.
+    Docs,
 }
 
 impl From<ConfigArgs> for browser_mcp::governance::config::cli::ConfigCommand {
@@ -88,6 +92,8 @@ impl From<ConfigArgs> for browser_mcp::governance::config::cli::ConfigCommand {
             ConfigAction::List => ConfigCommand::List,
             ConfigAction::Get { key } => ConfigCommand::Get { key },
             ConfigAction::Set { key, value } => ConfigCommand::Set { key, value },
+            ConfigAction::Schema => ConfigCommand::Schema,
+            ConfigAction::Docs => ConfigCommand::Docs,
         }
     }
 }

@@ -33,11 +33,13 @@
 //! [`reload`] holds the in-force snapshot behind an atomic swap and re-resolves it live on a
 //! debounced file-watch, so config and org-policy changes take effect with no restart.
 //! [`cli`] is the `browser-mcp config list/get/set` presentation surface over this registry.
+//! [`schema`] generates the JSON Schema and markdown key reference (`config schema`/`docs`).
 
 pub mod cli;
 pub mod layers;
 pub mod load;
 pub mod reload;
+pub mod schema;
 
 /// A configuration preset: a named bundle of layer-4 defaults (shared format doc section 2).
 /// The built-in Minimal defaults (layer 5) equal the Safe preset.

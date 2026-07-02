@@ -11,8 +11,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   `main`.
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
-  resolution), `a5` (hot-reload substrate), `g03` (config CLI) landed.
-- NEXT TASK: Phase A, task `g04` (`docs/tasks/stage-2/g04-schema-generation.md`).
+  resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
+  landed. Phase A (foundations) is COMPLETE.
+- NEXT TASK: Phase B, task `g05` (`docs/tasks/stage-2/g05-rw-classification.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -424,6 +425,62 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   touched/new file.
 - Browser checks queued: none (this task needs no browser; the manual smoke above was run live
   in this pass since it required only the binary, not BROWSER-TESTS.md deferral).
+
+### g04 generated JSON Schema and key reference docs -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/config/schema.rs`; `src/governance/config/mod.rs`
+  (`pub mod schema;`); `src/governance/config/cli.rs` (added `Schema`/`Docs` variants to
+  `ConfigCommand` and their `run()` arms, since g03 already landed a `ConfigCommand` enum this
+  task's own doc only anticipated might exist); `src/main.rs` (`ConfigAction::{Schema,Docs}`,
+  the `From` mapping); new `tests/config_schema_golden.rs`; new `tests/golden/config-schema.json`,
+  `tests/golden/config-keys.md`, `tests/golden/.gitattributes` (`* text eol=lf`, the whole fix
+  for CRLF-safe goldens on a Windows checkout, since the repo has no root `.gitattributes`).
+- Summary: `key_value_schema` maps each registry key's type/constraint/description/Safe-preset
+  default to a JSON Schema fragment (member order description/type/constraint-fields/default,
+  exactly per the type table); `config_file_schema` assembles the full user-config-file
+  document (the three pinned description/title strings verbatim, no `$id`, no `required`,
+  `additionalProperties: false` at both the root and inside `properties.config`, one property
+  per `KEYS` entry in registry order via `preserve_order`); `render_config_schema` is
+  `to_string_pretty` plus one trailing LF. `render_key_reference` builds the markdown from a
+  pinned header plus one section per key (type word, constraints phrase, three preset
+  defaults as compact JSON), joined with exactly one blank line between sections. Wired as
+  `browser-mcp config schema` / `config docs`, both synchronous, `print!` (not `println!`,
+  since the rendered strings already end in one LF).
+- Deviations from the g-doc per RECONCILIATION.md / carried forward from prior tasks: none of
+  the "known integration point" domain-pattern-validator threading applies here (schema
+  generation is pure registry introspection, no file loading, so no `fn(&str) -> bool` needed).
+  One deliberate gap-fill beyond the task's own literal spec: the constraints-phrase table in
+  the g04 doc enumerates bool/uint/enum/string(none)/string-list(with or without pattern), but
+  does not address `KeyConstraint::EmptyOrAbsolutePath` (the constraint G01 gave
+  `audit.file.path`, a Str-type key), since g04's doc predates that constraint variant.
+  Rendering "none" for it would be untruthful documentation (constraint 5's "the engine is
+  truthful" applies to generated docs too), so `constraints_phrase` gives it its own phrase,
+  "empty string, or an absolute path" (mirroring `ConfigValueError::ExpectedAbsolutePath`'s
+  wording), keyed on base type first so the fallback for any other unexpected
+  type/constraint pairing is a safe "none" rather than a panic. Placement:
+  `schema.rs` lands in `governance/config/` per the same RECONCILIATION section 1 mapping as
+  `layers.rs`/`load.rs`/`reload.rs`/`cli.rs`.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo test` green (146 lib unit tests, up from 143: +3 new in `governance::config::schema::tests`;
+  5 new in `tests/config_schema_golden.rs` -- byte-exact golden match for both outputs, full
+  registry-coverage cross-check in both directions, section-count cross-check for the markdown,
+  and an ASCII/no-CR check; all other suites unchanged: `tests/all_open_golden.rs` 3,
+  `tests/architecture.rs` 4 -- confirms `governance/config/schema.rs` introduces zero forbidden
+  edges, `tests/mcp_protocol.rs` 4, `tests/peer_death.rs` 1, `tests/tool_schema_fidelity.rs` 6).
+  Golden bootstrap procedure followed exactly: implemented first, generated both goldens via
+  `cargo run --quiet -- config schema`/`config docs`, reviewed both BY HAND against the task's
+  sections 2-4 (member order, the three pinned description/title strings, all seven keys
+  present in registry order, every constraint phrase, all three preset defaults per key) before
+  writing the golden tests. Manual checks per the task's own Verification steps 4-6, run live
+  (schema/docs generation needs no browser and touches no file outside `tests/golden/`):
+  `config schema` output starts with `{` and contains the `$schema` URL; `config docs` output's
+  first line is exactly `# Configuration key reference`; `cargo run -- config schema | diff -
+  tests/golden/config-schema.json` and the `docs`/`config-keys.md` equivalent both report zero
+  diff. Confirmed the staged golden blobs contain zero CR bytes (`git show :tests/golden/...`),
+  proving the scoped `.gitattributes` actually takes effect on this Windows checkout. ASCII scan
+  clean on every touched/new file including both golden files.
+- Browser checks queued: none (pure registry introspection; needs no browser, no file I/O
+  outside the two golden files this commit already carries).
 
 ## Reminders before running BROWSER-TESTS.md
 

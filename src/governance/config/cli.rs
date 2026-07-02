@@ -10,7 +10,7 @@
 //! resolved). The crate-root binary (`src/main.rs`) supplies the browser plugin's real
 //! checker at the call site.
 
-use super::{key_def, layers, load, KeyDef, KeyType};
+use super::{key_def, layers, load, schema, KeyDef, KeyType};
 
 /// A parsed `browser-mcp config` invocation.
 pub enum ConfigCommand {
@@ -28,6 +28,10 @@ pub enum ConfigCommand {
         /// The raw value as typed on the command line.
         value: String,
     },
+    /// Print the JSON Schema (draft 2020-12) for the user configuration file.
+    Schema,
+    /// Print the markdown key reference generated from the key registry.
+    Docs,
 }
 
 /// Run one config CLI command. Success output goes to stdout; failures return
@@ -38,6 +42,14 @@ pub fn run(cmd: ConfigCommand, domain_pattern_valid: fn(&str) -> bool) -> crate:
         ConfigCommand::List => run_list(domain_pattern_valid),
         ConfigCommand::Get { key } => run_get(&key, domain_pattern_valid),
         ConfigCommand::Set { key, value } => run_set(&key, &value, domain_pattern_valid),
+        ConfigCommand::Schema => {
+            print!("{}", schema::render_config_schema());
+            Ok(())
+        }
+        ConfigCommand::Docs => {
+            print!("{}", schema::render_key_reference());
+            Ok(())
+        }
     }
 }
 
