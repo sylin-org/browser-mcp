@@ -11,8 +11,8 @@
 //! interleaved mid-write.
 
 use crate::browser::redact;
+use crate::governance::config::Config;
 use crate::governance::dispatch::Governance;
-use crate::governance::policy::Config;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -25,13 +25,6 @@ use tokio::sync::mpsc;
 
 /// MCP protocol version this server speaks.
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
-
-/// How long a `tools/call` waits for the extension channel to come up before failing. The
-/// first call of a session races the native-messaging handshake; waiting briefly turns the
-/// single most common spurious failure into a success. Slated to become governance config
-/// key `engine.connection.first_call_wait_ms` per ADR-0019 (proposed); a hardcoded constant
-/// until the config plumbing lands.
-const FIRST_CALL_WAIT_MS: u64 = 5000;
 
 /// Run the stdio MCP server loop until stdin closes. `browser` is the (shared) handle to the
 /// extension; tool calls are forwarded through it.
@@ -76,7 +69,7 @@ pub async fn run(browser: Browser) -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        if let Some(resp) = handle_line(&browser, config, &governance, line, &tx).await {
+        if let Some(resp) = handle_line(&browser, &config, &governance, line, &tx).await {
             let _ = tx.send(resp);
         }
     }
@@ -92,7 +85,7 @@ pub async fn run(browser: Browser) -> Result<()> {
 /// [`Value`] so a structurally invalid but id-bearing request still gets an addressable `-32600`.
 async fn handle_line(
     browser: &Browser,
-    config: Config,
+    config: &Config,
     governance: &Arc<Governance>,
     line: &str,
     tx: &mpsc::UnboundedSender<JsonRpcResponse>,
@@ -145,14 +138,12 @@ async fn handle_line(
             // side initiates the connection (Chrome spawns the native-host, which dials the
             // endpoint this process has served since startup), so there is nothing to dial from
             // here; this watcher verifies readiness and records the outcome.
+            let wait_ms = config.first_call_wait_ms();
             tokio::spawn({
                 let browser = browser.clone();
                 async move {
                     let started = Instant::now();
-                    if browser
-                        .wait_connected(Duration::from_millis(FIRST_CALL_WAIT_MS))
-                        .await
-                    {
+                    if browser.wait_connected(Duration::from_millis(wait_ms)).await {
                         tracing::info!(
                             elapsed_ms = started.elapsed().as_millis() as u64,
                             "extension channel ready"
@@ -170,12 +161,13 @@ async fn handle_line(
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
         "tools/call" => {
             let browser = browser.clone();
+            let config = config.clone();
             let governance = Arc::clone(governance);
             let tx = tx.clone();
             let params = raw.get("params").cloned();
             tokio::spawn(async move {
                 let resp =
-                    handle_tools_call(&browser, config, &governance, id, params.as_ref()).await;
+                    handle_tools_call(&browser, &config, &governance, id, params.as_ref()).await;
                 let _ = tx.send(resp);
             });
             None
@@ -209,7 +201,7 @@ fn tools_list_result() -> Value {
 
 async fn handle_tools_call(
     browser: &Browser,
-    config: Config,
+    config: &Config,
     governance: &Governance,
     id: Option<Value>,
     params: Option<&Value>,
@@ -248,7 +240,7 @@ async fn handle_tools_call(
     if !browser.is_connected() {
         let started = Instant::now();
         if browser
-            .wait_connected(Duration::from_millis(FIRST_CALL_WAIT_MS))
+            .wait_connected(Duration::from_millis(config.first_call_wait_ms()))
             .await
         {
             waited = Some(started.elapsed());

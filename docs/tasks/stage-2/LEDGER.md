@@ -10,8 +10,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Branch: `stage-2` (off `main`, which has stage 1 merged). Never push, never merge, never commit to
   `main`.
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
-  (governance facade), `a7` (arch-test) landed.
-- NEXT TASK: Phase A, task `g01` (`docs/tasks/stage-2/g01-typed-key-registry.md`).
+  (governance facade), `a7` (arch-test), `g01` (typed key registry) landed.
+- NEXT TASK: Phase A, task `g02` (`docs/tasks/stage-2/g02-layered-resolution.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -173,6 +173,66 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the scanner anchors on `CARGO_MANIFEST_DIR`, not the working directory. ASCII scan clean.
 - Browser checks queued: none (pure build-time/test-time guard; no runtime or browser-facing
   behavior).
+
+### g01 typed key registry (value types beyond bool) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/config/mod.rs` (renamed from `src/governance/policy/mod.rs`,
+  rewritten: full typed registry replacing the bool-only prototype); `src/governance/mod.rs`
+  (`pub mod policy;` -> `pub mod config;`); new `src/browser/pattern.rs`; `src/browser/mod.rs`
+  (`pub mod pattern;`); `src/transport/mcp/server.rs` (Config import path, `&Config` threading,
+  `FIRST_CALL_WAIT_MS` constant removed and replaced by `config.first_call_wait_ms()`).
+- Summary: grew the registry to the full value model (`KeyValue`/`ConfigValue`/`KeyType`/
+  `KeyConstraint`/`Preset`), registered the seven stage-2 keys exactly per shared-format-doc
+  3.4 (`engine.connection.first_call_wait_ms`, `content.security.secrets.redact`,
+  `content.security.sacred_domains`, `audit.enabled`, `audit.destination`, `audit.file.path`,
+  `governance.mode`), added `KeyDef::parse_value` with the exact `ConfigValueError` display
+  vocabulary, grew `Config` to seven owned fields (loses `Copy`, gains `Clone`), and wired
+  `first_call_wait_ms` into the two `Duration::from_millis(FIRST_CALL_WAIT_MS)` call sites in
+  the MCP server (the T04 timeout constant this task was scoped to retire). All defaults for
+  `content.security.sacred_domains` are `StrList(&[])` for every preset, so `Config::from_preset`
+  never needs the domain-pattern validator (it reads registry defaults directly, no JSON
+  round-trip).
+- Deviations from the g-doc per RECONCILIATION.md (both significant; g01's own doc predates
+  A1 and assumes the flat `src/policy/mod.rs` layout):
+  1. **Placement.** RECONCILIATION.md section 1 maps `src/policy/mod.rs` (registry, resolver,
+     Config) to `governance/config/`, not the `governance/policy/` name A1 produced by a literal
+     directory move. Renamed the directory as part of this task (`git mv
+     src/governance/policy src/governance/config`), updated `governance/mod.rs`'s module
+     declaration, and repointed the one external import site
+     (`transport/mcp/server.rs`: `governance::policy::Config` -> `governance::config::Config`).
+  2. **The domain-pattern validator (the RECONCILIATION section 2 "known integration point,
+     resolve during g01/a1").** g01's own doc puts `pattern.rs` under `src/policy/pattern.rs`
+     (i.e. inside governance) and has `parse_value` call
+     `crate::policy::pattern::is_valid_pattern` directly. RECONCILIATION.md is explicit that the
+     pattern grammar is browser-domain (`browser/pattern.rs`) and that `governance/config` must
+     not name `browser::` (the a7 arch-test forbids it), offering two resolutions: inject a
+     validator hook, or carry the domain-pattern key in a browser key catalog. Chose the
+     injection hook (simpler than splitting `KEYS` into two composed catalogs, which would
+     ripple into every later G02/G03/G04/G12 consumer of a single flat registry): `pattern.rs`
+     landed in `src/browser/pattern.rs` (also the future home G07's matcher extends, per
+     RECONCILIATION's own placement table), and `KeyDef::parse_value` gained a
+     `domain_pattern_valid: fn(&str) -> bool` parameter, consulted only for the
+     `DomainPatternList` constraint. `governance/config`'s own tests use a small test-local
+     validator (duplicating the grammar) so they never depend on the browser plugin; the
+     authoritative grammar and its exhaustive test list (part 5 of g01's doc) live in
+     `browser/pattern.rs`'s own tests. Verified via `cargo test --test architecture`: zero
+     forbidden edges.
+  3. Minor: kept `audit.destination` / `audit.file.path` descriptions ending "Takes effect on
+     restart" per g01's literal text -- RECONCILIATION.md section 3 says these should eventually
+     drop that clause once hot-reload (A5) and the audit sink re-open (G06) exist, but neither
+     has landed yet at this point in the task sequence (A5 is the very next task after G02), so
+     the restart-only wording is still truthful today. Revisit when A5+G06 land.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean,
+  `cargo test` green (104 lib unit tests, up from 90: +13 new in `governance::config::tests`,
+  +2 new in `browser::pattern::tests`; `tests/all_open_golden.rs` 3 unchanged;
+  `tests/architecture.rs` 4 unchanged and still green after the `governance/config` rename
+  -- confirms zero forbidden edges introduced; `tests/mcp_protocol.rs` 4 unchanged;
+  `tests/peer_death.rs` 1 unchanged; `tests/tool_schema_fidelity.rs` 6 unchanged). Grep confirmed
+  `FIRST_CALL_WAIT_MS` and `minimal_default` no longer appear anywhere in `src/`. ASCII scan
+  clean on every touched/new file.
+- Browser checks queued: none (binary-only config/registry growth; the wired
+  `first_call_wait_ms` value is 5000 under the Safe/Minimal preset, byte-identical to the
+  retired constant, so no behavior changed).
 
 ## Reminders before running BROWSER-TESTS.md
 
