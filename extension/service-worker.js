@@ -93,12 +93,14 @@ const PX_PER_TOKEN = 28, MAX_TOKENS = 1568, MAX_SIDE = 1568, MAX_SCREENSHOT_B64 
 
 async function probeViewport(tabId) {
   const r = await cdp(tabId, "Runtime.evaluate", {
-    expression: "({w:innerWidth,h:innerHeight,d:window.devicePixelRatio||1})",
+    expression: "({w:innerWidth,h:innerHeight,d:window.devicePixelRatio||1,vis:document.visibilityState})",
     returnByValue: true,
   });
   const v = r && r.result && r.result.value;
   if (!v || !v.w || !v.h) throw hopError("page", "failed to probe viewport");
-  return { vpW: v.w, vpH: v.h, dpr: v.d || 1 };
+  // Chrome reports "hidden" for both background tabs and tabs in minimized windows, so this one
+  // probe covers both cases; a missing value counts as visible so pages without the API are unaffected.
+  return { vpW: v.w, vpH: v.h, dpr: v.d || 1, visible: (v.vis || "visible") === "visible" };
 }
 // Target screenshot dimensions (derived from the CSS viewport) under the token + longest-side budget.
 function targetDims(vpW, vpH) {
@@ -309,19 +311,48 @@ function textImage(t, base64) {
 }
 
 // --- Screenshot pipeline: capture native, downscale to the token budget, record ScreenshotContext ---
+// Returns { base64, note }; note is "" on every clean path and carries a truthful warning when a
+// non-visible tab could not be captured directly and the standard (possibly blank/stale) path ran.
 async function screenshot(tabId) {
   await ensureAttached(tabId);
-  const { vpW, vpH, dpr } = await probeViewport(tabId);
+  const { vpW, vpH, dpr, visible } = await probeViewport(tabId);
+  const { w, h } = targetDims(vpW, vpH);
   // Hide the phantom cursor / glow so they never appear in the model's screenshot.
   await sendToTab(tabId, { type: "HIDE_FOR_TOOL_USE" });
   await sleep(40);
-  let cap;
+  let cap, note = "", clipMsg = null;
   try {
-    cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false });
+    if (!visible) {
+      // Background/minimized tabs: clip + scale in one pass inside the browser (no canvas re-encode
+      // needed), reading from the compositing surface so a non-presented tab still yields real pixels.
+      const scale = w / vpW; // always <= 1: targetDims never grows past the CSS viewport
+      const clipParams = { clip: { x: 0, y: 0, width: vpW, height: vpH, scale }, fromSurface: true, captureBeyondViewport: false };
+      try {
+        cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 55, ...clipParams });
+        if (cap.data.length > MAX_SCREENSHOT_B64) {
+          cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 30, ...clipParams });
+        }
+        // The encoded image may differ from w x h by at most one rounding pixel per axis; recording
+        // w/h (not the decoded bitmap) keeps rescaleCoord's mapping exact without a canvas pass.
+        screenshotCtx.set(tabId, { vpW, vpH, shotW: w, shotH: h, offX: 0, offY: 0, regionW: vpW, regionH: vpH });
+        return { base64: cap.data, note: "" };
+      } catch (e) {
+        clipMsg = (e && e.message) || String(e);
+      }
+    }
+    try {
+      cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false });
+    } catch (e) {
+      if (clipMsg === null) throw e; // visible tab: propagate the standard-capture failure unchanged
+      const fbMsg = (e && e.message) || String(e);
+      throw new Error(`screenshot of non-visible tab failed: clipped capture: ${clipMsg}; fallback capture: ${fbMsg}`);
+    }
+    if (clipMsg !== null) {
+      note = "Warning: this tab was not visible and direct background capture failed; the image was taken with the standard capture path and may be blank or stale.";
+    }
   } finally {
     sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" });
   }
-  const { w, h } = targetDims(vpW, vpH);
   // Default to the raw native capture (dims = CSS viewport * DPR) if canvas downscaling is unavailable.
   let base64 = cap.data, shotW = Math.round(vpW * dpr), shotH = Math.round(vpH * dpr);
   try {
@@ -333,7 +364,7 @@ async function screenshot(tabId) {
   } catch { /* OffscreenCanvas/createImageBitmap unavailable: keep the raw native capture */ }
   // A full screenshot resets the zoom offset: subsequent coordinates map against the whole viewport.
   screenshotCtx.set(tabId, { vpW, vpH, shotW, shotH, offX: 0, offY: 0, regionW: vpW, regionH: vpH });
-  return base64;
+  return { base64, note };
 }
 
 // --- Zoom: capture a clipped, magnified region and record it as the tab's coordinate context ---
@@ -608,8 +639,11 @@ async function computer(a) {
   showActivity(tabId); // best-effort "agent active" glow for the watching user
 
   switch (a.action) {
-    case "screenshot":
-      return textImage("Screenshot captured (jpeg).", await screenshot(tabId));
+    case "screenshot": {
+      const caption = "Screenshot captured (jpeg).";
+      const shot = await screenshot(tabId);
+      return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+    }
     case "zoom": {
       const r = a.region;
       if (!Array.isArray(r) || r.length !== 4 || !r.every((v) => Number.isFinite(v)))
@@ -689,34 +723,38 @@ async function computer(a) {
       if (before === null) {
         // Verification unavailable (for example a mid-navigation page): same blind claim as before.
         await sleep(250);
-        return textImage(scrolled, await screenshot(tabId));
+        const shot = await screenshot(tabId);
+        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
       }
       await sleep(200);
       const after = await probeScrollState(tabId, c[0], c[1]);
       // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
-      if (after === null) return textImage(scrolled, await screenshot(tabId));
+      if (after === null) {
+        const shot = await screenshot(tabId);
+        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+      }
       // 5px threshold matches the moved-more-than-5px verification contract.
       const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
       const elementMoved = before.hasEl && after.hasEl &&
         (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
-      if (windowMoved || elementMoved) return textImage(scrolled, await screenshot(tabId));
+      if (windowMoved || elementMoved) {
+        const shot = await screenshot(tabId);
+        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+      }
       const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
       if (fb === null) {
-        return textImage(
-          `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`,
-          await screenshot(tabId)
-        );
+        const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`;
+        const shot = await screenshot(tabId);
+        return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
       }
       if (fb.moved) {
-        return textImage(
-          `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`,
-          await screenshot(tabId)
-        );
+        const caption = `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`;
+        const shot = await screenshot(tabId);
+        return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
       }
-      return textImage(
-        `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`,
-        await screenshot(tabId)
-      );
+      const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`;
+      const shot = await screenshot(tabId);
+      return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
     }
     case "scroll_to": {
       if (a.ref) {

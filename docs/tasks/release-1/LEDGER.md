@@ -10,14 +10,14 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T18 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09,
-  T10, T11 are done.
+- Current task: T16 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09,
+  T10, T11, T18 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T11 zoom region crop + coordinate-context update (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
-  `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
-  rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
-  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T11 (which
+- Last commit: feat(extension): T18 background-tab screenshot via clip+scale (this run)
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13/T18)
+  in `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the
+  installed rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden.
+  A whole-repo `cargo fmt --check` will report these two files; this has no bearing on T18 (which
   touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
   committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
   point; do not fold that into an unrelated task's commit.
@@ -42,7 +42,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | done |
 | 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | done |
 | 14 | T11 | Real zoom region crop + coordinate-context update | - | done |
-| 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | pending |
+| 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | done |
 | 16 | T16 | javascript_tool REPL semantics + 50KB cap | - | pending |
 | 17 | T17 | Effective-tabId fallback + valid-ID errors | - | pending |
 | 18 | T05 | Service-worker state recovery (runs LAST) | after all service-worker tasks | pending |
@@ -1535,3 +1535,179 @@ Append one entry per task using this template. Newest at the bottom.
     section) was left untouched.
 - Browser checks queued: T11-1, T11-2, T11-3, T11-4, T11-5, T11-6, T11-7, T11-8 in
   docs/tasks/release-1/BROWSER-TESTS.md (appended after T10-4, preserving task order).
+
+### T18 Background-tab screenshot via clip+scale single-pass capture -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T18 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean, both before and after every
+    edit.
+  - Full diff review confirming: `probeViewport`'s evaluated expression and return shape match the
+    prompt's contract verbatim (`vis:document.visibilityState` added, `visible: (v.vis ||
+    "visible") === "visible"`); the existing throw-on-missing-value guard is untouched; `screenshot`
+    now returns `{ base64, note }` on every path; `targetDims` is called once, moved earlier so both
+    the clipped and standard paths can read `w`/`h`; the HIDE_FOR_TOOL_USE/sleep(40) pair still runs
+    unconditionally before either capture path exactly as before; the whole capture phase (clipped
+    attempt, its quality-30 re-capture, and the standard/fallback capture) is wrapped in one
+    try/finally whose finally fires `sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" })` exactly
+    once, not awaited, regardless of which path returns/throws; the clipped-path CDP params match
+    the prompt's literal contract (`quality: 55` then `30` on oversize, `clip: { x: 0, y: 0, width:
+    vpW, height: vpH, scale }`, `fromSurface: true`, `captureBeyondViewport: false`); the clipped
+    success path records `screenshotCtx` and returns without ever decoding/measuring the image
+    (grepped the new code block for `createImageBitmap` -- zero occurrences before the `return
+    { base64: cap.data, note: "" }` line); a clipped-path rejection is caught, its message saved as
+    `clipMsg`, and control falls through (no early return, no rethrow) to the standard capture,
+    exactly as required; the standard capture's own params (`{ format: "jpeg", quality: 80,
+    captureBeyondViewport: false }`) are byte-identical to the pre-task code; a standard-capture
+    rejection on a visible tab (`clipMsg === null`) rethrows the original error object unchanged
+    (preserving any `.hop` tag from `cdp`'s own `hopError("cdp", ...)` wrapping); a standard-capture
+    rejection after a clipped-path failure throws a plain `new Error` (deliberately no `.hop`, per
+    the prompt's literal snippet) with the exact combined-message template
+    `` `screenshot of non-visible tab failed: clipped capture: ${clipMsg}; fallback capture:
+    ${fbMsg}` ``; the canvas downscale block after the try/finally (raw-capture defaults, `encodeJpeg`
+    at 0.55 then 0.3 over budget, silent keep-raw on canvas failure, the final
+    `screenshotCtx.set(...)`) is byte-for-byte what it was before this task, confirmed via `git diff`
+    hunk boundaries showing only the one-line move of `const { w, h } = targetDims(...)` and the
+    `return base64;` -> `return { base64, note };` change inside that trailing section.
+  - Confirmed every one of the SEVEN actual `await screenshot(tabId)` call sites in the file (not
+    the three the prompt's stale line-number citations named -- see Drift reconciled) was updated to
+    the `const shot = await screenshot(tabId); return textImage(shot.note ? caption + " " +
+    shot.note : caption, shot.base64);` pattern, with each site's caption string byte-identical to
+    its pre-task literal/template (grepped `git diff` for the caption text on each of the 7 sites;
+    none changed). Confirmed the `zoom` case was NOT touched (it calls `zoomScreenshot`, a fully
+    separate function introduced by T11, not `screenshot`) and needed no note-plumbing, per the
+    reconciliation below.
+  - Confirmed no other file references `screenshot(` as a bare-string-returning function:
+    `extension/content.js` and `extension/agent-visual-indicator.js` have zero occurrences of
+    `screenshot(` (grepped both).
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched and the frozen `computer` schema
+    is intact.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled:
+  - Line numbers had drifted throughout, exactly as the prompt itself warned ("locate the same code
+    by the function names given here" once other tasks land). `screenshotCtx` was at line 16 (actual
+    19), budget constants at line 70 (actual 92), `probeViewport` at 72-80 (actual 94-102),
+    `screenshot()` at 215-239 (actual 312-337) -- all matched in shape and content once located by
+    name, only line numbers moved.
+  - The prompt's "Current behavior" section cites exactly THREE call sites of `screenshot(tabId)`:
+    "Line 365" (the plain `screenshot` action), "Line 367" (the `zoom` action), and "Line 414"
+    (`scroll`). T11 (real zoom region crop), which runs immediately before T18 in the fixed
+    sequence, replaced the zoom call site entirely: `zoom` no longer calls `screenshot()` at all --
+    it calls a new, separate `zoomScreenshot(tabId, region)` function (its own CDP capture, its own
+    canvas downscale, its own `screenshotCtx.set`) that this task's Out of scope section explicitly
+    excludes ("The zoom action's region semantics (T11). zoom keeps delegating to the same
+    screenshot(); the only change at its call site is the note-plumbing pattern above" -- the second
+    half of that sentence is what no longer holds). Separately, T09/T10 (mouse click fidelity,
+    scroll verify) had already expanded the single `scroll` call site the prompt describes into SIX
+    call sites (blind-claim fallback, re-read-failed fallback, verified-movement success, and three
+    outcomes of the direct-scroll fallback), none of which existed when this prompt was authored.
+    Reconciled literally per the prompt's own escape hatch ("if other release-1 tasks have added
+    more screenshot-returning paths, update those identically"): updated all SEVEN actual call sites
+    (the plain `screenshot` action plus all six `scroll`-case sites) to the note-plumbing pattern,
+    and left `zoom` alone since it has no `screenshot(tabId)` call site left to update -- the
+    Out-of-scope clause's literal premise (zoom delegates to screenshot()) is false in the actual
+    tree, so there is nothing there for this task to touch without violating "The zoom action's
+    region semantics (T11)" being out of scope.
+  - The prompt's Required-behavior text and Task-specific constraints both describe the
+    ScreenshotContext shape as the pre-T11 four fields, `{ vpW, vpH, shotW, shotH }` (for example:
+    "On success: `screenshotCtx.set(tabId, { vpW, vpH, shotW: w, shotH: h });`" and "The
+    ScreenshotContext shape stays `{ vpW, vpH, shotW, shotH }`"). T11 (immediately prior in the fixed
+    sequence) had already extended the shape to eight fields, `{ vpW, vpH, shotW, shotH, offX, offY,
+    regionW, regionH }`, with both existing writers (`screenshot()`'s own visible-path
+    `screenshotCtx.set` and `zoomScreenshot()`) always writing all eight. Reconciled by writing the
+    same eight-field shape from the new clipped-path success branch too (`offX: 0, offY: 0, regionW:
+    vpW, regionH: vpH`, matching a full, un-zoomed viewport capture) rather than reverting to four
+    fields. This is required, not just consistent, by the Project context's own coordinate-model
+    contract ("the context recorded for a non-visible tab must hold the same CSS viewport dims and
+    the same final pixel dims that the visible path would have recorded for the same viewport") --
+    the ACTUAL visible path (unchanged by this task) writes all eight fields, so parity means the
+    clipped path must too. `rescaleCoord`'s `|| c.vpW`/`|| c.vpH`/`|| 0` fallbacks would have made a
+    four-field write behaviorally equivalent through the fallback chain, but the eight-field write
+    is the more literal, structurally-identical parity the contract describes, and was verified not
+    to violate "rescaleCoord stays untouched" (it was not touched; only `screenshotCtx.set`'s call
+    sites were).
+- Decisions made:
+  - Factored the two clipped-path capture calls (quality 55, then quality 30 on oversize) through a
+    shared `clipParams` object (`{ clip: {...}, fromSurface: true, captureBeyondViewport: false }`,
+    spread into each call alongside its own `quality`) rather than writing out two fully separate
+    literal CDP-params objects. The prompt's own snippet writes them as two separate literal calls;
+    this is a direct, low-risk DRY simplification (same rationale T06 used for its `error_result`
+    helper) that cannot let the two calls' clip/fromSurface/captureBeyondViewport drift apart from
+    each other, and produces the exact same two CDP calls the prompt describes.
+  - Did NOT factor the seven `const shot = await screenshot(tabId); return textImage(shot.note ?
+    caption + " " + shot.note : caption, shot.base64);` call sites through a shared helper function
+    (for example a hypothetical `shotWithNote(tabId, caption)`), even though they are close to
+    verbatim duplicates. The prompt's own wording ("Update EVERY call site... The pattern at each
+    site:") frames this as a literal per-site pattern rather than an extractable helper, and every
+    other task in this run that faced a similar choice (T11's note on variable naming, T09/T10's
+    per-branch verification blocks) chose direct traceability against the prompt's described shape
+    over introducing new abstractions the prompt did not ask for. Kept as seven direct, easily
+    diffable instances instead.
+  - The combined hard-failure error (`new Error(\`screenshot of non-visible tab failed: ...\`)`) is
+    deliberately built with the plain `Error` constructor, not `hopError(...)`, exactly as the
+    prompt's own snippet shows (`new Error(...)`, no third `hop` argument). This means `dispatch`'s
+    catch takes the `else` branch (`fail(id, \`${tool} failed: ${...}\`)` -- prefixing with the tool
+    name, "computer failed: ...") rather than the hop-preserving branch, which matches the prompt's
+    own stated expectation verbatim ("dispatch will surface this as `computer failed: screenshot of
+    non-visible tab failed: ...`"). This is a deliberate exception to T06's hop-attribution
+    convention: a background-capture-specific failure genuinely straddles two capture attempts (not
+    one CDP call), so there is no single accurate hop to tag it with; leaving it hop-less falls back
+    to the tool-name-prefixed generic form, which is the most honest attribution available.
+  - Used `w / vpW` (not `vpW / w` or a pre-divided constant) for `scale`, matching the prompt's
+    literal formula; added a one-line comment noting it is always <= 1 (since `targetDims` never
+    grows), which is the load-bearing invariant that makes the CDP `scale` parameter meaningful here
+    (CDP's `clip.scale` is a magnification factor on the captured surface, not a re-encode ratio;
+    a `scale <= 1` here means "shrink", which is what every clipped-path caller in this task actually
+    wants).
+  - Placed the new `return` (clipped-path success) and the two `throw`/`throw` (visible-tab
+    passthrough, non-visible combined failure) sites exactly where the prompt's ten-line pseudocode
+    implies them, without adding any additional branching, retry, or logging beyond what was
+    specified (Out of scope explicitly forbids retry loops, capture timeouts, settle-time tuning,
+    and new logging).
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs every prior task's log already described.
+- Notes for later tasks:
+  - `screenshot(tabId)` now returns `{ base64, note }`, NOT a bare base64 string. Any future task
+    that adds a new call site to `screenshot()` (there are none currently planned in T16/T17/T05,
+    which touch `javascript_tool`, tabId-resolution, and service-worker startup/recovery
+    respectively -- none of the three prompts as authored appear to add a new screenshot call site,
+    but re-verify against the actual tree before assuming) MUST use the `const shot = await
+    screenshot(tabId); ...shot.base64...shot.note...` pattern established here, not treat the return
+    value as a string.
+  - `probeViewport(tabId)`'s return shape gained a fifth field, `visible` (boolean); its only other
+    caller besides `screenshot()` is none currently (`zoomScreenshot` has its OWN separate
+    `Runtime.evaluate` probe for `{w, h, sx, sy}`, unrelated to `probeViewport`, and was not touched
+    by this task). A later task that calls `probeViewport` directly should be aware `visible` is now
+    part of its contract.
+  - The combined hard-failure message template (`` `screenshot of non-visible tab failed: clipped
+    capture: ${clipMsg}; fallback capture: ${fbMsg}` ``) and the fallback warning note (`"Warning:
+    this tab was not visible and direct background capture failed; the image was taken with the
+    standard capture path and may be blank or stale."`) are now byte-exact contracts at the same
+    tier as every prior task's contract in this run (T01's marker-line formats, T02's Note line,
+    T03's get_page_text contract, T06's `[hop: ...]` contract, T08's type-dispatch contract, T09's
+    click-event contract, T10's scroll-verify strings, T11's zoom-result contract, T13's
+    exception-text format, T14's network per-line format, T15's zero-result strings) -- do not
+    reword either string in a later task without updating this note and the T18 BROWSER-TESTS.md
+    entries.
+  - `zoomScreenshot()` was NOT given the same visibility-aware clip+scale treatment this task adds
+    to `screenshot()` (explicitly out of scope: "The zoom action's region semantics (T11)"). If a
+    future task ever wants background-tab support for `zoom` too, it would need its own prompt; do
+    not silently extend `zoomScreenshot` to reuse this task's `visible`/`clipMsg` pattern without one.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `computer` schema was left untouched, per this
+    task's Constraints section.
+- Browser checks queued: T18-1, T18-2, T18-3, T18-4, T18-5, T18-6, T18-7 in
+  docs/tasks/release-1/BROWSER-TESTS.md (appended after T11-8, preserving task order).

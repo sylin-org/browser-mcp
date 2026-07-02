@@ -983,3 +983,94 @@ Steps:
    worker" to open its console.
 2. Repeat T11-1 through T11-7.
 Expect: no errors logged in the service worker console during any of the zoom actions above.
+
+## T18-1: Background tab capture works via the clipped single-pass path (or the truthful fallback)
+Changed: `probeViewport` now also reports `document.visibilityState`; `screenshot()` attempts a
+clipped, pre-scaled `Page.captureScreenshot` (with `fromSurface: true`) for a non-visible tab
+before falling back to the standard capture. A successful clipped capture is silent (plain
+caption); a fallback that had to run appends a warning note to the caption.
+Steps:
+1. `tabs_create_mcp` twice to open two tabs in the Browser MCP group (tab A, tab B).
+2. `navigate` tab A to https://en.wikipedia.org/wiki/Dog and tab B to
+   https://en.wikipedia.org/wiki/Cat. Leave tab A as the active (focused) tab; do not click tab B.
+3. `computer` `{ "action": "screenshot", "tabId": <tab B's id> }`.
+Expect: either (a) an image that clearly shows the Cat article with the plain caption
+"Screenshot captured (jpeg)." (clipped path worked), or (b) the same caption plus the trailing
+sentence "Warning: this tab was not visible and direct background capture failed; the image was
+taken with the standard capture path and may be blank or stale." (fallback ran). Both are passes.
+A blank image, an image showing tab A's content (Dog), or the plain caption with no warning next
+to blank/wrong content is a FAIL. If `Page.captureScreenshot` rejects on both the clipped attempt
+and the fallback, the call fails outright with an error containing "screenshot of non-visible tab
+failed:" and both underlying CDP messages -- that is also an expected (non-silent) outcome, not a
+bug, but should not happen under normal conditions.
+
+## T18-2: Coordinate integrity after a background capture
+Changed: the clipped path records `{ vpW, vpH, shotW: w, shotH: h, offX: 0, offY: 0, regionW: vpW,
+regionH: vpH }` into the tab's ScreenshotContext, the same shape and same values the visible path
+would record for an identical viewport, so `rescaleCoord` maps model coordinates identically on
+both paths.
+Steps:
+1. With tab B still backgrounded from T18-1, `find` on tab B for a link near the top of the
+   article (for example the first inline citation or the "Cat" bolded term) to get its
+   approximate on-screen position, or read a coordinate directly off the T18-1 screenshot.
+2. `computer` `{ "action": "left_click", "tabId": <tab B's id>, "coordinate": [x, y] }` using a
+   coordinate read off the T18-1 background screenshot (do not activate tab B first).
+3. Manually click tab B's Chrome tab to bring it to the foreground and visually confirm where the
+   click landed (for example that a link now shows as visited/navigated, or a text selection
+   highlight is where expected).
+Expect: the click lands on the element that appeared at that position in the T18-1 background
+screenshot, confirming coordinates read off a background capture map correctly without ever
+having activated the tab.
+
+## T18-3: Visible (active) tab regression -- unchanged image and caption
+Changed: nothing on the visible-tab path should differ; this confirms the restructuring in
+`screenshot()` left it byte-for-byte equivalent.
+Steps:
+1. Click tab A (Dog article) to make it the active tab.
+2. `computer` `{ "action": "screenshot", "tabId": <tab A's id> }`.
+Expect: the plain caption "Screenshot captured (jpeg)." with no warning note, and an image of the
+same size and visual quality as screenshots looked like before this task (compare against any
+earlier browser-test screenshot in this file, for example T01 or T11's).
+
+## T18-4: Scroll regression -- clean scroll still has no note
+Changed: all six `screenshot(tabId)` call sites inside the `scroll` case now go through the
+`shot.note ? caption + " " + shot.note : caption` pattern; on the active tab this must render
+identically to before.
+Steps:
+1. With tab A active, `computer` `{ "action": "scroll", "tabId": <tab A's id>,
+   "scroll_direction": "down", "scroll_amount": 3 }`.
+Expect: result text is exactly "Scrolled down by 3." (no trailing warning text) plus a screenshot,
+matching the T10 scroll-verify behavior with no regression from this task's note-plumbing change.
+
+## T18-5: Resize regression -- context re-establishes correctly after resize
+Changed: none directly (resize_window's context-clearing logic is untouched), but this confirms
+the clipped path's context writes do not leave the tab in a state where `resize_window` or a
+following screenshot misbehaves.
+Steps:
+1. With tab A active, call `resize_window` to a new size (for example 900x700).
+2. `computer` `{ "action": "screenshot", "tabId": <tab A's id> }`, then `find` an element and
+   `computer` `left_click` at a coordinate read off that screenshot.
+Expect: the click lands on the correct element post-resize, exactly as before this task (resize
+still clears `screenshotCtx`, and the next screenshot -- visible-path -- re-establishes accurate
+coordinate mapping).
+
+## T18-6: Minimized window also triggers the background-capture path
+Changed: `probeViewport`'s `document.visibilityState` check reports "hidden" for a tab in a
+minimized window, the same as a background tab, so the clipped path is attempted there too.
+Steps:
+1. With tab A and tab B both open in the Browser MCP group's window, minimize that window from
+   the Windows taskbar (do not close it).
+2. `computer` `{ "action": "screenshot", "tabId": <tab A's id> }` (tab A was the active tab, but
+   its window is now minimized).
+Expect: same two-outcome pass criteria as T18-1 (clean image with plain caption, or fallback image
+with the warning note) -- never a silent blank image with the plain caption. Restore the window
+afterward (do not leave it minimized for later checks).
+
+## T18-7: No console errors during background-tab screenshot actions
+Steps:
+1. Open chrome://extensions, find the Browser MCP dev extension, click "Inspect views: service
+   worker" to open its console.
+2. Repeat T18-1 through T18-6.
+Expect: no errors logged in the service worker console during any of the background-capture
+actions above (a caught-and-handled clipped-path failure that leads to the fallback is expected
+and does not log to console; only an uncaught exception would be a failure here).
