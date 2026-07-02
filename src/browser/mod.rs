@@ -4,8 +4,8 @@
 //! is the browser-specific plugin over the domain-agnostic [`crate::governance`] core: it
 //! owns the tool wrappers ([`tools`]) that translate an MCP `tools/call` into an extension
 //! command, the secret-value redaction overlay ([`redact`]) applied to `read_page` output,
-//! the domain-pattern module ([`pattern`], syntax today, matching semantics added by a later
-//! task), and the read/write classification table ([`classify`], the plugin half of
+//! the domain-pattern module ([`pattern`], authored-pattern syntax plus the WHATWG-parser-backed
+//! matcher), and the read/write classification table ([`classify`], the plugin half of
 //! [`crate::governance::ports::DomainPolicy::classify`]; the observe/mutate axis type itself
 //! is core). It may depend on the governance core and on std/serde; the governance core must
 //! never depend back on this module.

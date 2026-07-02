@@ -13,8 +13,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
   landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
-  identity), `g06` (audit flight recorder) landed.
-- NEXT TASK: Phase C, task `g07` (`docs/tasks/stage-2/g07-domain-matcher.md`).
+  identity), `g06` (audit flight recorder), `g07` (domain matcher) landed.
+- NEXT TASK: Phase C, task `g08` (`docs/tasks/stage-2/g08-sacred-domains.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -737,6 +737,102 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   real `Governance`/`handle_tools_call` chokepoint) end to end without that risk; the live
   rebuild-and-restart smoke is left for a human's routine post-session verification, not
   BROWSER-TESTS.md (which is reserved for checks that need a live browser/extension).
+
+### g07 domain pattern matcher with bypass-class tests -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `Cargo.toml` (+`url = "2"`, the one sanctioned new dependency, with its
+  required justification comment) and its `Cargo.lock`; `src/browser/pattern.rs` (grown,
+  not replaced: the module doc comment now describes both halves, plus the new public
+  API and 17 named tests appended after the existing `is_valid_pattern`/`is_valid_label`
+  code and tests); `src/browser/mod.rs` (one doc-comment sentence updated, since it
+  described `pattern` as "syntax today, matching semantics added by a later task").
+- Summary: `host_for_matching(url: &str) -> HostOutcome` parses with `url::Url::parse`
+  and extracts a parser-normalized `MatchHost` for `http`/`https` URLs (`NonHttpScheme`
+  for anything else, `Unparseable` on any parse failure or hostless result), stripping
+  at most one trailing dot from a domain host and failing closed if a second one
+  remains. `DomainPattern::parse` validates and canonicalizes the section 5.1 grammar
+  (empty / non-ASCII / scheme / userinfo / path / wildcard-shape checks in a fixed
+  order, then body canonicalization through `url::Host::parse` -- the same WHATWG host
+  rules `Url::parse` itself applies -- so patterns and hosts normalize identically,
+  including IPv4 respellings like `0x7f.0.0.1` -> `127.0.0.1` and bracketed/bare IPv6
+  literals). `DomainPattern::matches` is an exact string compare for non-wildcard
+  patterns and a `.` + suffix `ends_with` check for `*.suffix` patterns, with a
+  match-time IP-literal guard even though parse-time already rejects wildcard-over-IP
+  patterns (defense in depth). `first_match` is a linear first-hit scan. No matcher
+  code inspects a raw URL string for policy signals; all structure comes from the `url`
+  crate. Nothing is wired into dispatch, config, or any enforcement path -- this task is
+  pure library addition, exactly per its own scope.
+- Deviations from the g-doc per RECONCILIATION.md:
+  1. **Placement: extends the EXISTING `browser/pattern.rs`, not a new
+     `src/policy/domain.rs`.** RECONCILIATION.md section 1 maps "the URL/domain matcher
+     (g07)" to `browser/` (the `url` crate lives only there), and -- more specifically --
+     `browser/pattern.rs` itself (landed by g01, pre-A1-translated per RECONCILIATION's
+     own "known integration point" note) carries a module doc comment stating outright
+     that "matching SEMANTICS... belong to the domain matcher task, which extends this
+     same file rather than creating a new one." Followed that instruction literally: the
+     new `MatchHost`/`HostOutcome`/`host_for_matching`/`DomainPattern`/`first_match`/
+     `PatternError` API was appended to `browser/pattern.rs` (after the existing
+     `is_valid_pattern`/`is_valid_label` syntax checker, which is untouched), and the 17
+     new named tests were appended to that file's existing `#[cfg(test)] mod tests`
+     rather than a new file. `src/browser/mod.rs` needed only a one-sentence doc update
+     (module declaration was already `pub mod pattern;` from g01). This is a larger
+     departure from the doc's literal file layout than any prior task's, but it is the
+     doc's OWN target file telling the task where to land, not a RECONCILIATION
+     reinterpretation -- the two sources agree exactly.
+  2. **`is_valid_pattern` (g01's authored-pattern syntax checker) is untouched and
+     coexists with the new `DomainPattern::parse`, deliberately not unified.** The two
+     have different semantics on purpose: `is_valid_pattern` is strict (rejects
+     uppercase, trailing dots, IPv6) because it validates already-canonical
+     `content.security.sacred_domains` config values; `DomainPattern::parse` is lenient/
+     canonicalizing (accepts `Allowed.COM`, `example.com.`, `[::1]`) because it is meant
+     to validate and normalize AUTHORED patterns from any source (future manifest grant
+     domains) into the exact form the matcher needs. Whether G08 (sacred domains)
+     switches the registry validator from `is_valid_pattern` to `DomainPattern::parse`
+     is explicitly that task's own decision (this task's own Out of scope section
+     forbids touching the registry at all), not pre-empted here.
+  3. **One test input adjusted after checking against the real `url` crate, not the
+     doc's assumption.** The doc's own test 8 already establishes the precedent of
+     pinning behavior to whatever the real `url` crate actually does rather than an
+     assumed value ("the shared format doc requires the test to pin the parser behavior
+     either way, and with the `url` crate the behavior is normalization to
+     `127.0.0.1`"). Applying that same precedent: the doc's test 14
+     (`malformed_urls_fail_closed`) lists `"http:///path"` as an input that must yield
+     `Unparseable`. Verified independently in a scratch Rust program (`url = "2"`,
+     matching this task's exact pinned version) before writing the test: `url::Url::
+     parse("http:///path")` actually succeeds with `host = Some(Domain("path"))`,
+     `path = "/"` -- the WHATWG "special authority slashes" state slurps the redundant
+     third slash for special schemes, so this is a legitimate (if unusual) host, not a
+     malformed URL. All other 6 inputs in the doc's list verified to yield `Unparseable`
+     exactly as expected. Removed only `"http:///path"` from the test's input list, with
+     a code comment recording the verified real-crate behavior and why it does not
+     belong in a fail-closed test; all 6 remaining inputs plus all 16 other named tests
+     are otherwise implemented and asserted exactly as the doc specifies, with no other
+     behavior deviating from a direct reading of section 5.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green (189 lib unit tests, up from 172: +17 new in
+  `browser::pattern::tests`, exactly the 17 named tests the doc requires (with input
+  #14 adjusted per deviation 3), covering exact/wildcard/case/port normalization, the
+  full section 5.3 bypass-class table by name (userinfo CVE-2025-47241, embedded
+  credentials, wildcard-never-matches-IP, IPv4 alternate-form normalization, trailing-
+  dot strip-without-bypass, punycode/homoglyph non-match, apex-excluded-from-wildcard,
+  suffix-stitching-needs-a-label-boundary, non-http schemes, malformed-URL fail-closed),
+  the full grammar-rejection table, canonical-form-via-`as_str`, and `first_match`
+  ordering; all other suites unchanged and green: `tests/all_open_golden.rs` 3,
+  `tests/architecture.rs` 4 -- confirms the new `url` crate dependency and the grown
+  `browser/pattern.rs` introduce zero forbidden edges (the `url` crate lives only in
+  `browser/`, never `governance/`), `tests/config_schema_golden.rs` 5,
+  `tests/mcp_protocol.rs` 4, `tests/peer_death.rs` 1, `tests/tool_schema_fidelity.rs` 6).
+  `git status --short` confirmed the touched-file set is smaller than the doc's own
+  predicted diff (no new file at all, since the doc's own target file already existed):
+  `Cargo.toml`, `Cargo.lock`, `src/browser/mod.rs`, `src/browser/pattern.rs` only;
+  `src/transport/mcp/schemas/tools.json` and everything under `extension/` show no
+  diff, and neither does any governance/dispatch/config file -- confirming constraint 3
+  (all-open stays byte-identical because nothing is wired) held trivially. ASCII scan
+  (`rg -n "[^\x00-\x7F]"`) clean on every touched file, confirmed via the Grep tool
+  (the one Cyrillic test input is written as a `\u{0430}` escape, per the doc's own
+  ASCII-only constraint).
+- Browser checks queued: none (pure library addition; nothing wired into dispatch,
+  config, or any enforcement path; no runtime-observable behavior change of any kind).
 
 ## Reminders before running BROWSER-TESTS.md
 
