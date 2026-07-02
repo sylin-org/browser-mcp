@@ -1,6 +1,6 @@
 # 0020. Organization policy experience: policy as code with explain, simulate, shadow
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07
 
 ## Context
