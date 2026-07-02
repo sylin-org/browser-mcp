@@ -204,17 +204,24 @@ Official evidence (harvest):
 - Before `Page.captureScreenshot` it **hides the on-page indicator** and waits ~50ms, so the model's
   screenshot is clean of the overlay (mcpPermissions ~19860). Restores it after.
 
-Plan (reimplement the CONCEPT leanly; do NOT copy Anthropic's overlay code):
-- Add a small `agent-visual-indicator.js` content script (all_urls) that draws: (a) a **cursor dot/
-  pointer** at the last mouse coordinate, animated on `computer` move/click/drag; (b) a subtle
-  **"agent active" affordance** (e.g. a border glow or corner badge) while a tool is executing.
-- Drive it from the service worker: emit a lightweight message to the tab before each `computer`
-  input dispatch with the (rescaled, CSS-px) coordinate; **hide it during screenshots** and restore
-  after (so screenshots the model sees stay clean -- important for coordinate fidelity).
-- Keep it policy-free/mechanism-only (fits "the extension holds mechanism, not policy"); it is pure
-  UI, no access decisions.
-- Next session: extract `agent-visual-indicator.min.js` (recipe above) + the `computer` phantom-cursor
-  / hide-indicator call sites to harvest the exact overlay technique before reimplementing.
+Plan (reimplement the CONCEPT leanly; do NOT copy Anthropic's overlay code): **[DONE]**
+- Added `extension/agent-visual-indicator.js` content script (all_urls, document_idle): (a) a phantom
+  **cursor** (own SVG arrow, tip at the target, Claude-orange with a white outline + glow) that moves
+  to each dispatch coordinate with a smooth transition; (b) a subtle **"agent active" glow border**
+  that self-fades after ~4s of inactivity. Respects prefers-reduced-motion.
+- Driven by the service worker: `moveCursor` (UPDATE_PHANTOM_CURSOR with the rescaled CSS-px coord)
+  before each mouse dispatch (click/hover/drag/scroll), awaiting the cursor settle so the user sees it
+  arrive; `showActivity` (SHOW_AGENT_INDICATORS) at the start of every computer action. Screenshots
+  send HIDE_FOR_TOOL_USE + 40ms before capture and SHOW_AFTER_TOOL_USE after, so the model's image
+  stays clean.
+- Overlay elements (`browser-mcp-*` ids) are excluded from read_page/find in content.js (zero-latency;
+  no need to hide them for text reads). content.js's message listener now returns false for non-its
+  messages so the two content scripts don't both answer.
+- Omitted the official's Stop button + static "chat" pill: those are product controls for the
+  OFFICIAL's in-browser agent (STOP_AGENT / SWITCH_TO_MAIN_TAB) and do not apply to our external-client
+  model -- the official itself suppresses the Stop button in isMcp mode. Lean by design.
+- Harvested from the official `agent-visual-indicator.js-CW8zgsee.js` + the mcpPermissions
+  phantom-cursor/hide call sites (19604-19611, 19637, 19860); reimplemented, not copied.
 
 ### Sequencing
 
@@ -222,9 +229,8 @@ Plan (reimplement the CONCEPT leanly; do NOT copy Anthropic's overlay code):
    fixture. Pure Rust; the fidelity test is the guard -- update the fixture to the official surface and
    keep the tests passing.
 2. [DONE] Extension redaction (B, security) + `<select>` options -- highest user/safety value.
-3. **UI visual cursor + agent-active indicator (D)** -- user-facing parity + "watching" delight;
-   pairs naturally with the coordinate work since both concern dispatch coordinates. NEXT. The cursor
-   must render at the SAME rescaled CSS-px coordinate `rescaleCoord()` produces for the dispatch.
+3. [DONE] **UI visual cursor + agent-active indicator (D)** -- user-facing parity + "watching" delight.
+   The cursor renders at the same rescaled CSS-px coordinate `rescaleCoord()` produces for dispatch.
 4. [DONE] Screenshot token-budget + coordinate-model decision (B) -- DECIDED: full official model
    (probe viewport/DPR, downscale to budget, ScreenshotContext, rescale model coords). Done before 3
    so the cursor consumes the rescaled dispatch coord.

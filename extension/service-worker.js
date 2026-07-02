@@ -215,7 +215,15 @@ function textImage(t, base64) {
 async function screenshot(tabId) {
   await ensureAttached(tabId);
   const { vpW, vpH, dpr } = await probeViewport(tabId);
-  const cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false });
+  // Hide the phantom cursor / glow so they never appear in the model's screenshot.
+  await sendToTab(tabId, { type: "HIDE_FOR_TOOL_USE" });
+  await sleep(40);
+  let cap;
+  try {
+    cap = await cdp(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: false });
+  } finally {
+    sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+  }
   const { w, h } = targetDims(vpW, vpH);
   // Default to the raw native capture (dims = CSS viewport * DPR) if canvas downscaling is unavailable.
   let base64 = cap.data, shotW = Math.round(vpW * dpr), shotH = Math.round(vpH * dpr);
@@ -234,6 +242,14 @@ async function screenshot(tabId) {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+// --- Visual indicator (best-effort; the content script is absent on chrome:// and similar pages) ---
+function sendToTab(tabId, msg) {
+  return chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+}
+function showActivity(tabId) { sendToTab(tabId, { type: "SHOW_AGENT_INDICATORS" }); }
+// Move the phantom cursor to a (rescaled, CSS-px) point and wait for it to settle, so the user sees
+// the pointer arrive before the action fires. Resolves immediately if no indicator is present.
+function moveCursor(tabId, x, y) { return sendToTab(tabId, { type: "UPDATE_PHANTOM_CURSOR", x, y }); }
 const KEY_MAP = {
   enter: "Enter", return: "Enter", tab: "Tab", escape: "Escape", esc: "Escape",
   backspace: "Backspace", delete: "Delete", space: " ",
@@ -316,6 +332,7 @@ async function computer(a) {
   const tabId = a.tabId;
   if (!(await inGroup(tabId))) return text(`Tab ${tabId} is not in the ${GROUP_TITLE} group.`);
   const modifiers = modifierBits(a.modifiers);
+  showActivity(tabId); // best-effort "agent active" glow for the watching user
 
   switch (a.action) {
     case "screenshot":
@@ -334,6 +351,7 @@ async function computer(a) {
     case "hover": {
       const c = await resolveCoords(tabId, a);
       if (!c) return text("coordinate or ref is required.");
+      await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
       if (a.action === "hover") {
         await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
         return text(`Hovered at (${c[0]}, ${c[1]}).`);
@@ -364,6 +382,7 @@ async function computer(a) {
       const amount = Math.min(a.scroll_amount || 3, 10);
       const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
       const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
+      await moveCursor(tabId, c[0], c[1]);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
       await sleep(250);
       return textImage(`Scrolled ${dir} by ${amount}.`, await screenshot(tabId));
@@ -379,6 +398,7 @@ async function computer(a) {
       // Both endpoints are model-provided (read off the screenshot) -> rescale to CSS px.
       const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
       const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
+      await moveCursor(tabId, sx, sy);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers });
       await sleep(40);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers });
@@ -387,6 +407,7 @@ async function computer(a) {
         await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx + ((ex - sx) * i) / 10, y: sy + ((ey - sy) * i) / 10, modifiers });
         await sleep(16);
       }
+      await moveCursor(tabId, ex, ey);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: ex, y: ey, button: "left", modifiers });
       return text(`Dragged (${sx}, ${sy}) -> (${ex}, ${ey}).`);
     }

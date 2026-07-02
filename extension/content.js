@@ -142,6 +142,7 @@
     }
     function walk(el, depth, indent) {
       if (truncated || depth > maxDepth || !el || el.nodeType !== 1) return;
+      if (el.id && el.id.indexOf("browser-mcp-") === 0) return; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) return;
       const r = role(el);
@@ -223,6 +224,7 @@
     let more = false;
     for (const el of collectAll(document)) {
       if (!visible(el)) continue;
+      if (el.id && el.id.indexOf("browser-mcp-") === 0) continue; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) continue;
       const hay = `${role(el) || ""} ${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.type || ""} ${tag}`.toLowerCase();
@@ -299,19 +301,19 @@
   // --- Message handler ---
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
-      case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); break;
-      case "pageText": sendResponse({ result: pageText() }); break;
-      case "find": sendResponse({ result: find(msg.query) }); break;
-      case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); break;
-      case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); break;
+      case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); return true;
+      case "pageText": sendResponse({ result: pageText() }); return true;
+      case "find": sendResponse({ result: find(msg.query) }); return true;
+      case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
+      case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;
       case "scrollToRef": {
         const el = deref(msg.ref);
         if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
         sendResponse({ result: Boolean(el) });
-        break;
+        return true;
       }
-      default: sendResponse({ error: "unknown message type" });
+      default:
+        return false; // not ours -- let the visual-indicator content script handle it
     }
-    return true;
   });
 })();
