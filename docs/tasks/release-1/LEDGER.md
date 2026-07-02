@@ -10,14 +10,13 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T13 (next pending). T04, T06, T07, T01, T02, T03, T12 are done.
+- Current task: T14 (next pending). T04, T06, T07, T01, T02, T03, T12, T13 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T12 per-domain console/network buffer reset
-  (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12) in
+- Last commit: feat(extension): T13 Runtime.exceptionThrown capture (this run)
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
-  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T12 (which
+  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T13 (which
   touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
   committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
   point; do not fold that into an unrelated task's commit.
@@ -35,7 +34,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 5 | T02 | read_page viewport culling (filter=interactive) | - | done |
 | 6 | T03 | get_page_text official semantics | - | done |
 | 7 | T12 | Per-domain console/network buffer reset | - | done |
-| 8 | T13 | Runtime.exceptionThrown capture | - | pending |
+| 8 | T13 | Runtime.exceptionThrown capture | - | done |
 | 9 | T14 | Network.loadingFailed status | - | pending |
 | 10 | T15 | Empty-result guidance notes | - | pending |
 | 11 | T08 | type via real keyDown/keyUp | - | pending |
@@ -682,3 +681,122 @@ Append one entry per task using this template. Newest at the bottom.
     it.
 - Browser checks queued: T12-1, T12-2, T12-3, T12-4, T12-5 in docs/tasks/release-1/BROWSER-TESTS.md
   (appended after T03-4, preserving task order).
+
+### T13 Runtime.exceptionThrown capture -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T13 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - A standalone throwaway Node script (not committed; deleted from scratchpad after use) that
+    copied `exceptionText` verbatim and asserted 8 cases against it: the prompt's own worked
+    example (`Error: boom` with url+lineNumber+4 call frames, confirming only the first 3 frames
+    render, that an empty `functionName` becomes `<anonymous>`, and that frame line numbers are
+    +1'd); a fully-empty `exceptionDetails` object producing the literal `"Uncaught exception"`
+    fallback (never crashes); a thrown-primitive case (`exception.value` present, no
+    `description`) using `String(value)` and ignoring `text`; a `text`-only fallback when no
+    `exception` object exists at all; a `url` present with a non-numeric `lineNumber` correctly
+    omitting the `:LINE` suffix (still emitting `(URL)`); a `lineNumber` present without a `url`
+    being fully ignored (no location part at all, matching "only when url is a non-empty
+    string"); a multi-line `description` reduced to only its first line; and an empty
+    `callFrames` array producing no `[at ...]` suffix. All 8 passed.
+  - Full diff review confirming: the new `Runtime.exceptionThrown` branch is an `else if`
+    directly after the `Runtime.consoleAPICalled` branch inside the same
+    `chrome.debugger.onEvent.addListener` callback (not a new listener); it stores via
+    `pushCapped(consoleBuffer, tabId, { level: "exception", text: ... })`, the exact same call
+    shape and buffer the consoleAPICalled branch already uses (which, per T12 having landed
+    first, already routes through `bufferFor`/`tabHost` domain-scoping and the 1000-entry cap
+    automatically -- no separate reset/keying logic was written for this task); `params.
+    exceptionDetails || {}` guards the "missing details" case so `exceptionText` is never called
+    with `undefined`; `exceptionText` is a pure function with no CDP calls, no `chrome.*` calls,
+    and returns a single-line string in all 8 verified cases (uses `.split("\n")[0]` for the one
+    documented multi-line source, `description`); nothing outside this one added function and
+    one added `else if` branch changed (grepped `git diff --stat` -- one file, and the diff hunk
+    boundaries in `service-worker.js` are exactly the two insertions described).
+  - Confirmed `read_console_messages`'s `onlyErrors` filter (now inside the `handlers` object,
+    not at the old cited line 518) still reads
+    `["error", "exception"].includes(m.level)` -- byte-identical to the prompt's description, no
+    edit needed or made.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("this task changes no Rust code").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: only line-number and buffer-shape drift, exactly as the prompt itself warned
+  it might have ("If a separate task has already changed how the consoleAPICalled branch keys or
+  clears the buffer by the time you start, mirror whatever that branch does"). T12 (which runs
+  earlier in the fixed sequence and had already landed) changed `consoleBuffer` from a bare
+  `tabId -> [...]` array to `tabId -> { host, items: [...] }`, and `pushCapped` now internally
+  calls `bufferFor(map, tabId, tabHost.get(tabId))` to domain-scope/reset the buffer before
+  appending. The prompt's own "Current behavior" section (lines 14, 48-60) describes the
+  pre-T12 bare-array shape and cites `pushCapped(consoleBuffer, tabId, entry)` as the exact call
+  pattern to reuse -- reconciled exactly as the prompt's own contingency text instructed: called
+  `pushCapped(consoleBuffer, tabId, entry)` verbatim (unchanged call signature; `pushCapped`'s
+  internal domain-scoping happens transparently) rather than writing any new keying/reset logic
+  of this task's own. Line numbers had also drifted (prompt cited the listener at "137-154" and
+  `pushCapped` at "155-160"; actual lines were 170-187 and 200-204 before this task's edit,
+  matching T12's log which already noted the same listener block moved to 170-187) -- confirmed
+  by reading the actual file before editing, not by trusting the prompt's numbers.
+- Decisions made:
+  - Named the helper `exceptionText` exactly as instructed, and placed it directly above
+    `chrome.debugger.onEvent.addListener` (immediately after the `chrome.tabs.onUpdated`
+    listener, which itself sits right after `hostOf`) -- "next to the listener" per the prompt,
+    and hoisting order does not matter for a `function` declaration referenced only from within
+    the listener body.
+  - Read `details.exception` once into a local `exc` at the top of `exceptionText` (rather than
+    repeating `details.exception` three times) -- a direct, low-risk readability simplification;
+    every branch and precedence order (description-first, then value, then top-level text, then
+    literal fallback) matches the prompt's four-way `else if` chain exactly.
+  - The one comment permitted by constraint 7 ("a one-line comment noting that CDP line numbers
+    are 0-based is acceptable") was placed directly on the `out += ... lineNumber + 1 ...` line
+    inside `exceptionText`, where the +1 arithmetic actually happens; a second short doc-style
+    comment was placed directly above the `exceptionText` function declaration itself
+    (describing its three-part single-line output shape), matching this file's existing density
+    of a one-to-two-line comment per non-trivial helper (for example `rescaleCoord`,
+    `bufferFor`) rather than being uncommented or over-commented.
+  - Verified `Array.isArray(details.stackTrace.callFrames)` (not just truthiness) before slicing,
+    to defend against a malformed/absent `stackTrace` without throwing -- consistent with
+    constraint requirement 1's "never crash the listener," even though the prompt's own spec
+    text only says "exists and its callFrames is a non-empty array," which this check
+    implements literally (an empty or non-array `callFrames` is treated as "no stack," never a
+    crash).
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03/T12's logs already described.
+- Notes for later tasks:
+  - `exceptionText(details)` is a new pure helper in `extension/service-worker.js`, module-scope,
+    taking a possibly-empty `exceptionDetails`-shaped object and returning a single-line string.
+    It has no dependency on and is not called by anything outside the new `Runtime.
+    exceptionThrown` branch; a later task should not need to touch it unless a new task prompt
+    explicitly asks for it (for example, changing exception-text formatting is explicitly listed
+    as out of scope for a "Formatting changes for other console levels" -- but note that clause
+    is about OTHER levels, not this one; this task's own three-part text format for level
+    `"exception"` is now itself a byte-exact contract at the same tier as T01's marker-line
+    formats, T02's Note line, T03's get_page_text contract, and T06's `[hop: ...]` contract -- do
+    not reword it in a later task without updating this note and the T13 BROWSER-TESTS.md
+    entries).
+  - T14 (Network.loadingFailed status) adds a new branch to the same `chrome.debugger.onEvent`
+    listener this task modified (now ending after the `Runtime.exceptionThrown` branch, before
+    `Network.requestWillBeSent`). Per this task's own Out-of-scope section, the
+    `Network.requestWillBeSent`/`Network.responseReceived` branches and the network buffer were
+    NOT touched; T14 should add its own `else if` branch in the same style, appending via
+    `pushCapped(networkBuffer, tabId, ...)` to inherit T12's domain-scoping automatically, same
+    as this task did for the console buffer.
+  - T15 (Empty-result guidance notes) touches the same `read_console_messages` zero-entries
+    string ("No console messages matching the pattern.") this task's Verification section
+    exercises but does not modify; this task changed zero characters of that string or of the
+    `[${m.level}] ${m.text}` render format in the handler.
+  - The Runtime CDP domain continues to be enabled only lazily, on the first
+    `read_console_messages` call per tab (unchanged); `Runtime.exceptionThrown` events for a tab
+    only start flowing into the buffer once that domain has been enabled for that tab, exactly
+    like `Runtime.consoleAPICalled` already did. No new domain-enable call was added anywhere.
+- Browser checks queued: T13-1, T13-2, T13-3 in docs/tasks/release-1/BROWSER-TESTS.md (appended
+  after T12-5, preserving task order).

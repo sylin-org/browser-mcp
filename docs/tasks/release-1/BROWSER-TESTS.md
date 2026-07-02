@@ -492,3 +492,42 @@ Steps:
 2. Open the extension's service worker console at chrome://extensions (click "service worker"
    under the Browser MCP extension) and check for errors logged around the time of the close.
 Expect: no errors appear in the service worker console from the tab-removal cleanup path.
+
+## T13-1: Deferred uncaught exception appears as a console entry with level "exception"
+Changed: `chrome.debugger.onEvent` now handles `Runtime.exceptionThrown` (previously silently
+dropped) and pushes a synthetic `{ level: "exception", text }` entry into the same per-tab
+console buffer `Runtime.consoleAPICalled` writes to. `read_console_messages`'s `onlyErrors`
+filter already accepted `"exception"`, so no change was needed there. Order matters below: the
+Runtime CDP domain is only enabled by the first `read_console_messages` call for a tab.
+Steps:
+1. Navigate a tab in the MCP tab group to any page (for example https://example.com).
+2. Call `read_console_messages` once for that tab (this enables the Runtime domain; the result
+   will likely be "No console messages matching the pattern.", which is fine).
+3. Call `javascript_tool` with text:
+   `setTimeout(() => { throw new Error("t13 test"); }, 0); "scheduled"`
+   (the setTimeout matters: throwing directly inside the evaluated expression surfaces in the
+   evaluate response itself and never emits `Runtime.exceptionThrown`; the deferred throw is a
+   genuine uncaught page exception).
+4. Call `read_console_messages` with `onlyErrors: true`.
+Expect (step 4): the output contains a line beginning `[exception] Error: t13 test` followed by
+a `(url:line)` location and a compact `[at ...]` stack, for example something like
+`[exception] Error: t13 test (https://example.com/:1) [at <anonymous>@https://example.com/:1]`
+(exact frame names/URLs depend on the page).
+
+## T13-2: Ordinary console levels are unaffected (no double counting)
+Changed: same as T13-1; this confirms the new branch does not disturb the existing
+`Runtime.consoleAPICalled` path.
+Steps:
+1. Continuing from T13-1 (same tab, Runtime domain already enabled), call `javascript_tool`
+   with text `console.log("t13 plain")`.
+2. Call `read_console_messages` without `onlyErrors`.
+Expect: `[log] t13 plain` appears exactly once, alongside the `[exception] Error: t13 test` line
+from T13-1 (both present, neither duplicated).
+
+## T13-3: pattern filtering matches the exception text
+Changed: same as T13-1; confirms the new entry participates in the existing `pattern` filter
+like any other console entry.
+Steps:
+1. Continuing from T13-1/T13-2, call `read_console_messages` with `pattern: "t13 test"`.
+Expect: the output contains only the `[exception] Error: t13 test ...` line and nothing else
+(not the `[log] t13 plain` line).

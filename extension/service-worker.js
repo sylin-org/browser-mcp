@@ -167,6 +167,32 @@ function hostOf(url) {
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.url !== undefined) tabHost.set(tabId, hostOf(info.url));
 });
+// Render an uncaught-exception CDP event as one single-line string: base message, then an
+// optional (url:line) location, then an optional compact [at frame, frame, ...] stack.
+function exceptionText(details) {
+  const exc = details.exception;
+  let base;
+  if (exc && typeof exc.description === "string" && exc.description) {
+    base = exc.description.split("\n")[0];
+  } else if (exc && exc.value !== undefined) {
+    base = String(exc.value);
+  } else if (typeof details.text === "string" && details.text) {
+    base = details.text;
+  } else {
+    base = "Uncaught exception";
+  }
+  let out = base;
+  if (typeof details.url === "string" && details.url) {
+    // CDP line numbers are 0-based; add 1 for the human-readable line reported here.
+    out += typeof details.lineNumber === "number" ? ` (${details.url}:${details.lineNumber + 1})` : ` (${details.url})`;
+  }
+  const frames = details.stackTrace && Array.isArray(details.stackTrace.callFrames) ? details.stackTrace.callFrames : [];
+  if (frames.length) {
+    const rendered = frames.slice(0, 3).map((f) => `${f.functionName || "<anonymous>"}@${f.url}:${f.lineNumber + 1}`);
+    out += ` [at ${rendered.join(", ")}]`;
+  }
+  return out;
+}
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
   if (method === "Runtime.consoleAPICalled") {
@@ -176,6 +202,8 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     // Runtime event (structured args + method-accurate `type`) and never enable Console.
     const text = (params.args || []).map((a) => a.value !== undefined ? a.value : (a.description || "")).join(" ");
     pushCapped(consoleBuffer, tabId, { level: params.type || "log", text });
+  } else if (method === "Runtime.exceptionThrown") {
+    pushCapped(consoleBuffer, tabId, { level: "exception", text: exceptionText(params.exceptionDetails || {}) });
   } else if (method === "Network.requestWillBeSent" && params.request) {
     pushCapped(networkBuffer, tabId, { requestId: params.requestId, method: params.request.method, url: params.request.url, status: 0 });
   } else if (method === "Network.responseReceived" && params.response) {
