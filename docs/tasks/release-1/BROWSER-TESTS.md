@@ -818,3 +818,73 @@ Steps:
 Expect: `sel` is greater than 0 (a text selection was created by the drag). Every value recorded
 in `drag` is `1` (every `mousemove` observed while dragging reports `buttons=1`, matching a real
 held left-button drag); no `0` values appear among the interpolated move samples.
+
+## T10-1: Normal page scroll is verified effective, reports the plain success text
+Changed: the `scroll` action in `extension/service-worker.js` now probes window/element scroll
+position before and after dispatching the wheel event, and only claims success when it actually
+verified movement (or verification was unavailable, same as before this task).
+Steps:
+1. `navigate` a grouped tab to https://en.wikipedia.org/wiki/Cat (a long article).
+2. `computer` with `{ "action": "scroll", "scroll_direction": "down", "scroll_amount": 3,
+   "coordinate": [400, 300] }` (a point roughly at the center of the visible page).
+Expect: result text is exactly `Scrolled down by 3.` plus a screenshot showing the page content
+visibly shifted upward compared to before the call.
+
+## T10-2: Wheel-blocked container triggers the direct-scroll fallback
+Changed: when the dispatched wheel event does not move the window or the nearest scrollable
+ancestor (checked twice, 200ms apart), the engine now calls `directScrollFallback`, which runs a
+direct `scrollBy({ behavior: "instant" })` on that ancestor (or `window`) and reports whether
+that moved something.
+Steps:
+1. Save this file locally and open it in a grouped tab via `navigate` to its `file://` path:
+   ```html
+   <!DOCTYPE html>
+   <html><body style="margin:0">
+   <div id="box" style="height:300px;width:400px;overflow-y:scroll;border:1px solid black">
+     <div style="height:3000px;background:linear-gradient(red,blue)">tall content</div>
+   </div>
+   <script>
+     document.getElementById("box").addEventListener(
+       "wheel", (e) => e.preventDefault(), { passive: false });
+   </script>
+   </body></html>
+   ```
+2. `computer` with `{ "action": "scroll", "scroll_direction": "down", "scroll_amount": 3,
+   "coordinate": [x, y] }` where `(x, y)` is a point inside the `#box` element (for example near
+   the top-left of the page, since the box is the first thing on the page at 0,0-400,300).
+Expect: result text is exactly
+`Scrolled down by 3 (mouse wheel had no effect; used direct scroll fallback).` and the screenshot
+shows the red/blue gradient inside the box has visibly shifted down (the wheel itself was
+swallowed by `preventDefault`, but the fallback `scrollBy` moved the box's own scroll position).
+
+## T10-3: Nothing to scroll reports the truthful no-effect text
+Changed: when neither the wheel nor the fallback move anything (a short page with nothing to
+scroll), the engine no longer claims `Scrolled down by 3.`; it now reports the exact coordinates
+and states nothing moved.
+Steps:
+1. `navigate` a grouped tab to https://example.com (a short page with no scrollable overflow at
+   normal window size).
+2. `computer` with `{ "action": "scroll", "scroll_direction": "down", "scroll_amount": 3,
+   "coordinate": [400, 300] }`.
+Expect: result text is exactly
+`Scroll down had no effect at (400, 300); the page did not move at that position.` (coordinates
+may be rescaled slightly from the resolved point; use the actual `(x, y)` reported), plus a
+screenshot of the unchanged page. If the browser window is unusually tall/short and the page
+does have overflow at your viewport size, resize the window smaller first so the page truly has
+no scroll room, or use a shorter test page.
+
+## T10-4: Regression -- click/type/scroll_to and the screenshot-action contract are unchanged
+Changed: nothing in this task touches `left_click`, `type`, or `scroll_to`; this check confirms
+the scroll rewrite did not leak into neighboring actions.
+Steps:
+1. `navigate` a grouped tab to https://example.com.
+2. `computer` with `{ "action": "left_click", "coordinate": [100, 100] }`. Expect: a text-only
+   result (`left_click at (x, y).`), no image content block.
+3. `computer` with `{ "action": "type", "text": "hello" }` on a page with a focused input (or
+   just confirm the result is text-only). Expect: text-only result, no image content block.
+4. `computer` with `{ "action": "scroll_to", "coordinate": [0, 0] }`. Expect: text-only result
+   `Scrolled to target.`, no image content block (scroll_to was explicitly out of scope for this
+   task and must still never return a screenshot).
+5. `computer` with `{ "action": "scroll", "scroll_direction": "down" }` on any page. Expect: the
+   result DOES include an image content block (scroll remains one of the three
+   screenshot-returning actions: screenshot, scroll, zoom).

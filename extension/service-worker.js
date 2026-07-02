@@ -385,6 +385,65 @@ async function resolveCoords(tabId, args) {
   }
   return null;
 }
+// Scrollable-ancestor predicate shared by probeScrollState and directScrollFallback: an element
+// counts as scrollable when its computed overflow allows scrolling AND its content overflows.
+const SCROLLABLE_FINDER_SNIPPET = `
+function findScrollable(px, py) {
+  let el = document.elementFromPoint(px, py);
+  while (el) {
+    const cs = getComputedStyle(el);
+    const overflowScrollable = cs.overflowY === "auto" || cs.overflowY === "scroll" || cs.overflowX === "auto" || cs.overflowX === "scroll";
+    const sizeScrollable = el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth;
+    if (overflowScrollable && sizeScrollable) return el;
+    el = el.parentElement;
+  }
+  return null;
+}`;
+// Reads the window scroll position plus the scrollable-ancestor state at (x, y), for a before/
+// after comparison around a wheel dispatch. Resolves to null (never throws) on any failure.
+async function probeScrollState(tabId, x, y) {
+  const px = Math.round(x), py = Math.round(y);
+  const expression = `(() => {${SCROLLABLE_FINDER_SNIPPET}
+    const el = findScrollable(${px}, ${py});
+    return {
+      winX: window.scrollX, winY: window.scrollY,
+      hasEl: !!el,
+      elX: el ? el.scrollLeft : null,
+      elY: el ? el.scrollTop : null,
+    };
+  })()`;
+  try {
+    const r = await cdp(tabId, "Runtime.evaluate", { expression, returnByValue: true });
+    if (!r || r.exceptionDetails || !r.result || r.result.value === undefined) return null;
+    return r.result.value;
+  } catch {
+    return null;
+  }
+}
+// Direct scrollBy on the nearest scrollable ancestor (or window), used when a dispatched wheel
+// event did not move anything (preventDefault, virtualized lists, etc). Resolves to null (never
+// throws) on any failure. dx/dy must be the same deltaX/deltaY already computed for the wheel.
+async function directScrollFallback(tabId, x, y, dx, dy) {
+  const px = Math.round(x), py = Math.round(y), pdx = Math.round(dx), pdy = Math.round(dy);
+  const expression = `(() => {${SCROLLABLE_FINDER_SNIPPET}
+    const el = findScrollable(${px}, ${py});
+    const target = el || window;
+    const beforeX = el ? el.scrollLeft : window.scrollX;
+    const beforeY = el ? el.scrollTop : window.scrollY;
+    target.scrollBy({ left: ${pdx}, top: ${pdy}, behavior: "instant" });
+    const afterX = el ? el.scrollLeft : window.scrollX;
+    const afterY = el ? el.scrollTop : window.scrollY;
+    // 5px threshold matches the moved-more-than-5px verification contract.
+    return { moved: Math.abs(afterX - beforeX) > 5 || Math.abs(afterY - beforeY) > 5, usedWindow: !el };
+  })()`;
+  try {
+    const r = await cdp(tabId, "Runtime.evaluate", { expression, returnByValue: true });
+    if (!r || r.exceptionDetails || !r.result || r.result.value === undefined) return null;
+    return r.result.value;
+  } catch {
+    return null;
+  }
+}
 async function pressKey(tabId, combo) {
   const parts = combo.split("+").map((p) => p.trim().toLowerCase());
   let modifiers = 0;
@@ -559,10 +618,41 @@ async function computer(a) {
       const amount = Math.min(a.scroll_amount || 3, 10);
       const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
       const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
+      const before = await probeScrollState(tabId, c[0], c[1]);
       await moveCursor(tabId, c[0], c[1]);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
-      await sleep(250);
-      return textImage(`Scrolled ${dir} by ${amount}.`, await screenshot(tabId));
+      const scrolled = `Scrolled ${dir} by ${amount}.`;
+      if (before === null) {
+        // Verification unavailable (for example a mid-navigation page): same blind claim as before.
+        await sleep(250);
+        return textImage(scrolled, await screenshot(tabId));
+      }
+      await sleep(200);
+      const after = await probeScrollState(tabId, c[0], c[1]);
+      // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
+      if (after === null) return textImage(scrolled, await screenshot(tabId));
+      // 5px threshold matches the moved-more-than-5px verification contract.
+      const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
+      const elementMoved = before.hasEl && after.hasEl &&
+        (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
+      if (windowMoved || elementMoved) return textImage(scrolled, await screenshot(tabId));
+      const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
+      if (fb === null) {
+        return textImage(
+          `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`,
+          await screenshot(tabId)
+        );
+      }
+      if (fb.moved) {
+        return textImage(
+          `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`,
+          await screenshot(tabId)
+        );
+      }
+      return textImage(
+        `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`,
+        await screenshot(tabId)
+      );
     }
     case "scroll_to": {
       if (a.ref) {

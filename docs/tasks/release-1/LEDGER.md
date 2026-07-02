@@ -10,10 +10,10 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T10 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09 are
-  done.
+- Current task: T11 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09,
+  T10 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T09 mouse click fidelity (this run)
+- Last commit: feat(extension): T10 scroll verify + scrollable-ancestor fallback (this run)
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
@@ -40,7 +40,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 10 | T15 | Empty-result guidance notes | - | done |
 | 11 | T08 | type via real keyDown/keyUp | - | done |
 | 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | done |
-| 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | pending |
+| 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | done |
 | 14 | T11 | Real zoom region crop + coordinate-context update | - | pending |
 | 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | pending |
 | 16 | T16 | javascript_tool REPL semantics + 50KB cap | - | pending |
@@ -1264,3 +1264,130 @@ Append one entry per task using this template. Newest at the bottom.
     task's Constraints section.
 - Browser checks queued: T09-1, T09-2, T09-3, T09-4, T09-5 in docs/tasks/release-1/BROWSER-TESTS.md
   (appended after T08-3, preserving task order).
+
+### T10 Scroll verify + scrollable-ancestor fallback -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T10 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - A standalone node one-liner that assembled both helpers' exact `expression` strings (same
+    template-literal composition as the real code, including the shared `SCROLLABLE_FINDER_SNIPPET`
+    interpolation) and parsed each with `new Function(...)` to confirm they are syntactically valid
+    JS before ever reaching a real page (a function declaration inside an arrow-function block body
+    is legal Annex B sloppy-mode JS; both parsed cleanly).
+  - Full diff review confirming the change is scoped to exactly two spots: two new module-level
+    helpers (`probeScrollState`, `directScrollFallback`) plus one new shared string constant
+    (`SCROLLABLE_FINDER_SNIPPET`) inserted directly after `resolveCoords`; and the body of the
+    `scroll` case in `computer()`'s switch, rewritten per the prompt's ten-step flow. Confirmed by
+    hunk boundaries that `scroll_to` (the very next case), `left_click_drag`, `resolveCoords`,
+    `moveCursor`, `rescaleCoord`, and the screenshot pipeline are byte-identical to before this task.
+  - Traced the new `scroll` case by hand against the prompt's Result A/B/C/D contract: `before` is
+    probed BEFORE `moveCursor`/dispatch (matching step order 1-2-3-4-5 exactly); `before === null`
+    short-circuits to the legacy 250ms-sleep/Result-A path; otherwise a 200ms settle then a second
+    probe, with `after === null` also short-circuiting to Result A without running the fallback (per
+    the prompt's explicit "do not run the fallback when the re-read failed" rule); `windowMoved`/
+    `elementMoved` use the literal 5px threshold with `after.elX/elY` and `before.elX/elY` coerced
+    via `|| 0` only in the diff arithmetic (not in the `hasEl` gate); the fallback path returns
+    Result D on `fb === null`, Result B on `fb.moved`, Result C otherwise -- all three fallback
+    result strings, and the two Result-A call sites, reproduce the prompt's four verbatim templates
+    exactly (`Scrolled ${dir} by ${amount}.`, the `(mouse wheel had no effect...)` suffix, and the
+    two `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); ...` variants).
+  - Confirmed `deltaX`/`deltaY`, the `amount * 100` magnitudes, the cap of 10, the `[0, 0]`
+    coordinate default, the `moveCursor` call, and the `modifiers` pass-through on the wheel dispatch
+    are byte-identical to the pre-task code (only the `before`/`after` probe calls were interleaved
+    around the existing lines; grepped for `deltaX =`/`deltaY =`/`Math.min(a.scroll_amount` -- one
+    match each, unchanged).
+  - Confirmed via `git diff` that both new helpers wrap their entire body (including the `await
+    cdp(...)` call) in `try { ... } catch { return null; }`, and that the failure check
+    (`!r || r.exceptionDetails || !r.result || r.result.value === undefined`) matches the prompt's
+    three named failure conditions (`cdp` rejects, `exceptionDetails` present, `result.value`
+    missing) exactly -- neither helper can throw.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`, 6/6)
+    passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("this task changes only extension
+    JavaScript, so no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: only line-number drift, exactly as the prompt itself warned ("line numbers
+  verified against the current tree" -- earlier tasks in this run, especially T08/T09, had already
+  grown the file). The prompt cited the `scroll` case at lines 405-415, `resolveCoords` at 278-287,
+  `cdp` at 114-117, `sleep` at 242-244, `text`/`textImage` at 207-212, `screenshot` at 215-239, and
+  the screenshot-contract comment at line 356; the actual working tree had these at `scroll`
+  556-565, `resolveCoords` 376-387, `cdp` 136-143, `sleep` 330-332, `text`/`textImage` 295-300,
+  `screenshot` 303-327, and the screenshot-contract comment (worded slightly differently, as
+  `// --- computer (13 actions; screenshots only on screenshot/scroll/zoom) ---`) at line 547. In
+  every case the function bodies, exact event/params shapes, and the "only screenshot/scroll/zoom
+  return an image" contract itself matched the working tree verbatim -- no logic-level drift, only
+  line numbers and one comment's exact wording (still asserting the same contract).
+- Decisions made:
+  - Introduced one additional module-level constant, `SCROLLABLE_FINDER_SNIPPET` (a template-
+    literal string holding the `findScrollable(px, py)` ancestor-walk function body), shared by both
+    new helpers via string interpolation, rather than duplicating the walk predicate literally
+    inside each helper's `expression` string. The prompt describes the predicate as "used by both
+    helpers, inside the evaluated snippets" without mandating either duplication or extraction;
+    sharing one definition means the two snippets cannot silently drift out of sync with each other,
+    which better serves constraint 4 (the engine is truthful: the fallback's target-finding must
+    exactly match what was measured in the probe, or the before/after comparison and the fallback's
+    own target choice could disagree). Verified both resulting `expression` strings still parse as
+    valid JS (see Tests added above) and that the walk semantics are identical to the prompt's
+    two-part predicate (overflow-y/overflow-x auto-or-scroll on either axis, AND scrollHeight/
+    clientHeight or scrollWidth/clientWidth overflow on either axis -- an OR of ORs, not a per-axis
+    AND, matching the prompt's literal wording).
+  - Rejected an earlier draft that built Result B via `` `${scrolled.slice(0, -1)} (mouse wheel...)` ``
+    (stripping the trailing period off the cached Result-A string and appending the suffix) in favor
+    of writing Result B as its own independent template literal. The slice-based version was byte-
+    identical in output but harder to verify as byte-exact against the prompt's contract by
+    inspection alone; constraint 4's "do not soften or merge them" reads most safely as "keep the
+    four result strings independently legible", so the more literal form was kept despite the tiny
+    duplication of `Scrolled ${dir} by ${amount}` between Result A and Result B.
+  - Cached the Result-A message once as `const scrolled = \`Scrolled ${dir} by ${amount}.\`;` and
+    reused it at its three call sites (before===null, after===null, windowMoved||elementMoved) since
+    `dir`/`amount` do not change across those branches within one call -- this guarantees the three
+    Result-A sites can never disagree with each other, and is a strict textual match for
+    `` `Scrolled ${dir} by ${amount}.` `` (verified by direct string construction, not just visual
+    inspection).
+  - `elementMoved`'s null-to-0 coercion (`|| 0`) is applied only inside the absolute-difference
+    arithmetic, never in the `before.hasEl && after.hasEl` gate itself -- per the prompt's exact
+    wording ("treat null as 0 in the arithmetic"), so a probe that never found a scrollable ancestor
+    (`hasEl: false`, `elX/elY: null`) cannot spuriously satisfy `elementMoved` via `0 - 0 > 5`
+    (impossible) or, more importantly, cannot mask a real ancestor find/lose transition between the
+    two probes (the `hasEl` gate requires both probes to have found one).
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust files
+    at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to revert this
+    time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly those same two
+    files, byte-for-byte the same diffs every prior task's log already described.
+- Notes for later tasks:
+  - `probeScrollState(tabId, x, y)` and `directScrollFallback(tabId, x, y, dx, dy)` are now
+    module-level helpers available to any later task in this file; both are exception-safe (resolve
+    to a value or `null`, never reject) and both round every interpolated coordinate/delta with
+    `Math.round` before building their `expression` string, per constraint 12 ("interpolate only
+    rounded numbers"). Neither is wired into any action besides `scroll` -- `scroll_to` was
+    explicitly out of scope and was not touched (confirmed unchanged by diff).
+  - `SCROLLABLE_FINDER_SNIPPET` is a raw JS-source string constant (not a callable function in the
+    service worker's own scope); it only makes sense interpolated inside a `Runtime.evaluate`
+    expression string. A later task adding a third scroll-related helper that needs the same
+    ancestor-walk predicate should reuse this constant rather than redefining the walk logic again.
+  - The four result texts (`Scrolled ${dir} by ${amount}.`, the fallback-used suffix, and the two
+    no-effect variants) are now a byte-exact contract at the same tier as T09's click-event contract,
+    T08's type-dispatch contract, T01's marker-line formats, T02's Note line, T03's get_page_text
+    contract, T06's `[hop: ...]` contract, T13's exception-text format, T14's network per-line
+    format, and T15's zero-result strings -- do not reword any of the four in a later task without
+    updating this note and the T10 BROWSER-TESTS.md entries.
+  - T11 (real zoom region crop + coordinate-context update) is next and touches the `zoom` case of
+    the same `computer()` switch (adjacent to, but disjoint from, this task's `scroll` changes) plus
+    likely `resolveCoords`/`rescaleCoord`/`screenshotCtx` for the coordinate-context update; it does
+    not depend on T10 per the ledger's Depends-on column ("T11 helpful, not required" is actually
+    listed the other way -- T18 depends helpfully on T11, T11 itself has no listed dependency), so no
+    blocking concern here. The `scroll` case's shape (probe-before, dispatch, probe-after, branch on
+    verified movement) is a new pattern in this file; T11 has no stated need to follow it, but a
+    future task touching `zoom`'s own verification (if ever proposed) could look here for precedent.
+- Browser checks queued: T10-1, T10-2, T10-3, T10-4 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T09-5, preserving task order).
