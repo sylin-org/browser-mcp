@@ -23,7 +23,7 @@ pub mod origin;
 pub mod policy;
 pub mod tools;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, ToolError};
 
 /// Initialize operational (debug) logging to **stderr**.
 ///

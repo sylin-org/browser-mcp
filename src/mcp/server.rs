@@ -12,10 +12,10 @@
 
 use crate::browser::Browser;
 use crate::dispatch;
-use crate::mcp::tools::TOOLS_JSON;
+use crate::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::mcp::types::{text_content, JsonRpcResponse};
 use crate::policy::{self, Config};
-use crate::Result;
+use crate::{Result, ToolError};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -202,6 +202,17 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or(Value::Null);
 
+    // Unknown tool names are rejected before dispatch (and before waiting on the extension
+    // channel at all): this is a client-request problem, not a browser/extension problem, and the
+    // client should learn that instantly regardless of whether an extension is even connected.
+    // The extension keeps its own `Unknown tool: ...` guard as a safety net (defense in depth);
+    // this pre-check just means well-formed clients never round-trip to hit it.
+    if !is_known_tool(name) {
+        let err = ToolError::invalid_request(format!("Unknown tool: {name}"))
+            .next_step("call tools/list and use one of the advertised tool names");
+        return JsonRpcResponse::success(id, error_result(err));
+    }
+
     // v1.0 engine: the policy and audit seams are no-ops (all-open). The v1.5 overlay slots in here
     // without touching this code (see src/dispatch.rs).
     let _decision = dispatch::policy_check(name);
@@ -209,7 +220,9 @@ async fn handle_tools_call(
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
     // Wait briefly for the channel instead of failing a healthy session (also covers calls
-    // arriving during a mid-session reconnect).
+    // arriving during a mid-session reconnect). If the wait times out, `waited` stays `None` and
+    // control falls through to `Browser::call` below, which fails fast with the canonical
+    // "extension not connected" `ToolError` -- one hop-attributed message, not two to keep in sync.
     let mut waited: Option<Duration> = None;
     if !browser.is_connected() {
         let started = Instant::now();
@@ -223,15 +236,6 @@ async fn handle_tools_call(
                 tool = name,
                 "tools/call failed: extension channel never came up"
             );
-            let mut result = text_content(format!(
-                "Browser extension not connected after {}s. Check that Chrome is running \
-                 with the extension enabled; run with --debug and inspect the status files.",
-                FIRST_CALL_WAIT_MS / 1000
-            ));
-            if let Some(obj) = result.as_object_mut() {
-                obj.insert("isError".into(), json!(true));
-            }
-            return JsonRpcResponse::success(id, result);
         }
     }
 
@@ -250,17 +254,26 @@ async fn handle_tools_call(
             JsonRpcResponse::success(id, result)
         }
         // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
+        // The rendered text is exactly the hop-attributed ToolError Display: no "Error: " prefix.
         Err(e) => {
-            let mut result = text_content(format!("Error: {e}"));
-            if let Some(obj) = result.as_object_mut() {
-                obj.insert("isError".into(), json!(true));
-            }
+            let mut result = error_result(e);
             if let Some(waited) = waited {
                 append_wait_note(&mut result, waited);
             }
             JsonRpcResponse::success(id, result)
         }
     }
+}
+
+/// Build an MCP tool error result (`{ content: [...], isError: true }`) from a hop-attributed
+/// [`ToolError`]. The result text is exactly the error's `Display`:
+/// `[hop: <hop>] <message>. Next step: <next step>.`
+fn error_result(err: ToolError) -> Value {
+    let mut result = text_content(err.to_string());
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("isError".into(), json!(true));
+    }
+    result
 }
 
 /// Append the truthful handshake-wait note as a final text block on an MCP tool result.

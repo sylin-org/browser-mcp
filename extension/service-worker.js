@@ -3,7 +3,10 @@
 // Policy-free CDP executor + native-messaging endpoint + tab-group manager. It holds MECHANISM
 // only; all governance (domains, tool classification, audit) lives in the Rust binary. It receives
 // { id, type: "tool_request", tool, args } and replies { id, type: "tool_response", result } or
-// { id, type: "tool_error", error }. Chrome frames native messages (4-byte LE) for us via the Port.
+// { id, type: "tool_error", error, hop?, detail? }. `hop` (only ever "cdp" or "page") and `detail`
+// are optional and are mechanism tags (which layer threw), never policy; an absent `hop` means the
+// binary attributes the failure to the extension itself. Chrome frames native messages (4-byte LE)
+// for us via the Port.
 
 const NATIVE_HOST = "org.sylin.browser_mcp";
 const GROUP_TITLE = "Browser MCP";
@@ -46,8 +49,18 @@ function connect() {
 function reply(id, result) {
   try { nativePort && nativePort.postMessage({ id, type: "tool_response", result }); } catch { /* port gone */ }
 }
+// Tag an error with the hop (mechanism, not policy) that threw it, plus optional debug-only detail.
+function hopError(hop, message, detail) {
+  const err = new Error(message);
+  err.hop = hop;
+  if (detail) err.detail = String(detail);
+  return err;
+}
 function fail(id, error) {
-  try { nativePort && nativePort.postMessage({ id, type: "tool_error", error: String(error) }); } catch { /* port gone */ }
+  const msg = { id, type: "tool_error", error: (error && error.message) || String(error) };
+  if (error && error.hop) msg.hop = error.hop;
+  if (error && error.detail) msg.detail = error.detail;
+  try { nativePort && nativePort.postMessage(msg); } catch { /* port gone */ }
 }
 
 // --- CDP ---
@@ -56,7 +69,11 @@ async function ensureAttached(tabId) {
   if (attached.has(tabId)) return;
   if (attaching.has(tabId)) return attaching.get(tabId);
   const p = (async () => {
-    await chrome.debugger.attach({ tabId }, "1.3");
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+    } catch (e) {
+      throw hopError("cdp", `debugger attach failed: ${(e && e.message) || e}`);
+    }
     attached.set(tabId, { domains: new Set() });
   })();
   attaching.set(tabId, p);
@@ -75,7 +92,7 @@ async function probeViewport(tabId) {
     returnByValue: true,
   });
   const v = r && r.result && r.result.value;
-  if (!v || !v.w || !v.h) throw new Error("failed to probe viewport");
+  if (!v || !v.w || !v.h) throw hopError("page", "failed to probe viewport");
   return { vpW: v.w, vpH: v.h, dpr: v.d || 1 };
 }
 // Target screenshot dimensions (derived from the CSS viewport) under the token + longest-side budget.
@@ -113,7 +130,11 @@ function rescaleCoord(tabId, x, y) {
 }
 async function cdp(tabId, method, params) {
   await ensureAttached(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params || {});
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params || {});
+  } catch (e) {
+    throw hopError("cdp", `${method} failed: ${(e && e.message) || e}`);
+  }
 }
 async function enableDomain(tabId, domain) {
   const state = attached.get(tabId);
@@ -198,8 +219,16 @@ async function content(tabId, message) {
   try {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    return chrome.tabs.sendMessage(tabId, message);
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch (e) {
+      throw hopError(
+        "page",
+        "content script unavailable on this page (script injection blocked)",
+        (e && e.message) || e
+      );
+    }
   }
 }
 
@@ -282,6 +311,8 @@ async function resolveCoords(tabId, args) {
   if (args.ref) {
     const r = await content(tabId, { type: "refCoordinates", ref: args.ref });
     if (r && r.result) return [r.result.x, r.result.y];
+    // The engine is truthful: a stale ref is a failure, never a silent [0, 0] substitution.
+    throw hopError("page", `Element ${args.ref} not found; the page may have changed since it was read`);
   }
   return null;
 }
@@ -414,8 +445,15 @@ async function computer(a) {
       return textImage(`Scrolled ${dir} by ${amount}.`, await screenshot(tabId));
     }
     case "scroll_to": {
-      if (a.ref) await content(tabId, { type: "scrollToRef", ref: a.ref });
-      else if (a.coordinate) await cdp(tabId, "Runtime.evaluate", { expression: `window.scrollTo(${a.coordinate[0]}, ${a.coordinate[1]})` });
+      if (a.ref) {
+        const r = await content(tabId, { type: "scrollToRef", ref: a.ref });
+        // The engine is truthful: a stale ref is a failure, never a false "Scrolled to target.".
+        if (!(r && r.result)) {
+          throw hopError("page", `Element ${a.ref} not found; the page may have changed since it was read`);
+        }
+      } else if (a.coordinate) {
+        await cdp(tabId, "Runtime.evaluate", { expression: `window.scrollTo(${a.coordinate[0]}, ${a.coordinate[1]})` });
+      }
       await sleep(250);
       return text("Scrolled to target.");
     }
@@ -499,7 +537,11 @@ const handlers = {
   async form_input(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
     const r = await content(a.tabId, { type: "setFormValue", ref: a.ref, value: a.value });
-    if (r && r.result && r.result.error) return text(`Error: ${r.result.error}`);
+    // The engine is truthful: a content-script failure is a failure, never a masqueraded success.
+    if (r && r.result && r.result.error) {
+      const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+      throw hopError("page", msg);
+    }
     return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
   },
   async javascript_tool(a) {
@@ -561,7 +603,9 @@ async function dispatch(id, tool, args) {
   try {
     reply(id, await handler(args));
   } catch (e) {
-    fail(id, `${tool} failed: ${(e && e.message) || e}`);
+    // Hop-tagged errors (cdp/page) pass through as-is; untagged errors keep the tool-name prefix.
+    if (e && e.hop) fail(id, e);
+    else fail(id, `${tool} failed: ${(e && e.message) || e}`);
   }
 }
 

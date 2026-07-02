@@ -79,19 +79,58 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
         "tools/list must equal the sacred fixture"
     );
 
-    // No extension is connected, so the tool call waits the bounded window (about 5s) and then
-    // returns an MCP tool error result (isError) with the exact timeout message.
+    // No extension is connected, so the tool call waits the bounded window (about 5s), falls
+    // through to Browser::call's fail-fast "not connected" path, and returns an MCP tool error
+    // result (isError) with the exact hop-attributed message.
     let call = &responses[2];
     assert_eq!(call["id"], 3);
     assert_eq!(call["result"]["isError"], true, "no extension -> isError");
     let text = call["result"]["content"][0]["text"]
         .as_str()
         .expect("error result carries a text block");
+    assert!(
+        text.starts_with("[hop: extension]"),
+        "hop-attributed message: {text}"
+    );
     assert_eq!(
         text,
-        "Browser extension not connected after 5s. Check that Chrome is running with the \
-         extension enabled; run with --debug and inspect the status files.",
-        "exact timeout message: {text}"
+        "[hop: extension] Browser extension not connected. \
+         Next step: check chrome://extensions and that Chrome is running.",
+        "exact message: {text}"
+    );
+}
+
+#[test]
+fn unknown_tool_name_is_rejected_before_dispatch() {
+    // No extension is ever connected in this test. If the unknown-tool pre-check ran AFTER the
+    // bounded extension-channel wait (or not at all), this would instead time out and surface
+    // "[hop: extension] Browser extension not connected. ...". Getting the invalid-request hop
+    // back proves the pre-check runs first.
+    let started = std::time::Instant::now();
+    let responses = drive(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bogus_tool","arguments":{}}}),
+    ]);
+    let elapsed = started.elapsed();
+
+    assert_eq!(responses.len(), 2, "got {responses:?}");
+    let call = &responses[1];
+    assert_eq!(call["id"], 2);
+    assert_eq!(call["result"]["isError"], true, "unknown tool -> isError");
+    let text = call["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error result carries a text block");
+    assert!(
+        text.starts_with("[hop: invalid-request]"),
+        "hop-attributed message: {text}"
+    );
+    assert!(
+        text.contains("Unknown tool: bogus_tool"),
+        "names the unknown tool: {text}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "the pre-check must return well before the 5s extension-channel wait: {elapsed:?}"
     );
 }
 

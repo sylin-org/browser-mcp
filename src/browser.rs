@@ -7,12 +7,15 @@
 //!
 //! Wire protocol (see also `native/messages.rs`): the mcp-server sends
 //! `{ "id", "type": "tool_request", "tool", "args" }`; the extension replies with
-//! `{ "id", "type": "tool_response", "result" }` or `{ "id", "type": "tool_error", "error" }`.
-//! Messages without an `id` (events, heartbeats) are ignored here (Phase 3 buffers events).
+//! `{ "id", "type": "tool_response", "result" }` or
+//! `{ "id", "type": "tool_error", "error", "hop"?, "detail"? }`. A `tool_error` is mapped to a
+//! hop-attributed [`ToolError`] (see [`ToolError::from_extension_wire`]); `detail`, if present, is
+//! logged with `tracing::debug!` and never reaches the tool result. Messages without an `id`
+//! (events, heartbeats) are ignored here (Phase 3 buffers events).
 
 use crate::debug::DebugSink;
 use crate::native::host;
-use crate::{Error, Result};
+use crate::ToolError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,8 +27,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// How long to wait for the extension to answer a single tool call before giving up.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Delivered to a waiting caller: `Ok(result)` or `Err(tool error message)`.
-type CallResult = std::result::Result<Value, String>;
+/// Delivered to a waiting caller: `Ok(result)` or `Err(hop-attributed tool error)`.
+type CallResult = std::result::Result<Value, ToolError>;
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult>>>>;
 
 /// A cloneable handle the mcp-server uses to call tools on the extension.
@@ -93,16 +96,29 @@ impl Browser {
 
     /// Invoke `tool` with `args` on the extension and await its result.
     ///
-    /// Returns [`Error::NativeMessaging`] if no extension is connected, if the extension reports a
-    /// tool error, or if the call times out.
-    pub async fn call(&self, tool: &str, args: &Value) -> Result<Value> {
+    /// Every failure is a hop-attributed [`ToolError`]: no extension connected, an encoding
+    /// failure before the request left the process, the extension reporting a tool error (tagged
+    /// `cdp`, `page`, or untagged and attributed to the `extension` hop), a mid-call disconnect,
+    /// or a timeout.
+    pub async fn call(&self, tool: &str, args: &Value) -> std::result::Result<Value, ToolError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
         self.debug.tool_begin(&id, tool);
 
         let request = json!({ "id": id, "type": "tool_request", "tool": tool, "args": args });
-        let framed = host::encode(&serde_json::to_vec(&request)?)?;
+        let framed = match serde_json::to_vec(&request)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| host::encode(&bytes).map_err(|e| e.to_string()))
+        {
+            Ok(framed) => framed,
+            Err(e) => {
+                self.pending.lock().unwrap().remove(&id);
+                let err = ToolError::binary(format!("failed to encode the tool request: {e}"));
+                self.debug.tool_end(&id, false, &err.to_string());
+                return Err(err);
+            }
+        };
 
         // Enqueue only if a native-host is connected; otherwise fail fast. The lock is scoped so it
         // is never held across the await below.
@@ -115,22 +131,23 @@ impl Browser {
         };
         if !sent {
             self.pending.lock().unwrap().remove(&id);
-            self.debug.tool_end(&id, false, "extension not connected");
-            return Err(Error::NativeMessaging(
-                "browser extension is not connected".into(),
-            ));
+            let err = ToolError::extension("Browser extension not connected");
+            self.debug.tool_end(&id, false, &err.to_string());
+            return Err(err);
         }
         self.debug.frame_out();
 
         let outcome = match tokio::time::timeout(TOOL_TIMEOUT, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(msg))) => Err(Error::NativeMessaging(msg)),
-            Ok(Err(_closed)) => Err(Error::NativeMessaging(
-                "extension disconnected before responding".into(),
-            )),
+            Ok(Ok(Err(err))) => Err(err),
+            Ok(Err(_closed)) => Err(ToolError::extension(
+                "Browser extension disconnected before responding",
+            )
+            .next_step("retry the call; the extension reconnects automatically")),
             Err(_elapsed) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err(Error::NativeMessaging("tool request timed out".into()))
+                Err(ToolError::extension("Tool request timed out after 60s")
+                    .next_step("check that Chrome is running and responsive, then retry"))
             }
         };
         match &outcome {
@@ -162,18 +179,31 @@ impl Browser {
             }
         });
 
-        // Route replies until the stream closes (Ok(None)) or errors.
-        while let Ok(Some(payload)) = host::read_message(&mut read_half).await {
-            self.debug.frame_in();
-            self.route_reply(&payload);
-        }
+        // Route replies until the stream closes cleanly (Ok(None)) or the transport errors
+        // (Err(e)); the two are distinguished so pending calls learn WHY the loop ended.
+        let drain_err = loop {
+            match host::read_message(&mut read_half).await {
+                Ok(Some(payload)) => {
+                    self.debug.frame_in();
+                    self.route_reply(&payload);
+                }
+                Ok(None) => {
+                    break ToolError::extension("Browser extension disconnected before responding")
+                        .next_step("retry the call; the extension reconnects automatically");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "native-host stream read failed");
+                    break ToolError::ipc(format!("IPC transport failed: {e}"));
+                }
+            }
+        };
 
         *self.outgoing.lock().unwrap() = None;
         self.debug.set_connected(false);
         self.connected.send_replace(false);
         writer.abort();
         for (_, tx) in self.pending.lock().unwrap().drain() {
-            let _ = tx.send(Err("extension disconnected".to_string()));
+            let _ = tx.send(Err(drain_err.clone()));
         }
     }
 
@@ -190,11 +220,18 @@ impl Browser {
             return; // late or duplicate reply
         };
         let result = match reply.get("type").and_then(Value::as_str) {
-            Some("tool_error") => Err(reply
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("tool execution failed")
-                .to_string()),
+            Some("tool_error") => {
+                let message = reply
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool execution failed")
+                    .to_string();
+                let hop = reply.get("hop").and_then(Value::as_str);
+                if let Some(detail) = reply.get("detail").and_then(Value::as_str) {
+                    tracing::debug!(detail, "extension error detail");
+                }
+                Err(ToolError::from_extension_wire(hop, message))
+            }
             _ => Ok(reply.get("result").cloned().unwrap_or(Value::Null)),
         };
         let _ = tx.send(result);
@@ -272,14 +309,76 @@ mod tests {
             .call("javascript_tool", &json!({}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("boom"), "{err}");
+        let text = err.to_string();
+        assert!(text.starts_with("[hop: extension]"), "{text}");
+        assert!(text.contains("boom"), "{text}");
     }
 
     #[tokio::test]
     async fn call_without_a_connection_fails_fast() {
         let browser = Browser::new();
         let err = browser.call("navigate", &json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("not connected"), "{err}");
+        let text = err.to_string();
+        assert!(text.starts_with("[hop: extension]"), "{text}");
+        assert!(text.contains("not connected"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn call_surfaces_a_cdp_tagged_tool_error_without_leaking_detail() {
+        let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+        let attached = browser.clone();
+        tokio::spawn(async move { attached.attach(browser_side).await });
+
+        tokio::spawn(async move {
+            let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
+            let v: Value = serde_json::from_slice(&req).unwrap();
+            let reply = json!({
+                "id": v["id"],
+                "type": "tool_error",
+                "error": "Input.dispatchMouseEvent failed: no target",
+                "hop": "cdp",
+                "detail": "verbose internals",
+            });
+            host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                .await
+                .unwrap();
+        });
+
+        wait_connected(&browser).await;
+        let err = browser.call("computer", &json!({})).await.unwrap_err();
+        let text = err.to_string();
+        assert!(text.starts_with("[hop: cdp]"), "{text}");
+        assert!(text.contains("Input.dispatchMouseEvent failed"), "{text}");
+        assert!(!text.contains("verbose internals"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn call_surfaces_a_page_tagged_tool_error() {
+        let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+        let attached = browser.clone();
+        tokio::spawn(async move { attached.attach(browser_side).await });
+
+        tokio::spawn(async move {
+            let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
+            let v: Value = serde_json::from_slice(&req).unwrap();
+            let reply = json!({
+                "id": v["id"],
+                "type": "tool_error",
+                "error": "Element ref_5 not found",
+                "hop": "page",
+            });
+            host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                .await
+                .unwrap();
+        });
+
+        wait_connected(&browser).await;
+        let err = browser.call("form_input", &json!({})).await.unwrap_err();
+        let text = err.to_string();
+        assert!(text.starts_with("[hop: page]"), "{text}");
+        assert!(text.contains("Element ref_5 not found"), "{text}");
     }
 
     #[tokio::test]
