@@ -124,6 +124,19 @@ async fn handle_line(
 
     match method {
         "initialize" => {
+            // Record the MCP client's self-reported identity (clientInfo.name [+ version]), if it
+            // sent one, for `browser-mcp doctor`/`status` to display. Missing params/clientInfo, or
+            // non-string fields, are silently fine: this is best-effort observability, not part of
+            // the protocol contract, and the response below never depends on it.
+            if let Some(client_info) = raw.get("params").and_then(|p| p.get("clientInfo")) {
+                if let Some(name) = client_info.get("name").and_then(Value::as_str) {
+                    let ident = match client_info.get("version").and_then(Value::as_str) {
+                        Some(version) => format!("{name} {version}"),
+                        None => name.to_string(),
+                    };
+                    browser.debug().set_client(&ident);
+                }
+            }
             // Warm the extension channel while the client finishes its handshake. The extension
             // side initiates the connection (Chrome spawns the native-host, which dials the
             // endpoint this process has served since startup), so there is nothing to dial from

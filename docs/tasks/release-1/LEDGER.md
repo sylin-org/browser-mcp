@@ -10,20 +10,20 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T07 (next pending). T04 and T06 are done.
+- Current task: T01 (next pending). T04, T06, T07 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(mcp): T06 hop-attributed error reporting across the full dispatch path (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06) in `src/policy/redact.rs`
+- Last commit: feat(cli): T07 doctor subcommand fusing debug state into one diagnosis (this run)
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07) in `src/policy/redact.rs`
   and `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were
-  left untouched again in T06 because they are out of scope / forbidden. A whole-repo
+  left untouched again in T07 because they are out of scope / forbidden. A whole-repo
   `cargo fmt --check` will report these two files; `rustfmt --check --edition 2021` on only the
-  files T06 touched (src/browser.rs, src/error.rs, src/mcp/server.rs, src/mcp/tools.rs,
-  src/native/messages.rs, tests/mcp_protocol.rs) is clean; src/lib.rs was excluded from that
-  targeted check because passing it to standalone `rustfmt` treats it as a crate root and pulls
-  in every `mod`-reachable file (including the two drifted ones) -- its one-line diff (adding
-  `ToolError` to the re-export list) was verified by inspection instead. A human may want to run
-  `cargo fmt` repo-wide in its own dedicated commit at some point; do not fold that into an
-  unrelated task's commit.
+  files T07 touched (src/debug.rs, src/install/mod.rs, src/main.rs, src/mcp/server.rs,
+  src/native/ipc.rs, src/doctor.rs) is clean; src/lib.rs was excluded from that targeted check
+  because passing it to standalone `rustfmt` treats it as a crate root and pulls in every
+  `mod`-reachable file (including the two drifted ones) -- its one-line diff (adding
+  `pub mod doctor;`) was verified by inspection instead. A human may want to run `cargo fmt`
+  repo-wide in its own dedicated commit at some point; do not fold that into an unrelated task's
+  commit.
 
 ## Sequence and status
 
@@ -33,7 +33,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 |---|------|-------|-----------|--------|
 | 1 | T04 | Extension-channel warmup + bounded first-call wait | - | done |
 | 2 | T06 | Hop-attributed error reporting | T04 (binary half) | done |
-| 3 | T07 | Extend installer doctor with runtime/debug-state fusion | - | pending |
+| 3 | T07 | Extend installer doctor with runtime/debug-state fusion | - | done |
 | 4 | T01 | read_page structural pagination + caps | - | pending |
 | 5 | T02 | read_page viewport culling (filter=interactive) | - | pending |
 | 6 | T03 | get_page_text official semantics | - | pending |
@@ -222,3 +222,109 @@ Append one entry per task using this template. Newest at the bottom.
     otherwise hit a real mismatch there.
 - Browser checks queued: T06-1, T06-2, T06-3, T06-4 in docs/tasks/release-1/BROWSER-TESTS.md
   (T04-2's expected text was also updated in place; see above).
+
+### T07 Doctor subcommand fusing debug state into one diagnosis -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(cli): T07 ...`)
+- Files touched: src/debug.rs, src/mcp/server.rs, src/main.rs, src/native/ipc.rs,
+  src/install/mod.rs, src/lib.rs, src/doctor.rs (new), docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added:
+  - src/debug.rs: updated both existing `DebugSink::enabled(&dir)` calls to
+    `enabled(&dir, "mcp-server")`; added `enabled_sink_records_role_and_client` (asserts
+    `snap["role"] == "mcp-server"` and `snap["client"] == "claude-code 1.2.3"` after `set_client`
+    + `flush`).
+  - src/native/ipc.rs: `probe_reports_absent_for_an_unused_endpoint` (plain `#[test]`, pid-unique
+    endpoint), `probe_reports_accepts_against_a_live_server` (`#[tokio::test]`, spawns `serve`,
+    polls `probe_endpoint` via `spawn_blocking` until `Accepts` or a 5s deadline).
+  - src/doctor.rs (new, `#[cfg(test)] mod tests`): `all_healthy_observations_produce_no_findings`,
+    `unregistered_browser_and_client_each_produce_their_own_finding`,
+    `absent_with_no_sessions_fires_exactly_rules_3_and_7_in_order`,
+    `rejects_embeds_a_known_pid_and_falls_back_to_process_manager_without_one`,
+    `accepts_with_no_server_session_fires_rule_5`,
+    `accepts_with_a_disconnected_extension_distinguishes_never_connected_from_dropped`,
+    `parse_session_extracts_full_new_format_fields`,
+    `parse_session_defaults_role_and_client_for_old_format_files`,
+    `parse_session_returns_none_for_garbage_or_a_missing_pid` -- all 9 cover every case the
+    prompt's Verification/unit-test list named.
+- Drift reconciled: none of consequence. Every function/struct/line-content the prompt named in
+  "Current behavior" (src/main.rs's `DoctorArgs`/role dispatch/`build_debug_sink`, src/debug.rs's
+  private helpers and `Snapshot`/`Inner`, src/install/mod.rs's old `run_doctor`/`DoctorOptions`,
+  src/native/ipc.rs's `serve`/`connect`/`socket_path`/`pipe_path`, src/mcp/server.rs's
+  `initialize` arm) matched the working tree exactly; only exact line numbers had drifted by a
+  few lines from T04/T06 landing first, as the prompt itself warned they would.
+- Decisions made:
+  - `status_report()`'s old "debug state at <path> is unreadable" failure text is retired (folded
+    into the new "no mcp-server debug state under <dir> (state files exist for other roles or are
+    unreadable)" message when no file both parses AND has an mcp-server-or-absent role). The
+    prompt's Part A.7 names exactly two new failure texts and says "everything else... keeps the
+    existing messages" -- read as: the old two-branch "is unreadable" message (there were two
+    identical `return format!(...)` arms for read-failure vs parse-failure) is not one of the
+    messages being kept, since the prompt's replacement logic no longer distinguishes "newest file
+    unreadable" from "no candidate at all" -- both simply produce no candidate. Grepped the repo
+    first to confirm no test asserts on the old "is unreadable" string; none does.
+  - The Debug-sessions row cap ("show at most 6 session rows... if more were parsed, `(and <n>
+    older...)`") is ambiguous about whether "rows" includes "(skipping unreadable state file: ...)"
+    lines in the cap-of-6 count. Implemented: the cap of 6 (non-verbose) applies to the *first 6
+    files in the newest-first list* (parsed or unreadable, one row each), and the trailing "and <n>
+    older" note counts only *additional successfully-parsed sessions* beyond what was shown (i.e.
+    total-parsed-across-all-files minus parsed-shown-within-the-cap) -- so a run of unreadable
+    files near the cap boundary can silently drop a couple of skip-lines without a trailing note,
+    but a real session is never silently dropped without being counted in "older". This is not
+    unit-tested (the prompt's own unit-test list only requires `findings` and `parse_session`
+    coverage, not row-cap rendering) -- flagging for a human/future task if stricter behavior is
+    wanted. The "extension last seen" line always scans the FULL parsed list (not just the shown,
+    possibly-capped rows), by design, so it never goes stale under the cap.
+  - `EndpointProbe`'s doc comment adds "(see [`probe_endpoint`])" to the prompt's literal text;
+    this is elaboration only (not one of the byte-exact-contract strings like `ToolError`'s
+    `Display` text), so it is not a deviation from any tested/asserted string.
+  - `browser-mcp doctor`'s Verdict "no debug instrumentation found" (rule 7) and the `Absent`/
+    `Rejects` rules (3/4) are independent findings per the prompt's own text ("fires in addition to
+    rule 3 or 4"); implemented as unconditional pushes in sequence, not an `else`, matching that
+    literally -- verified by `absent_with_no_sessions_fires_exactly_rules_3_and_7_in_order`.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched again (same pre-
+    existing rustfmt-version drift T04/T06 flagged); reverted both with `git checkout --` after
+    `cargo fmt` reformatted them as a side effect of formatting the crate root. Verified fmt
+    cleanliness on exactly the files this task touched with `rustfmt --check --edition 2021
+    src/debug.rs src/install/mod.rs src/main.rs src/mcp/server.rs src/native/ipc.rs src/doctor.rs`
+    (clean); `src/lib.rs`'s one-line diff (`pub mod doctor;`) was verified by inspection instead
+    (same crate-root caveat as T04/T06).
+- Notes for later tasks:
+  - `DebugSink::enabled` now takes `(dir: &Path, role: &'static str)`, not just `(dir: &Path)`.
+    `DebugSink::set_client(&self, client: &str)` and `DebugSink::ipc_note(&self, summary: &str)`
+    are new public methods (both force a snapshot write). `frame_in`/`frame_out` now also refresh
+    `updated_ms` (throttled via the new private `Inner::touch`), so a session that is only relaying
+    frames (no MCP requests) no longer looks stale in `status`/`doctor`.
+  - `Snapshot`/state-file JSON gained two additive fields: `role` (always present, "mcp-server" or
+    "native-host") and `client` (present only after `set_client` was called; omitted via
+    `skip_serializing_if` otherwise). Any later task reading `debug-state-*.json` by hand (tests,
+    tooling) should tolerate both fields being absent (old-format files) as well as present.
+  - `crate::debug::{now_ms, fmt_ms, session_state_files}` are now `pub(crate)` (were private) --
+    available to any future in-crate module, not just `doctor`.
+  - `browser_mcp::install::run_doctor` and `browser_mcp::install::DoctorOptions` are GONE (moved to
+    `browser_mcp::doctor::run` / `browser_mcp::doctor::DoctorOptions`). `browser_mcp::install::
+    host_file_path` is now `pub(crate)` (was private) so `doctor` can reuse it; `yesno` was deleted
+    from `install::mod` (only caller was the removed `run_doctor`) -- `doctor.rs` has its own
+    private `yn` helper, not shared.
+  - `native::ipc::relay_native_host` signature changed: `(endpoint: &str)` ->
+    `(endpoint: &str, debug: &crate::debug::DebugSink)`. Any future caller (there is currently only
+    `main::run_native_host_role`) must pass a sink (use `DebugSink::disabled()` if none is wanted).
+    New public `native::ipc::{EndpointProbe, probe_endpoint, endpoint_display}` (per-platform
+    `#[cfg(windows)]`/`#[cfg(unix)]` implementations, like `serve`/`connect`) are synchronous (no
+    tokio) and safe to call from `doctor`'s non-async context.
+  - `main::run_native_host_role` now takes `(debug: bool)` and `main::build_debug_sink` now takes
+    `(debug: bool, role: &'static str)`. The native-host role's debug sink is genuinely env-gated:
+    Chrome inherits its own launch environment and never passes `--debug` to the process it spawns,
+    so a native-host `debug-state-<pid>.json` only appears when Chrome ITSELF was started with
+    `BROWSER_MCP_DEBUG=1` in its environment -- doctor's rule set intentionally never treats a
+    missing native-host row as a problem by itself (see `doctor::findings`, which has no rule keyed
+    on native-host presence at all).
+  - `browser-mcp doctor`'s exit code is now truthful (0 = healthy/no findings, 1 = at least one
+    problem line), a behavior change from before (old `run_doctor` always returned `Ok(())` ->
+    exit 0 unconditionally). Any script that shells out to `browser-mcp doctor` and previously
+    ignored its exit code should be aware it can now be 1.
+  - Six new BROWSER-TESTS.md entries (T07-1..T07-6) depend on a live browser + a real MCP client
+    session; while inserting them, also moved the pre-existing T04-3 entry (which a prior run had
+    left stranded after the T06 block, out of task order) to sit directly after T06-4 and before
+    the new T07 entries, restoring "in task order" top-to-bottom without altering T04-3's content.
+- Browser checks queued: T07-1, T07-2, T07-3, T07-4, T07-5, T07-6 in
+  docs/tasks/release-1/BROWSER-TESTS.md.

@@ -149,3 +149,96 @@ Steps:
 Expect: the `ping` response arrives promptly (well under 5s), not only after the `tools/call`
 response. Cross-check with `browser-mcp status --json` or the debug event log: the mcp_request
 for `ping` is recorded and answered before the delayed `tools/call` response is written.
+
+## T07-1: `browser-mcp doctor` with no MCP session running reports the no-server problem, exit 1
+Changed: `doctor` is now a fused, one-shot diagnosis (Binary / Browsers / MCP clients / IPC
+endpoint / Debug sessions / Verdict sections) instead of registration-state-only output, and it
+now returns a truthful exit code (0 healthy, 1 any problem found). Binary-only change; rebuild
+the binary first (rename `target/debug/browser-mcp.exe` aside if a running session holds it
+locked, then rebuild). No extension reload needed for this step (no MCP client needs to be
+running at all).
+Steps:
+1. Ensure no MCP client / mcp-server process is running (close the MCP client, or otherwise make
+   sure nothing owns the `org.sylin.browser_mcp.v1` IPC endpoint).
+2. Run `browser-mcp doctor` from a shell.
+3. Check the exit code (`echo $?` in bash, `$LASTEXITCODE` in PowerShell).
+Expect: the report shows all six sections in order (Binary, Browsers, MCP clients, IPC endpoint,
+Debug sessions, Verdict). The IPC endpoint `state` line reads
+"absent (no mcp-server currently owns it)". The Verdict section has at least one
+"  problem: no mcp-server is running (the IPC endpoint does not exist): ..." line. The exit code
+is 1.
+
+## T07-2: `browser-mcp doctor` during a healthy debug session reports OK, exit 0
+Changed: same fusion as T07-1; this exercises the healthy path, including the new clientInfo
+capture (Part B) and the extension-connected signal. Requires the dev install to register the
+server with `BROWSER_MCP_DEBUG=1` (or manually restart the MCP client with `BROWSER_MCP_DEBUG=1`
+set in its environment) and the extension reloaded/attached at least once.
+Steps:
+1. Restart the MCP client so it launches the rebuilt binary with debug mode on (`--debug` or
+   `BROWSER_MCP_DEBUG=1`).
+2. Reload the extension at chrome://extensions if it was not already loaded, and make one tool
+   call (e.g. navigate to https://example.com) so the extension attaches.
+3. Run `browser-mcp doctor` from a shell.
+4. Check the exit code.
+Expect: IPC endpoint `state` reads
+"accepts connections (doctor made one brief probe connection)". Under "Debug sessions", the
+newest `mcp-server` row shows `client <name> <version>` where `<name>`/`<version>` match what the
+MCP client reports in its `initialize` request (e.g. "claude-code" and its version), NOT
+"(not recorded)", and `extension connected` (not "not connected"). The Verdict section is exactly
+one line: "  OK: mcp-server (pid <pid>) is running, the extension is connected, and the IPC
+endpoint accepts connections." Exit code is 0.
+
+## T07-3: `browser-mcp doctor` catches a disconnected extension, then recovers
+Changed: same fusion; this exercises Verdict rule 6 (extension disconnected from a live
+mcp-server). No rebuild needed beyond T07-2's if already done.
+Steps:
+1. With the debug session from T07-2 still running (mcp-server up, extension was connected),
+   disable the extension at chrome://extensions (or otherwise stop its service worker) and wait a
+   few seconds for the mcp-server to observe the disconnect.
+2. Run `browser-mcp doctor`.
+3. Re-enable the extension at chrome://extensions, make one more tool call so it reattaches, then
+   run `browser-mcp doctor` again.
+Expect step 2: a Verdict problem line naming the mcp-server's pid, either
+"the extension is disconnected from the mcp-server (pid <pid>; it connected <n> time(s) earlier
+in this session): ..." (if it had connected before) -- exit code 1.
+Expect step 3: doctor returns to the single "OK: ..." Verdict line and exit code 0.
+
+## T07-4: `browser-mcp doctor --verbose` shows every session with its counters
+Changed: `--verbose` (previously ignored by the installer's doctor) now lifts the 6-row display
+cap on the Debug sessions section and prints a `counters:` line under every row.
+Steps:
+1. With at least one debug session on record (from T07-2/T07-3), run
+   `browser-mcp doctor --verbose`.
+Expect: every session row (not just the newest 6) is shown, with no
+"(and N older; use --verbose to show all)" line, and each session row is immediately followed by
+a line reading
+"      counters: requests=<n> tools=<n> errors=<n> frames_out=<n> frames_in=<n> connects=<n>
+disconnects=<n>" with real (non-placeholder) numbers.
+
+## T07-5: `browser-mcp status` still works during a debug session (role filtering regression check)
+Changed: `status_report()` is now role-aware (only reports mcp-server sessions); this confirms
+that filtering did not silently break the existing `status` command.
+Steps:
+1. With the debug session from T07-2 running, run `browser-mcp status` (no flags).
+Expect: the usual formatted report (pid, uptime, extension connected/not, counters, in-flight,
+recent events) renders exactly as before this change -- no "no mcp-server debug state" message
+while a real session is live.
+
+## T07-6 (optional): native-host debug state file and the extension-last-seen line
+Changed: the native-host role now writes its own `debug-state-<pid>.json` / `debug-events-<pid>.jsonl`
+files, but only when Chrome itself was launched with `BROWSER_MCP_DEBUG=1` set in its environment
+(Chrome does not pass `--debug` to the process it spawns, so this is opt-in and its absence is
+normal -- do not treat a missing native-host row as a problem).
+Steps:
+1. Fully close Chrome.
+2. Launch Chrome from a shell with `BROWSER_MCP_DEBUG=1` set in that shell's environment (so the
+   native-host process Chrome spawns inherits it), with the extension enabled.
+3. Make one tool call from the MCP client so the extension attaches.
+4. Run `browser-mcp doctor` (with the mcp-server also in debug mode, per T07-2, for the fullest
+   picture).
+Expect: the Debug sessions section includes a `native-host` row
+("  native-host   pid <pid>  started <S> ago  active <A> ago", no client/extension fields on that
+row), and, after the session rows, a line reading
+"  extension last seen <A> ago (native-host pid <pid>)". Separately, confirm launching Chrome
+WITHOUT `BROWSER_MCP_DEBUG=1` (the normal case) produces no native-host row and no problem line
+about its absence.

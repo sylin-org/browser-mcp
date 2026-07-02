@@ -18,7 +18,8 @@
 use anyhow::Result;
 use browser_mcp::browser::Browser;
 use browser_mcp::debug::DebugSink;
-use browser_mcp::install::{DoctorOptions, InstallOptions, Selection, UninstallOptions};
+use browser_mcp::doctor::DoctorOptions;
+use browser_mcp::install::{InstallOptions, Selection, UninstallOptions};
 use browser_mcp::native::ipc;
 use clap::{Args, Parser, Subcommand};
 
@@ -46,7 +47,7 @@ enum Command {
     Install(InstallArgs),
     /// Remove the native host registration + the MCP server from clients.
     Uninstall(UninstallArgs),
-    /// Report browser + client detection and current registration state.
+    /// Diagnose the whole chain: registration, debug sessions, IPC endpoint, extension link.
     Doctor(DoctorArgs),
     /// Show the running server's live inner state (needs a server started with --debug).
     Status(StatusArgs),
@@ -167,7 +168,7 @@ fn main() -> Result<()> {
     // Role detection must precede clap: Chrome launches the native-messaging host with an extra
     // positional arg (the calling extension origin) that clap would reject.
     if std::env::args().any(|a| a.starts_with("chrome-extension://")) {
-        return run_native_host_role();
+        return run_native_host_role(debug);
     }
 
     match Cli::parse() {
@@ -182,7 +183,11 @@ fn main() -> Result<()> {
         Cli {
             command: Some(Command::Doctor(args)),
             ..
-        } => browser_mcp::install::run_doctor(args.into())?,
+        } => {
+            if !browser_mcp::doctor::run(args.into())? {
+                std::process::exit(1);
+            }
+        }
         Cli {
             command: Some(Command::Status(args)),
             ..
@@ -209,18 +214,27 @@ fn run_status(args: StatusArgs) {
 }
 
 /// Native-host role: relay native-messaging frames between Chrome (stdio) and the mcp-server (IPC).
-fn run_native_host_role() -> Result<()> {
+///
+/// `debug` comes from the same detection `main` uses for every role (env var or `--debug`
+/// argument), but Chrome itself never passes `--debug` when it launches this process -- it only
+/// inherits whatever environment Chrome was started with. So a native-host debug snapshot exists
+/// only when Chrome's own launching environment had `BROWSER_MCP_DEBUG=1` set; its absence in a
+/// normal launch is expected, not a problem (see `doctor`'s wording).
+fn run_native_host_role(debug: bool) -> Result<()> {
     tracing::info!("browser-mcp starting (native-host role, launched by the browser)");
+    let sink = build_debug_sink(debug, "native-host");
     let rt = tokio::runtime::Runtime::new()?;
-    let result = rt.block_on(async { ipc::relay_native_host(&ipc::default_endpoint()).await });
+    let result =
+        rt.block_on(async { ipc::relay_native_host(&ipc::default_endpoint(), &sink).await });
     if let Err(e) = result {
         tracing::warn!(error = %e, "native-host relay ended with error");
     }
+    sink.flush();
     // The relay has ended (the mcp-server or the extension went away). Exit the process directly
     // instead of returning: tokio's stdin reader parks a blocking thread in a ReadFile on Chrome's
     // still-open stdin, and dropping the runtime would hang forever trying to join it. This role is
-    // a stateless relay with nothing to flush, so an immediate exit is correct -- and it lets Chrome
-    // observe the disconnect and reconnect to the next mcp-server session (no zombie).
+    // a stateless relay with nothing else to flush, so an immediate exit is correct -- and it lets
+    // Chrome observe the disconnect and reconnect to the next mcp-server session (no zombie).
     tracing::info!("native-host relay ended; exiting");
     std::process::exit(0);
 }
@@ -233,7 +247,7 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
         debug_mode = debug_on,
         "browser-mcp starting (mcp-server role; v1.0 engine -- all-open, no governance overlay)"
     );
-    let sink = build_debug_sink(debug_on);
+    let sink = build_debug_sink(debug_on, "mcp-server");
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
         let browser = Browser::with_debug(sink.clone());
@@ -258,9 +272,10 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     Ok(())
 }
 
-/// Build the observability sink for the server. Debug-off yields a no-op sink; if the log directory
-/// cannot be prepared we warn and continue without observability rather than failing the server.
-fn build_debug_sink(debug: bool) -> DebugSink {
+/// Build the observability sink for `role` ("mcp-server" or "native-host"). Debug-off yields a
+/// no-op sink; if the log directory cannot be prepared we warn and continue without observability
+/// rather than failing the process.
+fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
     if !debug {
         return DebugSink::disabled();
     }
@@ -268,9 +283,9 @@ fn build_debug_sink(debug: bool) -> DebugSink {
         tracing::warn!("no log directory available; running without debug observability");
         return DebugSink::disabled();
     };
-    match DebugSink::enabled(&dir) {
+    match DebugSink::enabled(&dir, role) {
         Ok(sink) => {
-            tracing::info!(dir = %dir.display(), "debug mode on: state + event log under this dir");
+            tracing::info!(dir = %dir.display(), role, "debug mode on: state + event log under this dir");
             sink
         }
         Err(e) => {

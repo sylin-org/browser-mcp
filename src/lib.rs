@@ -15,6 +15,7 @@
 pub mod browser;
 pub mod debug;
 pub mod dispatch;
+pub mod doctor;
 pub mod error;
 pub mod install;
 pub mod mcp;

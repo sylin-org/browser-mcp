@@ -40,8 +40,13 @@ pub fn default_endpoint() -> String {
 /// no zombie. (Do NOT add a post-`select!` `ipc_write.shutdown().await`: on an already-dead Windows
 /// pipe that write never completes and would itself hang the process. Dropping the halves on return
 /// closes the handle synchronously, which is all we need.)
-pub async fn relay_native_host(endpoint: &str) -> Result<()> {
+///
+/// `debug` is env-gated (see `main::run_native_host_role`): Chrome inherits its own environment
+/// when it launches this process and never passes `--debug`, so a native-host debug snapshot only
+/// exists when Chrome itself was started with `BROWSER_MCP_DEBUG=1`. Its absence is normal.
+pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
     let stream = connect(endpoint).await?;
+    debug.ipc_note("connected to mcp-server endpoint");
     let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
     let mut chrome_in = tokio::io::stdin();
     let mut chrome_out = tokio::io::stdout();
@@ -49,6 +54,7 @@ pub async fn relay_native_host(endpoint: &str) -> Result<()> {
     // extension -> mcp-server
     let upstream = async {
         while let Ok(Some(frame)) = host::read_message(&mut chrome_in).await {
+            debug.frame_in();
             if host::write_message(&mut ipc_write, &frame).await.is_err() {
                 break;
             }
@@ -60,6 +66,7 @@ pub async fn relay_native_host(endpoint: &str) -> Result<()> {
             if host::write_message(&mut chrome_out, &frame).await.is_err() {
                 break;
             }
+            debug.frame_out();
         }
     };
 
@@ -67,7 +74,19 @@ pub async fn relay_native_host(endpoint: &str) -> Result<()> {
         _ = upstream => {}
         _ = downstream => {}
     }
+    debug.ipc_note("relay ended");
     Ok(())
+}
+
+/// Result of a one-shot, synchronous probe of the IPC endpoint (see [`probe_endpoint`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointProbe {
+    /// No pipe/socket of this name exists: no mcp-server currently owns the endpoint.
+    Absent,
+    /// The endpoint exists and accepted a connection (opened and closed immediately).
+    Accepts,
+    /// The endpoint exists but the probe could not connect (detail explains why).
+    Rejects(String),
 }
 
 // --- Windows: named pipes ---
@@ -75,6 +94,37 @@ pub async fn relay_native_host(endpoint: &str) -> Result<()> {
 #[cfg(windows)]
 fn pipe_path(endpoint: &str) -> String {
     format!(r"\\.\pipe\{endpoint}")
+}
+
+/// Synchronously probe the named pipe (no tokio; used by `browser-mcp doctor`, which runs with no
+/// async runtime). Opens the pipe for read+write and immediately drops the handle -- no bytes are
+/// written or read. Known, harmless side effect: probing a live idle server briefly attaches this
+/// connection, logging one phantom connect/disconnect pair in *that* server's own debug state; it
+/// never disturbs an already-attached native-host (the probe just queues behind it and is drained).
+#[cfg(windows)]
+pub fn probe_endpoint(endpoint: &str) -> EndpointProbe {
+    let path = pipe_path(endpoint);
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            drop(file);
+            EndpointProbe::Accepts
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EndpointProbe::Absent,
+        Err(e) if e.raw_os_error() == Some(231) => {
+            EndpointProbe::Rejects("all pipe instances are busy".into())
+        }
+        Err(e) => EndpointProbe::Rejects(e.to_string()),
+    }
+}
+
+/// Human-readable display of the endpoint's OS-level path (for `browser-mcp doctor`'s report).
+#[cfg(windows)]
+pub fn endpoint_display(endpoint: &str) -> String {
+    pipe_path(endpoint)
 }
 
 /// mcp-server role (Windows): own the named pipe (single active session) and serve native-host
@@ -233,6 +283,42 @@ fn socket_path(endpoint: &str) -> Result<std::path::PathBuf> {
     Ok(base.join("browser-mcp").join(format!("{endpoint}.sock")))
 }
 
+/// Synchronously probe the Unix domain socket (no tokio; used by `browser-mcp doctor`, which runs
+/// with no async runtime). Connects and immediately drops the stream -- no bytes are written or
+/// read. Known, harmless side effect: probing a live idle server briefly attaches this connection,
+/// logging one phantom connect/disconnect pair in *that* server's own debug state; it never
+/// disturbs an already-attached native-host (the probe just queues behind it and is drained).
+#[cfg(unix)]
+pub fn probe_endpoint(endpoint: &str) -> EndpointProbe {
+    let path = match socket_path(endpoint) {
+        Ok(p) => p,
+        Err(e) => return EndpointProbe::Rejects(e.to_string()),
+    };
+    if !path.exists() {
+        return EndpointProbe::Absent;
+    }
+    match std::os::unix::net::UnixStream::connect(&path) {
+        Ok(stream) => {
+            drop(stream);
+            EndpointProbe::Accepts
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            EndpointProbe::Rejects("socket file exists but nothing is listening (stale)".into())
+        }
+        Err(e) => EndpointProbe::Rejects(e.to_string()),
+    }
+}
+
+/// Human-readable display of the endpoint's OS-level path (for `browser-mcp doctor`'s report), or
+/// `(unresolvable: <error>)` when the socket path itself cannot be computed.
+#[cfg(unix)]
+pub fn endpoint_display(endpoint: &str) -> String {
+    match socket_path(endpoint) {
+        Ok(p) => p.display().to_string(),
+        Err(e) => format!("(unresolvable: {e})"),
+    }
+}
+
 #[cfg(unix)]
 fn set_mode(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
@@ -338,5 +424,36 @@ mod tests {
             .expect("tool call round-trips over the real IPC");
         assert_eq!(result["echoed"], "navigate");
         fake.await.unwrap();
+    }
+
+    #[test]
+    fn probe_reports_absent_for_an_unused_endpoint() {
+        let endpoint = format!("browser-mcp-test-probe-absent-{}", std::process::id());
+        assert_eq!(probe_endpoint(&endpoint), EndpointProbe::Absent);
+    }
+
+    #[tokio::test]
+    async fn probe_reports_accepts_against_a_live_server() {
+        let endpoint = format!("browser-mcp-test-probe-accepts-{}", std::process::id());
+        let browser = Browser::new();
+        let serving_endpoint = endpoint.clone();
+        tokio::spawn(async move {
+            let _ = serve(browser, &serving_endpoint).await;
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let probe_endpoint_name = endpoint.clone();
+            let outcome = tokio::task::spawn_blocking(move || probe_endpoint(&probe_endpoint_name))
+                .await
+                .unwrap();
+            if outcome == EndpointProbe::Accepts {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("probe never reported Accepts against a live server: {outcome:?}");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
     }
 }
