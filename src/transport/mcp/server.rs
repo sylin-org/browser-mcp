@@ -15,6 +15,7 @@ use crate::browser::{classify, pattern, redact, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
+use crate::governance::manifest::source::{self, LoadedPolicy};
 use crate::governance::ports::{AuditSink, Denial};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
@@ -30,14 +31,34 @@ use tokio::sync::mpsc;
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the stdio MCP server loop until stdin closes. `browser` is the (shared) handle to the
-/// extension; tool calls are forwarded through it.
-pub async fn run(browser: Browser) -> Result<()> {
+/// extension; tool calls are forwarded through it. `loaded_policy` is the manifest resolved at
+/// startup (G12, shared format doc sections 1.2-1.3): `None` manifest means all-open. G12
+/// itself only feeds a user-supplied manifest's `config` entries into the layer resolver
+/// (below) and holds the rest at this scope for later stage-2 tasks (G13 grant enforcement,
+/// G14 tool-advertisement filtering) to read grants from; loading it does not change which
+/// calls execute.
+pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
+    if let Some(manifest) = &loaded_policy.manifest {
+        tracing::debug!(
+            name = %manifest.name,
+            version = %manifest.version,
+            hash = %manifest.hash,
+            "active manifest held for later governance tasks"
+        );
+    }
+
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     // Hot-reload substrate (ADR-0019): the resolved Config is held behind an atomic swap; the
     // watcher re-resolves on a config/org/manifest change with no restart. With no files
     // present this resolves to the built-in defaults, so all-open behavior is byte-identical
-    // to stage 1.
-    let store = ConfigStore::load_initial(pattern::is_valid_pattern)?;
+    // to stage 1. A user-supplied manifest's `config` entries feed the user layer here too
+    // (G12); an org-sourced manifest's entries already reach the org layers through G02's own
+    // independent parse of the same file, so `manifest_config_as_user_layer` yields an empty
+    // map in that case (see its own doc comment).
+    let store = ConfigStore::load_initial_with_manifest_config(
+        pattern::is_valid_pattern,
+        source::manifest_config_as_user_layer(&loaded_policy),
+    )?;
     store.clone().spawn_watcher();
 
     // The audit flight recorder (ADR-0018 step 1) is orthogonal to the governance mode: it

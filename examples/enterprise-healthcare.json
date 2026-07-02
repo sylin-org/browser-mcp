@@ -1,0 +1,45 @@
+{
+  "schema": 2,
+  "name": "enterprise-healthcare",
+  "version": "2026.07.1",
+  "mode": "observe",
+  "identity": {
+    "resolved_by": "managed_config",
+    "principal": "GEISINGER\\jdoe",
+    "groups": ["Dept-EA", "App-ServiceNow-Admin", "App-Epic-ClinicalRead"],
+    "resolved_at": "2026-07-01T08:00:00Z"
+  },
+  "grants": [
+    {
+      "id": "servicenow",
+      "domains": ["servicenow.geisinger.org"],
+      "access": "all",
+      "description": "ServiceNow incident and change management"
+    },
+    {
+      "id": "epic-restricted",
+      "domains": ["epic.geisinger.org", "mychart.geisinger.org"],
+      "access": "all",
+      "exclude_tools": ["javascript_tool"],
+      "description": "EHR automation without arbitrary JS execution",
+      "mode": "enforce"
+    },
+    {
+      "id": "research",
+      "domains": ["*.gartner.com", "*.forrester.com", "*.ieee.org", "scholar.google.com", "learn.microsoft.com"],
+      "access": "read",
+      "description": "External research resources"
+    },
+    {
+      "id": "internal-docs",
+      "domains": ["confluence.geisinger.org", "sharepoint.geisinger.org"],
+      "access": "read",
+      "description": "Internal documentation"
+    }
+  ],
+  "config": [
+    { "key": "audit.enabled", "value": true, "level": "mandatory" },
+    { "key": "audit.destination", "value": "file", "level": "mandatory" },
+    { "key": "content.security.secrets.redact", "value": true, "level": "recommended" }
+  ]
+}

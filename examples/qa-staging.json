@@ -1,0 +1,31 @@
+{
+  "schema": 2,
+  "name": "qa-staging",
+  "version": "2026.07.1",
+  "mode": "enforce",
+  "identity": {
+    "resolved_by": "environment",
+    "principal": "ci-runner",
+    "groups": ["QA-Automation"],
+    "resolved_at": "2026-07-01T10:00:00Z"
+  },
+  "grants": [
+    {
+      "id": "staging",
+      "domains": ["*.staging.geisinger.org"],
+      "access": "all",
+      "description": "Full automation on staging environment"
+    },
+    {
+      "id": "production-readonly",
+      "domains": ["*.geisinger.org"],
+      "access": "read",
+      "description": "Read-only verification on production"
+    }
+  ],
+  "config": [
+    { "key": "audit.enabled", "value": true, "level": "mandatory" },
+    { "key": "audit.destination", "value": "file", "level": "mandatory" },
+    { "key": "audit.file.path", "value": "/var/log/browser-mcp/qa-audit.jsonl", "level": "mandatory" }
+  ]
+}

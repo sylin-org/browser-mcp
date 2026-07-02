@@ -16,12 +16,15 @@
 //! `main` deliberately has no `#[tokio::main]`: the two async roles each build their own runtime,
 //! and the installer needs none.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use browser_mcp::browser::pattern;
 use browser_mcp::debug::DebugSink;
 use browser_mcp::doctor::DoctorOptions;
+use browser_mcp::governance::manifest::source;
 use browser_mcp::install::{InstallOptions, Selection, UninstallOptions};
 use browser_mcp::native::ipc;
 use browser_mcp::transport::executor::Browser;
+use browser_mcp::transport::mcp::tools;
 use clap::{Args, Parser, Subcommand};
 
 /// Browser MCP -- the user's own authenticated browser, for AI agents.
@@ -294,11 +297,35 @@ fn run_native_host_role(debug: bool) -> Result<()> {
 /// mcp-server role: own the browser IPC endpoint + serve the native-host in the background, run the
 /// stdio MCP JSON-RPC loop in the foreground. Both share the [`Browser`] handle.
 fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
-    tracing::info!(
-        ?manifest,
-        debug_mode = debug_on,
-        "browser-mcp starting (mcp-server role; v1.0 engine -- all-open, no governance overlay)"
-    );
+    // Resolve the user-supplied manifest source (G12, shared format doc section 1.3): the
+    // --manifest flag wins when both it and BROWSER_MCP_MANIFEST are set. Plain synchronous
+    // I/O, before the async runtime starts: a source that is SELECTED but cannot be read,
+    // parsed, or validated is a fatal startup error (an org policy that fails open is worse
+    // than a crash), so this must happen before a single JSON-RPC line is served.
+    let user_source = manifest.or_else(|| std::env::var("BROWSER_MCP_MANIFEST").ok());
+    let loaded_policy = source::load_policy(
+        user_source.as_deref(),
+        pattern::is_valid_pattern,
+        tools::is_known_tool,
+    )
+    .with_context(|| "loading the governance manifest")?;
+
+    match (&loaded_policy.manifest, &loaded_policy.origin) {
+        (Some(m), Some(origin)) => tracing::info!(
+            name = %m.name,
+            version = %m.version,
+            hash = %m.hash,
+            mode = ?m.mode,
+            origin = ?origin,
+            debug_mode = debug_on,
+            "browser-mcp starting (mcp-server role; governance overlay active)"
+        ),
+        _ => tracing::info!(
+            debug_mode = debug_on,
+            "browser-mcp starting (mcp-server role; no manifest: all-open)"
+        ),
+    }
+
     let sink = build_debug_sink(debug_on, "mcp-server");
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
@@ -317,7 +344,7 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
                 }
             }
         });
-        let result = browser_mcp::mcp::server::run(browser).await;
+        let result = browser_mcp::mcp::server::run(browser, loaded_policy).await;
         sink.flush(); // final snapshot after stdin closes
         result
     })?;

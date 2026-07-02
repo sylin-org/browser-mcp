@@ -119,6 +119,23 @@ impl ConfigStore {
     /// (the browser plugin's real pattern-syntax checker); it is retained for every later
     /// reload.
     pub fn load_initial(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<Arc<ConfigStore>> {
+        Self::load_initial_with_manifest_config(domain_pattern_valid, serde_json::Map::new())
+    }
+
+    /// [`Self::load_initial`], plus a user-supplied manifest's `config` entries merged into the
+    /// user layer (G12, shared format doc section 1.3 rule 2: a user-supplied manifest's
+    /// entries always land at the user layer, regardless of their declared `level`). The user
+    /// CONFIG FILE's own entries win on a key collision (inserted last): `config.json` is the
+    /// user's own direct, immediate expression of preference, while a `--manifest` source is
+    /// more likely an external or automated input. An org-sourced manifest's `config` entries
+    /// need no merge here at all: `governance::config::load::parse_org_config` already reads
+    /// them independently from the SAME org policy file, so they already reach the org layers
+    /// through the existing `org`/`user` reads below -- pass an empty map in that case (or when
+    /// there is no active manifest at all).
+    pub fn load_initial_with_manifest_config(
+        domain_pattern_valid: fn(&str) -> bool,
+        manifest_user_config: serde_json::Map<String, serde_json::Value>,
+    ) -> crate::Result<Arc<ConfigStore>> {
         let sources = WatchSources {
             user_config: load::user_config_path(),
             org_policy: load::org_policy_path(),
@@ -127,7 +144,9 @@ impl ConfigStore {
 
         let org = read_and_parse_org(&sources.org_policy, domain_pattern_valid);
         let user = read_and_parse_user(sources.user_config.as_deref(), domain_pattern_valid);
-        let (last_good, warnings, preset) = compose_initial(org, user)?;
+        let (mut last_good, warnings, preset) = compose_initial(org, user)?;
+
+        last_good.user = merge_manifest_user_config(manifest_user_config, last_good.user);
 
         for w in &warnings {
             tracing::warn!("config: {w}");
@@ -383,6 +402,22 @@ pub struct ReloadReport {
     pub errors: Vec<String>,
 }
 
+/// Merge a user-supplied manifest's `config` entries under the user config FILE's own values
+/// (G12, shared format doc section 1.3 rule 2): the file's entries are inserted last, so they
+/// win on a key collision. Pure, so the precedence rule is testable without touching real
+/// files or the manifest engine.
+fn merge_manifest_user_config(
+    manifest_user: serde_json::Map<String, serde_json::Value>,
+    file_user: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if manifest_user.is_empty() {
+        return file_user;
+    }
+    let mut merged = manifest_user;
+    merged.extend(file_user);
+    merged
+}
+
 /// Build the layer inputs from the last-good state (used by startup and when every source
 /// fails on reload). The preset layer stays empty; presets are G18's job.
 fn compose_inputs(last_good: &LastGoodInputs) -> layers::LayerInputs {
@@ -553,6 +588,31 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn manifest_user_config_merge_is_empty_when_manifest_contributes_nothing() {
+        let file_user = serde_json::Map::from_iter([("a".to_string(), json!(1))]);
+        let merged = merge_manifest_user_config(serde_json::Map::new(), file_user.clone());
+        assert_eq!(merged, file_user);
+    }
+
+    #[test]
+    fn manifest_user_config_merge_adds_manifest_only_keys() {
+        let manifest_user =
+            serde_json::Map::from_iter([("audit.enabled".to_string(), json!(true))]);
+        let file_user = serde_json::Map::from_iter([("a".to_string(), json!(1))]);
+        let merged = merge_manifest_user_config(manifest_user, file_user);
+        assert_eq!(merged.get("audit.enabled"), Some(&json!(true)));
+        assert_eq!(merged.get("a"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn manifest_user_config_merge_the_config_file_wins_on_collision() {
+        let manifest_user = serde_json::Map::from_iter([("a".to_string(), json!("from-manifest"))]);
+        let file_user = serde_json::Map::from_iter([("a".to_string(), json!("from-file"))]);
+        let merged = merge_manifest_user_config(manifest_user, file_user);
+        assert_eq!(merged.get("a"), Some(&json!("from-file")));
+    }
 
     #[test]
     fn valid_reload_adopts_both_sources() {

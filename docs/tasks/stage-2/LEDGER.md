@@ -15,8 +15,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
   identity), `g06` (audit flight recorder), `g07` (domain matcher), `g08` (sacred domains,
   the FIRST real enforcement path), `g10` (take-the-wheel pause, the FIRST task touching
-  `extension/`), `g11` (panic kill switch) landed. Phase C is COMPLETE.
-- NEXT TASK: Phase D, task `g12` (`docs/tasks/stage-2/g12-manifest-engine.md`).
+  `extension/`), `g11` (panic kill switch) landed. Phase C is COMPLETE. `g12` (manifest
+  engine: parse/validate/load, no enforcement yet) landed.
+- NEXT TASK: Phase D, task `g13` (`docs/tasks/stage-2/g13-grant-enforcement.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -1258,6 +1259,196 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   (killed-check precedes not-connected), and the audit marker without a browser; only the
   actual debugger-infobar disappearance, the real service-worker lifecycle event, and the
   end-to-end popup interaction need a human's eyes.
+
+### g12 manifest parsing, validation, and loading -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/manifest/document.rs` (the schema-2 manifest types:
+  `Manifest`/`IdentityBlock`/`Grant`/`Access`/`ConfigEntry`/`Level`, `ManifestError`, and
+  `parse_manifest`'s full pipeline; 32 inline tests); new `src/governance/manifest/source.rs`
+  (source-string grammar, org/user selection, `LoadedPolicy`, `load_policy`,
+  `manifest_config_as_user_layer`; 21 inline tests); `src/governance/manifest/mod.rs` (module
+  doc updated, `pub mod document;`/`pub mod source;`); `src/governance/config/reload.rs`
+  (`ConfigStore::load_initial` now delegates to a new
+  `load_initial_with_manifest_config`, which merges a user-manifest-derived map into the
+  user layer via a new pure `merge_manifest_user_config` helper; 3 new tests); `src/main.rs`
+  (`run_server` resolves `--manifest`/`BROWSER_MCP_MANIFEST`, calls `load_policy`, logs the
+  outcome truthfully, passes `LoadedPolicy` into `server::run`); `src/transport/mcp/server.rs`
+  (`run` takes `LoadedPolicy`, holds it for later stage-2 tasks, and feeds a user-manifest's
+  config entries into `ConfigStore`); new `examples/{enterprise-healthcare,
+  developer-observe,qa-staging}.json` (byte-for-byte as specified); new
+  `tests/manifest_validation.rs` (4 integration tests over the example files and the
+  all-open invariant).
+- Summary: the manifest engine's front half (ADR-0018 step 3 groundwork; nothing is
+  enforced yet). `parse_manifest(text, source_label, domain_pattern_valid, is_known_tool)`
+  runs the exact pipeline the doc specifies -- BOM strip, syntax parse (line/column on
+  failure), a `schema == 2` check BEFORE shape validation (so a schema-1 manifest gets
+  `UnsupportedSchema`, never a confusing shape error), typed deserialize from the STRING
+  with `deny_unknown_fields` on every struct (catching superseded blocks and an authored
+  `hash` key automatically, since `hash` is `#[serde(skip)]`), semantic field-path
+  validation (empty name/version, duplicate grant ids, empty/invalid domains,
+  `tools`/`exclude_tools` mutual exclusion and unknown-tool-name checks, unregistered or
+  wrongly-typed config keys), then a content hash reusing G09's `canonical_hash` verbatim
+  (not a second hash implementation). Source resolution (`env://`/`file://`/`managed://`/
+  bare-path grammar, the org-file-always-wins selection rule, always parsing and validating
+  a displaced user manifest so its errors stay fatal) and startup wiring (the CLI flag or
+  `BROWSER_MCP_MANIFEST`, a truthful startup log naming name/version/hash/mode/origin or
+  "no manifest: all-open", a fatal non-zero exit on any broken SELECTED source) are both
+  live and manually verified against the real binary (see Verification). A user-supplied
+  manifest's `config` entries now actually reach the layer resolver's user layer (with the
+  user config FILE's own entries winning on a key collision); an org-sourced manifest's
+  entries need no new wiring at all, since G02's own independent parse of the same file
+  already feeds them. `Governance`'s mode, `PolicyDecision`, and every dispatch-chokepoint
+  behavior are completely untouched: a loaded manifest changes nothing about which calls
+  execute, by construction (this task's own explicit scope boundary).
+- Deviations from the g-doc per RECONCILIATION.md / the module-placement map (paths
+  translated post-A1/G01/G02/G05/G07/G09; RECONCILIATION.md's own row --
+  "manifest parse/identity (g09, g12) -> governance/ (core) -- generic over any policy
+  doc" -- names this task explicitly):
+  1. **`document.rs` and `source.rs` land inside the EXISTING `governance/manifest/`
+     directory** (alongside G09's `identity.rs`), not new top-level `src/policy/manifest.rs`
+     / `src/policy/source.rs` files -- G09's own module doc already earmarked this exact
+     landing spot ("the manifest engine... lands here too, alongside identity, once it
+     ships") and its own code comments explicitly anticipated this task's arrival (see
+     deviation 2).
+  2. **The manifest's hash is computed by calling G09's `canonical_hash` directly**, not a
+     second, independent BOM-strip-then-SHA-256 implementation as the doc's own
+     `parse_manifest` sketch would produce standing alone. G09's own module doc predicted
+     exactly this: "When G12 lands, it computes identity from the exact source bytes it
+     already parsed... `canonical_hash` and `identity_from_source` stay as the shared
+     primitives." One hash algorithm, one implementation, called from both tasks.
+  3. **G09's own standalone org-policy-file reader (`manifest_status`/`ManifestStatus`/
+     `active_manifest_identity`, used by `doctor`) is DELIBERATELY LEFT UNTOUCHED**, even
+     though G09's own doc comment says it "retires in favor of the engine's loader" once
+     G12 lands. No task's scope (including this one) actually asks for that retirement or
+     for rewiring `doctor`'s "Policy manifest:" section onto the new engine --
+     G12's own diff-scope check (Verification step 6) does not list `doctor.rs` or
+     `identity.rs` among the expected touched files, and this task's own required test list
+     has no doctor-facing assertion. Retiring a working, already-tested standalone reader
+     unprompted would be scope creep beyond what any g-doc actually calls for; G09's
+     "retires in favor of" note remains an aspiration for a future task to act on, not an
+     implicit requirement of this one. `governance/manifest/identity.rs` shows no diff.
+  4. **Tool-name validation and domain-pattern-SYNTAX validation are BOTH injected as
+     function pointers** (`is_known_tool: fn(&str) -> bool`, `domain_pattern_valid:
+     fn(&str) -> bool`), rather than `document.rs` parsing `TOOLS_JSON` itself or
+     hand-rolling its own pattern grammar as the doc's own text assumes. This is the SAME
+     "known integration point" pattern used by G01/G02/A5/G03/G08 for exactly this class of
+     core-cannot-name-plugin problem: `governance/manifest/document.rs` cannot reference
+     the transport layer's tool-schema fixture OR the browser plugin's pattern module
+     without violating the a7 arch-test's forbidden-edge scan. `main.rs` (the composition
+     root) supplies the real `browser::pattern::is_valid_pattern` and
+     `transport::mcp::tools::is_known_tool` at the one real call site
+     (`source::load_policy`); `document.rs`'s and `source.rs`'s OWN test modules use small
+     test-local mirrors of both (a hardcoded 13-name list; a duplicated syntax check) so
+     their tests never depend on `browser::`/`transport::` either -- caught by the a7
+     arch-test itself the first time these files were compiled (it flagged even
+     TEST-module references, and separately flagged the literal substrings
+     `` `crate::transport::` `` / `` `crate::browser::` `` inside doc-comment PROSE
+     explaining why those references were avoided; both were reworded to describe the
+     avoidance without ever spelling out the forbidden path text).
+  5. **Reused `crate::governance::ports::EffectiveMode` for BOTH `Manifest.mode` and
+     `Grant.mode`**, per the doc's own explicit instruction ("If G02 already defined an
+     observe/enforce mode type... REUSE it instead of defining a duplicate"). No new `Mode`
+     enum was created. A NEW `Access` enum (`Read`/`Write`/`All`) WAS created, since nothing
+     existing captures a grant's access level (RECONCILIATION.md section 2 is explicit that
+     `RwClass`, the classification axis, is a distinct concept from a grant's `access`
+     field).
+  6. **Domain-pattern SYNTAX validation reuses G07/G08's already-landed, stricter
+     `browser::pattern::is_valid_pattern`** (ASCII-only, lowercase-only, per-label length
+     and hyphen-position rules), rather than the doc's own literal, more permissive
+     grammar sketch ("Case and non-ASCII are NOT load errors... compared after ASCII
+     lowercasing at match time... a small pure function... e.g.
+     `fn validate_pattern(p: &str) -> Result<(), String>`"). The doc's own prose describes
+     a pre-G07 vision (deferring case/non-ASCII handling to a future `policy explain`
+     lint and to G13's match-time lowercasing); G07's REAL, already-landed matcher took a
+     different, stricter position (`DomainPattern::parse` hard-rejects non-ASCII with
+     `PatternError::NonAscii`), and G08 already established the precedent of validating
+     `content.security.sacred_domains` with the even-stricter `is_valid_pattern` rather
+     than the more lenient `DomainPattern::parse`. Reusing the SAME validator for grant
+     `domains` keeps exactly one pattern-syntax grammar authoritative across the whole
+     codebase (sacred domains, grants) instead of introducing a third, one-off,
+     more-permissive variant that would contradict the two already-landed precedents. No
+     required test in this task's own list depends on which validator gates grant domains
+     (the required invalid-pattern list contains no uppercase or non-ASCII cases), so this
+     is a zero-test-impact consistency choice, not a functional gap. One accepted
+     consequence, noted for completeness: error messages name the offending pattern
+     ("invalid domain pattern '<pattern>'") but not the SPECIFIC grammar rule it broke,
+     since the reused validator returns only a boolean, not a reason string, unlike the
+     doc's own suggested signature.
+  7. **The "feed manifest config entries into G02's layer model" requirement (section 6)
+     was implemented ONLY for the user-manifest case**, via a new
+     `ConfigStore::load_initial_with_manifest_config` (default-delegated-to by the
+     unchanged `load_initial`) plus `source::manifest_config_as_user_layer`. Tracing through
+     the actual mechanics: G02's `parse_org_config` ALREADY reads the org policy file's
+     `config` array directly and independently (its own code comment already says so:
+     "consumes ONLY the schema and config members; grants, name, version, mode, and
+     identity belong to the manifest tasks"), so when the ORG file is the active manifest,
+     its config entries already reach the org layers through G02's existing, unrelated
+     path -- feeding them again from G12's OWN parsed `Manifest.config` would be a second,
+     redundant path to the SAME data, not a new one. The only genuinely new gap this task
+     had to fill is the USER-SUPPLIED-manifest case (`--manifest`/`BROWSER_MCP_MANIFEST`),
+     which had NO path into the layer resolver at all before this task (`ConfigStore` only
+     knew about the fixed org-policy-file and user-config-file paths). Precedence on a
+     same-key collision between the manifest's entries and the user config file's own
+     entries is not addressed by any doc; picked config.json-wins (the user's own direct,
+     immediate expression of preference outranks an external/automated `--manifest` input)
+     and documented the choice inline. Mid-session manifest reload/watching stays entirely
+     out of scope, per the task's own text; only STARTUP feeding was wired.
+  8. **`ManifestError`/`SourceError`/`LoadError` are plain `thiserror` enums surfaced via
+     `anyhow`'s blanket `?` conversion at the one real call site (`main.rs`)**, rather than
+     routed through `crate::Error`/`crate::Result`. `crate::Error::Config` already exists
+     (G02/G03) for the CONFIG REGISTRY's own errors; extending it with manifest-specific
+     variants would either overload one variant's meaning across two unrelated concerns or
+     require several new `crate::Error` variants for what are already complete, precise,
+     `std::error::Error`-implementing types. `anyhow::Context` (`with_context`) adds the
+     "loading the governance manifest" framing at the `main.rs` boundary, matching the
+     project's own stated style ("typed errors in library code, anyhow in the binary").
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green (277 lib unit tests, up from 224: +32 in
+  `governance::manifest::document::tests` -- every required valid-input, invalid-field,
+  and shape/field-error-classification case from the doc's own matrix; +21 in
+  `governance::manifest::source::tests` -- the full source-string grammar, the pure
+  selection function in all four presence combinations, the pure `combine` composition,
+  the org-file read/parse/absent/invalid cases against temp files (never the real
+  platform path), and the manifest-config-as-user-layer mandatory-downgrade/org-origin/
+  no-manifest cases; +3 in `governance::config::reload::tests` -- the manifest/file user
+  config merge precedence (empty contributes nothing, manifest-only keys pass through,
+  the config file wins on collision); all other suites unchanged and green:
+  `tests/all_open_golden.rs` 3, `tests/architecture.rs` 4 -- confirms the new
+  `governance/manifest/document.rs`/`source.rs` introduce zero forbidden edges (this is
+  where the arch-test caught two real mistakes during this task: production-adjacent test
+  helpers that named the transport/browser modules directly, and doc-comment PROSE that
+  spelled out the exact forbidden path text while explaining why it was avoided -- both
+  fixed, see deviation 4), `tests/audit_recorder.rs` 2, `tests/config_schema_golden.rs` 5
+  unchanged -- g12 registers no NEW config key, `tests/mcp_protocol.rs` 4 UNCHANGED --
+  proves the no-manifest path stays byte-identical end to end over stdio,
+  `tests/tool_schema_fidelity.rs` 6 unchanged; new `tests/manifest_validation.rs` 4 --
+  the three example files parse (with `qa-staging.json`'s Unix-shaped `audit.file.path`
+  producing the platform-correct, `cfg`-gated outcome: rejected on this Windows dev
+  machine by the pre-existing, unrelated `EmptyOrAbsolutePath` registry constraint from
+  G01, since `std::path::Path::is_absolute()` requires a drive letter on Windows; accepted
+  outcome asserted for non-Windows), plus the all-open invariant (confirmed no real org
+  policy file exists on this machine before asserting the strict `LoadedPolicy` shape, the
+  same guard G02/G09's own manual-verification passes used). `git status --short`
+  confirmed the touched-file set matches this entry's list exactly, with NO diff to
+  `Cargo.toml`/`Cargo.lock` (this task adds no new dependency: `sha2` was already present
+  since G09), `extension/`, `src/transport/mcp/schemas/tools.json`, or
+  `src/governance/dispatch.rs`. ASCII scan (`rg -n "[^\x00-\x7F]"`) clean on every
+  touched/new file including the three example JSON files. Manual checks per the task's
+  own Verification step 4, run live against the real binary (no browser needed): a valid
+  manifest (`--manifest file://examples/enterprise-healthcare.json`) logs
+  `name=enterprise-healthcare version=2026.07.1 hash=<64 hex> mode=Some(Observe)
+  origin=UserFile` exactly as required (plus two truthful downgrade warnings for its
+  `mandatory`-declared `audit.enabled`/`audit.destination` entries, correctly downgraded
+  per deviation 7); a `{"schema":1,...}` file fails with
+  "unsupported schema version 1 (only schema 2 is supported)"; a manifest with an invalid
+  grant domain fails naming the exact pattern and path
+  (`grants[0].domains[0]: invalid domain pattern '...'`); no `--manifest` at all logs
+  "no manifest: all-open" and the process continues exactly as before this task. All
+  manual-check temp files were written under the session scratchpad directory, never a
+  real system path, and removed afterward.
+- Browser checks queued: none (this task needs no browser at all -- it is pure parsing,
+  validation, and startup-time file/environment I/O; no extension file changes, no tool
+  advertisement changes, no dispatch-chokepoint behavior changes of any kind).
 
 ## Reminders before running BROWSER-TESTS.md
 
