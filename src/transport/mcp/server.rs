@@ -2,9 +2,8 @@
 //!
 //! Reads newline-delimited JSON-RPC from stdin, handles `initialize` / `tools/list` / `tools/call`,
 //! and writes responses to stdout (one compact JSON object per line). `tools/call` routes through
-//! [`crate::governance::dispatch`] (the v1.0 no-op policy/audit seams) and then forwards to the
-//! extension via the [`Browser`] handle. stdout is reserved for the protocol stream; operational
-//! logs go to stderr.
+//! the [`Governance`] facade (the dispatch chokepoint) and then forwards to the extension via the
+//! [`Browser`] handle. stdout is reserved for the protocol stream; operational logs go to stderr.
 //!
 //! `tools/call` runs concurrently: each call is spawned on its own task (so a slow or waiting call
 //! never blocks `initialize`, `ping`, or later requests) and every response -- inline or from a
@@ -12,13 +11,14 @@
 //! interleaved mid-write.
 
 use crate::browser::redact;
-use crate::governance::dispatch;
+use crate::governance::dispatch::Governance;
 use crate::governance::policy::Config;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::{Result, ToolError};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -41,6 +41,7 @@ pub async fn run(browser: Browser) -> Result<()> {
     // built-in "Minimal" preset (safe-by-default). When the manifest engine lands it resolves
     // this per session.
     let config = Config::default();
+    let governance = Arc::new(Governance::all_open());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<JsonRpcResponse>();
 
@@ -75,7 +76,7 @@ pub async fn run(browser: Browser) -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        if let Some(resp) = handle_line(&browser, config, line, &tx).await {
+        if let Some(resp) = handle_line(&browser, config, &governance, line, &tx).await {
             let _ = tx.send(resp);
         }
     }
@@ -92,6 +93,7 @@ pub async fn run(browser: Browser) -> Result<()> {
 async fn handle_line(
     browser: &Browser,
     config: Config,
+    governance: &Arc<Governance>,
     line: &str,
     tx: &mpsc::UnboundedSender<JsonRpcResponse>,
 ) -> Option<JsonRpcResponse> {
@@ -168,10 +170,12 @@ async fn handle_line(
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
         "tools/call" => {
             let browser = browser.clone();
+            let governance = Arc::clone(governance);
             let tx = tx.clone();
             let params = raw.get("params").cloned();
             tokio::spawn(async move {
-                let resp = handle_tools_call(&browser, config, id, params.as_ref()).await;
+                let resp =
+                    handle_tools_call(&browser, config, &governance, id, params.as_ref()).await;
                 let _ = tx.send(resp);
             });
             None
@@ -206,6 +210,7 @@ fn tools_list_result() -> Value {
 async fn handle_tools_call(
     browser: &Browser,
     config: Config,
+    governance: &Governance,
     id: Option<Value>,
     params: Option<&Value>,
 ) -> JsonRpcResponse {
@@ -228,10 +233,11 @@ async fn handle_tools_call(
         return JsonRpcResponse::success(id, error_result(err));
     }
 
-    // v1.0 engine: the policy and audit seams are no-ops (all-open). The v1.5 overlay slots in here
-    // without touching this code (see src/dispatch.rs).
-    let _decision = dispatch::policy_check(name);
-    dispatch::audit(name);
+    // Inbound governance decision at the single dispatch chokepoint (the PEP). Under all-open
+    // (no manifest, default config) this is a literal STEP-0 short-circuit to Allow that queries no
+    // port and resolves no resource, so behavior is byte-identical to the ungoverned engine. Acting
+    // on a Deny (enforcement) and emitting the audit record attach here in later stage-2 tasks.
+    let _decision = governance.decide(name);
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
     // Wait briefly for the channel instead of failing a healthy session (also covers calls

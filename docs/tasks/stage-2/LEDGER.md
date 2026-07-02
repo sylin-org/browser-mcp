@@ -9,8 +9,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 
 - Branch: `stage-2` (off `main`, which has stage 1 merged). Never push, never merge, never commit to
   `main`.
-- Progress: tasks `a1` (module reorg), `a2` (governance ports) landed.
-- NEXT TASK: Phase A, task `a3` (`docs/tasks/stage-2/a3-governance-facade.md`).
+- Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
+  (governance facade) landed.
+- NEXT TASK: Phase A, task `a7` (`docs/tasks/stage-2/a7-arch-test.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -30,7 +31,7 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Browser checks queued: <count> (appended to BROWSER-TESTS.md as <task-id>-<n>), or none
 
 ### a1 module reorg (governance/ browser/ transport/) -- 2026-07-02
-- Commit: (pending, see this task's commit)
+- Commit: e66b02f
 - Files touched: `git mv` of `src/dispatch.rs`, `src/policy/{mod.rs,redact.rs}`, `src/tools/**`,
   `src/native/**`, `src/mcp/**` (incl. `schemas/`), `src/browser.rs`; new
   `src/{governance,browser,transport}/mod.rs`; edited `src/lib.rs`, `src/main.rs`, `src/doctor.rs`,
@@ -64,7 +65,7 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   own scope note).
 
 ### a2 governance ports (the seam contract) -- 2026-07-02
-- Commit: (pending, see this task's commit)
+- Commit: 21994b6
 - Files touched: new `src/governance/ports.rs`; one-line `pub mod ports;` edit to
   `src/governance/mod.rs`.
 - Summary: purely additive seam contract. Added the axis/placeholder types (`RwClass`,
@@ -96,7 +97,7 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Browser checks queued: none (pure library addition; nothing runtime-observable changed).
 
 ### correction: RwClass Observe/Mutate rename -- 2026-07-02
-- Commit: (pending, see this fix commit; lands immediately before a3)
+- Commit: 8da1bee
 - Files touched: `src/governance/ports.rs` only (variant names + doc comment + every test use).
 - Summary: renamed `RwClass::{Read,Write}` to `RwClass::{Observe,Mutate}` per
   RECONCILIATION.md section 2, which is explicit-by-name that a2/a3 prompt text guessing
@@ -109,6 +110,41 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   `cargo test` green (same 88 lib tests, all 7 `governance::ports::tests` still passing with the
   new variant names and wire strings).
 - Browser checks queued: none.
+
+### a3 governance facade (dispatch chokepoint) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/dispatch.rs` (rewritten: removed the no-op
+  `PolicyDecision`/`policy_check`/`audit` seam, added the `Governance` facade); rewired
+  `src/transport/mcp/server.rs` (threads `Arc<Governance>` through `run` -> `handle_line` ->
+  `handle_tools_call`, replacing the two no-op seam calls with one `governance.decide(name)`);
+  extended `tests/all_open_golden.rs` (added `facade_decide_is_all_open_after_the_move` and
+  `read_page_redaction_is_still_wired_at_the_chokepoint`, renamed the old
+  `dispatch_seam_is_all_open_after_the_move` since the free functions it tested no longer exist).
+- Summary: `Governance` holds either `Mode::AllOpen` (zero-port, STEP-0 short-circuit to
+  `Decision::Allow { grant_id: None }`) or `Mode::Governed(GovernedState)` (a boxed
+  `PolicyDecisionPoint` + an `Arc<dyn AuditSink>`, exercised only by the new facade unit tests,
+  not by any production path yet). `decide` stays sync; the `Governed` branch builds a
+  placeholder `DecisionRequest` (empty grants, `RwClass::Observe`, `GoverningResource::None`,
+  `EffectiveMode::Observe`) and asks the held PDP -- with `NoopPdp` the result is still `Allow`.
+  The MCP server constructs `Governance::all_open()` once per session and calls `decide` at the
+  same chokepoint position the old two-line seam occupied; the decision is still bound to
+  `_decision` and ignored (no enforcement yet). `read_page` redaction is untouched in place.
+- Deviations from the g-doc per RECONCILIATION.md: used A2's real port/type names throughout
+  (`NoopPdp`, not the prompt's guessed `NoopPolicyDecisionPoint`; `RwClass::Observe`, already
+  corrected in the prior ledger entry) per constraint 8 ("match A2's exact names").
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean (no
+  `#[allow(dead_code)]` added; `pdp`/`audit` stay live via `decide`/`audit_sink`), `cargo test`
+  green (90 lib unit tests incl. the 2 new `governance::dispatch::tests`; `tests/all_open_golden.rs`
+  3 tests incl. the 2 new; `tests/mcp_protocol.rs` UNCHANGED and green -- exact byte-identical
+  `tools/list` and the exact no-extension hop-attributed message; `tests/tool_schema_fidelity.rs`
+  and `tests/peer_death.rs` unchanged). Grep confirmed `policy_check`/`PolicyDecision` no longer
+  appear anywhere except one historical mention in `dispatch.rs`'s own module doc ("replaces the
+  v1.0 no-op `policy_check` / `audit` seams"). ASCII scan clean.
+- Browser checks queued: none (binary-only chokepoint change; manual verification note per the
+  task's own Verification step 5 -- tools/list still shows 13 tools, a call with Chrome closed
+  still times out at ~5s, read_page redaction still defaults on -- is covered by the automated
+  `tests/all_open_golden.rs::read_page_redaction_is_still_wired_at_the_chokepoint` test added this
+  task, so no live-browser check is queued).
 
 ## Reminders before running BROWSER-TESTS.md
 
