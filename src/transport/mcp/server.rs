@@ -11,7 +11,7 @@
 //! interleaved mid-write.
 
 use crate::browser::{pattern, redact};
-use crate::governance::config::{load, Config};
+use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::Governance;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
@@ -30,11 +30,12 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 /// extension; tool calls are forwarded through it.
 pub async fn run(browser: Browser) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    // Layered configuration per ADR-0019 (org-mandatory > user > org-recommended > preset >
-    // built-in Minimal); with no config/policy files present this resolves to the built-in
-    // defaults and behavior is byte-identical to all-open.
-    let resolution = load::load_and_resolve(pattern::is_valid_pattern)?;
-    let config = Config::from_resolution(&resolution);
+    // Hot-reload substrate (ADR-0019): the resolved Config is held behind an atomic swap; the
+    // watcher re-resolves on a config/org/manifest change with no restart. With no files
+    // present this resolves to the built-in defaults, so all-open behavior is byte-identical
+    // to stage 1.
+    let store = ConfigStore::load_initial(pattern::is_valid_pattern)?;
+    store.clone().spawn_watcher();
     let governance = Arc::new(Governance::all_open());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<JsonRpcResponse>();
@@ -70,7 +71,7 @@ pub async fn run(browser: Browser) -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        if let Some(resp) = handle_line(&browser, &config, &governance, line, &tx).await {
+        if let Some(resp) = handle_line(&browser, &store, &governance, line, &tx).await {
             let _ = tx.send(resp);
         }
     }
@@ -86,7 +87,7 @@ pub async fn run(browser: Browser) -> Result<()> {
 /// [`Value`] so a structurally invalid but id-bearing request still gets an addressable `-32600`.
 async fn handle_line(
     browser: &Browser,
-    config: &Config,
+    store: &Arc<ConfigStore>,
     governance: &Arc<Governance>,
     line: &str,
     tx: &mpsc::UnboundedSender<JsonRpcResponse>,
@@ -139,7 +140,7 @@ async fn handle_line(
             // side initiates the connection (Chrome spawns the native-host, which dials the
             // endpoint this process has served since startup), so there is nothing to dial from
             // here; this watcher verifies readiness and records the outcome.
-            let wait_ms = config.first_call_wait_ms();
+            let wait_ms = store.current().first_call_wait_ms();
             tokio::spawn({
                 let browser = browser.clone();
                 async move {
@@ -162,13 +163,13 @@ async fn handle_line(
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
         "tools/call" => {
             let browser = browser.clone();
-            let config = config.clone();
+            let store = Arc::clone(store);
             let governance = Arc::clone(governance);
             let tx = tx.clone();
             let params = raw.get("params").cloned();
             tokio::spawn(async move {
                 let resp =
-                    handle_tools_call(&browser, &config, &governance, id, params.as_ref()).await;
+                    handle_tools_call(&browser, &store, &governance, id, params.as_ref()).await;
                 let _ = tx.send(resp);
             });
             None
@@ -202,11 +203,15 @@ fn tools_list_result() -> Value {
 
 async fn handle_tools_call(
     browser: &Browser,
-    config: &Config,
+    store: &Arc<ConfigStore>,
     governance: &Governance,
     id: Option<Value>,
     params: Option<&Value>,
 ) -> JsonRpcResponse {
+    // One snapshot for the whole call, taken once at entry: a reload mid-call must not tear
+    // the snapshot the call already started with.
+    let config = store.current();
+
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return JsonRpcResponse::error(id, -32602, "tools/call requires a string 'name'");
     };

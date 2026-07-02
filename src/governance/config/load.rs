@@ -108,7 +108,7 @@ pub fn parse_user_config(
 }
 
 /// The org-layer values extracted from the org policy file (shared format 1.2, 4.4).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct OrgConfig {
     /// Entries with "level": "mandatory" -- layer 1, locked.
     pub mandatory: serde_json::Map<String, serde_json::Value>,

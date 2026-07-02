@@ -30,9 +30,12 @@
 //! [`layers`] implements the ADR-0019 five-layer precedence model; [`load`] loads the two
 //! configuration files of the shared format doc section 1 and produces the layer inputs.
 //! [`Config::from_resolution`] builds the typed session `Config` from a [`layers::Resolution`].
+//! [`reload`] holds the in-force snapshot behind an atomic swap and re-resolves it live on a
+//! debounced file-watch, so config and org-policy changes take effect with no restart.
 
 pub mod layers;
 pub mod load;
+pub mod reload;
 
 /// A configuration preset: a named bundle of layer-4 defaults (shared format doc section 2).
 /// The built-in Minimal defaults (layer 5) equal the Safe preset.

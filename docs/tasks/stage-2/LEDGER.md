@@ -11,8 +11,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   `main`.
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
-  resolution) landed.
-- NEXT TASK: Phase A, task `a5` (`docs/tasks/stage-2/a5-hot-reload-substrate.md`).
+  resolution), `a5` (hot-reload substrate) landed.
+- NEXT TASK: Phase A, task `g03` (`docs/tasks/stage-2/g03-config-cli.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -294,6 +294,66 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the builtin layer only, exactly as required by the task's own verification note. ASCII scan
   clean on every touched/new file.
 - Browser checks queued: none (binary-only startup wiring; no browser-facing behavior changed).
+
+### a5 hot-reload substrate (atomic swap + debounced watch + validate-then-swap) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/config/reload.rs`; `src/governance/config/mod.rs`
+  (`pub mod reload;`); `src/governance/config/load.rs` (added `PartialEq` to `OrgConfig`, needed
+  for the store's no-change swap check); `src/transport/mcp/server.rs` (startup now builds an
+  `Arc<ConfigStore>` + spawns the watcher instead of a one-shot `load_and_resolve`; `handle_line`
+  / `handle_tools_call` thread `&Arc<ConfigStore>` and take a fresh `store.current()` snapshot
+  per call instead of a config value/reference).
+- Summary: `ConfigStore` holds the in-force `Config` behind `Mutex<Arc<Config>>` (not `ArcSwap`;
+  justified in the module doc -- the critical section is a single Arc clone, so a plain mutex
+  costs nothing extra and adds zero dependencies), a monotonic generation counter, a
+  `tokio::sync::watch` change signal for the future G14 `list_changed` emit, and the last-good
+  layer inputs per source. `load_initial` is FAIL-LOUD (an invalid org file or broken user file
+  refuses to start the server); `reresolve`/`notify_local_edit` are validate-then-swap and NEVER
+  return an error -- `plan_reload` is the pure security-rule planner: an invalid user source
+  keeps last-good and WARNs, an invalid org source keeps last-good and ERRORs (fail-closed,
+  verified end-to-end through the resolver in `invalid_org_is_fail_closed`). The watcher is a
+  zero-dependency debounced mtime poll (`fingerprint` + `settle`) over the three source paths
+  (user config, org policy, and a `None` manifest slot marked as a G12 integration point),
+  ticking every 750ms; `spawn_watcher` is called once at mcp-server startup only. The server's
+  per-call config read (`store.current()`) is what makes a mid-session reload take effect on
+  the very next call with no other plumbing.
+- Deviations from the g-doc per RECONCILIATION.md / carried forward from G01/G02's precedent:
+  the task's own literal signatures (`load_initial() -> Result<Arc<ConfigStore>>`, no parameter)
+  predate G01/G02's domain-pattern-validator injection. Since `ConfigStore` calls the same G02
+  parsers that need `domain_pattern_valid: fn(&str) -> bool`, and the watcher loop re-invokes
+  `reresolve()` with no per-call way to supply one, the validator is stored as a `ConfigStore`
+  field (set once via `load_initial(domain_pattern_valid)`) rather than threaded as a
+  per-call parameter -- the same shape of deviation as G01/G02, just carried one level further
+  since this is the first task where the same validator must be reused across many calls over
+  the store's lifetime, not just one. `reload.rs` lands in `governance/config/` (not a flat
+  `src/policy/reload.rs`), consistent with G01/G02's RECONCILIATION section 1 placement.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean
+  (one fix along the way: added `#[derive(PartialEq)]` to `OrgConfig`, needed for
+  `plan.new_last_good.org == last_good.org`-style test assertions and, more importantly, for the
+  `**slot == *candidate` no-change check inside `Config`'s derive chain -- `Config` itself
+  already derived `PartialEq` from G01/G02, `OrgConfig` had not needed to until this task
+  compared it directly in tests). `cargo test` green (129 lib unit tests, up from 119: +10 new
+  in `governance::config::reload::tests` covering the pure planner's four security-rule cases,
+  the store's swap/generation/signal behavior including a no-receivers case and a
+  `#[tokio::test]` for the change-signal wake, the debounce settle function's create/delete/
+  flicker cases, and the fail-loud-vs-keep-last-good boundary; `tests/all_open_golden.rs` 3
+  unchanged; `tests/architecture.rs` 4 unchanged and still green -- confirms the new watcher/swap
+  code introduces zero forbidden edges; `tests/mcp_protocol.rs` 4 unchanged, including the
+  byte-identical `tools/list` assertion, now exercised against a binary that spawns a live
+  background watcher task at startup -- proves the hot-reload substrate is behavior-preserving
+  end to end; `tests/peer_death.rs` 1 unchanged; `tests/tool_schema_fidelity.rs` 6 unchanged).
+  ASCII scan clean on every touched/new file.
+- Browser checks queued: none (this task needs no browser at all). Not queued to
+  BROWSER-TESTS.md, which is reserved for checks that need a live browser; noted here instead.
+  The task's own Verification step 6 (manual hot-reload smoke: edit the real
+  `%APPDATA%\browser-mcp\config.json` / `%ProgramData%\browser-mcp\policy.json` and watch
+  stderr) was NOT run in this pass: it requires writing to fixed, non-bypassable system config
+  paths shared with any other browser-mcp install/session on this machine (the org path
+  requires admin rights on Windows), which is a live-system-state change outside this
+  unattended run's scope. The automated suite exercises the same fail-closed/keep-last-good
+  logic end to end through the resolver (see `invalid_org_is_fail_closed`), so the behavior is
+  covered; only the literal file-watch-plus-stderr smoke is deferred, to a human, next to the
+  standard BROWSER-TESTS.md pass.
 
 ## Reminders before running BROWSER-TESTS.md
 
