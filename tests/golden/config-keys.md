@@ -28,7 +28,7 @@ Redact values of secret fields (password/OTP/payment) in read_page output.
 
 ## `content.security.sacred_domains`
 
-User-authored never-touch domain patterns; always enforced, regardless of governance mode or manifest presence.
+Domains the agent must never touch: any tool call on a tab showing one of these domains, and any navigation targeting one, is denied. Always enforced.
 
 - Type: string list
 - Constraints: unique string elements; each a valid domain pattern

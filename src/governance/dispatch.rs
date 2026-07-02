@@ -23,7 +23,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::governance::ports::{
-    AuditRecord, AuditSink, ClientInfo, Decision, DecisionRequest, EffectiveMode,
+    AuditRecord, AuditSink, ClientInfo, Decision, DecisionRequest, Denial, EffectiveMode,
     GoverningResource, PolicyDecisionPoint, RwClass,
 };
 
@@ -142,33 +142,36 @@ impl Governance {
         }
     }
 
-    /// Build and record one audit record for a completed tool call (ADR-0018 step 1: the flight
-    /// recorder). Called at the dispatch chokepoint after the call resolves, so the record
-    /// carries the real duration. `action` is the `computer` sub-action when `tool == "computer"`,
-    /// `None` otherwise.
+    /// Build and record one audit record for a completed, ALLOWED tool call (ADR-0018 step 1:
+    /// the flight recorder). Called at the dispatch chokepoint after the call resolves, so the
+    /// record carries the real duration. `action` is the `computer` sub-action when
+    /// `tool == "computer"`, `None` otherwise. `domain` is the current tab's host at decision
+    /// time when the sacred-domains check (g08) resolved one, `None` otherwise (shared format
+    /// doc section 6.1: `domain` is a decision-time fact, not derived from tool arguments).
     ///
-    /// `identity`, `domain`, `grant_id`, `denial_id`, and `manifest` are always `None` until the
-    /// manifest and enforcement tasks (G12/G13) land; `decision` is always `"allow"` until then
-    /// (this task adds no enforcement). A classification miss (`self.classify` returns `None`:
-    /// an unknown tool, or a `computer` call with a missing or unknown action) records
-    /// [`RwClass::Mutate`]: the record vocabulary is only observe/mutate, and an unclassifiable
-    /// call must never be presented as harmless observation.
-    pub fn record_call(&self, tool: &str, action: Option<&str>, duration_ms: u64) {
+    /// `identity`, `grant_id`, and `manifest` are always `None` until the manifest task (G12)
+    /// lands; `decision` is always `"allow"` (a denied call goes through [`Self::record_deny`]
+    /// instead). A classification miss (`self.classify` returns `None`: an unknown tool, or a
+    /// `computer` call with a missing or unknown action) records [`RwClass::Mutate`]: the
+    /// record vocabulary is only observe/mutate, and an unclassifiable call must never be
+    /// presented as harmless observation.
+    pub fn record_call(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        duration_ms: u64,
+        domain: Option<&str>,
+    ) {
         let rw = (self.classify)(tool, action).unwrap_or(RwClass::Mutate);
-        let client = self
-            .client
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
         let record = AuditRecord {
             event_id: uuid::Uuid::new_v4().to_string(),
             ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             identity: None,
-            client,
+            client: self.current_client(),
             tool: tool.to_string(),
             action: action.map(str::to_string),
             rw,
-            domain: None,
+            domain: domain.map(str::to_string),
             decision: "allow",
             grant_id: None,
             denial_id: None,
@@ -176,6 +179,49 @@ impl Governance {
             manifest: None,
         };
         self.audit.record(&record);
+    }
+
+    /// Build and record one audit record for a call DENIED before dispatch (the sacred-domains
+    /// rule, g08; later the grant-enforcement rules, g13). No tool call ever ran, so
+    /// `duration_ms` is `0` per shared format doc section 6.1. `action` is the `computer`
+    /// sub-action when `tool == "computer"`, `None` otherwise (the same classification wiring
+    /// [`Self::record_call`] uses -- a denial is still classified, since the record's `rw` field
+    /// is about the call's nature, not its outcome). `domain` is the current tab's host at
+    /// decision time when a current-tab check resolved one, `None` otherwise -- this is
+    /// independent of which host the denial itself names (`denial.domain`): a navigate-target
+    /// denial with an unresolvable current tab still records `domain: null` even though the
+    /// denial message names the target (shared format doc section 6.1).
+    pub fn record_deny(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        denial: &Denial,
+        domain: Option<&str>,
+    ) {
+        let rw = (self.classify)(tool, action).unwrap_or(RwClass::Mutate);
+        let record = AuditRecord {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            identity: None,
+            client: self.current_client(),
+            tool: tool.to_string(),
+            action: action.map(str::to_string),
+            rw,
+            domain: domain.map(str::to_string),
+            decision: "deny",
+            grant_id: denial.grant_id.clone(),
+            denial_id: Some(denial.denial_id.clone()),
+            duration_ms: 0,
+            manifest: None,
+        };
+        self.audit.record(&record);
+    }
+
+    fn current_client(&self) -> Option<ClientInfo> {
+        self.client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -245,7 +291,7 @@ mod tests {
             g.decide("navigate"),
             Decision::Allow { grant_id: None }
         ));
-        g.record_call("navigate", None, 5);
+        g.record_call("navigate", None, 5, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
@@ -254,7 +300,7 @@ mod tests {
         let sink = Arc::new(CountingAuditSink::default());
         let g = Governance::governed(Box::new(NoopPdp), sink.clone(), no_classification);
         assert!(matches!(g.decide("navigate"), Decision::Allow { .. }));
-        g.record_call("navigate", None, 0);
+        g.record_call("navigate", None, 0, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
@@ -262,9 +308,9 @@ mod tests {
     fn classification_miss_records_mutate() {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
-        g.record_call("no_such_tool", None, 0);
+        g.record_call("no_such_tool", None, 0, None);
         assert_eq!(sink.last().rw, RwClass::Mutate);
-        g.record_call("computer", None, 0);
+        g.record_call("computer", None, 0, None);
         assert_eq!(
             sink.last().rw,
             RwClass::Mutate,
@@ -277,15 +323,15 @@ mod tests {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), sample_classify);
 
-        g.record_call("computer", Some("screenshot"), 0);
+        g.record_call("computer", Some("screenshot"), 0, None);
         let rec = sink.last();
         assert_eq!(rec.rw, RwClass::Observe);
         assert_eq!(rec.action.as_deref(), Some("screenshot"));
 
-        g.record_call("computer", Some("left_click"), 0);
+        g.record_call("computer", Some("left_click"), 0, None);
         assert_eq!(sink.last().rw, RwClass::Mutate);
 
-        g.record_call("read_page", None, 0);
+        g.record_call("read_page", None, 0, None);
         let rec = sink.last();
         assert_eq!(rec.rw, RwClass::Observe);
         assert_eq!(rec.action, None);
@@ -302,9 +348,39 @@ mod tests {
         assert_eq!(stored.as_ref().unwrap().version, "1");
         drop(stored);
 
-        g.record_call("navigate", None, 0);
+        g.record_call("navigate", None, 0, None);
         let client = sink.last().client.expect("client info recorded");
         assert_eq!(client.name, "a");
         assert_eq!(client.version, "1");
+    }
+
+    #[test]
+    fn record_call_passes_the_resolved_domain_through() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), no_classification);
+        g.record_call("read_page", None, 0, Some("www.mybank.com"));
+        assert_eq!(sink.last().domain.as_deref(), Some("www.mybank.com"));
+    }
+
+    #[test]
+    fn record_deny_writes_a_zero_duration_deny_record() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), sample_classify);
+        let denial = Denial {
+            rule: "sacred/*.mybank.com".to_string(),
+            grant_id: None,
+            denial_id: "D-af6633ec".to_string(),
+            domain: "www.mybank.com".to_string(),
+            message: "Denied (D-af6633ec): www.mybank.com is on the user's never-touch list."
+                .to_string(),
+        };
+        g.record_deny("read_page", None, &denial, Some("www.mybank.com"));
+        let rec = sink.last();
+        assert_eq!(rec.decision, "deny");
+        assert_eq!(rec.denial_id.as_deref(), Some("D-af6633ec"));
+        assert_eq!(rec.grant_id, None);
+        assert_eq!(rec.duration_ms, 0);
+        assert_eq!(rec.domain.as_deref(), Some("www.mybank.com"));
+        assert_eq!(rec.rw, RwClass::Observe);
     }
 }

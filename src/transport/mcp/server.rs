@@ -10,11 +10,12 @@
 //! spawned call -- funnels through a single writer task that owns stdout, so lines are never
 //! interleaved mid-write.
 
-use crate::browser::{classify, pattern, redact};
+use crate::browser::pattern::HostOutcome;
+use crate::browser::{classify, pattern, redact, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::Governance;
-use crate::governance::ports::AuditSink;
+use crate::governance::ports::{AuditSink, Denial};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -284,6 +285,24 @@ async fn handle_tools_call(
         None
     };
 
+    // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
+    // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
+    // "always-on carve-out". STEP A: an empty list (every preset's default) is the
+    // byte-identical fast path -- no extension traffic, no parsing, no allocation.
+    let sacred_domains = config.sacred_domains();
+    let SacredCheck { tab_domain, denial } = if sacred_domains.is_empty() {
+        SacredCheck {
+            tab_domain: None,
+            denial: None,
+        }
+    } else {
+        sacred_check(browser, sacred_domains, name, &args).await
+    };
+    if let Some(denial) = denial {
+        governance.record_deny(name, action, &denial, tab_domain.as_deref());
+        return JsonRpcResponse::success(id, text_content(denial.message));
+    }
+
     // Bounded first-call wait: the first call of a session races the extension handshake.
     // Wait briefly for the channel instead of failing a healthy session (also covers calls
     // arriving during a mid-session reconnect). If the wait times out, `waited` stays `None` and
@@ -307,7 +326,7 @@ async fn handle_tools_call(
 
     let outcome = browser.call(name, &args).await;
     let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    governance.record_call(name, action, duration_ms);
+    governance.record_call(name, action, duration_ms, tab_domain.as_deref());
 
     match outcome {
         // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
@@ -332,6 +351,97 @@ async fn handle_tools_call(
             }
             JsonRpcResponse::success(id, result)
         }
+    }
+}
+
+/// Outcome of the sacred-domains check (shared format doc section 3.4, g08).
+struct SacredCheck {
+    /// The current tab's host at decision time (shared format doc section 6.1 `domain` field),
+    /// resolved independently of whether a denial fired -- an allowed call on a clean tab still
+    /// carries its `domain` through to the audit record.
+    tab_domain: Option<String>,
+    /// The denial, if the current tab (STEP B) or, for `navigate`, the target (STEP C) matched
+    /// a sacred pattern.
+    denial: Option<Denial>,
+}
+
+/// STEPs B and C of the sacred-domains check. Only called when the list is non-empty (STEP A,
+/// the caller's job). Always enforced, independent of `governance.mode` or manifest presence --
+/// RECONCILIATION.md section 1's "always-on carve-out": this runs at the dispatch chokepoint
+/// directly, bypassing the grant-based `PolicyDecisionPoint` machinery g12/g13 wire in later
+/// (this rule predates and is exempt from that machinery by design, g08 constraint 9).
+///
+/// STEP B (current-tab check, any tool carrying a numeric `tabId`) runs first, so a sacred
+/// current tab denies with the tab's host in the message even for `navigate` (never-touch means
+/// the user, not the agent, moves that tab). STEP C (the `navigate` target) runs even when
+/// STEP B could not resolve the tab, since it is local and needs no extension.
+async fn sacred_check(
+    browser: &Browser,
+    sacred_domains: &[String],
+    tool: &str,
+    args: &Value,
+) -> SacredCheck {
+    let tab_host = match args.get("tabId").and_then(Value::as_i64) {
+        Some(tab_id) => resolve_tab_host(browser, tab_id).await,
+        None => None,
+    };
+    let tab_domain = tab_host.as_ref().map(|h| h.as_str().to_string());
+
+    if let Some(host) = &tab_host {
+        if let Some(pattern) = sacred::first_match(host, sacred_domains) {
+            return SacredCheck {
+                tab_domain,
+                denial: Some(sacred::sacred(host.as_str(), pattern)),
+            };
+        }
+    }
+
+    if tool == "navigate" {
+        if let Some(target_host) = args
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(sacred::navigate_target_host)
+        {
+            if let Some(pattern) = sacred::first_match(&target_host, sacred_domains) {
+                return SacredCheck {
+                    tab_domain,
+                    denial: Some(sacred::sacred(target_host.as_str(), pattern)),
+                };
+            }
+        }
+    }
+
+    SacredCheck {
+        tab_domain,
+        denial: None,
+    }
+}
+
+/// Resolve the current host of tab `tab_id` via the internal `tabs_context_mcp` lookup. This is
+/// machinery, not an MCP tool call: it produces no audit record of its own (shared format doc
+/// section 6). Any failure along the way -- the call errors (extension not connected), the reply
+/// is not the expected JSON shape (for example the `No Browser MCP tab group` plain-text reply),
+/// the tab id is absent from the list, or the url is empty/unparseable -- yields `None`: a deny
+/// requires a positive match on a resolved host, so an unresolved lookup never denies (g08
+/// constraint 12). Tabs outside the group are refused by the extension itself, and a genuinely
+/// failing extension fails the real call identically; this function does not fabricate
+/// protection from that failure.
+async fn resolve_tab_host(browser: &Browser, tab_id: i64) -> Option<pattern::MatchHost> {
+    let result = browser
+        .call("tabs_context_mcp", &json!({ "createIfEmpty": false }))
+        .await
+        .ok()?;
+    let text = result.get("content")?.get(0)?.get("text")?.as_str()?;
+    let parsed: Value = serde_json::from_str(text).ok()?;
+    let tabs = parsed.get("tabs")?.as_array()?;
+    let url = tabs
+        .iter()
+        .find(|t| t.get("tabId").and_then(Value::as_i64) == Some(tab_id))?
+        .get("url")?
+        .as_str()?;
+    match pattern::host_for_matching(url) {
+        HostOutcome::Host(h) => Some(h),
+        HostOutcome::NonHttpScheme(_) | HostOutcome::Unparseable => None,
     }
 }
 
@@ -360,7 +470,11 @@ fn append_wait_note(result: &mut Value, waited: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::config::Config;
+    use crate::governance::config::layers::{self, LayerInputs};
+    use crate::governance::config::{Config, CONTENT_SECURITY_SACRED_DOMAINS};
+    use crate::transport::native::host;
+    use std::sync::Mutex;
+    use std::time::Duration as StdDuration;
 
     fn temp_audit_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -387,6 +501,323 @@ mod tests {
         assert_eq!(ts.len(), 24, "ts: {ts}");
         assert!(ts.ends_with('Z'), "ts: {ts}");
         chrono::DateTime::parse_from_rfc3339(ts).expect("ts parses as rfc3339");
+    }
+
+    /// A `Config` whose `content.security.sacred_domains` resolves to exactly `patterns`,
+    /// everything else at its Minimal default. Built through the real layered resolver (not a
+    /// hand-built `Config`) so validation runs exactly as it would in production.
+    fn config_with_sacred_domains(patterns: &[&str]) -> Config {
+        let inputs = LayerInputs {
+            user: serde_json::Map::from_iter([(
+                CONTENT_SECURITY_SACRED_DOMAINS.to_string(),
+                json!(patterns),
+            )]),
+            ..Default::default()
+        };
+        Config::from_resolution(&layers::resolve(&inputs))
+    }
+
+    async fn wait_connected(browser: &Browser) {
+        for _ in 0..200 {
+            if browser.is_connected() {
+                return;
+            }
+            tokio::time::sleep(StdDuration::from_millis(5)).await;
+        }
+        panic!("browser never reported connected");
+    }
+
+    /// Attach a fake extension over an in-memory duplex pipe (the same pattern
+    /// `transport::executor`'s own tests use). Answers a `tool_request` for any tool name found
+    /// in `responses` with that canned result and records the tool names seen, in arrival order,
+    /// into the returned `Arc<Mutex<Vec<String>>>`. Panics if a `tool_request` arrives for a
+    /// tool not in `responses` -- tests use this to prove a denied call never reaches the real
+    /// tool.
+    fn attach_fake_extension(
+        browser: &Browser,
+        responses: Vec<(&'static str, Value)>,
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
+        let attached = browser.clone();
+        tokio::spawn(async move {
+            let _ = attached.attach(browser_side).await;
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_task = Arc::clone(&seen);
+        let responses: std::collections::HashMap<&'static str, Value> =
+            responses.into_iter().collect();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Some(req) = host::read_message(&mut ext_side).await.unwrap() else {
+                    break;
+                };
+                let v: Value = serde_json::from_slice(&req).unwrap();
+                let tool = v["tool"].as_str().unwrap().to_string();
+                seen_for_task.lock().unwrap().push(tool.clone());
+                let result = responses
+                    .get(tool.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| panic!("unexpected tool_request for '{tool}'"));
+                let reply = json!({ "id": v["id"], "type": "tool_response", "result": result });
+                host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                    .await
+                    .unwrap();
+            }
+        });
+        (handle, seen)
+    }
+
+    /// A `tabs_context_mcp` reply reporting one tab at `url`, in the exact shape
+    /// `resolve_tab_host` expects: a text content item whose text is the pretty/compact JSON of
+    /// `{ "mcpGroupId": 1, "tabs": [...] }`.
+    fn tabs_context_reply(tab_id: i64, url: &str) -> Value {
+        let text = json!({
+            "mcpGroupId": 1,
+            "tabs": [{ "tabId": tab_id, "title": "", "url": url }],
+        })
+        .to_string();
+        json!({ "content": [{ "type": "text", "text": text }] })
+    }
+
+    /// Test 6 (g08 spec section 6): a tab showing a sacred host denies every tool that carries
+    /// its `tabId`, including `navigate` (navigating AWAY is denied too), and the extension
+    /// never receives anything but the `tabs_context_mcp` pre-flight.
+    #[tokio::test]
+    async fn sacred_tab_denies_every_tool_and_never_runs_it() {
+        let path = temp_audit_path("sacred-tab");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["*.mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension(
+            &browser,
+            vec![(
+                "tabs_context_mcp",
+                tabs_context_reply(5, "https://www.mybank.com/account"),
+            )],
+        );
+        wait_connected(&browser).await;
+
+        let cases = [
+            ("read_page", json!({ "tabId": 5 })),
+            ("computer", json!({ "action": "screenshot", "tabId": 5 })),
+            (
+                "javascript_tool",
+                json!({ "action": "javascript_exec", "text": "1", "tabId": 5 }),
+            ),
+            (
+                "navigate",
+                json!({ "url": "https://example.com", "tabId": 5 }),
+            ),
+        ];
+        for (tool, args) in cases {
+            let params = json!({ "name": tool, "arguments": args });
+            let resp =
+                handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params))
+                    .await;
+            let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+                .as_str()
+                .expect("text content block");
+            assert!(
+                text.starts_with("Denied (D-af6633ec)"),
+                "{tool}: unexpected text: {text}"
+            );
+            assert!(text.contains("www.mybank.com"), "{tool}: {text}");
+        }
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 4, "exactly one deny record per denied call");
+        for rec in &lines {
+            assert_eq!(rec["decision"], "deny");
+            assert_eq!(rec["denial_id"], "D-af6633ec");
+            assert_eq!(rec["domain"], "www.mybank.com");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["tabs_context_mcp"; 4],
+            "the extension must never see anything but the tabs_context_mcp pre-flight"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Test 7 (g08 spec section 6): a `navigate` target matching a sacred pattern is denied
+    /// even when the current tab is clean; a target that does not match is allowed.
+    #[tokio::test]
+    async fn navigate_target_denied_even_when_tab_is_clean() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, _seen) = attach_fake_extension(
+            &browser,
+            vec![
+                (
+                    "tabs_context_mcp",
+                    tabs_context_reply(5, "https://example.com/"),
+                ),
+                (
+                    "navigate",
+                    json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+                ),
+            ],
+        );
+        wait_connected(&browser).await;
+
+        let denied_params = json!({
+            "name": "navigate",
+            "arguments": { "url": "mybank.com", "tabId": 5 },
+        });
+        let denied = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            Some(json!(1)),
+            Some(&denied_params),
+        )
+        .await;
+        let denied_text = denied.result.as_ref().expect("tool result present")["content"][0]
+            ["text"]
+            .as_str()
+            .expect("text content block");
+        assert!(
+            denied_text.starts_with("Denied (D-171052e3)"),
+            "{denied_text}"
+        );
+        assert!(denied_text.contains("mybank.com"));
+
+        let allowed_params = json!({
+            "name": "navigate",
+            "arguments": { "url": "https://example.org", "tabId": 5 },
+        });
+        let allowed = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            Some(json!(2)),
+            Some(&allowed_params),
+        )
+        .await;
+        let allowed_text = allowed.result.as_ref().expect("tool result present")["content"][0]
+            ["text"]
+            .as_str()
+            .expect("text content block");
+        assert_eq!(allowed_text, "navigated");
+    }
+
+    /// Test 8 (g08 spec section 6): with the default (empty) sacred list, a call reaches the
+    /// fake extension directly -- no `tabs_context_mcp` pre-flight ever -- and an unconnected
+    /// browser still resolves the sacred check without any browser access.
+    #[tokio::test]
+    async fn empty_list_is_byte_identical() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        assert!(store.current().sacred_domains().is_empty());
+
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension(
+            &browser,
+            vec![(
+                "read_page",
+                json!({ "content": [{ "type": "text", "text": "page text" }] }),
+            )],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert_eq!(text, "page text");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["read_page"],
+            "no tabs_context_mcp pre-flight ever, with an empty list"
+        );
+
+        // Allow resolves without touching the browser at all: an unconnected Browser still
+        // reaches the ordinary not-connected error, never a sacred pre-flight attempt.
+        let unconnected = Browser::new();
+        let params2 = json!({ "name": "navigate", "arguments": {} });
+        let resp2 = handle_tools_call(
+            &unconnected,
+            &store,
+            &governance,
+            Some(json!(2)),
+            Some(&params2),
+        )
+        .await;
+        let text2 = resp2.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert!(text2.contains("not connected"), "{text2}");
+    }
+
+    /// Test 9 (g08 spec section 6): a denied call writes exactly one audit record, and the
+    /// internal `tabs_context_mcp` lookup writes none.
+    #[tokio::test]
+    async fn denied_call_writes_one_deny_record() {
+        let path = temp_audit_path("deny-record");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["*.mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, _seen) = attach_fake_extension(
+            &browser,
+            vec![(
+                "tabs_context_mcp",
+                tabs_context_reply(5, "https://www.mybank.com/account"),
+            )],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let _ =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+
+        let lines = read_lines(&path);
+        assert_eq!(
+            lines.len(),
+            1,
+            "exactly one record: the tabs_context_mcp lookup writes none"
+        );
+        let rec = &lines[0];
+        assert_eq!(rec["decision"], "deny");
+        let denial_id = rec["denial_id"].as_str().expect("denial_id is a string");
+        assert!(
+            denial_id.starts_with("D-") && denial_id.len() == 10,
+            "{denial_id}"
+        );
+        assert_eq!(rec["grant_id"], Value::Null);
+        assert_eq!(rec["duration_ms"], 0);
+        assert_eq!(rec["domain"], "www.mybank.com");
+
+        std::fs::remove_file(&path).ok();
     }
 
     /// Test 10 (g06 spec section 6, adapted to the post-A3/A5 architecture): drives the real

@@ -319,8 +319,10 @@ pub const ENGINE_CONNECTION_FIRST_CALL_WAIT_MS: &str = "engine.connection.first_
 pub const CONTENT_SECURITY_SECRETS_REDACT: &str = "content.security.secrets.redact";
 
 /// `content.security.sacred_domains` -- user-authored never-touch domain patterns (ADR-0018
-/// step 2). Always enforced regardless of `governance.mode` or manifest presence. Matching
-/// semantics land with the matcher task; only pattern SYNTAX is validated here.
+/// step 2). Always enforced regardless of `governance.mode` or manifest presence, at the
+/// dispatch chokepoint (`browser::sacred`, `transport::mcp::server`). Values are validated
+/// against the section 5.1 pattern grammar (`browser::pattern::is_valid_pattern`) at config
+/// load; matching semantics live in `browser::pattern`/`browser::sacred`.
 pub const CONTENT_SECURITY_SACRED_DOMAINS: &str = "content.security.sacred_domains";
 
 /// `audit.enabled` -- record one audit line per tool call (the flight recorder, ADR-0018 step
@@ -365,7 +367,7 @@ pub const KEYS: &[KeyDef] = &[
     },
     KeyDef {
         key: CONTENT_SECURITY_SACRED_DOMAINS,
-        description: "User-authored never-touch domain patterns; always enforced, regardless of governance mode or manifest presence.",
+        description: "Domains the agent must never touch: any tool call on a tab showing one of these domains, and any navigation targeting one, is denied. Always enforced.",
         constraint: KeyConstraint::DomainPatternList,
         default_fully_open: KeyValue::StrList(&[]),
         default_safe: KeyValue::StrList(&[]),

@@ -13,8 +13,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
   landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
-  identity), `g06` (audit flight recorder), `g07` (domain matcher) landed.
-- NEXT TASK: Phase C, task `g08` (`docs/tasks/stage-2/g08-sacred-domains.md`).
+  identity), `g06` (audit flight recorder), `g07` (domain matcher), `g08` (sacred domains,
+  the FIRST real enforcement path) landed.
+- NEXT TASK: Phase C, task `g10` (`docs/tasks/stage-2/g10-take-the-wheel-pause.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -833,6 +834,169 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   ASCII-only constraint).
 - Browser checks queued: none (pure library addition; nothing wired into dispatch,
   config, or any enforcement path; no runtime-observable behavior change of any kind).
+
+### g08 sacred domains: the never-touch list with structured denials -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/config/mod.rs` (updated `CONTENT_SECURITY_SACRED_DOMAINS`'s
+  registry description to the exact shared-format-doc 3.4 string, and its doc comment);
+  new `src/governance/denial.rs` (`denial_id`); `src/governance/mod.rs` (`pub mod denial;`);
+  `src/governance/ports.rs` (`Denial` grown from A2's 2-field placeholder to the full
+  5-field shape; the one existing test constructing it updated); `src/governance/dispatch.rs`
+  (`Governance::record_call` gained a `domain: Option<&str>` parameter, new
+  `Governance::record_deny` method, both with tests); new `src/browser/sacred.rs`
+  (`first_match`, `navigate_target_host`, `sacred`); `src/browser/mod.rs` (`pub mod sacred;`,
+  module doc); `src/transport/mcp/server.rs` (the STEP A/B/C enforcement wiring in
+  `handle_tools_call`, a new `SacredCheck` struct, `sacred_check`/`resolve_tab_host`
+  functions, 4 new chokepoint tests); `tests/audit_recorder.rs` (2 call sites updated for
+  `record_call`'s new parameter); `tests/golden/config-schema.json` +
+  `tests/golden/config-keys.md` (regenerated: only the sacred-domains description string
+  changed).
+- Summary: the first real enforcement anywhere in the product (ADR-0018 step 2). A
+  `navigate` whose target host matches a `content.security.sacred_domains` pattern, or ANY
+  tool call whose current tab's host matches one, is denied before the tool runs, with a
+  stable `"D-" + 8-lowercase-hex` denial id (SHA-256 of `manifest_hash + "\n" + grant_id +
+  "\n" + rule`, pinned and independently verified in Python before writing any test: `D-
+  171052e3` for `sacred/mybank.com`, `D-af6633ec` for `sacred/*.mybank.com`) and a plain,
+  actionable message naming only the matched host and the id -- never the pattern, the
+  rest of the list, or any config key name. STEP A: an empty list (every preset's default)
+  is a byte-identical fast path -- no extension traffic, no parsing, no allocation --
+  verified by a dedicated test asserting the extension sees only the real tool's own
+  frame. STEP B: for any tool call carrying a numeric `tabId`, an internal
+  `tabs_context_mcp` lookup (machinery, not an MCP tool call -- it writes no audit record
+  of its own) resolves the current tab's host via G07's `host_for_matching`; a failed
+  lookup (not connected, tab not in the group, unparseable URL) never denies -- a deny
+  requires a positive match, never a fabricated one. STEP C: for `navigate`, the target
+  URL is normalized via a hand-rolled mirror of `extension/service-worker.js`'s own
+  normalization (`back`/`forward` -> none; `http(s)://` -> parse as-is; `about:`/`chrome:`/
+  `edge:`/`brave:` -> none; otherwise strip one leading 1-6-char scheme prefix then
+  prepend `https://`) and checked the same way. STEP B runs first and covers `navigate`
+  too (a tab showing a sacred domain may not be touched AT ALL, including navigating it
+  away); STEP C runs even when STEP B could not resolve the tab, since it needs no
+  extension. A denial short-circuits before `browser.call` ever fires (the real tool never
+  runs) and writes exactly one audit record via a new `Governance::record_deny` method
+  (`decision: "deny"`, the stable `denial_id`, `grant_id: null`, `duration_ms: 0`); an
+  allowed call's existing `record_call` now also carries the STEP-B-resolved `domain`
+  through, so a truthful current-tab host reaches the record even when nothing was denied.
+- Deviations from the g-doc per RECONCILIATION.md (the second-largest deviation set after
+  g06; g08's own doc predates A1/A2/A3/A5/G06/G07 and assumes a flat `src/dispatch.rs` +
+  `src/mcp/server.rs` + `src/policy/{denial,sacred}.rs` tree, a `Config` passed by value,
+  and a `Recorder` that owns `set_client`/`record_call` directly):
+  1. **Placement, per RECONCILIATION section 1's explicit split**: "sacred-domain list +
+     enforcement (g08) -> browser/ (data/logic) + governance/ (the always-on check
+     wiring)". `denial_id` (pure, domain-agnostic, reused verbatim by g13 per the doc's
+     own note) landed in NEW `governance/denial.rs`, core; the grown `Denial` TYPE landed
+     in the EXISTING `governance/ports.rs` (A2's seam-contract file), not a new
+     `governance/denial.rs`-owned struct, so there is exactly one definition site for
+     every governance-core wire type (the same principle G06 applied to `AuditRecord`).
+     The sacred LIST matching (`first_match`), the extension-mirroring URL normalization
+     (`navigate_target_host`), and the sacred-flavored `Denial` constructor (`sacred`) --
+     all browser-domain business logic -- landed in NEW `browser/sacred.rs`, reusing G07's
+     `browser/pattern.rs` types and never reimplementing matching semantics. The STEP A/B/C
+     ORCHESTRATION (the "always-on check wiring" RECONCILIATION assigns to "the core")
+     lives in `transport/mcp/server.rs`, the composition root -- NOT inside
+     `governance/dispatch.rs` itself, because STEP B needs a live, async
+     `browser.call("tabs_context_mcp", ...)` round trip, and `Governance` (governance
+     core) cannot name `Browser` (`transport::executor`) without violating the a7
+     arch-test's forbidden-edge scan. `transport/mcp/server.rs` already reaches into
+     `browser::classify`/`browser::pattern`/`browser::redact` directly (the established
+     precedent for composition-root code depending on the browser plugin); this task
+     extends that same precedent to `browser::sacred`, while the DECISION VOCABULARY the
+     orchestration produces (`Denial`, and `Governance::record_deny`'s `decision: "deny"`
+     audit shape) stays core. Considered making `Governance` generic over an injected
+     `ResourceResolver` (A2's port built for exactly this "resolve live state" shape) to
+     keep the orchestration inside `governance/`; rejected as disproportionate scope for
+     this task -- it would ripple `Arc<Governance<R>>` through every call site session-wide
+     for a port whose real, grant-aware consumer is G12/G13, and sacred explicitly bypasses
+     grant machinery entirely (constraint 9).
+  2. **`navigate_target_host` returns `Option<MatchHost>`, not the doc's literal
+     `Option<String>`.** Adapting the doc's guessed signature to G07's real, already-landed
+     type (the same category of adaptation G06/G07 already made for stale pre-G07/pre-A5
+     signatures): a bare `String` would need re-wrapping into a `MatchHost` to call
+     `first_match`, and `MatchHost`'s constructor is deliberately private to
+     `browser::pattern` (G07's own invariant: "constructible only via `host_for_matching`,
+     so a raw URL string can never be passed to the matcher by mistake"). Returning
+     `MatchHost` directly (it already comes from `host_for_matching` internally) keeps
+     that invariant fully intact and lets `first_match` consume one uniform type from both
+     STEP B's tab host and STEP C's target host, with no second privacy-loosening
+     constructor added anywhere.
+  3. **`first_match`'s host parameter is `&MatchHost`, not the doc's literal `&str`**, for
+     the same reason as deviation 2: reusing G07's real matcher (`DomainPattern::matches`)
+     requires a `MatchHost`, and constructing one from a bare `&str` inside `browser::sacred`
+     is exactly the privacy violation G07's design forbids. Sacred pattern strings
+     themselves stay plain `&[String]` (matching the doc exactly): each is parsed into a
+     `DomainPattern` per call via `DomainPattern::parse`, skipping (not crashing on) an
+     entry that fails to parse -- defense in depth for a list already validated at config
+     load, never expected to happen in practice.
+  4. **The registry's `content.security.sacred_domains` validator is UNCHANGED**
+     (`browser::pattern::is_valid_pattern`, G01's stricter syntax-only checker), not
+     switched to G07's more lenient, canonicalizing `DomainPattern::parse` as the doc's
+     phrase "validate each element with the G07 pattern validator" could be read to
+     require. Both functions live in the SAME file (`browser/pattern.rs`, per G07's own
+     ledger entry, which explicitly flagged this exact question as deferred to this task).
+     Kept `is_valid_pattern` deliberately: it is the stricter of the two (rejects
+     uppercase, trailing dots, and IPv6 forms that `DomainPattern::parse` would silently
+     canonicalize), and per the engine-is-truthful principle, tightening what a
+     user-authored PROTECTION list accepts is the conservative direction; loosening it
+     would be a real, if small, behavior change this task's own scope does not call for.
+     No test in this task's own required list depends on which validator gates the
+     registry, so this reduces to a documented, deliberate no-op.
+  5. **`Governance::record_call` grew a `domain: Option<&str>` parameter** rather than
+     forking a second recording path, and a new `Governance::record_deny` method was added
+     alongside it (not a `Recorder`-level `set_client`/`record_call` pair as the doc's
+     stale pre-G06-architecture text assumes -- those methods live on `Governance` post-G06,
+     per that task's own ledger entry). Both call sites (`transport/mcp/server.rs`,
+     `tests/audit_recorder.rs`) and dispatch's own test module were updated for the new
+     arity.
+  6. **`Denial.grant_id` is populated from the `Denial` itself in `record_deny`**
+     (`denial.grant_id.clone()`), always `None` for the sacred rule today, rather than a
+     literal hardcoded `None` in `record_deny` -- this makes `record_deny` already correct,
+     with no further change needed, for G13's future grant-denial rules that DO set a
+     `grant_id`.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green (203 lib unit tests, up from 189: +4 in `governance::denial
+  ::tests` -- the two pinned values plus determinism/format checks; +4 in `browser::sacred
+  ::tests` -- the exact-leak-nothing message, list-order honoring, the full navigate-target
+  mirror table, and the full section-5.3 bypass-class table turned to the deny direction
+  including the homoglyph and apex-vs-wildcard cases; +2 in `governance::dispatch::tests`
+  -- domain pass-through on an allow record, a zero-duration deny record; +4 new chokepoint
+  tests in `transport::mcp::server::tests` -- `sacred_tab_denies_every_tool_and_never
+  _runs_it` (all 4 of read_page/computer/javascript_tool/navigate denied, extension sees
+  only the `tabs_context_mcp` pre-flight, all 4 audit records pinned to `D-af6633ec` and
+  `www.mybank.com`), `navigate_target_denied_even_when_tab_is_clean` (pinned to
+  `D-171052e3`, then a second call to a clean target actually reaches the fake extension),
+  `empty_list_is_byte_identical` (no pre-flight chatter at all, plus an unconnected
+  `Browser` still resolving to the ordinary not-connected path with zero sacred-check
+  overhead), `denied_call_writes_one_deny_record` (exactly one record, the internal lookup
+  writes none); all other suites unchanged and green: `tests/all_open_golden.rs` 3,
+  `tests/architecture.rs` 4 -- confirms the new `governance/denial.rs` and the grown
+  `governance/ports.rs`/`governance/dispatch.rs` introduce zero forbidden edges despite
+  reusing `sha2` (already a dependency since G09), `tests/audit_recorder.rs` 1 (updated call
+  sites, unchanged assertions), `tests/config_schema_golden.rs` 5 -- both goldens
+  regenerated via `cargo run --quiet -- config schema`/`config docs` and hand-reviewed
+  before overwriting (diff showed exactly the one sacred-domains description string
+  changed), `tests/mcp_protocol.rs` 4 UNCHANGED -- proves the default empty-list config is
+  still byte-identical to pre-g08 behavior end to end over stdio,
+  `tests/tool_schema_fidelity.rs` 6 unchanged -- g08 never touches tool advertisement.
+  `git status --short` confirmed the touched-file set matches this entry's list exactly
+  (no `Cargo.toml`/`Cargo.lock` diff at all: `sha2` was already present since G09, so this
+  task added zero new dependencies); `src/transport/mcp/schemas/tools.json` and everything
+  under `extension/` show no diff (`git diff --stat` confirmed empty for both paths). ASCII
+  scan (`rg -n "[^\x00-\x7F]"`) clean on every touched/new file, confirmed via the Grep
+  tool (the one Cyrillic test host is a `\u{0430}` escape, reused from G07's own pattern).
+- Browser checks queued: none appended to `BROWSER-TESTS.md` in this pass -- the task's own
+  Verification step 5 (live check: set `content.security.sacred_domains` in the real user
+  config file, restart the MCP client, ask the agent to navigate to/read/screenshot a
+  sacred domain and confirm the denial message and browser behavior, confirm normal
+  domains still work, confirm the audit JSONL shows the deny record) requires a live
+  browser AND restarting this very session's own MCP client connection, which BOOTSTRAP's
+  ground rules place out of scope for an unattended pass (no live browser available; no
+  human present to restart the client and observe the result). The 4 new chokepoint tests
+  exercise the identical `handle_tools_call` code path end to end (fake extension, real
+  `Governance`/`Recorder`, real STEP A/B/C logic) without a live browser, covering
+  everything the live check would observe except the actual on-screen browser behavior and
+  the real default-audit-file location; the live check itself is added to
+  `BROWSER-TESTS.md` as item g08-1 for a human to run later, alongside the existing
+  reminder that g10/g11/g14/g12/g13/g15 will need the same.
 
 ## Reminders before running BROWSER-TESTS.md
 

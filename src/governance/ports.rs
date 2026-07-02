@@ -70,15 +70,26 @@ pub struct ToolId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcePattern(pub String);
 
-/// A structured denial. Placeholder: g08 introduces the stable denial-id scheme and g13 the
-/// full reason set. Two fields now, both serde-round-trippable, so `Decision::Deny` and
-/// `Decision::ShadowDeny` carry something meaningful before g08 lands.
+/// A structured policy denial (shared format doc section 7). Carried by `Decision::Deny` and
+/// `Decision::ShadowDeny`; its `denial_id` (via [`crate::governance::denial::denial_id`]) goes
+/// into the audit record and its `message` is returned to the caller as a normal text tool
+/// result -- a denial is a policy outcome to read and adapt to, never a transport or tool
+/// failure. Grown by g08 from A2's two-field placeholder to the full shape; g13 (grant
+/// enforcement) reuses it unchanged for the `unmatched_domain` / `access` / `tool` / `scheme`
+/// denial rules.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Denial {
-    /// Stable denial identifier (g08 pins the scheme).
+    /// Rule string per shared format doc section 7.1, e.g. `"sacred/*.mybank.com"`.
+    pub rule: String,
+    /// The resolving grant's id. Always `None` until the manifest engine (g12/g13) lands.
+    pub grant_id: Option<String>,
+    /// Stable denial id: `"D-"` plus 8 lowercase hex characters (shared format doc 7.1).
     pub denial_id: String,
-    /// Human-readable reason surfaced to the caller.
-    pub reason: String,
+    /// Parser-normalized host named in the message.
+    pub domain: String,
+    /// Full caller-facing message (shared format doc section 7.2 template). Names only the
+    /// matched host and the denial id; never the rule, the pattern, or any other list entry.
+    pub message: String,
 }
 
 /// The `identity` object of an audit record: `{ "principal": ..., "resolved_by": ... }`,
@@ -436,8 +447,12 @@ mod tests {
     #[test]
     fn decision_round_trips_through_serde() {
         let denial = Denial {
+            rule: "sacred/mybank.com".to_string(),
+            grant_id: None,
             denial_id: "D-9f3a1c2e".to_string(),
-            reason: "no grant covers this domain".to_string(),
+            domain: "mybank.com".to_string(),
+            message: "Denied (D-9f3a1c2e): mybank.com is on the user's never-touch list."
+                .to_string(),
         };
         let variants = [
             Decision::Allow {
