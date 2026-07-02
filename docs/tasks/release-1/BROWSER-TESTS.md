@@ -531,3 +531,51 @@ Steps:
 1. Continuing from T13-1/T13-2, call `read_console_messages` with `pattern: "t13 test"`.
 Expect: the output contains only the `[exception] Error: t13 test ...` line and nothing else
 (not the `[log] t13 plain` line).
+
+## T14-1: A failed fetch shows a stand-in 503 with the CDP error text instead of staying pending
+Changed: `chrome.debugger.onEvent` now handles `Network.loadingFailed` (previously silently
+dropped). When the failure matches an existing buffered request (by `requestId`), the entry's
+`status` is set to 503, `errorText` is recorded from the CDP event when present, and `canceled`
+is recorded as a boolean. `read_network_requests` now appends ` (<errorText>)` after the status
+whenever `errorText` is present. Order matters below: the Network CDP domain is only enabled by
+the first `read_network_requests` call for a tab.
+Steps:
+1. Navigate a tab in the MCP tab group to any page (for example https://example.com).
+2. Call `read_network_requests` once for that tab (this enables the Network domain; the result
+   will likely be "No network requests matching the pattern.", which is fine).
+3. Call `javascript_tool` with text:
+   `fetch("https://no-such-host-t14.invalid/").catch(() => "failed")`
+4. Wait a moment, then call `read_network_requests` again.
+Expect (step 4): a line of the form
+`GET https://no-such-host-t14.invalid/ -> 503 (net::ERR_NAME_NOT_RESOLVED)`.
+
+## T14-2: Ordinary successful requests are unaffected
+Changed: same as T14-1; confirms the new branch does not disturb the existing
+`Network.requestWillBeSent` / `Network.responseReceived` rendering.
+Steps:
+1. Continuing from T14-1 (same tab, Network domain already enabled), call `javascript_tool`
+   with text `fetch("https://example.com/").catch(() => "failed")`.
+2. Call `read_network_requests` again.
+Expect: a line of the form `GET https://example.com/ -> 200`, with no `errorText` suffix, still
+present alongside the T14-1 failure line (both present, neither altered).
+
+## T14-3: A client-aborted request renders with net::ERR_ABORTED and canceled recorded
+Changed: same as T14-1; confirms the `canceled` flag is captured (not rendered, per the task's
+Out of scope, but exercised here to confirm the branch does not throw when `canceled` is true).
+Steps:
+1. Continuing from T14-1/T14-2, call `javascript_tool` with text:
+   `(() => { const c = new AbortController(); fetch("https://example.com/", { signal: c.signal }).catch(() => "aborted"); c.abort(); return "ok"; })()`
+2. Wait a moment, then call `read_network_requests` again.
+Expect: a new line of the form `GET https://example.com/ -> 503 (net::ERR_ABORTED)` (the URL
+requested with the abort signal); the earlier T14-1 and T14-2 lines are unchanged.
+
+## T14-4: A genuinely in-flight request still renders (pending)
+Changed: same as T14-1; confirms `Network.loadingFailed` never fires for a request that has not
+failed, so unrelated in-flight requests keep the pre-existing `(pending)` text.
+Steps:
+1. Continuing from T14-1/T14-2/T14-3, call `javascript_tool` with text:
+   `fetch("https://httpbin.org/delay/10").catch(() => "failed"); "started"`
+2. Immediately (within a second or two) call `read_network_requests` again, before the 10s delay
+   endpoint could have responded or failed.
+Expect: a line of the form `GET https://httpbin.org/delay/10 (pending)` (no `->`, no status,
+unchanged wording), alongside the T14-1/T14-2/T14-3 lines.

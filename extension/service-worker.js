@@ -15,7 +15,7 @@ let nativePort = null;
 let groupId = null;
 const attached = new Map(); // tabId -> { domains: Set<string> }
 const consoleBuffer = new Map(); // tabId -> { host, items: [{ level, text }] }
-const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType }] }
+const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType, errorText, canceled }] }
 const screenshotCtx = new Map(); // tabId -> { vpW, vpH, shotW, shotH } (set on each screenshot)
 const tabHost = new Map(); // tabId -> hostname of the tab's current URL ("" when none)
 
@@ -211,6 +211,14 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     const existing = buf.items.find((r) => r.requestId === params.requestId);
     if (existing) { existing.status = params.response.status; existing.mimeType = params.response.mimeType; }
     else pushCapped(networkBuffer, tabId, { requestId: params.requestId, method: "?", url: params.response.url, status: params.response.status, mimeType: params.response.mimeType });
+  } else if (method === "Network.loadingFailed" && params.requestId) {
+    const buf = bufferFor(networkBuffer, tabId, tabHost.get(tabId));
+    const existing = buf.items.find((r) => r.requestId === params.requestId);
+    if (existing) {
+      existing.status = 503;
+      if (params.errorText) existing.errorText = params.errorText;
+      existing.canceled = !!params.canceled;
+    }
   }
 });
 // Buffers are owned by the tab's current hostname, per the read_console_messages /
@@ -633,7 +641,7 @@ const handlers = {
     if (a.urlPattern) reqs = reqs.filter((r) => r.url.includes(a.urlPattern));
     reqs = reqs.slice(-(a.limit || 100));
     if (a.clear) networkBuffer.set(a.tabId, { host, items: [] });
-    return text(reqs.length ? reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status : "(pending)"}`).join("\n") : "No network requests matching the pattern.");
+    return text(reqs.length ? reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" + r.errorText + ")" : "") : "(pending)"}`).join("\n") : "No network requests matching the pattern.");
   },
   async resize_window(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);

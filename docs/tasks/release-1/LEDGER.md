@@ -10,9 +10,9 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T14 (next pending). T04, T06, T07, T01, T02, T03, T12, T13 are done.
+- Current task: T15 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T13 Runtime.exceptionThrown capture (this run)
+- Last commit: feat(extension): T14 Network.loadingFailed marks requests failed (this run)
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
@@ -35,7 +35,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 6 | T03 | get_page_text official semantics | - | done |
 | 7 | T12 | Per-domain console/network buffer reset | - | done |
 | 8 | T13 | Runtime.exceptionThrown capture | - | done |
-| 9 | T14 | Network.loadingFailed status | - | pending |
+| 9 | T14 | Network.loadingFailed status | - | done |
 | 10 | T15 | Empty-result guidance notes | - | pending |
 | 11 | T08 | type via real keyDown/keyUp | - | pending |
 | 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | pending |
@@ -800,3 +800,119 @@ Append one entry per task using this template. Newest at the bottom.
     like `Runtime.consoleAPICalled` already did. No new domain-enable call was added anywhere.
 - Browser checks queued: T13-1, T13-2, T13-3 in docs/tasks/release-1/BROWSER-TESTS.md (appended
   after T12-5, preserving task order).
+
+### T14 Network.loadingFailed marks requests failed instead of eternally pending -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T14 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - Full diff review confirming: the new `Network.loadingFailed` branch is an `else if` directly
+    after the `Network.responseReceived` branch inside the same `chrome.debugger.onEvent.
+    addListener` callback (not a new listener), guarded by `method === "Network.loadingFailed" &&
+    params.requestId`, matching the sibling branches' guard style exactly; it looks up the entry
+    via `bufferFor(networkBuffer, tabId, tabHost.get(tabId))` then `buf.items.find((r) =>
+    r.requestId === params.requestId)`, the identical lookup pattern the `responseReceived` branch
+    uses one branch above it; when found, `existing.status = 503` unconditionally, `existing.
+    errorText = params.errorText` only inside `if (params.errorText)` (falsy-string guard covers
+    both `undefined` and `""`, satisfying "only when a non-empty string"), and `existing.canceled =
+    !!params.canceled` unconditionally; when NOT found, the branch does nothing (no `pushCapped`
+    call, no synthetic entry) -- confirmed by reading the branch body, which has no code path after
+    the `if (existing) { ... }` block. The `requestWillBeSent` and `responseReceived` branches
+    above it are byte-identical to before this task (verified via the `git diff` hunk, which shows
+    only an insertion after `responseReceived`'s closing line, no deletions in either sibling
+    branch).
+  - Renderer diff confirms the exact template expression from the prompt was used verbatim:
+    `` `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" +
+    r.errorText + ")" : "") : "(pending)"}` ``; traced by hand against the three documented cases
+    (status+errorText -> `-> 503 (net::ERR_...)`; status, no errorText -> `-> 200` unchanged;
+    status 0 -> `(pending)` unchanged, since `r.status` is falsy for `0` and the ternary's false
+    branch is taken regardless of `errorText`). The group check, `ensureAttached`,
+    `enableDomain(a.tabId, "Network")`, the `urlPattern` substring filter, the `limit` slice, the
+    `clear` behavior, the `"\n"` join, and the empty-result message
+    "No network requests matching the pattern." are all byte-identical to before this task (only
+    the one template-literal line inside `.map(...)` changed; confirmed via `git diff` hunk
+    boundaries).
+  - The shape comment on the `networkBuffer` declaration was updated to list the two new fields
+    (`errorText, canceled`) appended to the existing five.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: the prompt's "Current behavior" section describes the buffer shape from BEFORE
+  T12 landed (a bare `tabId -> [{ requestId, method, url, status, mimeType }]` array, with the
+  prompt's own step 1 saying to "get the tab's array (`networkBuffer.get(tabId) || []`)"). T12
+  (which runs earlier in the fixed sequence and had already landed) changed `networkBuffer` to
+  `tabId -> { host, items: [...] }` and introduced `bufferFor`/`tabHost` for per-domain scoping;
+  the `Network.responseReceived` branch immediately above the new code (which the prompt explicitly
+  says to mirror -- "Look up the entry exactly like the responseReceived branch does") already used
+  `bufferFor(networkBuffer, tabId, tabHost.get(tabId))` then `.items.find(...)`, not a bare
+  `.get(tabId) || []`. Reconciled by copying the ACTUAL responseReceived lookup pattern verbatim
+  (as the prompt itself instructed: mirror the sibling branch), not the prompt's stale
+  `networkBuffer.get(tabId) || []` snippet. T13's own log entry had already flagged this exact
+  handoff ("T14 should add its own else if branch in the same style, appending via
+  pushCapped(networkBuffer, tabId, ...) to inherit T12's domain-scoping"); this task's branch does
+  not append a NEW entry at all (constraint: no synthetic entry on a miss), so `pushCapped` is not
+  called here -- only `bufferFor` (read path), which is the correct application of T12's
+  domain-scoping to an update-in-place branch, not an append. Line numbers had also drifted (prompt
+  cited the listener at "lines 137-154", `pushCapped` at "155-160", and the renderer at "line 535";
+  actual lines before this task's edit were 196-215, 228-232, and 636 respectively, consistent with
+  T12's and T13's logs which already noted the listener block's earlier moves).
+- Decisions made:
+  - Named the new branch's lookup buffer variable `buf` and the found record `existing`, matching
+    the exact names the sibling `Network.responseReceived` branch already uses one block above --
+    not mandated by the prompt but the natural, lowest-risk choice given the prompt's own
+    instruction to look up "exactly like the responseReceived branch does."
+  - `existing.errorText = params.errorText` is written inside `if (params.errorText)` (a plain
+    truthiness check) rather than `if (typeof params.errorText === "string" && params.errorText.
+    length > 0)`. Both are equivalent for this field in practice (CDP's `errorText` is always
+    either a non-empty string or absent per the Network domain spec; there is no realistic path
+    where it is `0`, `false`, or `null` instead of absent), and the prompt's own worked snippet
+    (constraint 4's wording "whenever the event provided one") does not distinguish "absent" from
+    "falsy," so the simpler truthiness form was kept for consistency with the surrounding file's
+    style (every other optional-field guard in this file, e.g. `if (a.urlPattern)`, `if (a.
+    pattern)`, uses plain truthiness, not an explicit type/length check).
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03/T12/T13's logs already
+    described.
+- Notes for later tasks:
+  - `networkBuffer` entries can now carry two additional optional fields, `errorText` (string) and
+    `canceled` (boolean), set only by the `Network.loadingFailed` branch. `canceled` is stored for
+    data fidelity but deliberately never rendered by `read_network_requests` (per this task's own
+    Constraints/Out-of-scope); a later task should not add rendering for it without a new task
+    prompt explicitly requiring it.
+  - The `read_network_requests` renderer's exact per-entry template
+    (`<METHOD> <URL> -> <STATUS> (<ERRORTEXT>)` / `<METHOD> <URL> -> <STATUS>` / `<METHOD> <URL>
+    (pending)`) is now a byte-exact contract at the same tier as T01's marker-line formats, T02's
+    Note line, T03's get_page_text contract, T06's `[hop: ...]` contract, and T13's exception-text
+    format -- do not reword any of the three cases in a later task without updating this note and
+    the T14 BROWSER-TESTS.md entries.
+  - T15 (Empty-result guidance notes) touches the same `read_network_requests` zero-entries string
+    ("No network requests matching the pattern.") this task's Verification exercises but does not
+    modify; this task changed zero characters of that string, and changed only the non-empty-result
+    branch's per-line format (adding the optional ` (<errorText>)` suffix), not the empty-result
+    branch.
+  - `Network.loadingFailed` never creates a new buffer entry (only updates an existing one found by
+    `requestId`); if `Network.requestWillBeSent` for that same request was dropped by a CDP race
+    (the accepted cross-domain-navigation race T12's log already documents) or arrived in a
+    different tab's buffer, the failure is silently dropped rather than rendered anywhere -- this
+    matches the prompt's Required-behavior item 1's explicit "If no entry is found: do nothing," is
+    not a bug introduced by this task, and should not be "fixed" by a later task without a new task
+    prompt requiring synthetic-entry creation on a `loadingFailed` miss.
+  - The Network CDP domain continues to be enabled only lazily, on the first `read_network_requests`
+    call per tab (unchanged); `Network.loadingFailed` events for a tab only start flowing into the
+    buffer once that domain has been enabled for that tab AND the corresponding
+    `Network.requestWillBeSent` was already buffered, exactly matching how `responseReceived`
+    already behaved. No new domain-enable call was added anywhere.
+- Browser checks queued: T14-1, T14-2, T14-3, T14-4 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T13-3, preserving task order).
