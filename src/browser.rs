@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// How long to wait for the extension to answer a single tool call before giving up.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,6 +35,9 @@ pub struct Browser {
     pending: Pending,
     /// `Some` when a native-host (and thus the extension) is connected; `None` otherwise.
     outgoing: Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
+    /// Readiness signal: `true` while a native-host / extension is attached. Lets callers await
+    /// connectedness (see [`Browser::wait_connected`]) instead of polling [`Browser::is_connected`].
+    connected: Arc<watch::Sender<bool>>,
     /// Observability sink (no-op unless debug mode is on).
     debug: DebugSink,
 }
@@ -51,6 +54,9 @@ impl Browser {
             next_id: Arc::new(AtomicU64::new(1)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             outgoing: Arc::new(Mutex::new(None)),
+            // Dropping the initial receiver is fine: updates use `send_replace`, which does not
+            // require a live receiver (unlike `send`, which would fail and skip the update).
+            connected: Arc::new(watch::channel(false).0),
             debug,
         }
     }
@@ -63,6 +69,26 @@ impl Browser {
     /// True while a native-host / extension is connected.
     pub fn is_connected(&self) -> bool {
         self.outgoing.lock().unwrap().is_some()
+    }
+
+    /// Wait until a native-host / extension is attached, up to `timeout`. Returns `true`
+    /// immediately when already connected, `true` when a connection arrives within the window,
+    /// and `false` when the window elapses without one.
+    pub async fn wait_connected(&self, timeout: Duration) -> bool {
+        let mut rx = self.connected.subscribe();
+        if *rx.borrow() {
+            return true;
+        }
+        tokio::time::timeout(timeout, async {
+            while rx.changed().await.is_ok() {
+                if *rx.borrow() {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Invoke `tool` with `args` on the extension and await its result.
@@ -125,6 +151,7 @@ impl Browser {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         *self.outgoing.lock().unwrap() = Some(tx);
         self.debug.set_connected(true);
+        self.connected.send_replace(true);
 
         let writer = tokio::spawn(async move {
             while let Some(frame) = rx.recv().await {
@@ -143,6 +170,7 @@ impl Browser {
 
         *self.outgoing.lock().unwrap() = None;
         self.debug.set_connected(false);
+        self.connected.send_replace(false);
         writer.abort();
         for (_, tx) in self.pending.lock().unwrap().drain() {
             let _ = tx.send(Err("extension disconnected".to_string()));
@@ -252,5 +280,27 @@ mod tests {
         let browser = Browser::new();
         let err = browser.call("navigate", &json!({})).await.unwrap_err();
         assert!(err.to_string().contains("not connected"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn wait_connected_times_out_without_a_connection() {
+        let browser = Browser::new();
+        let ready = browser.wait_connected(Duration::from_millis(50)).await;
+        assert!(!ready, "no extension ever attached; wait must time out");
+    }
+
+    #[tokio::test]
+    async fn wait_connected_wakes_when_the_extension_attaches() {
+        let (browser_side, _ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+
+        let attached = browser.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+            attached.attach(browser_side).await;
+        });
+
+        let ready = browser.wait_connected(Duration::from_secs(2)).await;
+        assert!(ready, "wait_connected must wake once attach() connects");
     }
 }
