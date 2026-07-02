@@ -16,7 +16,7 @@
 //! and relays frames between the extension and the mcp-server ([`relay_native_host`]). Single active
 //! session: a second mcp-server refuses with [`Error::SessionBusy`].
 
-use crate::browser::Browser;
+use crate::browser::{AttachOutcome, Browser};
 use crate::native::host;
 use crate::{Error, Result};
 use tokio::time::{sleep, Duration};
@@ -98,9 +98,11 @@ fn pipe_path(endpoint: &str) -> String {
 
 /// Synchronously probe the named pipe (no tokio; used by `browser-mcp doctor`, which runs with no
 /// async runtime). Opens the pipe for read+write and immediately drops the handle -- no bytes are
-/// written or read. Known, harmless side effect: probing a live idle server briefly attaches this
-/// connection, logging one phantom connect/disconnect pair in *that* server's own debug state; it
-/// never disturbs an already-attached native-host (the probe just queues behind it and is drained).
+/// written or read. Known, harmless side effect: probing a live *idle* server briefly wins the accept
+/// slot, logging one phantom connect/disconnect pair in *that* server's own debug state. It never
+/// disturbs an already-attached native-host: [`serve`] accepts ahead on a spare instance, so the
+/// probe connects to the spare and [`crate::browser::Browser::attach`] rejects it (AlreadyAttached)
+/// and drops it without touching the live session.
 #[cfg(windows)]
 pub fn probe_endpoint(endpoint: &str) -> EndpointProbe {
     let path = pipe_path(endpoint);
@@ -161,8 +163,22 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
             .map_err(|e| Error::Ipc(format!("cannot create next pipe instance: {e}")))?;
         let connected = std::mem::replace(&mut server, next);
         tracing::info!("native-host connected");
-        browser.attach(connected).await;
-        tracing::info!("native-host disconnected");
+        // Accept-ahead: hand this connection to a spawned task and loop back immediately, so a spare
+        // pipe instance is always waiting in ConnectNamedPipe. `Browser::attach` enforces the single
+        // active session -- the real native-host claims the slot; a stray connection (e.g. a `doctor`
+        // probe) is accepted here, rejected by attach as AlreadyAttached, and dropped without
+        // disturbing the live session. Awaiting attach inline (the old behavior) parked the loop for
+        // the whole session, leaving one consumable spare a probe could starve (ERROR_PIPE_BUSY 231
+        // on every later probe until the session ended).
+        let browser = browser.clone();
+        tokio::spawn(async move {
+            match browser.attach(connected).await {
+                AttachOutcome::Detached => tracing::info!("native-host disconnected"),
+                AttachOutcome::AlreadyAttached => {
+                    tracing::debug!("dropped a stray connection; a session is already attached")
+                }
+            }
+        });
     }
 }
 
@@ -285,9 +301,11 @@ fn socket_path(endpoint: &str) -> Result<std::path::PathBuf> {
 
 /// Synchronously probe the Unix domain socket (no tokio; used by `browser-mcp doctor`, which runs
 /// with no async runtime). Connects and immediately drops the stream -- no bytes are written or
-/// read. Known, harmless side effect: probing a live idle server briefly attaches this connection,
-/// logging one phantom connect/disconnect pair in *that* server's own debug state; it never
-/// disturbs an already-attached native-host (the probe just queues behind it and is drained).
+/// read. Known, harmless side effect: probing a live *idle* server briefly wins the accept slot,
+/// logging one phantom connect/disconnect pair in *that* server's own debug state. It never disturbs
+/// an already-attached native-host: [`serve`] spawns a handler per accepted connection and
+/// [`crate::browser::Browser::attach`] rejects a stray (AlreadyAttached), dropping it without
+/// touching the live session.
 #[cfg(unix)]
 pub fn probe_endpoint(endpoint: &str) -> EndpointProbe {
     let path = match socket_path(endpoint) {
@@ -362,8 +380,18 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
         match listener.accept().await {
             Ok((stream, _)) => {
                 tracing::info!("native-host connected");
-                browser.attach(stream).await;
-                tracing::info!("native-host disconnected");
+                // Accept-ahead (mirrors the Windows path): spawn the handler and keep accepting, so a
+                // queued stray connection (e.g. a `doctor` probe) is not promoted into a session when
+                // the loop resumes. `Browser::attach` enforces the single active session.
+                let browser = browser.clone();
+                tokio::spawn(async move {
+                    match browser.attach(stream).await {
+                        AttachOutcome::Detached => tracing::info!("native-host disconnected"),
+                        AttachOutcome::AlreadyAttached => {
+                            tracing::debug!("dropped a stray connection; a session is already attached")
+                        }
+                    }
+                });
             }
             Err(e) => tracing::warn!(error = %e, "socket accept failed"),
         }

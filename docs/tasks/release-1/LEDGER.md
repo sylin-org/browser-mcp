@@ -160,20 +160,26 @@ extension's own DevTools service-worker console).
 - All 18 tasks (T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18, T16,
   T17, T05) are done. Nothing left in the fixed task sequence.
 - The interactive live-browser verification pass (see "BROWSER-TESTS.md VERIFICATION PASS" above)
-  found 7 confirmed bugs (BUGFIX-01 through 07 below). BUGFIX WORK IS DONE: 5 of the 7 (01-05) are
-  fixed AND live-verified against their original failing reproductions (see "LIVE VERIFICATION of
-  BUGFIX-01 through BUGFIX-05" at the end of the file). BUGFIX-06 (doctor pipe-busy) and BUGFIX-07
-  (left_click_drag coordinate scale) were investigated and deliberately left unfixed -- see their
-  own entries for why (both need either a riskier redesign or a cleaner re-test than was possible
-  in this session). Nothing further is queued.
+  found 7 confirmed bugs (BUGFIX-01 through 07 below). ALL BUGFIX WORK IS NOW DONE: 5 of the 7
+  (01-05) are fixed AND live-verified against their original failing reproductions (see "LIVE
+  VERIFICATION of BUGFIX-01 through BUGFIX-05" at the end of the file); BUGFIX-06 (doctor pipe-busy)
+  is now FIXED (Model A: accept-ahead serve loop + an atomic single-slot claim in Browser::attach --
+  see the "BUGFIX-06 ... FIXED" entry at the end), clippy-clean and covered by a new lib unit test,
+  but not yet live-verified (the running server locks the binary, so the rebuild+reload is a human
+  step); BUGFIX-07 (left_click_drag coordinate scale) was re-reviewed at the code level and confirmed
+  NOT a code defect (both endpoints map through the same rescaleCoord() as every other click, a pure
+  identity on a tab with no screenshot context) -- it needs only a hands-off live re-test to close
+  formally, no code change. Nothing further is queued.
 - Branch: release-1-hardening (create from main if absent).
 - Last commit: fix(extension): resolve 5 bugs found in interactive BROWSER-TESTS.md pass (22c985b);
   a follow-up commit recording the live-verification results (this update) lands next.
-- NEXT ACTION for a future call: nothing is pending from this bugfix pass. If picking this repo back
-  up, either (a) tackle BUGFIX-06/07 as their own properly-scoped tasks (read their ledger entries
-  first -- both have specific, non-obvious risks a naive fix would hit), or (b) treat release-1 as
-  complete and move to whatever is next (NOT docs/tasks/stage-2/ without an explicit human decision,
-  per ADR-0018).
+- NEXT ACTION for a future call: BUGFIX-06 is fixed in code but needs a rebuild + extension reload to
+  go live (the running server locks target/debug/browser-mcp.exe, so cargo cannot relink until the
+  MCP client is stopped); after reload, re-run the doctor pipe-busy repro (repeated `browser-mcp
+  doctor` during a live session) to confirm ERROR_PIPE_BUSY 231 is gone. BUGFIX-07 needs only a
+  hands-off live re-test of left_click_drag (no code change). Otherwise release-1 is complete; do NOT
+  start docs/tasks/stage-2/ without an explicit human decision (ADR-0018). Architecture direction for
+  the family + persistent service is captured in docs/design/ghostlight-service-architecture.md.
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to
   T04/T06/T07/T01/T02/T03/T12/T13/T18/T16/T17/T05) in `src/policy/redact.rs` and
   `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were left
@@ -2507,6 +2513,10 @@ Append one entry per task using this template. Newest at the bottom.
   docs/tasks/release-1/BROWSER-TESTS.md.
 
 ### BUGFIX-06 doctor pipe-busy after repeated probes -- investigated, NOT fixed -- 2026-07-02
+- UPDATE 2026-07-02: NOW FIXED. This entry records the original investigation and why the naive fix
+  was unsafe; the actual fix (accept-ahead serve loop + an atomic single-slot claim in
+  Browser::attach) is in the "BUGFIX-06 ... FIXED" entry at the end of this file, done exactly the
+  way the "Recommendation for a human" below called for.
 - Commit: n/a (no code change; investigation only)
 - Files touched: none (src/native/ipc.rs read only)
 - Root cause (precisely identified): the Windows `serve()` loop in src/native/ipc.rs creates exactly
@@ -2553,6 +2563,11 @@ Append one entry per task using this template. Newest at the bottom.
   a human, should be reported against this ledger entry, not treated as a new/unknown bug).
 
 ### BUGFIX-07 left_click_drag coordinate scale -- investigated, INCONCLUSIVE -- 2026-07-02
+- UPDATE 2026-07-02: code re-review confirms this is NOT a code defect. `left_click_drag` maps both
+  endpoints through the same `rescaleCoord()` as every other click action, which is a pure identity
+  (round only) on a tab with no screenshot context (service-worker.js:159-164, 883-899). No code path
+  scales by ~1.1x. Closing it formally still needs a hands-off live re-test, but no code change is
+  warranted.
 - Commit: n/a (no code change; investigation, no fix attempted)
 - Files touched: none
 - Summary: the original verification pass reproduced a consistent ~1.1x coordinate scale distortion
@@ -2620,6 +2635,32 @@ failing reproduction:
   Neither is the old bare `Error: Uncaught`. CONFIRMED FIXED.
 
 All 5 of the fixed bugs are now confirmed working end-to-end against their original failing
-reproductions. BUGFIX-06 (doctor pipe-busy) and BUGFIX-07 (left_click_drag coordinate scale) remain
-un-fixed by design (see their own entries above for why); nothing further is queued for this
-BROWSER-TESTS.md verification-and-fix pass.
+reproductions. BUGFIX-06 (doctor pipe-busy) has since been FIXED in code (see the entry below);
+BUGFIX-07 (left_click_drag coordinate scale) was re-reviewed and confirmed NOT a code defect (see its
+entry above). Nothing further is queued for this BROWSER-TESTS.md verification-and-fix pass.
+
+### BUGFIX-06 doctor pipe-busy -- FIXED (accept-ahead + attach single-slot gate) -- 2026-07-02
+- Files touched: src/browser.rs, src/native/ipc.rs
+- Fix (topology "Model A" from the in-session design panel): the Windows and Unix `serve()` accept
+  loops no longer await `browser.attach()` inline (which parked the loop for the whole session,
+  leaving one consumable spare pipe instance a probe could starve). They now `tokio::spawn` the
+  per-connection `attach()` and loop back immediately (accept-ahead), so a spare instance is always
+  waiting. To make that spawn safe, `Browser::attach` now returns `AttachOutcome::{Detached,
+  AlreadyAttached}` and does an atomic single-slot claim on `outgoing`: the first connection wins the
+  slot; any connection arriving while a session is attached (a `doctor` probe, or a service-worker
+  relaunch overlap) is dropped WITHOUT touching the live session's sender/connected/pending -- fixing
+  the exact regression that made the naive one-line spawn unsafe. `doctor`'s probe now connects to the
+  ever-present spare, is rejected as AlreadyAttached, and dropped; ERROR_PIPE_BUSY 231 no longer
+  appears during a live session.
+- Verification: `cargo clippy --all-targets -- -D warnings` clean; `cargo test --lib` green
+  (81 passed), including a new regression test
+  `a_second_attach_is_rejected_without_disturbing_the_live_session` (a second concurrent attach
+  returns AlreadyAttached, the live session stays connected, and it still round-trips a call). NOT yet
+  live-verified: the running debug server locks target/debug/browser-mcp.exe so the binary cannot be
+  relinked until the MCP client is stopped; the human step is stop client -> `cargo build` -> reload
+  -> re-run the repeated-`doctor`-during-a-live-session repro.
+- Doc comments corrected: `probe_endpoint`'s comment previously claimed the probe "queues behind [the
+  attached connection] and is drained" (true only on Unix, false on Windows); updated on both
+  platforms to describe the accept-ahead + AlreadyAttached behavior.
+- Browser checks queued: 1 (repeated `browser-mcp doctor` during a live session returns healthy, no
+  ERROR_PIPE_BUSY 231), to be run by a human after rebuild + reload.
