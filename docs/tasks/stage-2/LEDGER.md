@@ -10,8 +10,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Branch: `stage-2` (off `main`, which has stage 1 merged). Never push, never merge, never commit to
   `main`.
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
-  (governance facade), `a7` (arch-test), `g01` (typed key registry) landed.
-- NEXT TASK: Phase A, task `g02` (`docs/tasks/stage-2/g02-layered-resolution.md`).
+  (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
+  resolution) landed.
+- NEXT TASK: Phase A, task `a5` (`docs/tasks/stage-2/a5-hot-reload-substrate.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -233,6 +234,66 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Browser checks queued: none (binary-only config/registry growth; the wired
   `first_call_wait_ms` value is 5000 under the Safe/Minimal preset, byte-identical to the
   retired constant, so no behavior changed).
+
+### g02 layered configuration resolution and file loading -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/config/layers.rs` (the ADR-0019 five-layer resolver) and
+  `src/governance/config/load.rs` (paths, file parsing, orchestration); `src/governance/config/mod.rs`
+  (`pub mod layers;`/`pub mod load;`, `Config::from_resolution` + four `resolved_*` helpers);
+  `src/error.rs` (one new variant, `Error::Config(String)`); `src/transport/mcp/server.rs`
+  (startup now calls `load::load_and_resolve` + `Config::from_resolution` instead of
+  `Config::default()`).
+- Summary: `layers::resolve` walks `KEYS` and picks, for each key, the first of
+  org_mandatory/user/org_recommended/preset/builtin that defines it, returning the shared-format
+  2.1 triple (value/source/locked); `layers::validate_value` delegates to G01's
+  `KeyDef::parse_value`. `load::user_config_path`/`org_policy_path` implement the exact
+  shared-format 1.1/1.2 per-platform paths (Windows/macOS/Linux `cfg` branches, `ProgramData`
+  env fallback). `load::parse_user_config` is lenient per entry (warn + skip unknown keys,
+  invalid values, unknown presets, unknown top-level members; hard error only on structurally
+  broken JSON). `load::parse_org_config` is strict everywhere (every violation --
+  bad/missing schema, non-array config, unknown key, invalid value, bad level, duplicate key,
+  unexpected member -- is a hard `Error::Config`). `load_and_resolve` reads both files
+  (`ErrorKind::NotFound` -> absent/empty layer; any other I/O error -> hard error), logs
+  warnings via `tracing::warn!`, and resolves. `Config::from_resolution` builds the typed
+  session `Config` from a `Resolution`, with a `debug_assert!`-guarded fallback to the Safe
+  preset default on an unreachable-by-construction shape mismatch (mirroring the `preset_*`
+  helpers' panic-is-unreachable reasoning from G01, but non-panicking since a resolution is
+  runtime-influenced by file content rather than purely compile-time).
+- Deviations from the g-doc per RECONCILIATION.md / carried forward from G01's precedent: g02's
+  own doc (written pre-A1/G01) specifies `validate_value(def, value) -> Result<(), String>` and
+  `load_and_resolve() -> Result<Resolution>` with NO domain-pattern-validator parameter, and has
+  `parse_user_config`/`parse_org_config` likewise take no such parameter. Since G01 threaded a
+  `domain_pattern_valid: fn(&str) -> bool` into `KeyDef::parse_value` (the RECONCILIATION
+  section 2 "known integration point": the governance core cannot name the browser plugin's
+  pattern grammar directly), every function in this task that ultimately validates a
+  `content.security.sacred_domains` value inherits that same extra parameter:
+  `validate_value`, `parse_user_config`, `parse_org_config`, and `load_and_resolve` all gained
+  a `domain_pattern_valid: fn(&str) -> bool` parameter, threaded from `transport/mcp/server.rs`
+  (which supplies `browser::pattern::is_valid_pattern`, the real grammar) down to
+  `layers::validate_value`'s call into `KeyDef::parse_value`. This is the same shape of
+  deviation G01 already made and is not a new architectural decision, just its continuation.
+  Placement: `layers.rs` and `load.rs` land in `governance/config/` (not a flat
+  `src/policy/{layers,load}.rs`), per RECONCILIATION section 1's mapping, consistent with G01.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean
+  (fixed two lints along the way: a doc-comment line break that clippy's `doc_lazy_continuation`
+  read as an unclosed markdown blockquote due to a mid-sentence `>` at a line wrap -- reworded
+  to avoid `>` entirely; and `needless_return` in `org_policy_path`'s per-platform `cfg` blocks,
+  restructured to `#[cfg(..)] let path = ...;` per-platform bindings ending in a single tail
+  `path` expression instead of early `return`s under an `#[allow(unreachable_code)]`). `cargo
+  test` green (119 lib unit tests, up from 104: +6 new in `governance::config::layers::tests`,
+  +8 new in `governance::config::load::tests`, including a windows-`cfg`-gated
+  `paths_follow_the_shared_format_locations`; `tests/all_open_golden.rs` 3 unchanged;
+  `tests/architecture.rs` 4 unchanged and still green -- confirms `governance/config/{layers,load}.rs`
+  introduce zero forbidden edges despite doing real file I/O and platform-path logic;
+  `tests/mcp_protocol.rs` 4 unchanged, including the byte-identical `tools/list` assertion --
+  proves the layered resolver with both files absent is byte-identical to the old
+  `Config::default()` path; `tests/peer_death.rs` 1 unchanged; `tests/tool_schema_fidelity.rs`
+  6 unchanged). Confirmed no stray `%APPDATA%\browser-mcp\config.json` or
+  `%ProgramData%\browser-mcp\policy.json` exists on the dev machine before running (both
+  `Test-Path` false), so the live binary spawned by `tests/mcp_protocol.rs` resolves through
+  the builtin layer only, exactly as required by the task's own verification note. ASCII scan
+  clean on every touched/new file.
+- Browser checks queued: none (binary-only startup wiring; no browser-facing behavior changed).
 
 ## Reminders before running BROWSER-TESTS.md
 

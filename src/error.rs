@@ -55,6 +55,10 @@ pub enum Error {
     /// The running platform/browser/client combination is not supported in this build.
     #[error("unsupported target: {0}")]
     Unsupported(String),
+
+    /// A configuration file failed to load or validate (user config or org policy file).
+    #[error("configuration error: {0}")]
+    Config(String),
 }
 
 /// Convenience alias for fallible engine operations.

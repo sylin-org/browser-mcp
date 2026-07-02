@@ -10,8 +10,8 @@
 //! spawned call -- funnels through a single writer task that owns stdout, so lines are never
 //! interleaved mid-write.
 
-use crate::browser::redact;
-use crate::governance::config::Config;
+use crate::browser::{pattern, redact};
+use crate::governance::config::{load, Config};
 use crate::governance::dispatch::Governance;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
@@ -30,10 +30,11 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 /// extension; tool calls are forwarded through it.
 pub async fn run(browser: Browser) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    // Governance config in force. The policy engine ships in a later stage, so this is the
-    // built-in "Minimal" preset (safe-by-default). When the manifest engine lands it resolves
-    // this per session.
-    let config = Config::default();
+    // Layered configuration per ADR-0019 (org-mandatory > user > org-recommended > preset >
+    // built-in Minimal); with no config/policy files present this resolves to the built-in
+    // defaults and behavior is byte-identical to all-open.
+    let resolution = load::load_and_resolve(pattern::is_valid_pattern)?;
+    let config = Config::from_resolution(&resolution);
     let governance = Arc::new(Governance::all_open());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<JsonRpcResponse>();

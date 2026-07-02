@@ -26,6 +26,13 @@
 //! plugin (kept out of this module by the a7 arch-test). [`KeyDef::parse_value`] takes the
 //! validator as an injected function pointer rather than naming the browser plugin directly
 //! (RECONCILIATION.md section 2, "known integration point").
+//!
+//! [`layers`] implements the ADR-0019 five-layer precedence model; [`load`] loads the two
+//! configuration files of the shared format doc section 1 and produces the layer inputs.
+//! [`Config::from_resolution`] builds the typed session `Config` from a [`layers::Resolution`].
+
+pub mod layers;
+pub mod load;
 
 /// A configuration preset: a named bundle of layer-4 defaults (shared format doc section 2).
 /// The built-in Minimal defaults (layer 5) equal the Safe preset.
@@ -429,6 +436,78 @@ fn preset_str_list(key: &str, preset: Preset) -> Vec<String> {
     }
 }
 
+/// Extract a resolved key's JSON value as `bool`, falling back to the Safe preset default on
+/// an unreachable-by-construction shape mismatch. See [`Config::from_resolution`] for the
+/// fallback rationale.
+fn resolved_bool(resolution: &layers::Resolution, key: &str) -> bool {
+    let resolved = resolution.get(key).expect("registered key");
+    match resolved.value.as_bool() {
+        Some(b) => b,
+        None => {
+            debug_assert!(
+                false,
+                "resolved value for {key} is not a bool: {:?}",
+                resolved.value
+            );
+            preset_bool(key, Preset::Safe)
+        }
+    }
+}
+
+/// Extract a resolved key's JSON value as `u64`. See [`resolved_bool`] for the fallback
+/// rationale.
+fn resolved_uint(resolution: &layers::Resolution, key: &str) -> u64 {
+    let resolved = resolution.get(key).expect("registered key");
+    match resolved.value.as_u64() {
+        Some(u) => u,
+        None => {
+            debug_assert!(
+                false,
+                "resolved value for {key} is not a uint: {:?}",
+                resolved.value
+            );
+            preset_uint(key, Preset::Safe)
+        }
+    }
+}
+
+/// Extract a resolved key's JSON value as an owned `String` (Enum or Str). See
+/// [`resolved_bool`] for the fallback rationale.
+fn resolved_string_like(resolution: &layers::Resolution, key: &str) -> String {
+    let resolved = resolution.get(key).expect("registered key");
+    match resolved.value.as_str() {
+        Some(s) => s.to_string(),
+        None => {
+            debug_assert!(
+                false,
+                "resolved value for {key} is not a string: {:?}",
+                resolved.value
+            );
+            preset_string_like(key, Preset::Safe)
+        }
+    }
+}
+
+/// Extract a resolved key's JSON value as an owned `Vec<String>`. See [`resolved_bool`] for
+/// the fallback rationale.
+fn resolved_str_list(resolution: &layers::Resolution, key: &str) -> Vec<String> {
+    let resolved = resolution.get(key).expect("registered key");
+    match resolved.value.as_array() {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        None => {
+            debug_assert!(
+                false,
+                "resolved value for {key} is not an array: {:?}",
+                resolved.value
+            );
+            preset_str_list(key, Preset::Safe)
+        }
+    }
+}
+
 /// The governance configuration currently in force, with values typed for direct use by
 /// governed code paths. `Config` is owned (not `Copy`): it holds `String`/`Vec<String>`
 /// fields so a later re-resolve (hot-reload, A5) can swap in a fresh snapshot without a
@@ -463,6 +542,25 @@ impl Config {
     /// today's Minimal", ADR-0019).
     pub fn minimal() -> Self {
         Self::from_preset(Preset::Safe)
+    }
+
+    /// Build the typed session `Config` from a layer resolution ([`layers::resolve`]).
+    /// Resolved values are already validated by the loaders, so conversion cannot fail; an
+    /// impossible mismatch (a resolved JSON shape that does not match its key's declared type)
+    /// falls back to the registry's Safe default. That fallback is unreachable by construction
+    /// for a well-formed registry and a resolver that only ever inserts pre-validated values,
+    /// and `debug_assert!` makes a violation loud in tests/debug builds rather than silently
+    /// substituting the wrong value.
+    pub fn from_resolution(resolution: &layers::Resolution) -> Self {
+        Self {
+            first_call_wait_ms: resolved_uint(resolution, ENGINE_CONNECTION_FIRST_CALL_WAIT_MS),
+            secrets_redact: resolved_bool(resolution, CONTENT_SECURITY_SECRETS_REDACT),
+            sacred_domains: resolved_str_list(resolution, CONTENT_SECURITY_SACRED_DOMAINS),
+            audit_enabled: resolved_bool(resolution, AUDIT_ENABLED),
+            audit_destination: resolved_string_like(resolution, AUDIT_DESTINATION),
+            audit_file_path: resolved_string_like(resolution, AUDIT_FILE_PATH),
+            governance_mode: resolved_string_like(resolution, GOVERNANCE_MODE),
+        }
     }
 
     /// Upper bound on the first-call wait for the extension handshake
