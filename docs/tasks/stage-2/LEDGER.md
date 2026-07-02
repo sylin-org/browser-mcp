@@ -9,8 +9,8 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 
 - Branch: `stage-2` (off `main`, which has stage 1 merged). Never push, never merge, never commit to
   `main`.
-- Progress: task `a1` (module reorg) landed.
-- NEXT TASK: Phase A, task `a2` (`docs/tasks/stage-2/a2-governance-ports.md`).
+- Progress: tasks `a1` (module reorg), `a2` (governance ports) landed.
+- NEXT TASK: Phase A, task `a3` (`docs/tasks/stage-2/a3-governance-facade.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -62,6 +62,34 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the first build.
 - Browser checks queued: none (binary-internal move; no user-visible behavior change per the task's
   own scope note).
+
+### a2 governance ports (the seam contract) -- 2026-07-02
+- Commit: (pending, see this task's commit)
+- Files touched: new `src/governance/ports.rs`; one-line `pub mod ports;` edit to
+  `src/governance/mod.rs`.
+- Summary: purely additive seam contract. Added the axis/placeholder types (`RwClass`,
+  `EffectiveMode`, `Grant`, `ToolId`, `ResourcePattern`, `Denial`, `AuditRecord`), the core
+  decision types (`GoverningResource`, `DecisionRequest`, `Decision`), the traits
+  (`PolicyDecisionPoint`, `DomainPolicy`, `ResourceResolver`, `AuditSink`), and the two
+  zero-policy impls (`NoopPdp`, `NullSink`), exactly as specified in the task prompt. Nothing
+  wired into `dispatch` yet (A3's job); no runtime behavior changed. `ResourceResolver` uses a
+  native async fn in trait with `#[allow(async_fn_in_trait)]` (no `async-trait` dependency
+  added), per constraint 9.
+- Deviations from the g-doc per RECONCILIATION.md: none (A2 is an a-prompt, not a g-doc; it
+  already encodes the current vision per RECONCILIATION.md section 2). Followed
+  a2-governance-ports.md as written.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean
+  (the single permitted `#[allow(async_fn_in_trait)]` suppression), `cargo test` green (88 lib
+  unit tests, +7 new in `governance::ports::tests` covering noop-pdp-allows-all, null-sink-is-
+  noop, both ports' dyn-object-safety, `DecisionRequest`/`Decision` serde round-trips, and the
+  lowercase wire vocabulary for `RwClass`/`EffectiveMode`). `tests/tool_schema_fidelity.rs`,
+  `tests/mcp_protocol.rs`, `tests/peer_death.rs`, and `tests/all_open_golden.rs` all unchanged
+  and green. Arch-fence manual check: `ports.rs` has exactly one `use` statement (`use serde::
+  {Deserialize, Serialize};`); `serde_json::Value` is referenced by full path inline. A grep
+  for the bare word "browser" hits only doc-comment prose (e.g. "browser: a host such as
+  github.com"), matching the task prompt's own example text verbatim -- no `use crate::browser`
+  or similar import exists. ASCII scan clean.
+- Browser checks queued: none (pure library addition; nothing runtime-observable changed).
 
 ## Reminders before running BROWSER-TESTS.md
 
