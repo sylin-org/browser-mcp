@@ -301,9 +301,21 @@ async function pressKey(tabId, combo) {
   } else {
     key = KEY_MAP[parts[0]] || combo;
   }
+  // Reload chords (ctrl/cmd+r, F5): Chrome will not reload from a synthetic key event delivered to
+  // the renderer, so intercept and drive the reload directly (shift => bypass cache / hard reload).
+  const bare = (key || "").toLowerCase();
+  const ctrlOrCmd = (modifiers & 2) !== 0 || (modifiers & 4) !== 0;
+  if ((ctrlOrCmd && bare === "r") || bare === "f5") {
+    await chrome.tabs.reload(tabId, { bypassCache: (modifiers & 8) !== 0 });
+    return;
+  }
+  // Include the Windows virtual key code so Chrome maps modified combos (ctrl+a, ctrl+c, ...) to
+  // real editing commands; without it a modified keyDown arrives but triggers no edit action.
   const code = keyCode(key);
-  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
-  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+  const vk = vkCode(key);
+  const evt = { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...evt });
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...evt });
   await sleep(20);
 }
 // Best-effort DOM `code` for a resolved key, so pages that branch on event.code / keyCode work.
@@ -313,6 +325,20 @@ function keyCode(key) {
     if (/[0-9]/.test(key)) return "Digit" + key;
   }
   return key; // named keys (Enter, Tab, ArrowUp, ...) use the key name as their code
+}
+// Windows virtual key codes, so Chrome interprets shortcuts (ctrl+a select-all, etc.) as commands.
+const VK_NAMED = {
+  Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, " ": 32,
+  ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
+  Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45,
+};
+function vkCode(key) {
+  if (key.length === 1) {
+    const up = key.toUpperCase();
+    if (up >= "A" && up <= "Z") return up.charCodeAt(0); // A-Z -> 65-90
+    if (key >= "0" && key <= "9") return key.charCodeAt(0); // 0-9 -> 48-57
+  }
+  return VK_NAMED[key] || 0;
 }
 function waitForLoad(tabId) {
   return new Promise((resolve) => {
