@@ -10,14 +10,14 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T12 (next pending). T04, T06, T07, T01, T02, T03 are done.
+- Current task: T13 (next pending). T04, T06, T07, T01, T02, T03, T12 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T03 get_page_text official semantics
+- Last commit: feat(extension): T12 per-domain console/network buffer reset
   (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03) in
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
-  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T03 (which
+  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T12 (which
   touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
   committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
   point; do not fold that into an unrelated task's commit.
@@ -34,7 +34,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 4 | T01 | read_page structural pagination + caps | - | done |
 | 5 | T02 | read_page viewport culling (filter=interactive) | - | done |
 | 6 | T03 | get_page_text official semantics | - | done |
-| 7 | T12 | Per-domain console/network buffer reset | - | pending |
+| 7 | T12 | Per-domain console/network buffer reset | - | done |
 | 8 | T13 | Runtime.exceptionThrown capture | - | pending |
 | 9 | T14 | Network.loadingFailed status | - | pending |
 | 10 | T15 | Empty-result guidance notes | - | pending |
@@ -578,3 +578,107 @@ Append one entry per task using this template. Newest at the bottom.
     task's Constraints section.
 - Browser checks queued: T03-1, T03-2, T03-3, T03-4 in docs/tasks/release-1/BROWSER-TESTS.md
   (appended after T02-4, preserving task order).
+
+### T12 Console/network buffers reset on same-tab domain change -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T12 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - Full diff review confirming: `hostOf` matches the prompt's snippet verbatim; `tabHost` is a
+    new module-level `Map` declared alongside the other buffer declarations; the persistent
+    `chrome.tabs.onUpdated` listener and `bufferFor` match the prompt's snippets verbatim (byte
+    for byte, including the exact reset/adopt/keep-as-is branching); `pushCapped` now routes
+    through `bufferFor` and stays capped at 1000 via `buf.items.splice`; the attach closure in
+    `ensureAttached` seeds `tabHost` right after `attached.set(tabId, { domains: new Set() })`
+    inside its own try/catch that cannot fail the attach; `chrome.tabs.onRemoved` gained exactly
+    one new line (`tabHost.delete(tabId);`); both read handlers resolve the tab's live hostname
+    fresh via `chrome.tabs.get`, refresh `tabHost`, call `bufferFor`, and read `buf.items` before
+    any filter/slice; the two `clear` lines were updated to the new `{ host, items: [] }` shape;
+    grepped the two zero-entries strings ("No console messages matching the pattern." / "No
+    network requests matching the pattern.") and both `[level] text` / `METHOD url -> status`
+    format strings -- byte-identical to the pre-task code, confirmed via `git diff` (no lines
+    inside either return statement's template literal changed).
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("no Rust rebuild is needed").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: only line-number drift, as the prompt itself warned ("line numbers verified
+  against extension/service-worker.js as of this writing" -- earlier tasks in this run had already
+  landed and shifted them). The prompt cited the attach closure at "lines 58-61"; the actual
+  working tree (after T04/T06/T07 landed) had it at lines 71-78 before this task's edit. The
+  prompt cited `chrome.tabs.onRemoved` at "lines 125-133" and the buffering section
+  (`chrome.debugger.onEvent`/`pushCapped`) at "lines 137-160"; actual lines were 146-181. The
+  prompt cited the two read handlers at "lines 512-536"; actual lines were 554-578. In every case
+  the function names, code shape, comment text, and the exact strings the prompt quoted (the
+  console/network zero-entries strings, the two schema-description phrases it names in "Project
+  context" for `src/mcp/schemas/tools.json`, which was not touched) matched the working tree
+  verbatim; only line numbers had moved. No logic-level drift, and `src/mcp/schemas/tools.json`
+  itself was never opened for edits (out of scope, and the prompt only cites it for context).
+- Decisions made:
+  - Kept the read-handler local variable names exactly as the prompt's own snippet uses them
+    (`tab`, `host`, `buf`) in both `read_console_messages` and `read_network_requests`, even
+    though each name is reused across the two independent handler functions -- there is no
+    collision risk since each is its own function scope (verified by reading both handlers in
+    full; neither had a pre-existing local named `tab`, `host`, or `buf`), and matching the
+    prompt's snippet verbatim minimizes any risk of silently diverging from its documented
+    semantics.
+  - Placed the new `hostOf` function and the persistent `chrome.tabs.onUpdated` listener at the
+    top of the "Console / network buffering" section (immediately after the section's `---`
+    header comment, before the pre-existing `chrome.debugger.onEvent` listener), and placed the
+    new `bufferFor` helper between the `chrome.debugger.onEvent` listener and `pushCapped` (which
+    now calls it). The prompt names exact line ranges to touch but leaves placement of the four
+    "new" additions (`hostOf`, `tabHost`, `bufferFor`, `chrome.tabs.onUpdated`) unspecified beyond
+    "in the console/network buffering section near the chrome.debugger.onEvent listener" for the
+    listener specifically; this placement satisfies that literally and keeps the whole
+    buffer-ownership concern (hostname helper -> live tracking -> event-driven append -> ownership
+    rule -> capped append) in one readable top-to-bottom block. `tabHost` itself was declared next
+    to the other buffer declarations (line 20, after `screenshotCtx`), per the prompt's explicit
+    instruction ("Add module-level state next to the buffer declarations").
+  - In the `Network.responseReceived` branch of `chrome.debugger.onEvent`, call `bufferFor`
+    directly (not `pushCapped`) to look up-or-reset the buffer before searching by `requestId`,
+    exactly as the prompt's step 5 specifies; the not-found fallback still calls the existing
+    `pushCapped(networkBuffer, tabId, {...})`, which internally calls `bufferFor` a second time --
+    this second call is idempotent (the buffer's `host` was already resolved/adopted by the first
+    call in this same event tick), so there is no double-reset or lost-append risk. Verified by
+    tracing `bufferFor`'s branches by hand for this exact call sequence.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03's logs already described.
+- Notes for later tasks:
+  - Both buffers are now `tabId -> { host, items: [...] }` instead of `tabId -> [...]`. Any later
+    task reading `consoleBuffer`/`networkBuffer` directly (none of the remaining prompts in this
+    run appear to) must go through `.items`, not treat the map's value as an array.
+  - `bufferFor(map, tabId, host)` is the single choke point for "get or reset-or-adopt a buffer for
+    this tab against this hostname"; both the event listener's append path (via `pushCapped`) and
+    the two read handlers route through it. A later task adding a new event source that appends to
+    either buffer should call `pushCapped`, not touch the maps directly.
+  - `tabHost` is refreshed three ways (event-driven via `chrome.tabs.onUpdated`, seeded on attach,
+    and refreshed fresh on every read-handler call via `chrome.tabs.get`) but is deliberately never
+    persisted (no `chrome.storage`); a service-worker restart starts it empty again, same as
+    `attached`/`consoleBuffer`/`networkBuffer`.
+  - T15 (Empty-result guidance notes) will touch the exact same two zero-entries return strings
+    this task deliberately left untouched ("No console messages matching the pattern." / "No
+    network requests matching the pattern."); this task changed nothing about wording, only which
+    entries are visible when those strings are chosen.
+  - T13 (Runtime.exceptionThrown capture) and T14 (Network.loadingFailed status) both add new
+    branches to the same `chrome.debugger.onEvent` listener this task modified. Any new branch
+    that appends to `consoleBuffer` or `networkBuffer` must go through `pushCapped` (which now
+    routes through `bufferFor`/`tabHost` automatically) to stay domain-scoped; do not append via a
+    raw `map.get(tabId).items.push(...)` or reintroduce a bare-array buffer shape.
+  - The accepted CDP-race limitation (a cross-domain navigation's main-document
+    `Network.requestWillBeSent` can land in the old domain's buffer and be discarded on the next
+    reset) is intentional per the prompt's Required-behavior item 8; do not "fix" it with
+    `Page.frameNavigated`, `webNavigation`, or URL heuristics without a new task prompt requiring
+    it.
+- Browser checks queued: T12-1, T12-2, T12-3, T12-4, T12-5 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T03-4, preserving task order).

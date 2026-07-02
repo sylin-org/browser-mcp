@@ -421,3 +421,74 @@ Steps:
 Expect: the output does NOT contain the string "HIDDEN_MARKER_XYZ" anywhere. (The pre-T03
 `textContent`-based implementation would have included it; this confirms the switch to
 `innerText` actually excludes CSS-hidden content.)
+
+## T12-1: Cross-domain navigation clears network requests
+Changed: the network buffer is now keyed to the tab's current hostname; navigating a tab to a
+different hostname replaces its buffer with a fresh empty one owned by the new hostname, so a
+read after a cross-domain navigation never returns the old domain's requests. Extension-only
+change: requires reloading the extension at chrome://extensions; no MCP client restart needed.
+Steps:
+1. Reload the extension at chrome://extensions.
+2. Create a tab in the group and navigate it to https://example.com/.
+3. Call `read_network_requests` on that tab (this enables Network tracking for the first time).
+4. Navigate the same tab to https://example.com/ again (reload) to capture some traffic.
+5. Call `read_network_requests` again.
+Expect (step 5): the output contains example.com request lines (URLs starting with
+"https://example.com/" or "http://example.com/").
+6. Navigate the SAME tab to a different domain, for example https://www.iana.org/.
+7. Call `read_network_requests`.
+Expect (step 7): the output contains no example.com URLs anywhere. It is fine (and expected per
+the accepted CDP-race limitation) if the very first iana.org document request is missing or
+appears as a response-only "? https://www.iana.org/ -> 200" style line; seeing any example.com
+traffic here is a failure.
+
+## T12-2: Same-hostname navigation retains earlier requests
+Changed: same as T12-1; this checks the non-reset side of the same rule (an unchanged hostname
+must NOT reset the buffer), including SPA-style same-hostname URL changes.
+Steps:
+1. Continuing from T12-1 (tab currently on https://www.iana.org/, buffer already has iana.org
+   entries from step 7 above), navigate the same tab to https://www.iana.org/domains (a
+   different path, same hostname).
+2. Call `read_network_requests`.
+Expect: the output contains BOTH the request(s) captured on the earlier "/" page from T12-1 step
+7 AND the new requests from /domains -- nothing was dropped by the path-only navigation.
+
+## T12-3: Console messages are domain-scoped the same way
+Changed: the console buffer follows the identical per-hostname ownership rule as the network
+buffer.
+Steps:
+1. Navigate a grouped tab to https://example.com/.
+2. Call `read_console_messages` on that tab once (enables Runtime tracking for the first time;
+   ignore its output).
+3. Call `javascript_tool` on the same tab with the expression: `console.log("marker-A"); "ok"`.
+4. Call `read_console_messages` on the same tab.
+Expect (step 4): the output contains the line "[log] marker-A".
+5. Navigate the same tab to a different domain, for example https://www.iana.org/.
+6. Call `read_console_messages` on the same tab.
+Expect (step 6): the output does NOT contain "marker-A" (either "No console messages matching the
+pattern." if nothing else was logged yet, or only iana.org-originated messages if the page itself
+logs something).
+7. Call `javascript_tool` on the same tab with the expression: `console.log("marker-B"); "ok"`.
+8. Call `read_console_messages` on the same tab.
+Expect (step 8): the output contains "[log] marker-B" and still does NOT contain "marker-A".
+
+## T12-4: clear still works after the per-domain change
+Changed: `read_network_requests`'s `clear: true` parameter still empties the buffer as before,
+now via the new `{ host, items: [] }` shape.
+Steps:
+1. On a grouped tab with some captured network traffic (for example continuing from T12-1/T12-2),
+   call `read_network_requests` with `clear: true`.
+2. Perform a page action that generates at least one new request (for example a reload).
+3. Call `read_network_requests` again (no `clear`).
+Expect (step 3): the output shows only requests made after the clear in step 1 -- none of the
+pre-clear requests reappear.
+
+## T12-5: Tab close cleanup runs without errors
+Changed: the `chrome.tabs.onRemoved` listener now also deletes the tab's `tabHost` entry
+alongside the existing buffer/context cleanup.
+Steps:
+1. With a grouped tab that has an attached debugger and some buffered console/network entries
+   (any tab used in T12-1 through T12-4 qualifies), close that tab.
+2. Open the extension's service worker console at chrome://extensions (click "service worker"
+   under the Browser MCP extension) and check for errors logged around the time of the close.
+Expect: no errors appear in the service worker console from the tab-removal cleanup path.

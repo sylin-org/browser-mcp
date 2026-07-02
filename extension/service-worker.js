@@ -14,9 +14,10 @@ const GROUP_TITLE = "Browser MCP";
 let nativePort = null;
 let groupId = null;
 const attached = new Map(); // tabId -> { domains: Set<string> }
-const consoleBuffer = new Map(); // tabId -> [{ level, text }]
-const networkBuffer = new Map(); // tabId -> [{ requestId, method, url, status, mimeType }]
+const consoleBuffer = new Map(); // tabId -> { host, items: [{ level, text }] }
+const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType }] }
 const screenshotCtx = new Map(); // tabId -> { vpW, vpH, shotW, shotH } (set on each screenshot)
+const tabHost = new Map(); // tabId -> hostname of the tab's current URL ("" when none)
 
 // A rejected promise must not tear down the service worker.
 self.addEventListener("unhandledrejection", (e) => e.preventDefault());
@@ -75,6 +76,10 @@ async function ensureAttached(tabId) {
       throw hopError("cdp", `debugger attach failed: ${(e && e.message) || e}`);
     }
     attached.set(tabId, { domains: new Set() });
+    try {
+      const t = await chrome.tabs.get(tabId);
+      tabHost.set(tabId, hostOf(t.url || ""));
+    } catch { /* tab gone */ }
   })();
   attaching.set(tabId, p);
   try { await p; } finally { attaching.delete(tabId); }
@@ -151,10 +156,17 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   consoleBuffer.delete(tabId);
   networkBuffer.delete(tabId);
   screenshotCtx.delete(tabId);
+  tabHost.delete(tabId);
 });
 chrome.debugger.onDetach.addListener((src) => attached.delete(src.tabId));
 
 // --- Console / network buffering (join network events by requestId, unlike the reference) ---
+function hostOf(url) {
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.url !== undefined) tabHost.set(tabId, hostOf(info.url));
+});
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
   if (method === "Runtime.consoleAPICalled") {
@@ -167,17 +179,28 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   } else if (method === "Network.requestWillBeSent" && params.request) {
     pushCapped(networkBuffer, tabId, { requestId: params.requestId, method: params.request.method, url: params.request.url, status: 0 });
   } else if (method === "Network.responseReceived" && params.response) {
-    const arr = networkBuffer.get(tabId) || [];
-    const existing = arr.find((r) => r.requestId === params.requestId);
+    const buf = bufferFor(networkBuffer, tabId, tabHost.get(tabId));
+    const existing = buf.items.find((r) => r.requestId === params.requestId);
     if (existing) { existing.status = params.response.status; existing.mimeType = params.response.mimeType; }
     else pushCapped(networkBuffer, tabId, { requestId: params.requestId, method: "?", url: params.response.url, status: params.response.status, mimeType: params.response.mimeType });
   }
 });
+// Buffers are owned by the tab's current hostname, per the read_console_messages /
+// read_network_requests schema contract; a hostname change replaces the buffer with a fresh one.
+function bufferFor(map, tabId, host) {
+  let buf = map.get(tabId);
+  if (!buf || (host !== undefined && buf.host !== undefined && buf.host !== host)) {
+    buf = { host, items: [] };
+    map.set(tabId, buf);
+  } else if (buf.host === undefined && host !== undefined) {
+    buf.host = host; // entries captured before the host was known belong to the first host learned
+  }
+  return buf;
+}
 function pushCapped(map, tabId, item) {
-  const arr = map.get(tabId) || [];
-  arr.push(item);
-  if (arr.length > 1000) arr.splice(0, arr.length - 1000);
-  map.set(tabId, arr);
+  const buf = bufferFor(map, tabId, tabHost.get(tabId));
+  buf.items.push(item);
+  if (buf.items.length > 1000) buf.items.splice(0, buf.items.length - 1000);
 }
 
 // --- Tab group (created lazily; recovered from live state after a service-worker restart) ---
@@ -556,24 +579,32 @@ const handlers = {
     await ensureAttached(a.tabId);
     // Only enable Runtime; the Console domain is the deprecated duplicate source (see onEvent).
     await enableDomain(a.tabId, "Runtime");
-    let msgs = consoleBuffer.get(a.tabId) || [];
+    const tab = await chrome.tabs.get(a.tabId);
+    const host = hostOf(tab.url || "");
+    tabHost.set(a.tabId, host);
+    const buf = bufferFor(consoleBuffer, a.tabId, host);
+    let msgs = buf.items;
     if (a.onlyErrors) msgs = msgs.filter((m) => ["error", "exception"].includes(m.level));
     if (a.pattern) {
       try { const re = new RegExp(a.pattern, "i"); msgs = msgs.filter((m) => re.test(m.text) || re.test(m.level)); }
       catch { msgs = msgs.filter((m) => m.text.includes(a.pattern)); }
     }
     msgs = msgs.slice(-(a.limit || 100));
-    if (a.clear) consoleBuffer.set(a.tabId, []);
+    if (a.clear) consoleBuffer.set(a.tabId, { host, items: [] });
     return text(msgs.length ? msgs.map((m) => `[${m.level}] ${m.text}`).join("\n") : "No console messages matching the pattern.");
   },
   async read_network_requests(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
     await ensureAttached(a.tabId);
     await enableDomain(a.tabId, "Network");
-    let reqs = networkBuffer.get(a.tabId) || [];
+    const tab = await chrome.tabs.get(a.tabId);
+    const host = hostOf(tab.url || "");
+    tabHost.set(a.tabId, host);
+    const buf = bufferFor(networkBuffer, a.tabId, host);
+    let reqs = buf.items;
     if (a.urlPattern) reqs = reqs.filter((r) => r.url.includes(a.urlPattern));
     reqs = reqs.slice(-(a.limit || 100));
-    if (a.clear) networkBuffer.set(a.tabId, []);
+    if (a.clear) networkBuffer.set(a.tabId, { host, items: [] });
     return text(reqs.length ? reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status : "(pending)"}`).join("\n") : "No network requests matching the pattern.");
   },
   async resize_window(a) {
