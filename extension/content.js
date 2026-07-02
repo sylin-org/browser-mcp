@@ -68,9 +68,12 @@
       }).filter(Boolean);
       if (names.length) return names.join(" ");
     }
-    if (el.placeholder) return el.placeholder.trim();
-    if (el.title) return el.title.trim();
-    if (el.alt) return el.alt.trim();
+    // typeof-guarded: on a <form>, a child control named/id'd "title", "placeholder", or "alt"
+    // shadows the same-named IDL property with that control element (HTMLFormElement's named-item
+    // behavior), so el.title etc. can be an Element instead of a string -- .trim() would throw.
+    if (typeof el.placeholder === "string" && el.placeholder) return el.placeholder.trim();
+    if (typeof el.title === "string" && el.title) return el.title.trim();
+    if (typeof el.alt === "string" && el.alt) return el.alt.trim();
     if (el.id) {
       const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (label) return label.textContent.trim();
@@ -99,6 +102,12 @@
     const s = getComputedStyle(el);
     return s.display !== "none" && s.visibility !== "hidden";
   }
+  // getBoundingClientRect is viewport-relative for every element, so this is correct at any
+  // scroll position and for position:fixed elements without special cases.
+  function intersectsViewport(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+  }
 
   // --- Sensitive fields: mark (do not hide) their values so the binary's policy overlay can act ---
   // Gate on the input type and on the sensitive `autocomplete` tokens the platform defines for
@@ -116,39 +125,55 @@
   }
 
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
+  // Two-pass design: pass 1 (measure) walks the DOM once and builds a render tree with
+  // per-subtree measurements; pass 2 (emit) walks that render tree top-down and decides, node
+  // by node, whether the whole subtree fits the character budget, whether it must collapse
+  // behind a marker, or whether the budget is exhausted and the walk must stop. Output that
+  // fits the budget is byte-identical to a plain top-down serialization: markers and summary
+  // lines only appear once the budget or the element cap is actually exceeded.
   function accessibilityTree(options) {
     options = options || {};
     const filter = options.filter || "all";
     const maxDepth = options.depth || 15;
     const maxChars = options.max_chars || 50000;
-    let out = "";
-    let truncated = false;
-    function add(s) {
-      if (truncated) return false;
-      if (out.length + s.length > maxChars) {
-        out += s.slice(0, maxChars - out.length) + "\n... (truncated)";
-        truncated = true;
-        return false;
-      }
-      out += s;
-      return true;
-    }
-    function walk(el, depth, indent) {
-      if (truncated || depth > maxDepth || !el || el.nodeType !== 1) return;
-      if (el.id && el.id.indexOf("browser-mcp-") === 0) return; // our own visual-indicator overlay
+    const MAX_ELEMENTS = 10000;
+    // A real page's reachable node count within a given depth is unbounded (wide, deeply nested
+    // markup -- citation lists, infobox tables, and similar structures push this into the tens of
+    // thousands well before any depth/filter/char-budget limit would otherwise apply). MAX_ELEMENTS
+    // above only bounds pass 2's OUTPUT; without a bound on pass 1 itself, a single call could force
+    // an unbounded synchronous DOM walk (getComputedStyle/getBoundingClientRect per node) on a large
+    // page. MAX_MEASURED bounds pass 1's own work independent of maxDepth: once hit, deeper/further
+    // nodes are treated as absent from the render tree (same as exceeding maxDepth), so the call
+    // still returns promptly with whatever was measured rather than not returning at all.
+    const MAX_MEASURED = 20000;
+    let measured = 0;
+    let culled = false; // true once the viewport test removes an element that would otherwise show
+
+    // Pass 1: measure. Same entry guards, same show computation, same recursion order as a
+    // single-pass walk would use; the only difference is that each visited node returns a
+    // record (unit text plus subtree measurements) instead of appending to an output string.
+    function measure(el, depth, indent) {
+      if (depth > maxDepth || !el || el.nodeType !== 1) return null;
+      if (++measured > MAX_MEASURED) return null;
+      if (el.id && el.id.indexOf("browser-mcp-") === 0) return null; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
-      if (["script", "style", "noscript", "template"].includes(tag)) return;
+      if (["script", "style", "noscript", "template"].includes(tag)) return null;
       const r = role(el);
       const n = accessibleName(el);
       const isInteractive = interactive(el);
       const isVisible = visible(el);
       const isContainer = el.children.length > 0;
-      if (filter === "interactive" && !isInteractive && !isContainer) return;
-      const show = ((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible;
+      if (filter === "interactive" && !isInteractive && !isContainer) return null;
+      const wouldShow = ((filter === "all" && (r || n)) || (filter === "interactive" && isInteractive)) && isVisible;
+      const show = wouldShow && (filter === "all" || intersectsViewport(el));
+      if (wouldShow && !show) culled = true;
+      let unit = "";
+      let ref = null;
       if (show) {
+        ref = refFor(el);
         let line = indent + (r || tag);
         if (n) line += ` "${n.slice(0, 100)}"`;
-        line += ` [${refFor(el)}]`;
+        line += ` [${ref}]`;
         if (tag === "a" && el.href) line += ` href="${el.href}"`;
         if (["input", "textarea"].includes(tag) && el.value) {
           // Truthful: always emit the raw value. Secret fields use the `secret_value` marker so the
@@ -160,7 +185,7 @@
         const placeholder = el.getAttribute && el.getAttribute("placeholder");
         if (placeholder) line += ` placeholder="${placeholder}"`;
         if (el.disabled) line += " disabled";
-        if (!add(line + "\n")) return;
+        unit = line + "\n";
         // Emit <select> options as child lines so the model can see the available choices.
         if (tag === "select") {
           for (const opt of el.options) {
@@ -169,38 +194,172 @@
             if (otext) ol += ` "${otext}"`;
             if (opt.selected) ol += " (selected)";
             if (opt.value && opt.value !== otext) ol += ` value="${opt.value}"`;
-            if (!add(ol + "\n")) return;
+            unit += ol + "\n";
           }
         }
       }
+      const children = [];
       // A <select> is a leaf in the tree: its <option>s are emitted above (or deliberately
       // suppressed when sensitive), so we never descend into them.
       if (tag !== "select") {
         const nextIndent = show ? indent + "  " : indent;
-        if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, depth + 1, nextIndent);
-        for (const c of el.children) walk(c, depth + 1, nextIndent);
+        if (el.shadowRoot) {
+          for (const c of el.shadowRoot.children) {
+            const child = measure(c, depth + 1, nextIndent);
+            if (child) children.push(child);
+          }
+        }
+        for (const c of el.children) {
+          const child = measure(c, depth + 1, nextIndent);
+          if (child) children.push(child);
+        }
       }
+      let subtreeChars = unit.length;
+      let elements = show ? 1 : 0;
+      for (const child of children) {
+        subtreeChars += child.subtreeChars;
+        elements += child.elements;
+      }
+      return { unit, ref, indent, children, unitChars: unit.length, subtreeChars, elements, show };
     }
+
     let root = document.body;
     if (options.ref_id) {
       const el = deref(options.ref_id);
       if (!el) return `Error: ref_id "${options.ref_id}" not found or was garbage-collected.`;
       root = el;
     }
-    walk(root, 0, "");
-    return out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+    const rootRecord = measure(root, 0, "");
+    const total = rootRecord ? rootRecord.elements : 0;
+
+    // Pass 2: emit. Walk the render tree top-down and decide, per record, whether it fits whole,
+    // must collapse behind a marker, or the whole emit pass must halt because even a collapsed
+    // form does not fit. Once halted, no later record (at any level) is emitted: output is
+    // always a prefix of document order plus markers, never a sequence with silent gaps.
+    let out = "";
+    let remaining = maxChars;
+    let shown = 0;
+    let collapsed = false; // a collapse marker was emitted
+    let stopped = false; // the walk halted because even a collapsed form did not fit
+    let capped = false; // the element cap was reached
+    function emit(record, isRoot) {
+      if (stopped || capped) return;
+      if (!record.show) {
+        // Pass-through node: it owns no line, so it cannot collapse; only its children can.
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      if (record.subtreeChars <= remaining) {
+        out += record.unit;
+        remaining -= record.unitChars;
+        shown++;
+        if (shown >= MAX_ELEMENTS) { capped = true; return; }
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      if (isRoot) {
+        // The record the caller re-rooted at (via ref_id) must never collapse behind a marker
+        // naming its own ref -- that would be an unexpandable loop (the caller is already looking
+        // at this ref_id). Show its own line if it fits, then let each child decide individually
+        // whether it fits whole, collapses behind its own marker, or halts the walk.
+        if (record.unitChars > remaining) { stopped = true; return; }
+        out += record.unit;
+        remaining -= record.unitChars;
+        shown++;
+        if (shown >= MAX_ELEMENTS) { capped = true; return; }
+        for (const child of record.children) {
+          emit(child);
+          if (stopped || capped) return;
+        }
+        return;
+      }
+      const markerLine = `${record.indent}  [subtree collapsed: ${record.elements - 1} elements; call read_page with ref_id=${record.ref} to expand]\n`;
+      if (record.unitChars + markerLine.length <= remaining) {
+        out += record.unit + markerLine;
+        remaining -= record.unitChars + markerLine.length;
+        shown++;
+        if (shown >= MAX_ELEMENTS) capped = true;
+        collapsed = true;
+        return;
+      }
+      stopped = true;
+    }
+    if (rootRecord) emit(rootRecord, true);
+
+    const omitted = total - shown;
+    if (capped && omitted > 0) {
+      out += `[element cap reached: output stopped after ${MAX_ELEMENTS} elements; use filter="interactive", a ref_id subtree, or a smaller depth]\n`;
+    }
+    if (omitted > 0) {
+      out += `[showing ${shown} of ${total} elements; expand a collapsed subtree with ref_id, or narrow with filter="interactive" or a smaller depth]\n`;
+    }
+    let result = out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+    if (culled) {
+      result += "\nNote: interactive results are limited to the current viewport; scroll or use filter=all for the full document.";
+    }
+    return result;
   }
 
   // --- Page text ---
-  function pageText() {
-    const selectors = ["article", "main", '[role="main"]', '[class*="article"]', '[class*="post-content"]', ".content", "#content"];
-    let source = null;
-    for (const sel of selectors) { source = document.querySelector(sel); if (source) break; }
-    if (!source) source = document.body;
-    const clone = source.cloneNode(true);
-    clone.querySelectorAll("script, style, noscript, template, svg").forEach((el) => el.remove());
-    const t = clone.textContent.replace(/\s+/g, " ").trim().slice(0, 100000);
-    return `Title: ${document.title}\nURL: ${location.href}\n\n${t}`;
+  // Main-content candidates. An element can match several selectors; the FIRST selector in
+  // this list that finds it is the one reported in the "Source element:" header, and ties
+  // on innerText length go to the earlier selector.
+  const PAGE_TEXT_SELECTORS = [
+    "article",
+    "main",
+    '[role="main"]',
+    '[itemprop="articleBody"]',
+    ".entry-content",
+    ".content-body",
+    ".article-body",
+    ".articleBody",
+    ".post-content",
+    ".story-body",
+    "#content",
+    ".content",
+  ];
+  // Conservative cleanup only: innerText already excludes hidden text and preserves layout
+  // line breaks, so just tidy line endings and keep paragraph breaks intact.
+  function normalizePageText(t) {
+    return t
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  function pageText(maxCharsArg) {
+    const maxChars = typeof maxCharsArg === "number" && Number.isFinite(maxCharsArg) && maxCharsArg >= 1
+      ? Math.floor(maxCharsArg)
+      : 50000;
+    let bestEl = null, bestText = "", bestSel = "body";
+    const seen = new Set();
+    for (const sel of PAGE_TEXT_SELECTORS) {
+      for (const el of document.querySelectorAll(sel)) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        const t = el.innerText || "";
+        if (t.length > bestText.length) { bestEl = el; bestText = t; bestSel = sel; }
+      }
+    }
+    if (!bestEl || bestText.length === 0) {
+      bestSel = "body";
+      bestText = (document.body && document.body.innerText) || "";
+    }
+    const body = normalizePageText(bestText);
+    if (body.length < 10) {
+      return `No readable text content found (source element: ${bestSel}). The page may be mostly visual or may render text dynamically. Use read_page to inspect the page structure instead.`;
+    }
+    const header = `Source element: ${bestSel}\n\n`;
+    if (body.length > maxChars) {
+      return header + body.slice(0, maxChars) + `\n\n[Truncated at ${maxChars} characters. Retry with a larger max_chars, or use read_page to get a structured view with element refs.]`;
+    }
+    return header + body;
   }
 
   // --- Find (traverses shadow roots) ---
@@ -296,7 +455,7 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
       case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); return true;
-      case "pageText": sendResponse({ result: pageText() }); return true;
+      case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
       case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;

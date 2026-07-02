@@ -55,11 +55,6 @@ pub struct UninstallOptions {
     pub browsers: Selection,
     pub clients: Selection,
 }
-#[derive(Debug, Clone)]
-pub struct DoctorOptions {
-    pub verbose: bool,
-}
-
 /// Injected filesystem roots so path computation is a pure function of inputs (testable on any OS).
 #[derive(Debug, Clone)]
 pub struct PlanCtx {
@@ -540,7 +535,7 @@ fn plan_host_removal(label: String, path: PathBuf) -> Action {
 
 // --- Shared helpers ---
 
-fn host_file_path(b: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
+pub(crate) fn host_file_path(b: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
     if cfg!(target_os = "macos") {
         native_host::mac_host_path(b, ctx)
     } else {
@@ -713,55 +708,6 @@ pub fn run_uninstall(opts: UninstallOptions) -> Result<()> {
     let tally = apply(&actions, opts.dry_run);
     finish(opts.dry_run, &tally);
     exit_result(&tally)
-}
-
-/// `browser-mcp doctor` -- detection + registration state, read-only.
-pub fn run_doctor(_opts: DoctorOptions) -> Result<()> {
-    let ctx = PlanCtx::resolve()?;
-    println!(
-        "browser-mcp doctor\n\nBinary: {}",
-        ctx.current_exe.display()
-    );
-    println!("\nBrowsers:");
-    for b in native_host::BROWSERS {
-        let detected = native_host::detect_browser(b, &ctx);
-        let registered = if cfg!(windows) {
-            // Check both per-user (HKCU) and system-wide (HKLM, both WOW views) registrations.
-            let key = native_host::win_reg_key(b);
-            native_host::read_default(Hive::Hkcu, &key, WowView::Native).is_some()
-                || native_host::read_default(Hive::Hklm, &key, WowView::Both).is_some()
-        } else {
-            host_file_path(b, &ctx).exists()
-        };
-        println!(
-            "  {:<16} detected={:<5} registered={}",
-            b.display,
-            yesno(detected),
-            yesno(registered)
-        );
-    }
-    println!("\nMCP clients:");
-    for c in clients::CLIENTS {
-        let detected = clients::detect(c, &ctx);
-        let registered = std::fs::read_to_string(clients::config_path(c, &ctx))
-            .map(|s| s.contains("\"browser-mcp\""))
-            .unwrap_or(false);
-        println!(
-            "  {:<16} detected={:<5} registered={}",
-            c.display,
-            yesno(detected),
-            yesno(registered)
-        );
-    }
-    Ok(())
-}
-
-fn yesno(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
 }
 
 fn finish(dry_run: bool, t: &Tally) {

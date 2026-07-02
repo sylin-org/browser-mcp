@@ -13,8 +13,15 @@
 //! ## extension -> binary
 //! ```json
 //! { "id": "<string>", "type": "tool_response", "result": { "content": [ ... ] } }
-//! { "id": "<string>", "type": "tool_error",    "error":  "<message>" }
+//! { "id": "<string>", "type": "tool_error",    "error":  "<message>", "hop": "<cdp|page>", "detail": "<string>" }
 //! ```
 //!
 //! `result` is an MCP tool result object. Replies without an `id` (events, heartbeats) are ignored
 //! by the mcp-server in v1.0; Phase 3 will buffer console/network events pushed this way.
+//!
+//! `hop` and `detail` on a `tool_error` reply are both optional. `hop` is only ever `"cdp"` or
+//! `"page"` -- the extension tags mechanism (which layer threw), never policy; an absent `hop`
+//! means the binary attributes the failure to the extension itself (see
+//! [`crate::ToolError::from_extension_wire`]). `detail` is debug-log-only material (logged with
+//! `tracing::debug!` in [`crate::browser`]) and must never appear in a tool result surfaced to the
+//! MCP client.

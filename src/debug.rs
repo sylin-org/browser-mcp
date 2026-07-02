@@ -42,7 +42,7 @@ const STATE_THROTTLE_MS: u128 = 200;
 const STALE_AFTER: Duration = Duration::from_secs(24 * 3600);
 
 /// Milliseconds since the Unix epoch (best-effort; 0 if the clock is before the epoch).
-fn now_ms() -> u128 {
+pub(crate) fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -70,7 +70,7 @@ fn boundary_clip(s: &str, max: usize) -> &str {
 }
 
 /// Format a millisecond duration compactly ("3m 12s", "800ms").
-fn fmt_ms(ms: u128) -> String {
+pub(crate) fn fmt_ms(ms: u128) -> String {
     let secs = ms / 1000;
     if secs == 0 {
         return format!("{ms}ms");
@@ -84,7 +84,7 @@ fn fmt_ms(ms: u128) -> String {
 }
 
 /// Session `debug-state-*.json` files under `dir`, newest (by mtime) first.
-fn session_state_files(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn session_state_files(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -136,22 +136,39 @@ pub fn raw_state() -> Option<String> {
 }
 
 /// A human-readable `browser-mcp status` report, or a hint when no debug session is found.
+///
+/// Role-aware: `status` describes the mcp-server role only. A state file is a *candidate* when it
+/// parses as JSON and its `role` field is either absent (old-format files, written before the
+/// `role` field existed) or equal to `"mcp-server"`; native-host state files (see `doctor`, which
+/// does read those) are skipped here rather than misreported as a server session.
 pub fn status_report() -> String {
     let Some(dir) = log_dir() else {
         return "no log directory available on this platform".to_string();
     };
     let files = session_state_files(&dir);
-    let Some(path) = files.first() else {
+    if files.is_empty() {
         return format!(
             "no debug state under {}\nstart the server with --debug (or BROWSER_MCP_DEBUG=1), then re-run status",
             dir.display()
         );
-    };
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return format!("debug state at {} is unreadable", path.display());
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return format!("debug state at {} is unreadable", path.display());
+    }
+    let candidates: Vec<(PathBuf, serde_json::Value)> = files
+        .into_iter()
+        .filter_map(|p| {
+            let raw = std::fs::read_to_string(&p).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            let role = v
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("mcp-server");
+            (role == "mcp-server").then_some((p, v))
+        })
+        .collect();
+    let Some((_path, v)) = candidates.first() else {
+        return format!(
+            "no mcp-server debug state under {} (state files exist for other roles or are unreadable)",
+            dir.display()
+        );
     };
 
     let now = now_ms();
@@ -237,10 +254,10 @@ pub fn status_report() -> String {
         _ => out += "    (none)\n",
     }
 
-    if files.len() > 1 {
+    if candidates.len() > 1 {
         out += &format!(
             "\n  ({} debug sessions present; showing the most recently updated)\n",
-            files.len()
+            candidates.len()
         );
     }
     out
@@ -281,6 +298,12 @@ struct Counters {
 #[derive(Serialize)]
 struct Snapshot<'a> {
     pid: u32,
+    /// "mcp-server" or "native-host". Absent in state files written before this field existed;
+    /// consumers (see `doctor` / `status_report`) treat a missing field as `"mcp-server"`.
+    role: &'static str,
+    /// The MCP client's self-reported identity (from `initialize`'s `clientInfo`), if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client: Option<&'a str>,
     started_ms: u128,
     updated_ms: u128,
     extension_connected: bool,
@@ -291,6 +314,8 @@ struct Snapshot<'a> {
 
 /// Mutable inner state, guarded by the sink's mutex.
 struct Inner {
+    role: &'static str,
+    client: Option<String>,
     started_ms: u128,
     last_state_ms: u128,
     extension_connected: bool,
@@ -321,10 +346,23 @@ impl Inner {
         }
     }
 
+    /// Refresh `updated_ms` on the same throttle window `record` uses, without appending an event.
+    /// Used by `frame_in`/`frame_out`: individual frames are too chatty for the event stream (see
+    /// their doc comments) but `updated_ms` should still track frame traffic, not just requests.
+    fn touch(&mut self) {
+        let now = now_ms();
+        if now.saturating_sub(self.last_state_ms) >= STATE_THROTTLE_MS {
+            self.last_state_ms = now;
+            self.write_state();
+        }
+    }
+
     /// Atomically rewrite the snapshot (temp sibling + rename) so a reader never sees a partial file.
     fn write_state(&self) {
         let snapshot = Snapshot {
             pid: std::process::id(),
+            role: self.role,
+            client: self.client.as_deref(),
             started_ms: self.started_ms,
             updated_ms: now_ms(),
             extension_connected: self.extension_connected,
@@ -360,7 +398,9 @@ impl DebugSink {
 
     /// An enabled sink writing `debug-state-<pid>.json` and `debug-events-<pid>.jsonl` under `dir`
     /// (created if needed). Per-PID names avoid clobbering when two servers run with `--debug`.
-    pub fn enabled(dir: &Path) -> std::io::Result<Self> {
+    /// `role` ("mcp-server" or "native-host") is recorded in every snapshot so a reader (`status`,
+    /// `doctor`) can tell which process wrote a given state file.
+    pub fn enabled(dir: &Path, role: &'static str) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         cleanup_stale(dir);
         let pid = std::process::id();
@@ -371,6 +411,8 @@ impl DebugSink {
             .open(dir.join(format!("debug-events-{pid}.jsonl")))?;
         let now = now_ms();
         let inner = Inner {
+            role,
+            client: None,
             started_ms: now,
             last_state_ms: now,
             extension_connected: false,
@@ -514,14 +556,22 @@ impl DebugSink {
         });
     }
 
-    /// Record a frame sent to the extension (counter only; not an event -- too chatty).
+    /// Record a frame sent to the extension (counter only; not an event -- too chatty). Refreshes
+    /// `updated_ms` (throttled, see `Inner::touch`) so an idle-but-relaying session does not look
+    /// stale in `status`/`doctor` just because no MCP request has arrived recently.
     pub fn frame_out(&self) {
-        self.with(|i| i.counters.frames_out += 1);
+        self.with(|i| {
+            i.counters.frames_out += 1;
+            i.touch();
+        });
     }
 
-    /// Record a frame received from the extension (counter only).
+    /// Record a frame received from the extension (counter only; see `frame_out`).
     pub fn frame_in(&self) {
-        self.with(|i| i.counters.frames_in += 1);
+        self.with(|i| {
+            i.counters.frames_in += 1;
+            i.touch();
+        });
     }
 
     /// Record an extension connect / disconnect transition (forces a snapshot: the flag must be
@@ -548,6 +598,42 @@ impl DebugSink {
                             "disconnected"
                         }
                     ),
+                    detail: None,
+                },
+                true,
+            );
+        });
+    }
+
+    /// Record the MCP client's self-reported identity (from the `initialize` params' `clientInfo`).
+    /// Forces a snapshot so `doctor`/`status` see it immediately.
+    pub fn set_client(&self, client: &str) {
+        self.with(|i| {
+            let clipped = Self::ident(client);
+            i.client = Some(clipped.clone());
+            i.record(
+                Event {
+                    ts_ms: now_ms(),
+                    kind: "mcp",
+                    dir: "-",
+                    summary: format!("client {clipped}"),
+                    detail: None,
+                },
+                true,
+            );
+        });
+    }
+
+    /// Record a one-line IPC lifecycle note (used by the native-host role, which has no MCP
+    /// request/response boundary of its own to hang events off of). Forces a snapshot.
+    pub fn ipc_note(&self, summary: &str) {
+        self.with(|i| {
+            i.record(
+                Event {
+                    ts_ms: now_ms(),
+                    kind: "ipc",
+                    dir: "-",
+                    summary: Self::ident(summary),
                     detail: None,
                 },
                 true,
@@ -615,7 +701,7 @@ mod tests {
     #[test]
     fn enabled_sink_tracks_state_and_writes_files() {
         let dir = temp_dir("state");
-        let sink = DebugSink::enabled(&dir).unwrap();
+        let sink = DebugSink::enabled(&dir, "mcp-server").unwrap();
         assert!(sink.is_enabled());
         assert!(state_path(&dir).is_file());
         assert!(events_path(&dir).is_file());
@@ -642,9 +728,21 @@ mod tests {
     }
 
     #[test]
+    fn enabled_sink_records_role_and_client() {
+        let dir = temp_dir("role-client");
+        let sink = DebugSink::enabled(&dir, "mcp-server").unwrap();
+        sink.set_client("claude-code 1.2.3");
+        sink.flush();
+        let snap = read_snap(&dir);
+        assert_eq!(snap["role"], "mcp-server");
+        assert_eq!(snap["client"], "claude-code 1.2.3");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn disconnect_clears_in_flight() {
         let dir = temp_dir("disc");
-        let sink = DebugSink::enabled(&dir).unwrap();
+        let sink = DebugSink::enabled(&dir, "mcp-server").unwrap();
         sink.set_connected(true);
         sink.tool_begin("1", "read_page_mcp");
         sink.set_connected(false); // forces a snapshot

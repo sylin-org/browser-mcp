@@ -75,8 +75,14 @@ mod tests {
     #[test]
     fn redacts_marked_values_and_removes_the_marker() {
         let out = apply_to_tree(LINE, true);
-        assert!(!out.contains("secret_value="), "marker must be stripped: {out}");
-        assert!(!out.contains("hunter2"), "secret must not survive redaction: {out}");
+        assert!(
+            !out.contains("secret_value="),
+            "marker must be stripped: {out}"
+        );
+        assert!(
+            !out.contains("hunter2"),
+            "secret must not survive redaction: {out}"
+        );
         assert!(out.contains("value=\"[value redacted]\""), "{out}");
         // Non-sensitive values are untouched.
         assert!(out.contains("value=\"alice\""), "{out}");
@@ -85,8 +91,14 @@ mod tests {
     #[test]
     fn preserves_raw_values_when_disabled_but_still_removes_the_marker() {
         let out = apply_to_tree(LINE, false);
-        assert!(!out.contains("secret_value="), "marker must be stripped even raw: {out}");
-        assert!(out.contains("value=\"hunter2\""), "raw value expected when disabled: {out}");
+        assert!(
+            !out.contains("secret_value="),
+            "marker must be stripped even raw: {out}"
+        );
+        assert!(
+            out.contains("value=\"hunter2\""),
+            "raw value expected when disabled: {out}"
+        );
         assert!(out.contains("value=\"alice\""), "{out}");
     }
 
@@ -96,7 +108,10 @@ mod tests {
         let red = apply_to_tree(s, true);
         assert_eq!(red.matches("[value redacted]").count(), 3, "{red}");
         assert!(!red.contains("secret_value="), "{red}");
-        assert!(!red.contains("one") && !red.contains("two") && !red.contains("trunc"), "{red}");
+        assert!(
+            !red.contains("one") && !red.contains("two") && !red.contains("trunc"),
+            "{red}"
+        );
     }
 
     #[test]
@@ -115,7 +130,10 @@ mod tests {
             ]
         });
         apply_to_result(&mut result, true);
-        assert_eq!(result["content"][0]["text"], "in value=\"[value redacted]\" out");
+        assert_eq!(
+            result["content"][0]["text"],
+            "in value=\"[value redacted]\" out"
+        );
         // Non-text items are left untouched (the marker only ever appears in read_page text).
         assert_eq!(result["content"][1]["data"], "secret_value=\"not-text\"");
     }

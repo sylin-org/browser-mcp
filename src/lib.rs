@@ -15,6 +15,7 @@
 pub mod browser;
 pub mod debug;
 pub mod dispatch;
+pub mod doctor;
 pub mod error;
 pub mod install;
 pub mod mcp;
@@ -23,7 +24,7 @@ pub mod origin;
 pub mod policy;
 pub mod tools;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, ToolError};
 
 /// Initialize operational (debug) logging to **stderr**.
 ///
