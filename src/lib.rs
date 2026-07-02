@@ -20,6 +20,7 @@ pub mod install;
 pub mod mcp;
 pub mod native;
 pub mod origin;
+pub mod policy;
 pub mod tools;
 
 pub use error::{Error, Result};

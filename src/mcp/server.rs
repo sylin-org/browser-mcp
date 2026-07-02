@@ -9,6 +9,7 @@ use crate::browser::Browser;
 use crate::dispatch;
 use crate::mcp::tools::TOOLS_JSON;
 use crate::mcp::types::{text_content, JsonRpcResponse};
+use crate::policy::{self, Config};
 use crate::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -21,13 +22,16 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 pub async fn run(browser: Browser) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
+    // Governance config in force. The policy engine is parked, so this is the built-in "Minimal"
+    // preset (safe-by-default). When the manifest engine lands it resolves this per session.
+    let config = Config::default();
 
     while let Some(line) = lines.next_line().await? {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Some(resp) = handle_line(&browser, line).await {
+        if let Some(resp) = handle_line(&browser, config, line).await {
             let mut buf = serde_json::to_string(&resp)?;
             if browser.debug().is_enabled() {
                 // Use the already-typed id (do not re-parse the whole -- possibly large -- body).
@@ -47,7 +51,7 @@ pub async fn run(browser: Browser) -> Result<()> {
 /// Returns `Some(response)` for requests (an `id` member is present, even if `null`) and `None` for
 /// notifications (no `id` member) and for lines we cannot parse at all. Fields are read from a raw
 /// [`Value`] so a structurally invalid but id-bearing request still gets an addressable `-32600`.
-async fn handle_line(browser: &Browser, line: &str) -> Option<JsonRpcResponse> {
+async fn handle_line(browser: &Browser, config: Config, line: &str) -> Option<JsonRpcResponse> {
     let raw: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
@@ -80,7 +84,7 @@ async fn handle_line(browser: &Browser, line: &str) -> Option<JsonRpcResponse> {
     match method {
         "initialize" => Some(JsonRpcResponse::success(id, initialize_result())),
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
-        "tools/call" => Some(handle_tools_call(browser, id, raw.get("params")).await),
+        "tools/call" => Some(handle_tools_call(browser, config, id, raw.get("params")).await),
         "ping" => Some(JsonRpcResponse::success(id, json!({}))),
         _ if is_notification => {
             tracing::debug!(method, "ignoring unknown notification");
@@ -110,6 +114,7 @@ fn tools_list_result() -> Value {
 
 async fn handle_tools_call(
     browser: &Browser,
+    config: Config,
     id: Option<Value>,
     params: Option<&Value>,
 ) -> JsonRpcResponse {
@@ -127,8 +132,16 @@ async fn handle_tools_call(
     dispatch::audit(name);
 
     match browser.call(name, &args).await {
-        // The extension returns an MCP result object (`{ content: [...] }`); pass it through.
-        Ok(result) => JsonRpcResponse::success(id, result),
+        // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
+        // read_page carries secret field values under a `secret_value=` marker; the governance
+        // overlay rewrites that marker here (redacting per `content.security.secrets.redact`) before
+        // the result leaves the binary. Other tools pass through untouched.
+        Ok(mut result) => {
+            if name == "read_page" {
+                policy::redact::apply_to_result(&mut result, config.secrets_redact());
+            }
+            JsonRpcResponse::success(id, result)
+        }
         // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
         Err(e) => {
             let mut result = text_content(format!("Error: {e}"));

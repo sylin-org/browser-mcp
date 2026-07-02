@@ -4,9 +4,11 @@
 // extraction, element finding, and form input with shadow-DOM traversal. Runs in the page; the
 // service worker calls in via chrome.tabs.sendMessage. No governance here.
 //
-// Safety mechanism (not policy): values of sensitive fields (passwords, one-time codes, payment
-// data) are redacted to "[value redacted]" and sensitive <select> options are suppressed, so
-// credentials never enter the accessibility tree or find results.
+// The engine is TRUTHFUL: it returns the raw page, including secret field values. It only MARKS a
+// secret field's value with the `secret_value="..."` attribute (a neutral fact: the page marks this
+// field secret). The governance overlay in the binary rewrites that marker -- redacting per the
+// `content.security.secrets.redact` policy key -- before the result leaves the machine. The decision
+// is the binary's; the engine never lies.
 
 (function () {
   if (window.__browserMcpLoaded) return;
@@ -51,9 +53,8 @@
     return TAG_ROLE[tag] || null;
   }
   function accessibleName(el) {
-    // A non-sensitive <select> names itself by its selected option so the model sees the choice.
-    // Sensitive selects fall through (their option text may be private) and get a label instead.
-    if (el.tagName.toLowerCase() === "select" && !sensitive(el)) {
+    // A <select> names itself by its selected option so the model sees the current choice.
+    if (el.tagName.toLowerCase() === "select") {
       const sel = el.querySelector("option[selected]") || (el.options && el.options[el.selectedIndex]);
       if (sel && sel.textContent && sel.textContent.trim()) return sel.textContent.trim();
     }
@@ -99,27 +100,19 @@
     return s.display !== "none" && s.visibility !== "hidden";
   }
 
-  // --- Sensitive fields: never emit their values into the tree ---
+  // --- Sensitive fields: mark (do not hide) their values so the binary's policy overlay can act ---
   // Gate on the input type and on the sensitive `autocomplete` tokens the platform defines for
-  // credentials, one-time codes, and payment data. Matches the official extension's redaction set.
+  // credentials, one-time codes, and payment data (the platform's own signal that a field is a
+  // secret -- a structural fact, not content inspection).
   const SENSITIVE_AUTOCOMPLETE = [
     "current-password", "new-password", "one-time-code",
     "cc-number", "cc-csc", "cc-exp", "cc-exp-month", "cc-exp-year",
   ];
-  function sensitiveAttrs(el) {
+  function sensitive(el) {
     const t = (el.getAttribute("type") || "").toLowerCase();
     if (t === "password" || t === "hidden") return true;
     const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
     return SENSITIVE_AUTOCOMPLETE.some((s) => ac.indexOf(s) !== -1);
-  }
-  function sensitive(el) {
-    if (sensitiveAttrs(el)) return true;
-    // An <option> (or anything) inside a sensitive <select> inherits its sensitivity.
-    if (el.closest) {
-      const sel = el.closest("select");
-      if (sel && sel !== el && sensitiveAttrs(sel)) return true;
-    }
-    return false;
   }
 
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
@@ -158,8 +151,10 @@
         line += ` [${refFor(el)}]`;
         if (tag === "a" && el.href) line += ` href="${el.href}"`;
         if (["input", "textarea"].includes(tag) && el.value) {
-          const v = sensitive(el) ? "[value redacted]" : String(el.value).slice(0, 80);
-          line += ` value="${v}"`;
+          // Truthful: always emit the raw value. Secret fields use the `secret_value` marker so the
+          // binary's policy overlay can redact it; the engine itself makes no such decision.
+          const attr = sensitive(el) ? "secret_value" : "value";
+          line += ` ${attr}="${String(el.value).slice(0, 80)}"`;
         }
         if (tag === "input") line += ` type="${el.type || "text"}"`;
         const placeholder = el.getAttribute && el.getAttribute("placeholder");
@@ -167,8 +162,7 @@
         if (el.disabled) line += " disabled";
         if (!add(line + "\n")) return;
         // Emit <select> options as child lines so the model can see the available choices.
-        // Suppressed for sensitive selects, whose option text may carry private data.
-        if (tag === "select" && !sensitive(el)) {
+        if (tag === "select") {
           for (const opt of el.options) {
             const otext = (opt.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
             let ol = indent + "  option";
@@ -234,7 +228,7 @@
       results.push({
         ref: refFor(el),
         role: role(el) || tag,
-        name: (accessibleName(el) || (sensitive(el) ? "" : el.textContent) || "").trim().slice(0, 80),
+        name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
         x: Math.round(rect.x + rect.width / 2),
         y: Math.round(rect.y + rect.height / 2),
       });
