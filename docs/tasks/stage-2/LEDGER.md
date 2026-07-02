@@ -14,8 +14,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
   landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
   identity), `g06` (audit flight recorder), `g07` (domain matcher), `g08` (sacred domains,
-  the FIRST real enforcement path) landed.
-- NEXT TASK: Phase C, task `g10` (`docs/tasks/stage-2/g10-take-the-wheel-pause.md`).
+  the FIRST real enforcement path), `g10` (take-the-wheel pause, the FIRST task touching
+  `extension/`) landed.
+- NEXT TASK: Phase C, task `g11` (`docs/tasks/stage-2/g11-panic-kill-switch.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -997,6 +998,122 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the real default-audit-file location; the live check itself is added to
   `BROWSER-TESTS.md` as item g08-1 for a human to run later, alongside the existing
   reminder that g10/g11/g14/g12/g13/g15 will need the same.
+
+### g10 take-the-wheel pause (a user hold the agent must honor) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/ports.rs` (`AuditRecord` grew a `held: bool` field, appended
+  last per the shared-format doc's own instruction, with a new test); `src/governance/audit
+  /mod.rs` (its `sample_record` test helper updated for the new field); `src/governance
+  /dispatch.rs` (`HOLD_HINT_AFTER` constant + `hold_message` pure function; `record_call`/
+  `record_deny` refactored onto a shared private `build_record` helper that also backs the
+  new `Governance::record_held`; 5 new tests); `src/transport/executor.rs` (`Browser` grew
+  a `held` field, `held_for`/`set_held`/`toggle_held`, hold-request handling in
+  `route_reply`, 4 new tests); `src/transport/mcp/server.rs` (the hold check wired into
+  `handle_tools_call`, before governance.decide/the sacred check/any extension traffic; 2
+  new chokepoint tests); `src/transport/native/messages.rs` (the hold wire-vocabulary doc
+  block, additive); `tests/audit_recorder.rs` (field-order assertion extended); new
+  `extension/popup.html` + `extension/popup.js`; `extension/manifest.json` (`action` +
+  `commands` keys, no new permissions); `extension/service-worker.js` (hold-request
+  handling on the native port, `holdRequest`/`updateHoldBadge` helpers, a
+  `chrome.commands.onCommand` listener, a `chrome.runtime.onMessage` listener for the
+  popup); `docs/tasks/stage-2/00-shared-format.md` (the `held` field row appended to the
+  section 6.1 audit table, additive-only per the task's own instruction).
+- Summary: a user-facing pause control (ADR-0018 step 2, alongside sacred domains). The
+  extension's popup button and `Alt+Shift+P` shortcut send `get_hold`/`set_hold`/
+  `toggle_hold` requests over the existing native-messaging channel; `Browser` holds the
+  flag (`Option<Instant>`, process memory only) and answers with `hold_state`/
+  `hold_error`. While held, `handle_tools_call` answers EVERY `tools/call` immediately with
+  a successful (never `isError`) text result stating plainly the call was NOT executed and
+  telling the agent to wait, not retry -- checked before `governance.decide`, before the
+  g08 sacred check, and before any extension traffic, so a held call never reaches the
+  extension and is never queued, deferred, or replayed (the agent re-issues calls itself
+  after resume). Past `HOLD_HINT_AFTER` (2 minutes), the reply appends a second sentence
+  naming the only way to resume. The flag survives an extension disconnect/reconnect (the
+  user paused; a service-worker death must not silently resume the agent) but never
+  persists to disk and never survives a binary restart. A held call still produces exactly
+  one audit record (`decision: "allow"`, the new `held: true` field, `duration_ms: 0`,
+  `domain: null` since a held call must not touch the extension); every other record now
+  carries `held: false`.
+- Deviations from the g-doc per RECONCILIATION.md / the module-placement map (paths
+  translated post-A1/A5/G06/G08; no explicit g10 row in RECONCILIATION.md, so the general
+  placement principles from g06/g08 apply):
+  1. **`HOLD_HINT_AFTER` and `hold_message` land in the EXISTING `governance/dispatch.rs`**
+     (the doc's own literal instruction: "In `src/dispatch.rs` add:"), not a new file --
+     both are pure, domain-agnostic text formatting with no browser-specific concept,
+     consistent with `governance/` owning "the chokepoint" and "denial, mode" per
+     RECONCILIATION section 1. The hold FLAG (`Browser::held`/`held_for`/`set_held`/
+     `toggle_held`) lives on `transport::executor::Browser` (RECONCILIATION: "`src/native/`,
+     `src/mcp/`, `src/browser.rs` handle -> `transport/`"), since `governance/` cannot name
+     `Browser` without violating the a7 arch-test's forbidden-edge scan.
+  2. **The hold check's ORCHESTRATION lives in `transport/mcp/server.rs`, not
+     `governance/dispatch.rs`**, for the identical reason g08's sacred-check orchestration
+     does: `Governance` cannot hold or query a live `Browser` handle directly (the a7
+     arch-test forbids `governance -> transport`), so `handle_tools_call` (the composition
+     root's dispatch loop) calls `browser.held_for()` itself and, on a hold, calls the pure
+     `governance::dispatch::hold_message` and the new `Governance::record_held` -- the same
+     "decision vocabulary in core, live-state orchestration at the composition root" split
+     g08 already established, now applied to a second always-on, mode-independent check.
+  3. **`record_call`/`record_deny`/`record_held` refactored onto a shared private
+     `build_record` helper** rather than duplicating the 13-field `AuditRecord` literal a
+     third time. Not a doc requirement, just avoiding a third near-identical struct literal
+     now that a third "always-allow/always-deny-shaped" record-building call exists;
+     `record_call`'s and `record_deny`'s own observable behavior and public signatures are
+     completely unchanged.
+  4. **The `held` field is appended LAST to `AuditRecord`**, after `manifest` -- the doc's
+     own instruction is to "append this exact row to the field table," which is only
+     satisfiable by adding it after every field that exists today; there is no ambiguity
+     here, just noting it since every prior task's field-order test needed updating too
+     (`governance::ports::tests::record_serializes_all_fields_in_shared_format_order`,
+     `tests/audit_recorder.rs`'s own key-order assertion).
+  5. **Audit wiring was MANDATORY, not deferred**, per the task's own "Depends on" branch
+     rule: the audit subsystem (G06) has landed, so the `held` marker was wired for real
+     (no `tracing::info!`-only fallback was needed or used).
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green (215 lib unit tests, up from 203: +2 in `governance::ports
+  ::tests` -- the extended field-order list, `held` defaults false and serializes as a
+  JSON boolean (never omitted, never null); +5 in `governance::dispatch::tests` -- three
+  `hold_message` tests (no-hint below the threshold, hint present at and above
+  `HOLD_HINT_AFTER`, the `computer (<action>)` label convention), `record_held` (allow,
+  `held: true`, zero duration, no domain), and a check that `record_call`/`record_deny`
+  both leave `held: false`; +4 in `transport::executor::tests` -- hold set/toggle/clear,
+  a repeated `set_held(true)` preserving the original engage instant across a real 30ms
+  sleep, all three hold requests answered correctly over a real duplex connection
+  (including the `hold_error` case for a non-boolean `held`), and the hold surviving the
+  extension end of the duplex closing; +2 new chokepoint tests in `transport::mcp::server
+  ::tests` -- a held `Browser` with NO extension connected returns the `Paused:` text
+  before the ordinary not-connected error (proving the hold check precedes it), with hold
+  released the existing `isError` path returns unchanged; a held call's audit record shows
+  `decision: "allow"`, `held: true`, `duration_ms: 0` while a normal call's shows
+  `held: false`; all other suites unchanged and green: `tests/all_open_golden.rs` 3,
+  `tests/architecture.rs` 4 -- confirms the grown `governance/ports.rs`/
+  `governance/dispatch.rs` introduce zero forbidden edges, `tests/audit_recorder.rs` 1
+  (field-order assertion extended, all other assertions and behavior unchanged),
+  `tests/config_schema_golden.rs` 5 unchanged -- g10 registers no config key,
+  `tests/mcp_protocol.rs` 4 UNCHANGED -- proves the hold-never-engaged path stays
+  byte-identical end to end over stdio, `tests/tool_schema_fidelity.rs` 6 unchanged -- g10
+  advertises no tool and filters nothing from `tools/list`. `git status --short` confirmed
+  the touched-file set matches this entry's list exactly, including the FIRST diff this
+  session under `extension/` (`manifest.json`, `service-worker.js`, new `popup.html`/
+  `popup.js`); confirmed no diff to `extension/content.js`,
+  `extension/agent-visual-indicator.js`, `src/transport/native/host.rs`,
+  `src/transport/native/ipc.rs`, `src/install/`, `src/debug.rs`, or
+  `src/transport/mcp/schemas/tools.json`. `Cargo.toml`/`Cargo.lock` show no diff (no new
+  dependency, matching the task's own constraint). ASCII scan (`rg -n "[^\x00-\x7F]"`)
+  clean on every touched/new file including all four extension JS/HTML/JSON files.
+  `node --check` confirmed `service-worker.js` and `popup.js` are syntactically valid, and
+  `python3 -m json.tool`-equivalent parsing confirmed `manifest.json` is valid JSON (no
+  Chrome available in this environment to load the unpacked extension itself).
+- Browser checks queued: `BROWSER-TESTS.md` items `g10-1` through `g10-5`, covering this
+  task's own Verification steps 3-4 and 6-10 (popup open/pause/resume/badge, the agent
+  receiving `Paused:` text with no `tool_request` reaching the extension, the resume hint
+  past 2 minutes, the hold surviving a service-worker kill-and-restart from
+  `chrome://extensions`, and the popup's `No active browsing session.` state with no MCP
+  session running) -- ALL of these need a live Chrome with the extension loaded and (for
+  steps 4/6) a live Claude Code connection, which this unattended pass cannot drive. The
+  automated suite proves every one of these at the code level (the hold state machine, the
+  wire protocol, the dispatch-chokepoint ordering, the audit marker) without a browser;
+  only the actual on-screen popup/badge/shortcut behavior and the literal
+  reload-survives-a-worker-restart property need a human's eyes.
 
 ## Reminders before running BROWSER-TESTS.md
 

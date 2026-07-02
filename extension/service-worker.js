@@ -13,6 +13,11 @@ const GROUP_TITLE = "Browser MCP";
 
 let nativePort = null;
 let groupId = null;
+// Take-the-wheel hold (g10): pending id -> resolver, for get_hold/set_hold/toggle_hold replies.
+// A separate sequence and map from tool_request ids; hold ids never collide with tool ids
+// because tool ids are binary-chosen and hold ids are extension-chosen.
+const holdPending = new Map(); // id -> { resolve }
+let holdSeq = 0;
 const attached = new Map(); // tabId -> { domains: Set<string> }
 const consoleBuffer = new Map(); // tabId -> { host, items: [{ level, text }] }
 const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType, errorText, canceled }] }
@@ -42,10 +47,23 @@ function connect() {
     nativePort.onMessage.addListener((msg) => {
       if (msg && msg.type === "tool_request" && msg.id) {
         dispatch(msg.id, msg.tool, msg.args || {});
+        return;
+      }
+      if (msg && (msg.type === "hold_state" || msg.type === "hold_error") && msg.id) {
+        const pending = holdPending.get(msg.id);
+        if (!pending) return; // late or duplicate reply
+        holdPending.delete(msg.id);
+        if (msg.type === "hold_state") {
+          updateHoldBadge(msg.result && msg.result.held === true);
+          pending.resolve(msg.result || null);
+        } else {
+          pending.resolve(null);
+        }
       }
     });
     nativePort.onDisconnect.addListener(() => {
       nativePort = null;
+      updateHoldBadge(null); // state unknown without a session
       setTimeout(connect, 2000);
     });
   } catch {
@@ -57,6 +75,78 @@ function connect() {
 function reply(id, result) {
   try { nativePort && nativePort.postMessage({ id, type: "tool_response", result }); } catch { /* port gone */ }
 }
+
+// --- Take-the-wheel hold (g10): mechanism only. The binary holds the flag and decides;
+// this file only reports the user's gesture and renders the state the binary reports back.
+
+// Send one get_hold/set_hold/toggle_hold request and resolve with its `result` object (or
+// `null` on a hold_error, a 1500ms timeout, or no connected port). `null` means "no active
+// session" to callers. Never gates tool_request dispatch on the outcome.
+function holdRequest(payload) {
+  return new Promise((resolve) => {
+    if (!nativePort) {
+      connect(); // attempt a reconnect for next time, but do not wait for it here
+      resolve(null);
+      return;
+    }
+    const id = `h${++holdSeq}`;
+    const timer = setTimeout(() => {
+      holdPending.delete(id);
+      resolve(null);
+    }, 1500);
+    holdPending.set(id, {
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    });
+    try {
+      nativePort.postMessage(Object.assign({ id }, payload));
+    } catch {
+      clearTimeout(timer);
+      holdPending.delete(id);
+      resolve(null);
+    }
+  });
+}
+
+// `held` is `true`/`false` from a hold_state reply, or `null` when the session state is
+// unknown (no connected port). Badge text/color only; renders state, decides nothing.
+function updateHoldBadge(held) {
+  if (held) {
+    chrome.action.setBadgeText({ text: "II" });
+    chrome.action.setBadgeBackgroundColor({ color: "#D97757" });
+  } else {
+    chrome.action.setBadgeText({ text: "" });
+  }
+}
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== "toggle-hold") return;
+  holdRequest({ type: "toggle_hold" });
+});
+
+// Popup messages. Returns true to answer asynchronously; false for unrecognized types (the
+// popup treats a false/undefined response the same as "no active session").
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg && msg.type === "getHoldState") {
+    holdRequest({ type: "get_hold" }).then((result) => {
+      sendResponse(
+        result ? { session: true, held: result.held === true } : { session: false, held: false }
+      );
+    });
+    return true;
+  }
+  if (msg && msg.type === "setHold") {
+    holdRequest({ type: "set_hold", held: msg.held === true }).then((result) => {
+      sendResponse(
+        result ? { session: true, held: result.held === true } : { session: false, held: false }
+      );
+    });
+    return true;
+  }
+  return false;
+});
 // Tag an error with the hop (mechanism, not policy) that threw it, plus optional debug-only detail.
 function hopError(hop, message, detail) {
   const err = new Error(message);

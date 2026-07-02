@@ -56,7 +56,8 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
             "grant_id",
             "denial_id",
             "duration_ms",
-            "manifest"
+            "manifest",
+            "held"
         ],
         "field order matches the shared format"
     );
@@ -66,6 +67,7 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
     assert_eq!(rec["rw"], "mutate");
     assert_eq!(rec["decision"], "allow");
     assert_eq!(rec["duration_ms"], 42);
+    assert_eq!(rec["held"], false);
     assert_eq!(rec["client"]["name"], "claude-code");
     assert_eq!(rec["client"]["version"], "2.1.0");
     for field in ["identity", "domain", "grant_id", "denial_id", "manifest"] {

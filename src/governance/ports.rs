@@ -112,8 +112,9 @@ pub struct ClientInfo {
 
 /// One audit record: exactly one JSON line per tool call (shared format doc section 6.1).
 /// Field ORDER is part of the format; `serde_json` is built with `preserve_order`. Grown by
-/// g06 from A2's single-field placeholder to the full shape; reused unchanged by `policy
-/// simulate`, the activity ledger, and session recap (later tasks).
+/// g06 from A2's single-field placeholder to the full shape, then by g10 (the `held`
+/// field); reused unchanged by `policy simulate`, the activity ledger, and session recap
+/// (later tasks).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AuditRecord {
     /// UUID v4, lowercase, hyphenated. Unique per record.
@@ -150,6 +151,10 @@ pub struct AuditRecord {
     /// Reuses [`crate::governance::manifest::identity::ManifestIdentity`] (g09) rather than a
     /// second `{name, version, hash}` shape.
     pub manifest: Option<crate::governance::manifest::identity::ManifestIdentity>,
+    /// `true` when the call was answered with the take-the-wheel pause text instead of
+    /// executing (a user hold, g10); on a held record `decision` is `"allow"` and
+    /// `duration_ms` is `0`. `false` on every other record; always present, never omitted.
+    pub held: bool,
 }
 
 // --- The core decision types (serde is load-bearing) ---
@@ -345,6 +350,7 @@ mod tests {
             denial_id: None,
             duration_ms: 0,
             manifest: None,
+            held: false,
         }
     }
 
@@ -376,8 +382,17 @@ mod tests {
                 "denial_id",
                 "duration_ms",
                 "manifest",
+                "held",
             ]
         );
+    }
+
+    #[test]
+    fn held_defaults_false_and_serializes_as_a_boolean() {
+        let record = sample_audit_record("navigate");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+        assert_eq!(v["held"], false);
     }
 
     #[test]

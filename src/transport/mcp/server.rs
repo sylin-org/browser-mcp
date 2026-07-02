@@ -14,7 +14,7 @@ use crate::browser::pattern::HostOutcome;
 use crate::browser::{classify, pattern, redact, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
-use crate::governance::dispatch::Governance;
+use crate::governance::dispatch::{hold_message, Governance};
 use crate::governance::ports::{AuditSink, Denial};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
@@ -269,13 +269,6 @@ async fn handle_tools_call(
         return JsonRpcResponse::success(id, error_result(err));
     }
 
-    // Dispatch chokepoint. The decision seam is a literal STEP-0 short-circuit to Allow under
-    // all-open (no manifest, default config) that queries no port and resolves no resource, so
-    // behavior is byte-identical to the ungoverned engine; acting on a Deny (enforcement)
-    // attaches here in later stage-2 tasks. The audit seam records every call (ADR-0018 step 1)
-    // after it resolves, so the record carries the real duration and completion timestamp.
-    let dispatch_started = Instant::now();
-    let _decision = governance.decide(name);
     // The only tool-call argument ever read for audit purposes: the computer sub-action
     // (shared format doc section 6.2 sensitive-parameter omission; no other argument is read,
     // logged, or stored).
@@ -284,6 +277,25 @@ async fn handle_tools_call(
     } else {
         None
     };
+
+    // Take-the-wheel hold (g10, ADR-0018 step 2): a user gesture, not a policy decision, so it
+    // is checked before ANY dispatch machinery -- before governance.decide, before the sacred
+    // check, before any extension traffic. A held call is answered immediately with a
+    // successful (never isError) text result and is never queued, deferred, or replayed;
+    // resuming affects only future calls. Held calls still produce one audit record
+    // (`decision: "allow"`, `held: true`, `duration_ms: 0`).
+    if let Some(held_for) = browser.held_for() {
+        governance.record_held(name, action);
+        return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
+    }
+
+    // Dispatch chokepoint. The decision seam is a literal STEP-0 short-circuit to Allow under
+    // all-open (no manifest, default config) that queries no port and resolves no resource, so
+    // behavior is byte-identical to the ungoverned engine; acting on a Deny (enforcement)
+    // attaches here in later stage-2 tasks. The audit seam records every call (ADR-0018 step 1)
+    // after it resolves, so the record carries the real duration and completion timestamp.
+    let dispatch_started = Instant::now();
+    let _decision = governance.decide(name);
 
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
@@ -918,5 +930,94 @@ mod tests {
             handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
         assert_eq!(resp.error.as_ref().expect("error present")["code"], -32602);
         assert!(!path.exists(), "no audit file must be created");
+    }
+
+    /// Test 4 (g10 spec section 6): a held `Browser` with NO extension connected returns the
+    /// `Paused:` text as a successful result (never `isError`), proving the hold check
+    /// precedes the "extension not connected" failure path; with the hold released, the
+    /// existing `isError` result is unchanged.
+    #[tokio::test]
+    async fn held_call_returns_the_pause_text_before_the_not_connected_error() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        browser.set_held(true);
+
+        let params = json!({ "name": "computer", "arguments": { "action": "screenshot" } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        assert!(resp.error.is_none(), "a held reply is a JSON-RPC success");
+        let result = resp.result.as_ref().expect("tool result present");
+        assert_ne!(
+            result["isError"], true,
+            "a held reply must never be isError"
+        );
+        let text = result["content"][0]["text"].as_str().expect("text block");
+        assert!(text.starts_with("Paused:"), "{text}");
+        assert!(text.contains("'computer (screenshot)' call"), "{text}");
+
+        browser.set_held(false);
+        let resp2 =
+            handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
+        let result2 = resp2.result.as_ref().expect("tool result present");
+        assert_eq!(
+            result2["isError"], true,
+            "with hold released, the not-connected path returns"
+        );
+        let text2 = result2["content"][0]["text"].as_str().expect("text block");
+        assert!(text2.contains("not connected"), "{text2}");
+    }
+
+    /// Test 6 (g10 spec section 6): a held call writes one audit record with
+    /// `decision: "allow"`, `held: true`, `duration_ms: 0`; a normal allowed call writes
+    /// `held: false`.
+    #[tokio::test]
+    async fn held_call_marks_the_audit_record_and_normal_calls_do_not() {
+        let path = temp_audit_path("held");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+
+        browser.set_held(true);
+        let held_params = json!({ "name": "navigate", "arguments": {} });
+        let _ = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            Some(json!(1)),
+            Some(&held_params),
+        )
+        .await;
+
+        browser.set_held(false);
+        let allowed_params = json!({ "name": "navigate", "arguments": {} });
+        let _ = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            Some(json!(2)),
+            Some(&allowed_params),
+        )
+        .await;
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["decision"], "allow");
+        assert_eq!(lines[0]["held"], true);
+        assert_eq!(lines[0]["duration_ms"], 0);
+        assert_eq!(lines[1]["held"], false);
+
+        std::fs::remove_file(&path).ok();
     }
 }

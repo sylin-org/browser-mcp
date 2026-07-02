@@ -153,6 +153,7 @@ mod tests {
             denial_id: None,
             duration_ms: 0,
             manifest: None,
+            held: false,
         }
     }
 

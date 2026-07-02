@@ -25,3 +25,32 @@
 //! [`crate::ToolError::from_extension_wire`]). `detail` is debug-log-only material (logged with
 //! `tracing::debug!` in [`crate::transport::executor`]) and must never appear in a tool result
 //! surfaced to the MCP client.
+//!
+//! ## Take-the-wheel hold (g10, ADR-0018 step 2)
+//!
+//! A separate, minimal request/reply vocabulary on the SAME channel, for the extension's popup
+//! and keyboard-shortcut controls. It only shares the envelope style with `tool_request` /
+//! `tool_response` / `tool_error` above and with the (not-yet-implemented) shared format doc
+//! section 9 settings protocol (`get_status` / `get_config` / `set_config_key`); it is not part
+//! of that protocol.
+//!
+//! ## extension -> binary (requests; `id` is a caller-chosen string, unique per request)
+//! ```json
+//! { "id": "<string>", "type": "get_hold" }
+//! { "id": "<string>", "type": "set_hold", "held": true }
+//! { "id": "<string>", "type": "toggle_hold" }
+//! ```
+//!
+//! ## binary -> extension (responses; `id` is echoed)
+//! ```json
+//! { "id": "<echoed>", "type": "hold_state", "result": { "held": true } }
+//! { "id": "<echoed>", "type": "hold_error", "error": "set_hold requires a boolean 'held'" }
+//! ```
+//!
+//! All three request types receive a `hold_state` reply carrying the state AFTER the request
+//! was applied (`get_hold` reports without changing it; `set_hold` sets it; `toggle_hold` flips
+//! it atomically in the binary). A `set_hold` whose `held` member is missing or not a JSON
+//! boolean gets the `hold_error` reply above and changes nothing. Request/reply only: the
+//! binary never pushes an unsolicited `hold_state` or `hold_error`. The native-host relays these
+//! messages verbatim, exactly like every other frame; only the mcp-server
+//! ([`crate::transport::executor::Browser`]) interprets them.

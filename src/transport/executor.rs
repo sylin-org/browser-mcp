@@ -12,6 +12,14 @@
 //! hop-attributed [`ToolError`] (see [`ToolError::from_extension_wire`]); `detail`, if present, is
 //! logged with `tracing::debug!` and never reaches the tool result. Messages without an `id`
 //! (events, heartbeats) are ignored here (Phase 3 buffers events).
+//!
+//! Take-the-wheel hold (g10, ADR-0018 step 2): the extension's popup/shortcut sends
+//! `get_hold` / `set_hold` / `toggle_hold` requests over the same channel; [`Browser`] holds
+//! the flag (mcp-server process memory only -- no disk persistence, no survival across a
+//! restart, and NOT cleared by an extension disconnect/reconnect) and answers with a
+//! `hold_state` (or `hold_error`) reply. The dispatch chokepoint (`transport::mcp::server`)
+//! checks [`Browser::held_for`] before any policy or extension traffic; the flag itself
+//! carries no policy meaning here, only a user gesture the chokepoint acts on.
 
 use crate::debug::DebugSink;
 use crate::transport::native::host;
@@ -20,7 +28,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -55,6 +63,9 @@ pub struct Browser {
     connected: Arc<watch::Sender<bool>>,
     /// Observability sink (no-op unless debug mode is on).
     debug: DebugSink,
+    /// Take-the-wheel hold (g10): `None` while not held; `Some(t)` since the instant the user
+    /// engaged it. Process memory only -- never persisted, never cleared by a disconnect.
+    held: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Browser {
@@ -73,12 +84,49 @@ impl Browser {
             // require a live receiver (unlike `send`, which would fail and skip the update).
             connected: Arc::new(watch::channel(false).0),
             debug,
+            held: Arc::new(Mutex::new(None)),
         }
     }
 
     /// The observability sink (used by the mcp-server to record the MCP boundary).
     pub fn debug(&self) -> &DebugSink {
         &self.debug
+    }
+
+    /// Time since the take-the-wheel hold was engaged, or `None` while not held (g10).
+    pub fn held_for(&self) -> Option<Duration> {
+        self.held.lock().unwrap().map(|since| since.elapsed())
+    }
+
+    /// Set the hold flag and return the resulting state (g10). Setting `true` while already
+    /// held is a no-op on the timer: the original engage instant is preserved (a repeated
+    /// pause gesture must not reset the hint countdown). Logs exactly once per real
+    /// transition, never on a no-op repeat.
+    pub fn set_held(&self, held: bool) -> bool {
+        let mut guard = self.held.lock().unwrap();
+        let was_held = guard.is_some();
+        if held && !was_held {
+            *guard = Some(Instant::now());
+            tracing::info!("user hold engaged");
+        } else if !held && was_held {
+            *guard = None;
+            tracing::info!("user hold released");
+        }
+        held
+    }
+
+    /// Flip the hold flag atomically and return the new state (g10).
+    pub fn toggle_held(&self) -> bool {
+        let mut guard = self.held.lock().unwrap();
+        let now_held = guard.is_none();
+        if now_held {
+            *guard = Some(Instant::now());
+            tracing::info!("user hold engaged");
+        } else {
+            *guard = None;
+            tracing::info!("user hold released");
+        }
+        now_held
     }
 
     /// True while a native-host / extension is connected.
@@ -245,12 +293,23 @@ impl Browser {
         AttachOutcome::Detached
     }
 
-    /// Route one framed reply to its waiting caller (by id). Replies without an id are events.
+    /// Route one framed message from the extension: either a hold request (g10:
+    /// `get_hold` / `set_hold` / `toggle_hold`, answered here and returned early) or a reply
+    /// to a waiting tool caller (by id). Messages without an id are events.
     fn route_reply(&self, payload: &[u8]) {
         let Ok(reply) = serde_json::from_slice::<Value>(payload) else {
             tracing::warn!("dropping unparseable extension reply");
             return;
         };
+
+        let msg_type = reply.get("type").and_then(Value::as_str);
+        if let (Some(id), Some(kind @ ("get_hold" | "set_hold" | "toggle_hold"))) =
+            (reply.get("id").and_then(Value::as_str), msg_type)
+        {
+            self.handle_hold_request(id, kind, &reply);
+            return;
+        }
+
         let Some(id) = reply.get("id").and_then(Value::as_str) else {
             return; // an event/heartbeat, not a tool reply
         };
@@ -273,6 +332,45 @@ impl Browser {
             _ => Ok(reply.get("result").cloned().unwrap_or(Value::Null)),
         };
         let _ = tx.send(result);
+    }
+
+    /// Apply one hold request (g10) and send the `hold_state` (or `hold_error`) reply back
+    /// over the same connection. `get_hold` reports without changing state; `set_hold`
+    /// requires a boolean `held` member (a missing or non-boolean value is a `hold_error` that
+    /// changes nothing); `toggle_hold` flips atomically. Every request receives the state
+    /// AFTER the request was applied.
+    fn handle_hold_request(&self, id: &str, kind: &str, request: &Value) {
+        let outcome = match kind {
+            "get_hold" => Ok(self.held_for().is_some()),
+            "toggle_hold" => Ok(self.toggle_held()),
+            "set_hold" => match request.get("held").and_then(Value::as_bool) {
+                Some(held) => Ok(self.set_held(held)),
+                None => Err("set_hold requires a boolean 'held'"),
+            },
+            _ => unreachable!("matched only get_hold/set_hold/toggle_hold in route_reply"),
+        };
+        let reply = match outcome {
+            Ok(held) => json!({ "id": id, "type": "hold_state", "result": { "held": held } }),
+            Err(error) => json!({ "id": id, "type": "hold_error", "error": error }),
+        };
+        self.send_hold_reply(&reply);
+    }
+
+    /// Frame and enqueue a hold reply on the outgoing channel, dropping it silently if the
+    /// connection is already gone (the same fire-and-forget posture as every other
+    /// best-effort send in this module).
+    fn send_hold_reply(&self, reply: &Value) {
+        let Ok(bytes) = serde_json::to_vec(reply) else {
+            tracing::warn!("failed to serialize a hold reply");
+            return;
+        };
+        let Ok(framed) = host::encode(&bytes) else {
+            tracing::warn!("failed to frame a hold reply");
+            return;
+        };
+        if let Some(tx) = self.outgoing.lock().unwrap().as_ref() {
+            let _ = tx.send(framed);
+        }
     }
 }
 
@@ -472,5 +570,105 @@ mod tests {
         let result = browser.call("navigate", &json!({})).await.unwrap();
         assert_eq!(result, json!({ "ok": true }));
         ext.await.unwrap();
+    }
+
+    #[test]
+    fn held_state_set_toggle_and_preserved_timer() {
+        let browser = Browser::new();
+        assert!(browser.held_for().is_none());
+
+        assert!(browser.set_held(true));
+        assert!(browser.held_for().is_some());
+
+        assert!(!browser.set_held(false));
+        assert!(browser.held_for().is_none());
+
+        assert!(browser.toggle_held());
+        assert!(browser.held_for().is_some());
+        assert!(!browser.toggle_held());
+        assert!(browser.held_for().is_none());
+    }
+
+    #[test]
+    fn repeated_set_held_true_preserves_the_original_instant() {
+        let browser = Browser::new();
+        browser.set_held(true);
+        std::thread::sleep(Duration::from_millis(30));
+        browser.set_held(true);
+        assert!(
+            browser.held_for().unwrap() >= Duration::from_millis(30),
+            "a repeated set_held(true) must not reset the engage instant"
+        );
+    }
+
+    #[tokio::test]
+    async fn hold_requests_are_answered_over_the_native_channel() {
+        let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+        let attached = browser.clone();
+        tokio::spawn(async move { attached.attach(browser_side).await });
+        wait_connected(&browser).await;
+
+        async fn send_and_read(ext_side: &mut tokio::io::DuplexStream, request: Value) -> Value {
+            host::write_message(ext_side, &serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            let reply = host::read_message(ext_side).await.unwrap().unwrap();
+            serde_json::from_slice(&reply).unwrap()
+        }
+
+        let reply = send_and_read(
+            &mut ext_side,
+            json!({ "id": "h1", "type": "set_hold", "held": true }),
+        )
+        .await;
+        assert_eq!(reply["id"], "h1");
+        assert_eq!(reply["type"], "hold_state");
+        assert_eq!(reply["result"]["held"], true);
+        assert!(browser.held_for().is_some());
+
+        let reply = send_and_read(&mut ext_side, json!({ "id": "h2", "type": "get_hold" })).await;
+        assert_eq!(reply["type"], "hold_state");
+        assert_eq!(
+            reply["result"]["held"], true,
+            "get_hold must not change state"
+        );
+        assert!(browser.held_for().is_some());
+
+        let reply =
+            send_and_read(&mut ext_side, json!({ "id": "h3", "type": "toggle_hold" })).await;
+        assert_eq!(reply["result"]["held"], false);
+        assert!(browser.held_for().is_none());
+
+        let reply = send_and_read(
+            &mut ext_side,
+            json!({ "id": "h4", "type": "set_hold", "held": "not-a-bool" }),
+        )
+        .await;
+        assert_eq!(reply["type"], "hold_error");
+        assert_eq!(reply["error"], "set_hold requires a boolean 'held'");
+        assert!(
+            browser.held_for().is_none(),
+            "an invalid set_hold must change nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn hold_survives_the_extension_disconnecting() {
+        let (browser_side, ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+        browser.set_held(true);
+
+        let attached = browser.clone();
+        let attach_task = tokio::spawn(async move { attached.attach(browser_side).await });
+        wait_connected(&browser).await;
+
+        drop(ext_side);
+        let _ = attach_task.await.unwrap();
+
+        assert!(
+            browser.held_for().is_some(),
+            "the hold must survive the extension disconnecting"
+        );
     }
 }

@@ -467,6 +467,7 @@ and reused by `policy simulate`, the local activity ledger, and session recap
 | `denial_id` | string or null | The stable denial id (section 7) for `deny` and `shadow_deny`; `null` for `allow`. |
 | `duration_ms` | unsigned integer | Wall time from dispatch entry to result, in milliseconds. `0` for calls denied before dispatch. |
 | `manifest` | object or null | `{ "name": string, "version": string, "hash": string }` of the active manifest (`hash` per section 4.2, 64 lowercase hex chars); `null` when no manifest is active. |
+| `held` | boolean | `true` when the call was answered with the take-the-wheel pause text instead of executing (user hold, G10); on held records `decision` is `"allow"` and `duration_ms` is `0`. `false` on all other records. |
 
 Example (one line on disk):
 

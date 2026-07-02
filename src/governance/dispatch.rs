@@ -21,11 +21,48 @@
 //! real classifier at construction.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use crate::governance::ports::{
     AuditRecord, AuditSink, ClientInfo, Decision, DecisionRequest, Denial, EffectiveMode,
     GoverningResource, PolicyDecisionPoint, RwClass,
 };
+
+/// How long a take-the-wheel hold may last before [`hold_message`] appends the resume hint
+/// (g10, ADR-0018 step 2). A constant for now; a future registry key
+/// (`engine.hold.hint_after_ms`) may make it configurable -- not this task's job.
+pub const HOLD_HINT_AFTER: Duration = Duration::from_secs(120);
+
+/// The take-the-wheel pause reply for a held tool call (g10, ADR-0018 step 2): a plain,
+/// truthful statement that the call was NOT executed, why, and what the agent should do
+/// (stop and wait, never retry-spin), rendered as a normal successful MCP text result --
+/// never an error, never a hint that the action happened. `action` is the `computer`
+/// sub-action, rendering the label `computer (<action>)`; every other tool renders its bare
+/// name (mirrors the denial-format convention, shared format doc section 7.2). Past
+/// [`HOLD_HINT_AFTER`], a second sentence names the only way to resume: the user, from the
+/// extension.
+pub fn hold_message(tool: &str, action: Option<&str>, held_for: Duration) -> String {
+    let label = match (tool, action) {
+        ("computer", Some(action)) => format!("computer ({action})"),
+        _ => tool.to_string(),
+    };
+    let mut message = format!(
+        "Paused: the user has taken control of the browser (take-the-wheel). The '{label}' \
+         call was NOT executed. This is not an error, and retrying will not help: every \
+         browser tool call receives this same reply until the user resumes. Stop issuing \
+         browser tool calls, tell the user the session is paused and you are waiting, and \
+         continue only after the user says they have resumed."
+    );
+    if held_for >= HOLD_HINT_AFTER {
+        message.push(' ');
+        message.push_str(
+            "This session has been paused for more than 2 minutes. Only the user can resume \
+             it, from the Browser MCP extension: the popup Pause/Resume button or the toggle \
+             keyboard shortcut.",
+        );
+    }
+    message
+}
 
 /// The governance facade held at the dispatch chokepoint: the Policy Enforcement Point.
 ///
@@ -162,22 +199,16 @@ impl Governance {
         duration_ms: u64,
         domain: Option<&str>,
     ) {
-        let rw = (self.classify)(tool, action).unwrap_or(RwClass::Mutate);
-        let record = AuditRecord {
-            event_id: uuid::Uuid::new_v4().to_string(),
-            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            identity: None,
-            client: self.current_client(),
-            tool: tool.to_string(),
-            action: action.map(str::to_string),
-            rw,
-            domain: domain.map(str::to_string),
-            decision: "allow",
-            grant_id: None,
-            denial_id: None,
+        let record = self.build_record(
+            tool,
+            action,
+            domain,
+            "allow",
+            None,
+            None,
             duration_ms,
-            manifest: None,
-        };
+            false,
+        );
         self.audit.record(&record);
     }
 
@@ -198,8 +229,44 @@ impl Governance {
         denial: &Denial,
         domain: Option<&str>,
     ) {
+        let record = self.build_record(
+            tool,
+            action,
+            domain,
+            "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            0,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Build and record one audit record for a call answered with the take-the-wheel pause
+    /// text instead of executing (a user hold, g10). The call was not policy-denied (policy
+    /// was never consulted) and no tool ran, so `decision` is `"allow"` and `duration_ms` is
+    /// `0`, exactly like [`Self::record_deny`]'s zero-duration convention -- but `held` is
+    /// `true` and `grant_id`/`denial_id` stay `None`. `domain` is always `None`: a held call
+    /// must not touch the extension, so no current-tab host is ever resolved for it.
+    pub fn record_held(&self, tool: &str, action: Option<&str>) {
+        let record = self.build_record(tool, action, None, "allow", None, None, 0, true);
+        self.audit.record(&record);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_record(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        domain: Option<&str>,
+        decision: &'static str,
+        grant_id: Option<String>,
+        denial_id: Option<String>,
+        duration_ms: u64,
+        held: bool,
+    ) -> AuditRecord {
         let rw = (self.classify)(tool, action).unwrap_or(RwClass::Mutate);
-        let record = AuditRecord {
+        AuditRecord {
             event_id: uuid::Uuid::new_v4().to_string(),
             ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             identity: None,
@@ -208,13 +275,13 @@ impl Governance {
             action: action.map(str::to_string),
             rw,
             domain: domain.map(str::to_string),
-            decision: "deny",
-            grant_id: denial.grant_id.clone(),
-            denial_id: Some(denial.denial_id.clone()),
-            duration_ms: 0,
+            decision,
+            grant_id,
+            denial_id,
+            duration_ms,
             manifest: None,
-        };
-        self.audit.record(&record);
+            held,
+        }
     }
 
     fn current_client(&self) -> Option<ClientInfo> {
@@ -382,5 +449,73 @@ mod tests {
         assert_eq!(rec.duration_ms, 0);
         assert_eq!(rec.domain.as_deref(), Some("www.mybank.com"));
         assert_eq!(rec.rw, RwClass::Observe);
+    }
+
+    #[test]
+    fn record_held_writes_an_allow_record_with_held_true_and_no_domain() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), sample_classify);
+        g.record_held("computer", Some("screenshot"));
+        let rec = sink.last();
+        assert_eq!(rec.decision, "allow");
+        assert!(rec.held);
+        assert_eq!(rec.duration_ms, 0);
+        assert_eq!(rec.domain, None);
+        assert_eq!(rec.grant_id, None);
+        assert_eq!(rec.denial_id, None);
+        assert_eq!(rec.rw, RwClass::Observe);
+        assert_eq!(rec.action.as_deref(), Some("screenshot"));
+    }
+
+    #[test]
+    fn record_call_and_record_deny_leave_held_false() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), no_classification);
+        g.record_call("navigate", None, 5, None);
+        assert!(!sink.last().held);
+
+        let denial = Denial {
+            rule: "sacred/mybank.com".to_string(),
+            grant_id: None,
+            denial_id: "D-171052e3".to_string(),
+            domain: "mybank.com".to_string(),
+            message: "Denied (D-171052e3): mybank.com is on the user's never-touch list."
+                .to_string(),
+        };
+        g.record_deny("navigate", None, &denial, None);
+        assert!(!sink.last().held);
+    }
+
+    #[test]
+    fn hold_message_states_not_executed_with_no_hint_below_the_threshold() {
+        let msg = hold_message("navigate", None, Duration::from_secs(1));
+        assert!(msg.starts_with("Paused:"));
+        assert!(msg.contains("NOT executed"));
+        assert!(msg.contains("'navigate' call"));
+        assert!(!msg.contains("2 minutes"));
+    }
+
+    #[test]
+    fn hold_message_appends_the_hint_at_and_above_the_threshold() {
+        let at_threshold = hold_message("navigate", None, HOLD_HINT_AFTER);
+        assert!(at_threshold.contains("2 minutes"));
+        assert!(at_threshold.contains("Only the user can resume it"));
+
+        let above_threshold =
+            hold_message("navigate", None, HOLD_HINT_AFTER + Duration::from_secs(1));
+        assert!(above_threshold.contains("2 minutes"));
+
+        let below_threshold =
+            hold_message("navigate", None, HOLD_HINT_AFTER - Duration::from_secs(1));
+        assert!(!below_threshold.contains("2 minutes"));
+    }
+
+    #[test]
+    fn hold_message_renders_computer_action_label() {
+        let msg = hold_message("computer", Some("left_click"), Duration::from_secs(0));
+        assert!(msg.contains("'computer (left_click)' call"));
+
+        let plain = hold_message("read_page", None, Duration::from_secs(0));
+        assert!(plain.contains("'read_page' call"));
     }
 }
