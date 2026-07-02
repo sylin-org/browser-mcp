@@ -50,6 +50,13 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
     }
     let any_client_registered = mcp_clients.iter().any(|(_, _, registered)| *registered);
 
+    let manifest_status = crate::governance::manifest::identity::manifest_status();
+    println!();
+    println!("Policy manifest:");
+    for line in crate::governance::manifest::identity::manifest_section_lines(&manifest_status) {
+        println!("{line}");
+    }
+
     let endpoint = ipc::default_endpoint();
     let endpoint_display = ipc::endpoint_display(&endpoint);
     let probe = ipc::probe_endpoint(&endpoint);

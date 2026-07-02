@@ -2,11 +2,13 @@
 //!
 //! This bounded context (see docs/design/ghostlight-service-architecture.md section 3)
 //! names no browser type. It owns the dispatch seam ([`dispatch`]), the typed config
-//! registry ([`config`]), and the policy-decision-point/policy-enforcement-point contract
-//! ([`ports`]). The dependency direction is strictly inward: infra and the browser plugin
-//! may depend on this module; this module depends only on std and serde. A fail-closed
-//! arch-test (task A7) enforces that.
+//! registry ([`config`]), the policy manifest ([`manifest`]), and the
+//! policy-decision-point/policy-enforcement-point contract ([`ports`]). The dependency
+//! direction is strictly inward: infra and the browser plugin may depend on this module;
+//! this module depends only on std and serde. A fail-closed arch-test (task A7) enforces
+//! that.
 
 pub mod config;
 pub mod dispatch;
+pub mod manifest;
 pub mod ports;

@@ -12,8 +12,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Progress: tasks `a1` (module reorg), `a2` (governance ports, + RwClass correction), `a3`
   (governance facade), `a7` (arch-test), `g01` (typed key registry), `g02` (layered
   resolution), `a5` (hot-reload substrate), `g03` (config CLI), `g04` (schema generation)
-  landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification) landed.
-- NEXT TASK: Phase B, task `g09` (`docs/tasks/stage-2/g09-manifest-identity.md`).
+  landed. Phase A (foundations) is COMPLETE. `g05` (r/w classification), `g09` (manifest
+  identity) landed.
+- NEXT TASK: Phase B, task `g06` (`docs/tasks/stage-2/g06-audit-recorder.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -524,6 +525,65 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   task's own tests parse against). ASCII scan clean on every touched/new file.
 - Browser checks queued: none (pure classification lookup; nothing wired into dispatch or
   audit yet, no runtime-observable behavior change).
+
+### g09 manifest identity (name, version, content hash) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `Cargo.toml` (+`sha2 = "0.10"`, the one sanctioned new dependency) and its
+  `Cargo.lock`; new `src/governance/manifest/mod.rs`, `src/governance/manifest/identity.rs`;
+  `src/governance/mod.rs` (`pub mod manifest;`); `src/doctor.rs` (the "Policy manifest:"
+  section, inserted after "MCP clients:" and before "IPC endpoint:").
+- Summary: `ManifestIdentity { name, version, hash }` (declaration order load-bearing for the
+  pinned `{"name":...,"version":...,"hash":...}` serialization) plus `canonical_hash` and
+  `identity_from_source`, computing the shared-format-4.2 canonical bytes (BOM-strip, parse
+  once, compact re-serialize via `preserve_order`, SHA-256, hand-rolled lowercase hex) exactly
+  as specified -- verified independently in Python before writing any test (`sha256({"name":
+  "a","version":"1","grants":[]})` and `sha256({})` both matched the task doc's pinned values
+  bit for bit). Since neither prerequisite this task is conditional on has landed yet (G12
+  manifest engine, G06 audit), followed Branch B for both source resolution (a standalone org-
+  policy-file reader: `ManifestStatus`, `manifest_status`, `active_manifest_identity`, with the
+  G12 integration-point doc comment verbatim) and record-stamping (no `src/audit/` created;
+  the `ManifestIdentity` type plus its pinned-shape test and the audit integration-point doc
+  comment are the whole deliverable there). Wired the MANDATORY doctor section 5a: a
+  `manifest_section_lines(&ManifestStatus)` helper renders the three cases
+  (`none (all-open)` / three `name`/`version`/`hash` lines / one `invalid (...)` line), called
+  from `doctor::run`.
+- Deviations from the g-doc per RECONCILIATION.md / a documented reuse decision (not a
+  RECONCILIATION-driven placement split like g05, but the same "don't duplicate an existing
+  primitive" spirit): g09's own Branch B spec asks for a NEW `org_policy_path() -> Option<PathBuf>`
+  function inside `identity.rs`, re-deriving the shared-format-1.2 per-platform path a second
+  time. Since `governance::config::load::org_policy_path()` (G02) ALREADY implements that exact
+  path rule (and is the one actually used by the real config-loading path), adding a second,
+  slightly different implementation (G02's returns a bare `PathBuf` with a `C:\ProgramData`
+  fallback when the env var is absent; g09's own signature returns `Option<PathBuf>`, `None` on
+  absence) would create two divergent sources of truth for the same path. `manifest_status()`
+  calls `governance::config::load::org_policy_path()` directly instead; no second
+  `org_policy_path` function was written. Module placement: `governance/manifest/` (a new
+  sibling to `governance/config/`) per RECONCILIATION section 1's explicit row "manifest parse/
+  identity (g09, g12) -> governance/ (core) -- generic over any policy doc"; structured as a
+  `mod.rs` + `identity.rs` pair so the manifest engine (G12: parsing, grants, source selection)
+  has a natural home to extend into, mirroring how `governance/config/` grew task by task.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo test` green (159 lib unit tests, up from 151: +8 new in
+  `governance::manifest::identity::tests` covering the BOM/whitespace-insensitivity and key-
+  order/content-sensitivity of the hash, the empty-object hash vector, hex-format shape, the
+  name/version extraction error cases, the pinned serialization shape, the three doctor-line
+  renderings, and a temp-directory-backed Absent/Active/Invalid read-the-file test via the
+  `status_at` seam; all other suites unchanged: `tests/all_open_golden.rs` 3,
+  `tests/architecture.rs` 4 -- confirms `governance/manifest/identity.rs` (despite doing real
+  file I/O and pulling in the new `sha2` crate) introduces zero forbidden edges,
+  `tests/mcp_protocol.rs` 4, `tests/peer_death.rs` 1, `tests/tool_schema_fidelity.rs` 6).
+  Manual doctor check per the task's own Verification step 4, run live (no browser needed):
+  confirmed no `%ProgramData%\browser-mcp\policy.json` exists on this dev machine, ran
+  `browser-mcp doctor`, confirmed the `Policy manifest:` section renders exactly
+  `  none (all-open)`. Did NOT attempt the Active/Invalid manual doctor checks against the real
+  `%ProgramData%` path: writing a machine-wide, admin-scoped file as a side effect of an
+  unattended pass is out of scope (and the harness's own auto-mode classifier declined the
+  attempt for exactly that reason when tried). The Active/Invalid cases are covered by the
+  automated `manifest_status_reads_the_org_policy_file` test instead, which exercises the
+  identical `status_at` code path against a disposable temp directory. ASCII scan clean on
+  every touched/new file.
+- Browser checks queued: none (pure identity computation + doctor text; no browser-facing
+  behavior).
 
 ## Reminders before running BROWSER-TESTS.md
 
