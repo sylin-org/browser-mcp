@@ -10,18 +10,22 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T05 (next pending, LAST task in the sequence). T04, T06, T07, T01, T02, T03, T12,
-  T13, T14, T15, T08, T09, T10, T11, T18, T16, T17 are done.
+- All 18 tasks (T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18, T16,
+  T17, T05) are done. Nothing left in the fixed task sequence.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T17 effective-tabId fallback + valid-ID errors (this run)
+- Last commit: feat(extension): T05 service-worker state recovery (this run)
+- NEXT ACTION for a future call: run BOOTSTRAP.md's "Completion" section (verify the tree is
+  clean, every task row has a final state, write the RUN SUMMARY section at the top of this
+  file, commit `chore(ledger): run summary`, then stop). Do NOT execute any of the 18 tasks
+  again; they are all done.
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to
-  T04/T06/T07/T01/T02/T03/T12/T13/T18/T16/T17) in `src/policy/redact.rs` and
+  T04/T06/T07/T01/T02/T03/T12/T13/T18/T16/T17/T05) in `src/policy/redact.rs` and
   `tests/tool_schema_fidelity.rs` -- both reformat under the installed rustfmt 1.9.0 but were left
   untouched again because they are out of scope / forbidden. A whole-repo `cargo fmt --check` will
-  report these two files; this has no bearing on T17 (which touched no Rust files at all --
-  `git status --short -- '*.rs' src/ tests/` was empty before committing). A human may want to run
-  `cargo fmt` repo-wide in its own dedicated commit at some point; do not fold that into an
-  unrelated task's commit.
+  report these two files; this has no bearing on any task in this run (none of them touched
+  either file -- confirmed again for T05 via `git status --short -- '*.rs' src/ tests/`, empty).
+  A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some point; the
+  completion pass should mention this in the RUN SUMMARY as something for a human to decide.
 
 ## Sequence and status
 
@@ -46,7 +50,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 15 | T18 | Background-tab screenshot via clip+scale | T11 helpful, not required | done |
 | 16 | T16 | javascript_tool REPL semantics + 50KB cap | - | done |
 | 17 | T17 | Effective-tabId fallback + valid-ID errors | - | done |
-| 18 | T05 | Service-worker state recovery (runs LAST) | after all service-worker tasks | pending |
+| 18 | T05 | Service-worker state recovery (runs LAST) | after all service-worker tasks | done |
 
 Status values: pending, in_progress, done, blocked (with reason in the log).
 
@@ -1977,3 +1981,203 @@ Append one entry per task using this template. Newest at the bottom.
     absent tabId even though the schema still marks it required).
 - Browser checks queued: T17-1, T17-2, T17-3, T17-4, T17-5 in
   docs/tasks/release-1/BROWSER-TESTS.md (appended after T16-6, preserving task order).
+
+### T05 Service-worker death recovery (rehydrate tab group, reattach lazily) -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T05 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - Full diff review confirming every required piece is present and wired: `persistSessionState()`
+    (new) writes exactly `{ groupId, tabIds }` under the `"sessionState"` key, deriving `tabIds`
+    live from `chrome.tabs.query({ groupId })` (or `[]` when `groupId` is null or the query
+    throws), wrapped in its own try/catch that swallows a `chrome.storage.session.set` failure.
+    Grepped for `chrome.storage.local` and `chrome.storage.sync` -- zero occurrences; only
+    `chrome.storage.session` is used, per constraint 10.
+  - `persistSessionState()` is called at exactly the four listed persistence points --
+    `ensureGroup`'s every exit (verified all four return paths: existing-valid-group,
+    adopt-by-title, stale-id-with-create-false, and the create branch), `inGroup`'s re-adopt
+    branch only (not its other paths), `tabs_create_mcp` after the `chrome.tabs.group` call, and
+    `chrome.tabs.onRemoved`'s end -- and nowhere else (grepped every call site of
+    `persistSessionState(` in the final file: four in `ensureGroup`, one in `inGroup`, one in
+    `rehydrate`, one in `tabs_create_mcp`, one in `chrome.tabs.onRemoved`; none in `navigate`,
+    `computer`, or any read-tool handler, matching constraint "do not add persistence calls
+    anywhere else").
+  - `rehydrate()` (new) matches the prompt's four sub-steps in order: reads
+    `chrome.storage.session.get("sessionState")` and returns early on no stored value (fresh
+    start, no notice flags set); decides `priorSession` from `storedGroupId !== null ||
+    tabIds.length > 0` and sets both `consoleResetNotice`/`networkResetNotice` true only then;
+    verifies a non-null stored `groupId` with `chrome.tabGroups.get` and adopts it by id with NO
+    title comparison and no rename/recolor call (grepped the whole function body for
+    `tabGroups.update` -- zero occurrences); calls `persistSessionState()` unconditionally at the
+    end (which re-derives `tabIds` from a live query, pruning stale ids for free, as the prompt
+    specifies). Grepped the whole function for `chrome.tabs.create`, `chrome.tabs.group`,
+    `chrome.windows.create`, `chrome.debugger.attach`, and any `.enable` CDP call -- zero
+    occurrences, confirming rehydration never creates a group/tab/window and never eagerly attaches
+    or enables a CDP domain, per the prompt's explicit "must NOT" list and Out of scope.
+  - `rehydrate()`'s entire body is one `try { ... } catch { /* ... */ }` with an empty-on-error
+    fallthrough (implicit `return` via falling off the end of the catch block), so it truly cannot
+    reject regardless of which internal `await` throws; the whole promise it returns therefore
+    always settles (never rejects), satisfying "must never reject."
+  - `const ready = rehydrate();` sits immediately before the pre-existing top-level `connect();`
+    call at the very end of the file (the only other module-level statement anywhere near
+    `connect()`); `dispatch(id, tool, args)` now begins with `await ready;` as its first statement,
+    before the unknown-tool lookup or any handler dispatch -- confirmed by reading the function from
+    its `async function dispatch(id, tool, args) {` line downward with no statement above the new
+    `await ready;` line.
+  - `ensureAttached`'s new resilience branch: on a `chrome.debugger.attach` rejection whose message
+    matches `/already attached/i`, calls `chrome.debugger.getTargets()` and looks for a target with
+    matching `tabId` and `attached === true`; if found, falls through (without throwing) to the
+    pre-existing shared `attached.set(tabId, { domains: new Set() })` line -- adopting the surviving
+    attachment with a fresh empty `domains` set exactly as specified; if not found, or if the
+    original error did not match `/already attached/i`, throws the same `hopError("cdp", "debugger
+    attach failed: ...")` the pre-T05 code always threw, unchanged in shape (no retry, no
+    force-detach -- grepped the new branch for `chrome.debugger.detach` -- zero occurrences).
+  - Buffer-loss notices: `consoleResetNotice`/`networkResetNotice` both declared `let ... = false`
+    at module scope; both handlers now build the final `out` string first (entries-joined or the
+    pre-existing fallback text, byte-identical to before), THEN conditionally append exactly
+    "\nNote: console event buffer was reset by a browser service-worker restart; tracking resumed
+    from that point." (or the network equivalent) and clear the flag, then `return text(out)`. Since
+    both handlers call `effectiveTabId(a.tabId)` as their very first statement and that throw
+    propagates out of the handler before any of this code runs, the early-rejection path can never
+    consume a flag, per the prompt's explicit rule. Confirmed the two flags are fully independent
+    (no shared state, no handler touches the other tool's flag).
+  - `cargo test` (all 91 tests across the workspace -- 80 unit + 4 mcp_protocol + 1 peer_death + 6
+    tool_schema_fidelity -- plus 0 doc-tests) passes unchanged, confirming the frozen tool schemas
+    and every other Rust surface were left untouched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, exactly as the prompt's "Build and test" note predicted ("this task changes no Rust
+    code").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on both edited files (`extension/service-
+    worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`) returned empty lists.
+- Drift reconciled: line-number and code-shape drift throughout, exactly as the prompt itself
+  predicted ("all line numbers refer to extension/service-worker.js as it stands now (568
+  lines)" -- the actual working tree, after every earlier task in this run landed first, is 984
+  lines). Every function the prompt's "Current behavior" section named (`connect`, `ensureAttached`,
+  `cdp`, `enableDomain`, `chrome.tabs.onRemoved`, the console/network buffering block, `ensureGroup`,
+  `inGroup`, `tabContext`, `tabs_context_mcp`, `tabs_create_mcp`, `read_console_messages`,
+  `read_network_requests`, `dispatch`) was present with the described shape once located by name;
+  only exact line numbers, plus a few structural additions from later-landing tasks in this run's
+  fixed sequence, had shifted:
+  - T06 added hop-tagging: `ensureAttached`'s attach failure is wrapped in `hopError("cdp", ...)`
+    (the prompt's "Current behavior" describes a bare throw of the raw error) -- reconciled by
+    keeping T06's `hopError` wrapping in both the pre-existing success/failure paths and the new
+    "already attached" adoption's not-found/no-match fallthrough throw, since the prompt's own
+    instruction ("rethrow the original attach error unchanged") only makes sense read against the
+    actual (T06-wrapped) throw shape, not the prompt's stale pre-T06 snippet.
+  - T12 added the `tabHost` map and `bufferFor`/per-domain buffer-reset machinery the prompt's
+    "Current behavior" never mentions (it was authored describing plain `tabId -> [...]` buffers).
+    This task's new code (`persistSessionState`, `rehydrate`) never touches `consoleBuffer`,
+    `networkBuffer`, or `tabHost` at all, per the prompt's own explicit "Do NOT persist
+    consoleBuffer, networkBuffer, screenshotCtx, or attached" rule, so T12's buffer-ownership
+    machinery needed no reconciliation beyond confirming it was left untouched (grepped every new
+    function body for `consoleBuffer`, `networkBuffer`, `tabHost`, `screenshotCtx` -- zero
+    occurrences).
+  - T13/T14 added `exceptionText`/`Network.loadingFailed` handling inside the
+    `chrome.debugger.onEvent` listener, structurally between `ensureAttached` and `ensureGroup` in
+    the actual file (the prompt's line numbers place the buffering section immediately after
+    `ensureAttached`, which was true at authoring time but is now separated by ~100 lines of T13/T14
+    code) -- purely positional drift; this task's edits to `ensureAttached` and to the
+    `chrome.tabs.onRemoved` listener are both above this block and untouched by it, and this task's
+    new "Tab group" section code is below it, so nothing needed reconciling beyond locating the
+    right section by its `// --- Tab group ...` header comment rather than a line number.
+  - T17 added `effectiveTabId`/`TabAccessError` immediately after `inGroup` (the prompt's "Current
+    behavior" section, describing the pre-T17 file, does not mention them at all and places
+    `tabContext` directly after `inGroup`). Reconciled by inserting the new `rehydrate()` function
+    between `inGroup` and `TabAccessError`'s class declaration (i.e., still directly after
+    `inGroup`, preserving the prompt's stated adjacency intent -- "the branch [in inGroup] where
+    groupId transitions..." -- while not disturbing T17's own `effectiveTabId`/`TabAccessError`/
+    `tabContext` block, which sits immediately below the newly inserted `rehydrate()`). `dispatch`'s
+    catch block (T06's hop branch plus T17's `TabAccessError` branch) was read in full and left
+    completely untouched by this task except for the new `await ready;` line prepended before the
+    handler lookup -- this task's Required-behavior text ("dispatch must begin with await ready")
+    only mandates a new first line, not any change to the existing try/catch shape, and T17's own
+    ledger note already flagged that T05 "should have no reason to revisit" its `TabAccessError`
+    diff hunks unless reasoning about tab-group resolution during recovery, which this task's
+    `rehydrate()`/`persistSessionState()` additions do (indirectly, by keeping `groupId` correct
+    before any `effectiveTabId` call runs, thanks to `await ready;` guaranteeing rehydration
+    completes first) but without touching `effectiveTabId`/`TabAccessError` themselves.
+  - T16 added a `javascript_tool` illegal-return retry path; unrelated to this task's scope and not
+    touched (grepped `javascript_tool`'s body -- no `a.tabId`/`tabId` resolution changes needed,
+    since T17 already normalized every tabId-bearing handler including this one).
+  No prompt fact turned out to be substantively wrong once mapped onto the actual code; every
+  discrepancy above was purely "the prompt describes an earlier snapshot of this file" drift, which
+  BOOTSTRAP.md and the prompt itself both anticipated.
+- Decisions made:
+  - In `ensureGroup`, added a `persistSessionState()` call even on the very first early-return
+    branch (existing valid `groupId`, `chrome.tabGroups.get` succeeds) even though that specific
+    case is not one of the three the prompt calls out by name ("covers the adopt-by-title branch,
+    the create branch, and the stale-id-cleared case"). Read "at the end of ensureGroup(create), on
+    every call, after groupId has settled" literally: "on every call" is the more specific,
+    all-branches instruction, and the three named cases are given as examples of what this achieves
+    ("covers ...") rather than an exhaustive branch list. A `persistSessionState()` call here is a
+    no-op in effect when nothing changed (it re-derives and re-writes the same `{ groupId, tabIds }`
+    it already had), so this reading cannot be observably wrong even if a human intended the
+    narrower one; it was chosen because it is the literal, simpler-to-verify rule ("every call, at
+    the end") and avoids a special-cased fifth branch that skips persistence for no stated reason.
+  - Restructured `ensureGroup` from three early `return` statements (two of which returned with no
+    persistence call in the original code) into four explicit `await persistSessionState(); return;`
+    exit points (one per branch: existing-valid, adopt-by-title, stale-id-with-create-false, and the
+    fall-through create-branch which persists then implicitly returns at function end) rather than a
+    single trailing `await persistSessionState();` after a restructured single-exit function body.
+    Chose per-branch calls over a single-exit refactor to keep the diff minimal and the branch
+    structure (and its comments/behavior) otherwise completely unchanged, matching this run's
+    general preference (seen in every prior task's log) for the smallest diff that satisfies the
+    contract over a broader refactor.
+  - `getTargets` survivor lookup: used `targets.find((t) => t.tabId === tabId && t.attached)`,
+    matching the prompt's literal English description exactly ("a target whose tabId equals this
+    tab and whose attached flag is true"). Did not additionally filter on `target.type === "page"`
+    or similar (the prompt does not mention target type, and `chrome.debugger.getTargets()` in a
+    normal single-tab-debugging scenario has at most one target per tabId regardless of type) --
+    the prompt's own "Caveat you must preserve" paragraph explicitly accepts that this adoption
+    cannot distinguish whose debugger is attached, so a narrower type filter would not change the
+    fundamental tradeoff the prompt already accepts, and adding one un-requested would be scope
+    creep.
+  - Placed the two notice flags (`consoleResetNotice`, `networkResetNotice`) at module scope
+    immediately after the `tabHost` declaration (the last of the existing per-tab state maps),
+    rather than colocated with `rehydrate()`/`persistSessionState()` in the "Tab group" section
+    further down -- the prompt does not mandate a location, and grouping all plain module-level
+    `let`/`const` state declarations together (as the file already does for `nativePort`, `groupId`,
+    the five Maps) keeps that declaration block a single, complete inventory of the worker's
+    in-memory state, which a later task auditing "what state does this worker hold" would want to
+    find in one place rather than split across the file.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust files
+    at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to revert
+    this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly those
+    same two files, byte-for-byte the same diffs every prior task's log already described.
+- Notes for later tasks:
+  - T05 is the LAST task in this run's fixed sequence. All 18 tasks (T04, T06, T07, T01, T02, T03,
+    T12, T13, T14, T15, T08, T09, T10, T11, T18, T16, T17, T05) are now done. A future call should
+    run BOOTSTRAP.md's "Completion" section next (write the RUN SUMMARY, verify a clean tree, commit
+    `chore(ledger): run summary`, then stop) -- do not re-execute any of the 18 tasks.
+  - `persistSessionState`, `rehydrate`, and the `ready` promise are now permanent top-level names on
+    the service worker's global scope. Any future task that adds a new group-membership-changing
+    code path (a new way to create, adopt, or empty the tab group) should call
+    `persistSessionState()` at that point too, mirroring the four existing call sites, to keep
+    `chrome.storage.session`'s `sessionState` record accurate.
+  - `dispatch` now begins with `await ready;`. Any future change to `dispatch`'s structure must
+    preserve this as the very first statement (before the unknown-tool check, before any handler
+    lookup), since the entire point is that no tool handler -- including ones that read `groupId`
+    indirectly through `ensureGroup`/`inGroup`/`effectiveTabId` -- can run before rehydration has
+    settled `groupId` from a prior session.
+  - The two notice-line strings ("Note: console event buffer was reset by a browser service-worker
+    restart; tracking resumed from that point." and the network equivalent) are now byte-exact
+    contracts at the same tier as every other task's contract in this run (T01's marker-line
+    formats, T02's Note line, T03's get_page_text contract, T06's `[hop: ...]` contract, T08's
+    type-dispatch contract, T09's click-event contract, T10's scroll-verify strings, T11's
+    zoom-result contract, T13's exception-text format, T14's network per-line format, T15's
+    zero-result strings, T18's background-capture contract, T16's javascript_tool contract, T17's
+    tabId-fallback/valid-IDs messages) -- do not reword either notice line in a later task (there is
+    none left in this run's sequence, but a future non-release-1 task touching this file should
+    know) without updating this note and the T05 BROWSER-TESTS.md entries.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming every frozen schema was left untouched, per this task's
+    Constraints section.
+- Browser checks queued: T05-1 through T05-9 in docs/tasks/release-1/BROWSER-TESTS.md (appended
+  after T17-5, preserving task order).

@@ -18,6 +18,10 @@ const consoleBuffer = new Map(); // tabId -> { host, items: [{ level, text }] }
 const networkBuffer = new Map(); // tabId -> { host, items: [{ requestId, method, url, status, mimeType, errorText, canceled }] }
 const screenshotCtx = new Map(); // tabId -> { vpW, vpH, shotW, shotH, offX, offY, regionW, regionH } (set on each screenshot/zoom)
 const tabHost = new Map(); // tabId -> hostname of the tab's current URL ("" when none)
+// Set true by rehydrate() when a prior session was recovered; consumed (and cleared) by the next
+// successful read of the corresponding buffer, so the model is told once that tracking restarted.
+let consoleResetNotice = false;
+let networkResetNotice = false;
 
 // A rejected promise must not tear down the service worker.
 self.addEventListener("unhandledrejection", (e) => e.preventDefault());
@@ -73,7 +77,17 @@ async function ensureAttached(tabId) {
     try {
       await chrome.debugger.attach({ tabId }, "1.3");
     } catch (e) {
-      throw hopError("cdp", `debugger attach failed: ${(e && e.message) || e}`);
+      const msg = (e && e.message) || String(e);
+      // A previous service-worker instance's attachment can survive a restart (Chrome keeps the
+      // debugger session alive while the extension's worker itself dies); adopt it if it is still
+      // there instead of failing a tool call over an attachment we already effectively own.
+      if (/already attached/i.test(msg)) {
+        const targets = await chrome.debugger.getTargets();
+        const survivor = targets.find((t) => t.tabId === tabId && t.attached);
+        if (!survivor) throw hopError("cdp", `debugger attach failed: ${msg}`);
+      } else {
+        throw hopError("cdp", `debugger attach failed: ${msg}`);
+      }
     }
     attached.set(tabId, { domains: new Set() });
     try {
@@ -168,6 +182,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   networkBuffer.delete(tabId);
   screenshotCtx.delete(tabId);
   tabHost.delete(tabId);
+  persistSessionState();
 });
 chrome.debugger.onDetach.addListener((src) => attached.delete(src.tabId));
 
@@ -251,17 +266,45 @@ function pushCapped(map, tabId, item) {
 }
 
 // --- Tab group (created lazily; recovered from live state after a service-worker restart) ---
+// chrome.storage.session survives a service-worker restart (extension reload, browser update,
+// crash) but is cleared on a full browser restart -- exactly the durability window we want: a
+// genuinely fresh browser session looks like a fresh install, never a false recovery notice.
+async function persistSessionState() {
+  let tabIds = [];
+  if (groupId !== null) {
+    try {
+      tabIds = (await chrome.tabs.query({ groupId })).map((t) => t.id);
+    } catch {
+      tabIds = []; // the group vanished between the null check and the query
+    }
+  }
+  try {
+    await chrome.storage.session.set({ sessionState: { groupId, tabIds } });
+  } catch { /* persistence is best-effort; recovery still has the title-based fallback below */ }
+}
 async function ensureGroup(create) {
   if (groupId !== null) {
-    try { await chrome.tabGroups.get(groupId); return; } catch { groupId = null; }
+    try {
+      await chrome.tabGroups.get(groupId);
+      await persistSessionState();
+      return;
+    } catch { groupId = null; }
   }
   const groups = await chrome.tabGroups.query({ title: GROUP_TITLE });
-  if (groups.length) { groupId = groups[0].id; return; }
-  if (!create) return;
+  if (groups.length) {
+    groupId = groups[0].id;
+    await persistSessionState();
+    return;
+  }
+  if (!create) {
+    await persistSessionState();
+    return;
+  }
   const win = await chrome.windows.create({ focused: true, url: "about:blank" });
   const gid = await chrome.tabs.group({ tabIds: [win.tabs[0].id] });
   await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: "blue" });
   groupId = gid;
+  await persistSessionState();
 }
 async function groupTabs() {
   return groupId === null ? [] : chrome.tabs.query({ groupId });
@@ -272,12 +315,39 @@ async function inGroup(tabId) {
     const tab = await chrome.tabs.get(tabId);
     if (tab.groupId !== -1 && groupId === null) {
       const g = await chrome.tabGroups.get(tab.groupId);
-      if (g.title === GROUP_TITLE) groupId = g.id;
+      if (g.title === GROUP_TITLE) {
+        groupId = g.id;
+        await persistSessionState();
+      }
     }
     return tab.groupId === groupId;
   } catch {
     return false;
   }
+}
+// Restore durable session state (if any) on service-worker startup. Never rejects: any internal
+// failure degrades to the existing cold-start / title-based recovery path instead of wedging
+// dispatch, which awaits this promise before running any tool.
+async function rehydrate() {
+  try {
+    const stored = await chrome.storage.session.get("sessionState");
+    const sessionState = stored && stored.sessionState;
+    if (!sessionState) return; // genuinely fresh start: nothing to recover
+    const priorSession =
+      sessionState.groupId !== null ||
+      (Array.isArray(sessionState.tabIds) && sessionState.tabIds.length > 0);
+    if (priorSession) {
+      consoleResetNotice = true;
+      networkResetNotice = true;
+    }
+    if (sessionState.groupId !== null) {
+      try {
+        await chrome.tabGroups.get(sessionState.groupId);
+        groupId = sessionState.groupId; // stored id is authoritative even if the user renamed it
+      } catch { /* group is gone; ensureGroup's title-query fallback recovers next */ }
+    }
+    await persistSessionState();
+  } catch { /* rehydration must never wedge dispatch; degrade to cold-start behavior */ }
 }
 // Thrown when a tool call names a tab outside the group or the group has no usable tab.
 // dispatch() converts it to a plain text tool result so the message reaches the model
@@ -832,6 +902,7 @@ const handlers = {
     await ensureGroup(true);
     const tab = await chrome.tabs.create({ active: true });
     await chrome.tabs.group({ tabIds: [tab.id], groupId });
+    await persistSessionState();
     const r = tabContext(await groupTabs());
     r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
     return r;
@@ -922,11 +993,20 @@ const handlers = {
     }
     msgs = msgs.slice(-(a.limit || 100));
     if (a.clear) consoleBuffer.set(tabId, { host, items: [] });
-    if (msgs.length) return text(msgs.map((m) => `[${m.level}] ${m.text}`).join("\n"));
-    const primary = total
-      ? `${total} console message(s) recorded for this tab, but none matched your filter.`
-      : "No console messages recorded for this tab.";
-    return text(`${primary}\nNote: console tracking begins when this tool is first used on a tab. Reload the page to capture messages emitted during page load.`);
+    let out;
+    if (msgs.length) {
+      out = msgs.map((m) => `[${m.level}] ${m.text}`).join("\n");
+    } else {
+      const primary = total
+        ? `${total} console message(s) recorded for this tab, but none matched your filter.`
+        : "No console messages recorded for this tab.";
+      out = `${primary}\nNote: console tracking begins when this tool is first used on a tab. Reload the page to capture messages emitted during page load.`;
+    }
+    if (consoleResetNotice) {
+      out += "\nNote: console event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
+      consoleResetNotice = false;
+    }
+    return text(out);
   },
   async read_network_requests(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -941,11 +1021,20 @@ const handlers = {
     if (a.urlPattern) reqs = reqs.filter((r) => r.url.includes(a.urlPattern));
     reqs = reqs.slice(-(a.limit || 100));
     if (a.clear) networkBuffer.set(tabId, { host, items: [] });
-    if (reqs.length) return text(reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" + r.errorText + ")" : "") : "(pending)"}`).join("\n"));
-    const primary = total
-      ? `${total} network request(s) recorded for this tab, but none matched your filter.`
-      : "No network requests recorded for this tab.";
-    return text(`${primary}\nNote: network tracking begins when this tool is first used on a tab. Reload the page to capture requests made during page load, or interact with the page to trigger new requests.`);
+    let out;
+    if (reqs.length) {
+      out = reqs.map((r) => `${r.method || "?"} ${r.url} ${r.status ? "-> " + r.status + (r.errorText ? " (" + r.errorText + ")" : "") : "(pending)"}`).join("\n");
+    } else {
+      const primary = total
+        ? `${total} network request(s) recorded for this tab, but none matched your filter.`
+        : "No network requests recorded for this tab.";
+      out = `${primary}\nNote: network tracking begins when this tool is first used on a tab. Reload the page to capture requests made during page load, or interact with the page to trigger new requests.`;
+    }
+    if (networkResetNotice) {
+      out += "\nNote: network event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
+      networkResetNotice = false;
+    }
+    return text(out);
   },
   async resize_window(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -969,6 +1058,7 @@ const handlers = {
 };
 
 async function dispatch(id, tool, args) {
+  await ready; // never run a tool against un-rehydrated state
   const handler = handlers[tool];
   if (!handler) return fail(id, `Unknown tool: ${tool}`);
   try {
@@ -981,4 +1071,5 @@ async function dispatch(id, tool, args) {
   }
 }
 
+const ready = rehydrate();
 connect();

@@ -1198,3 +1198,118 @@ Steps:
 Expect: no errors logged in the service worker console during any of the above (a caught
 `TabAccessError` delivered as a plain text result is expected control flow, not a logged
 error).
+
+## T05-1: Establish a session and confirm durable state is written
+Changed: the service worker now persists `{ groupId, tabIds }` to `chrome.storage.session`
+under the key `"sessionState"` at every point group membership changes. This is an
+extension-only change; reload the extension at chrome://extensions, no MCP client restart
+needed.
+Steps:
+1. Call `tabs_context_mcp` with `{ "createIfEmpty": true }`. Note the `mcpGroupId` value (call
+   it GID) from the JSON output.
+2. Call `tabs_create_mcp`. Note the new tab's id (call it TID) from the "Created tab TID."
+   prefix line.
+3. Call `navigate` with `{ "tabId": TID, "url": "https://example.com" }`.
+4. Call `read_console_messages` with `{ "tabId": TID }`.
+5. Open chrome://extensions, click "Inspect views: service worker" on the Browser MCP dev
+   extension, and in its console run
+   `chrome.storage.session.get("sessionState").then(console.log)`.
+Expect: step 4 returns "No console messages recorded for this tab.\nNote: console tracking
+begins..." with NO "service-worker restart" note (this is a fresh session, nothing to
+recover). Step 5 logs `{ groupId: GID, tabIds: [...] }` where `tabIds` includes TID (and any
+other tabs already in the group).
+
+## T05-2: Killing the service worker does not lose the tab group
+Changed: `rehydrate()` restores `groupId` from `chrome.storage.session` on service-worker
+startup, by id rather than by title, before any tool executes (`dispatch` awaits it).
+Steps:
+1. With the session from T05-1 still open, kill the service worker: open Chrome's task manager
+   (Shift+Esc), find the "Extension: Browser MCP" row, and End Process. (Alternative: open
+   chrome://serviceworker-internals, find the extension's worker, and press Stop. Close the
+   worker's DevTools window first if it is open, so it can actually die.)
+2. Call `tabs_context_mcp` with no `createIfEmpty` argument.
+3. Look at the Chrome tab strip / tab groups for any window.
+Expect: step 2 returns the SAME `mcpGroupId` (GID) as T05-1, listing the same tabs (including
+TID). Step 3 shows exactly one "Browser MCP" tab group in the browser; no duplicate group was
+created.
+
+## T05-3: Console buffer reset is reported exactly once
+Changed: `rehydrate()` sets a one-shot notice flag when a prior session existed; the next
+`read_console_messages` call appends it, then clears it.
+Steps:
+1. Immediately after T05-2, call `read_console_messages` with `{ "tabId": TID }`.
+2. Call `read_console_messages` with `{ "tabId": TID }` again.
+Expect: step 1's result ends with exactly the line "Note: console event buffer was reset by a
+browser service-worker restart; tracking resumed from that point." on its own trailing line,
+after the normal message/fallback text. Step 2's result does NOT contain that line (the flag
+was consumed).
+
+## T05-4: Network buffer reset is reported exactly once, independent of the console notice
+Changed: same mechanism as T05-3 but with its own independent flag.
+Steps:
+1. Call `read_network_requests` with `{ "tabId": TID }`.
+2. Call `read_network_requests` with `{ "tabId": TID }` again.
+Expect: step 1's result ends with exactly the line "Note: network event buffer was reset by a
+browser service-worker restart; tracking resumed from that point." on its own trailing line.
+Step 2's result does NOT contain that line. (This confirms the console notice from T05-3 being
+consumed did not also consume this one, and vice versa.)
+
+## T05-5: Lazy debugger reattach after the kill (including "already attached" adoption)
+Changed: `ensureAttached` now recovers from a `chrome.debugger.attach` rejection whose message
+matches "already attached" by adopting the surviving attachment via `chrome.debugger.
+getTargets()`, instead of failing the call.
+Steps:
+1. Call `computer` with `{ "action": "screenshot", "tabId": TID }`.
+2. Look at the top of the tab TID for the "Browser MCP started debugging this browser" infobar.
+Expect: step 1 returns a successful screenshot (image + "Screenshot captured (jpeg)." caption,
+no error). Step 2: the infobar is present (it either survived the worker kill from the
+previous CDP session, in which case this exercises the "already attached" adoption path
+directly, or it reappeared because a fresh attach succeeded; either is a pass as long as step
+1 succeeded). Check the service worker console (Inspect views: service worker) for no thrown
+errors during this call.
+
+## T05-6: Rename resilience -- recovery by stored id, not by title
+Changed: `rehydrate()` adopts the stored `groupId` by id and never compares or rewrites the
+group's title/color, unlike the pre-existing `ensureGroup` title-query fallback.
+Steps:
+1. In the Chrome tab strip, right-click the "Browser MCP" tab group and rename it to something
+   else, for example "My Renamed Group". Do not change its color deliberately (color is
+   unrelated to this check).
+2. Kill the service worker again exactly as in T05-2 step 1.
+3. Call `tabs_context_mcp` with no `createIfEmpty` argument.
+4. Look at the tab group's name in the Chrome tab strip.
+Expect: step 3 returns the SAME `mcpGroupId` (GID) as before, with the same tabs. Step 4: the
+group is still named "My Renamed Group" (the extension did not rename it back to "Browser
+MCP"). No second "Browser MCP" or "My Renamed Group" group was created anywhere.
+
+## T05-7: Closing a managed tab prunes it from the stored session state
+Changed: `chrome.tabs.onRemoved` now calls `persistSessionState()` after its existing cleanup,
+so a closed tab drops out of the stored `tabIds` without waiting for the next group-membership
+change.
+Steps:
+1. Close tab TID (created in T05-1) in the Chrome tab strip (leave at least one other tab in
+   the group open).
+2. Open the service worker console (Inspect views: service worker) and run
+   `chrome.storage.session.get("sessionState").then(console.log)`.
+Expect: the logged `tabIds` array no longer contains TID; `groupId` is unchanged (GID).
+
+## T05-8: A full browser restart clears session state -- no false recovery notice
+Changed: `chrome.storage.session` is cleared by Chrome itself on a full browser restart, so
+`rehydrate()`'s "no stored value" branch runs and neither reset-notice flag is set.
+Steps:
+1. Fully quit Chrome (all windows) and relaunch it.
+2. Reconnect the MCP client if it is not already connected (browser-mcp doctor can confirm).
+3. Call `tabs_context_mcp` with `{ "createIfEmpty": true }`, then `tabs_create_mcp`, then
+   `read_console_messages` on the new tab.
+Expect: `read_console_messages` returns "No console messages recorded for this tab.\nNote:
+console tracking begins..." with NO "service-worker restart" note (there is genuinely no prior
+session to recover from after a full browser restart).
+
+## T05-9: No console errors during state-recovery calls
+Steps:
+1. Open chrome://extensions, click "Inspect views: service worker" on the Browser MCP dev
+   extension, to open its console.
+2. Repeat T05-1 through T05-8.
+Expect: no errors logged in the service worker console during any of the above (an adopted
+"already attached" recovery in T05-5, and any internal `rehydrate()`/`persistSessionState()`
+try/catch swallow, are expected control flow, not logged errors).
