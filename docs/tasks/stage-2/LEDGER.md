@@ -75,9 +75,13 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   wired into `dispatch` yet (A3's job); no runtime behavior changed. `ResourceResolver` uses a
   native async fn in trait with `#[allow(async_fn_in_trait)]` (no `async-trait` dependency
   added), per constraint 9.
-- Deviations from the g-doc per RECONCILIATION.md: none (A2 is an a-prompt, not a g-doc; it
-  already encodes the current vision per RECONCILIATION.md section 2). Followed
-  a2-governance-ports.md as written.
+- Deviations from the g-doc per RECONCILIATION.md: the task prompt's literal example code used
+  `RwClass::Read`/`RwClass::Write`; this was landed as-is and is WRONG per RECONCILIATION.md
+  section 2, which is explicit that `RwClass` must be `Observe`/`Mutate` (distinct from a
+  grant's `read`/`write`/`all` access field) and that a2/a3 prompt text using `Read`/`Write` is
+  exactly the case to override. Caught before a3 consumed it; fixed in a follow-up correction
+  commit (see the log entry below) rather than amending this commit, so the history stays
+  linear per the one-task-one-commit rule.
 - Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean
   (the single permitted `#[allow(async_fn_in_trait)]` suppression), `cargo test` green (88 lib
   unit tests, +7 new in `governance::ports::tests` covering noop-pdp-allows-all, null-sink-is-
@@ -90,6 +94,21 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   github.com"), matching the task prompt's own example text verbatim -- no `use crate::browser`
   or similar import exists. ASCII scan clean.
 - Browser checks queued: none (pure library addition; nothing runtime-observable changed).
+
+### correction: RwClass Observe/Mutate rename -- 2026-07-02
+- Commit: (pending, see this fix commit; lands immediately before a3)
+- Files touched: `src/governance/ports.rs` only (variant names + doc comment + every test use).
+- Summary: renamed `RwClass::{Read,Write}` to `RwClass::{Observe,Mutate}` per
+  RECONCILIATION.md section 2, which is explicit-by-name that a2/a3 prompt text guessing
+  `Read`/`Write` (or a bare `Observe` without a `Mutate` sibling) must be overridden to
+  `Observe`/`Mutate`, kept distinct from a grant's `access: read|write|all` field. Wire form is
+  now `"observe"`/`"mutate"` (was `"read"`/`"write"`). No other type or trait touched; caught
+  during a3 prep, before any other file consumed the wrong names, so this is a single
+  self-contained rename with zero blast radius beyond `ports.rs`.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean,
+  `cargo test` green (same 88 lib tests, all 7 `governance::ports::tests` still passing with the
+  new variant names and wire strings).
+- Browser checks queued: none.
 
 ## Reminders before running BROWSER-TESTS.md
 

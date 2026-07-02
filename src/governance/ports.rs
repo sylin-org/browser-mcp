@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 // --- Supporting placeholder and axis types ---
 
 /// Read/write classification of a tool call: the observe-vs-mutate axis (the core owns the
-/// axis; g05 owns the tool+action -> class table in the browser plugin). `Read` is an
-/// observation; `Write` is a mutation. g05 maps each tool/action onto this and MAY extend
-/// the type minimally when it lands.
+/// axis; g05 owns the tool+action -> class table in the browser plugin). `Observe` is an
+/// observation; `Mutate` is a mutation. g05 maps each tool/action onto this and MAY extend
+/// the type minimally when it lands. Distinct from a grant's `access` field (`read` | `write`
+/// | `all`), which is a separate concept applied during enforcement (g13); see
+/// RECONCILIATION.md section 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RwClass {
-    Read,
-    Write,
+    Observe,
+    Mutate,
 }
 
 /// The effective enforcement mode for a call (g15 resolves it: per-grant > manifest >
@@ -227,12 +229,12 @@ mod tests {
         let pdp = NoopPdp;
         let requests = [
             sample_request(
-                RwClass::Read,
+                RwClass::Observe,
                 GoverningResource::None,
                 EffectiveMode::Observe,
             ),
             sample_request(
-                RwClass::Write,
+                RwClass::Mutate,
                 GoverningResource::Resource("example.com".to_string()),
                 EffectiveMode::Enforce,
             ),
@@ -241,7 +243,7 @@ mod tests {
                     id: "g1".to_string(),
                 }],
                 tool: "computer".to_string(),
-                rw: RwClass::Write,
+                rw: RwClass::Mutate,
                 resource: GoverningResource::AlwaysAllow,
                 mode: EffectiveMode::Enforce,
             },
@@ -263,7 +265,7 @@ mod tests {
     fn pdp_is_object_safe() {
         let pdp: Box<dyn PolicyDecisionPoint> = Box::new(NoopPdp);
         let req = sample_request(
-            RwClass::Read,
+            RwClass::Observe,
             GoverningResource::None,
             EffectiveMode::Observe,
         );
@@ -285,7 +287,7 @@ mod tests {
                 id: "servicenow-full".to_string(),
             }],
             tool: "navigate".to_string(),
-            rw: RwClass::Write,
+            rw: RwClass::Mutate,
             resource: GoverningResource::Resource("example.com".to_string()),
             mode: EffectiveMode::Enforce,
         };
@@ -317,8 +319,14 @@ mod tests {
 
     #[test]
     fn rw_and_mode_wire_names_are_lowercase() {
-        assert_eq!(serde_json::to_string(&RwClass::Read).unwrap(), "\"read\"");
-        assert_eq!(serde_json::to_string(&RwClass::Write).unwrap(), "\"write\"");
+        assert_eq!(
+            serde_json::to_string(&RwClass::Observe).unwrap(),
+            "\"observe\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RwClass::Mutate).unwrap(),
+            "\"mutate\""
+        );
         assert_eq!(
             serde_json::to_string(&EffectiveMode::Observe).unwrap(),
             "\"observe\""
