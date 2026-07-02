@@ -26,7 +26,7 @@ history live here.
 | [0016](0016-debug-mode-pinned-extension-id.md) | Debug/observability mode + pinned dev extension id | Accepted |
 | [0017](0017-release-1-engine-hardening.md) | Release 1 engine hardening | Accepted |
 | [0018](0018-governance-observe-then-enforce.md) | Governance ships observe-then-enforce | Accepted |
-| [0019](0019-layered-configuration-model.md) | Layered configuration: typed key registry, presets, org locks | Proposed |
+| [0019](0019-layered-configuration-model.md) | Layered configuration: typed key registry, presets, org locks | Accepted |
 
 ## Conventions
 

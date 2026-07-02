@@ -1,6 +1,6 @@
 # 0019. Layered configuration: typed key registry, presets, organization locks
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07
 
 ## Context
