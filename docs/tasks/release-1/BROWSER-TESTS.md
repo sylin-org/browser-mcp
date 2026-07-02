@@ -366,3 +366,58 @@ Steps:
 2. Call `read_page` with `filter: "interactive"`.
 Expect: the output ends with the "Viewport: WxH" line and nothing after it -- no Note line, since
 nothing was off-screen to cull.
+
+## T03-1: get_page_text picks the largest-innerText candidate, with the Source element header
+Changed: `get_page_text` no longer picks the first matching selector or reads `textContent` off a
+cloned node; it now scans every element matching any of twelve candidate selectors, picks the one
+with the strictly largest `innerText`, and prefixes the output with "Source element: <selector>".
+Paragraph breaks now survive (innerText preserves layout line breaks; the old textContent path
+collapsed all whitespace to single spaces). Extension-only change: requires reloading the
+extension at chrome://extensions; no MCP client restart needed.
+Steps:
+1. Reload the extension at chrome://extensions.
+2. Navigate a grouped tab to a text-heavy Wikipedia article, for example
+   https://en.wikipedia.org/wiki/Web_browser.
+3. Call `get_page_text` with only `tabId` set (no `max_chars`).
+Expect: the output starts with "Source element: " followed by one of the twelve candidate
+selectors (for example "main" or ".content"), and the body text below it is broken into multiple
+paragraphs separated by blank lines (not one giant single-spaced line). No "Title:" or "URL:"
+line appears anywhere.
+
+## T03-2: max_chars truncates with the exact bracketed notice
+Changed: `max_chars` (previously ignored end to end) now bounds the normalized body text; the
+service worker forwards it unchanged and the content script floors/validates it, defaulting to
+50000 for anything absent or invalid.
+Steps:
+1. On the same tab as T03-1 (extension already reloaded), call `get_page_text` with
+   `max_chars: 500`.
+Expect: the output is "Source element: <selector>", a blank line, roughly 500 characters of body
+text, a blank line, then a line reading exactly
+"[Truncated at 500 characters. Retry with a larger max_chars, or use read_page to get a
+structured view with element refs.]" (the number matches the `max_chars` you passed).
+
+## T03-3: No readable text produces the actionable no-content message
+Changed: previously an empty/near-empty page silently returned "Title: ...\nURL: ...\n\n" with no
+text; now it returns a single actionable line naming the source element and suggesting
+`read_page`.
+Steps:
+1. Navigate a grouped tab to about:blank.
+2. Call `get_page_text` with only `tabId` set.
+Expect: the output is exactly one line:
+"No readable text content found (source element: body). The page may be mostly visual or may
+render text dynamically. Use read_page to inspect the page structure instead."
+(No "Source element:" header, no blank body.)
+
+## T03-4: Hidden text (display:none) is excluded, unlike the old textContent implementation
+Changed: switching from `textContent` on a cloned node to `innerText` means CSS-hidden text (for
+example `display:none` banners or collapsed sections) is no longer included in the output. This
+is a direct regression check against the old behavior.
+Steps:
+1. Navigate a grouped tab to a simple page, for example https://example.com.
+2. Call `javascript_tool` on that tab with the expression:
+   `const d = document.createElement("div"); d.style.display = "none"; d.textContent =
+   "HIDDEN_MARKER_XYZ"; document.body.appendChild(d); "ok"`
+3. Call `get_page_text` on the same tab with only `tabId` set.
+Expect: the output does NOT contain the string "HIDDEN_MARKER_XYZ" anywhere. (The pre-T03
+`textContent`-based implementation would have included it; this confirms the switch to
+`innerText` actually excludes CSS-hidden content.)

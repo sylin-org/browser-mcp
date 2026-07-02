@@ -521,7 +521,7 @@ const handlers = {
   },
   async get_page_text(a) {
     if (!(await inGroup(a.tabId))) return text(`Tab ${a.tabId} is not in the group.`);
-    const r = await content(a.tabId, { type: "pageText" });
+    const r = await content(a.tabId, { type: "pageText", max_chars: a.max_chars });
     return text((r && r.result) || "Could not extract page text.");
   },
   async find(a) {

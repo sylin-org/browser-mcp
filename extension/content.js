@@ -277,15 +277,59 @@
   }
 
   // --- Page text ---
-  function pageText() {
-    const selectors = ["article", "main", '[role="main"]', '[class*="article"]', '[class*="post-content"]', ".content", "#content"];
-    let source = null;
-    for (const sel of selectors) { source = document.querySelector(sel); if (source) break; }
-    if (!source) source = document.body;
-    const clone = source.cloneNode(true);
-    clone.querySelectorAll("script, style, noscript, template, svg").forEach((el) => el.remove());
-    const t = clone.textContent.replace(/\s+/g, " ").trim().slice(0, 100000);
-    return `Title: ${document.title}\nURL: ${location.href}\n\n${t}`;
+  // Main-content candidates. An element can match several selectors; the FIRST selector in
+  // this list that finds it is the one reported in the "Source element:" header, and ties
+  // on innerText length go to the earlier selector.
+  const PAGE_TEXT_SELECTORS = [
+    "article",
+    "main",
+    '[role="main"]',
+    '[itemprop="articleBody"]',
+    ".entry-content",
+    ".content-body",
+    ".article-body",
+    ".articleBody",
+    ".post-content",
+    ".story-body",
+    "#content",
+    ".content",
+  ];
+  // Conservative cleanup only: innerText already excludes hidden text and preserves layout
+  // line breaks, so just tidy line endings and keep paragraph breaks intact.
+  function normalizePageText(t) {
+    return t
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  function pageText(maxCharsArg) {
+    const maxChars = typeof maxCharsArg === "number" && Number.isFinite(maxCharsArg) && maxCharsArg >= 1
+      ? Math.floor(maxCharsArg)
+      : 50000;
+    let bestEl = null, bestText = "", bestSel = "body";
+    const seen = new Set();
+    for (const sel of PAGE_TEXT_SELECTORS) {
+      for (const el of document.querySelectorAll(sel)) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        const t = el.innerText || "";
+        if (t.length > bestText.length) { bestEl = el; bestText = t; bestSel = sel; }
+      }
+    }
+    if (!bestEl || bestText.length === 0) {
+      bestSel = "body";
+      bestText = (document.body && document.body.innerText) || "";
+    }
+    const body = normalizePageText(bestText);
+    if (body.length < 10) {
+      return `No readable text content found (source element: ${bestSel}). The page may be mostly visual or may render text dynamically. Use read_page to inspect the page structure instead.`;
+    }
+    const header = `Source element: ${bestSel}\n\n`;
+    if (body.length > maxChars) {
+      return header + body.slice(0, maxChars) + `\n\n[Truncated at ${maxChars} characters. Retry with a larger max_chars, or use read_page to get a structured view with element refs.]`;
+    }
+    return header + body;
   }
 
   // --- Find (traverses shadow roots) ---
@@ -381,7 +425,7 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
       case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); return true;
-      case "pageText": sendResponse({ result: pageText() }); return true;
+      case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
       case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;

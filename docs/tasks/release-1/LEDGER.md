@@ -10,14 +10,14 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T03 (next pending). T04, T06, T07, T01, T02 are done.
+- Current task: T12 (next pending). T04, T06, T07, T01, T02, T03 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T02 read_page viewport culling for filter=interactive
+- Last commit: feat(extension): T03 get_page_text official semantics
   (this run)
-- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02) in
+- Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
-  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T02 (which
+  whole-repo `cargo fmt --check` will report these two files; this has no bearing on T03 (which
   touched no Rust files at all -- `git status --short -- '*.rs' src/ tests/` was empty before
   committing). A human may want to run `cargo fmt` repo-wide in its own dedicated commit at some
   point; do not fold that into an unrelated task's commit.
@@ -33,7 +33,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 3 | T07 | Extend installer doctor with runtime/debug-state fusion | - | done |
 | 4 | T01 | read_page structural pagination + caps | - | done |
 | 5 | T02 | read_page viewport culling (filter=interactive) | - | done |
-| 6 | T03 | get_page_text official semantics | - | pending |
+| 6 | T03 | get_page_text official semantics | - | done |
 | 7 | T12 | Per-domain console/network buffer reset | - | pending |
 | 8 | T13 | Runtime.exceptionThrown capture | - | pending |
 | 9 | T14 | Network.loadingFailed status | - | pending |
@@ -500,3 +500,81 @@ Append one entry per task using this template. Newest at the bottom.
     task's Constraints section.
 - Browser checks queued: T02-1, T02-2, T02-3, T02-4 in docs/tasks/release-1/BROWSER-TESTS.md
   (appended after T01-6, preserving task order).
+
+### T03 get_page_text official semantics -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T03 ...`)
+- Files touched: extension/content.js, extension/service-worker.js,
+  docs/tasks/release-1/BROWSER-TESTS.md, docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/content.js` and `node --check extension/service-worker.js` (syntax
+    only), both clean.
+  - Full diff review confirming: `PAGE_TEXT_SELECTORS` contains exactly the twelve selectors from
+    the prompt's contract, in that exact order; `pageText` reads `el.innerText` /
+    `document.body.innerText` only, with zero occurrences of `textContent` or `cloneNode` anywhere
+    in the new code; the `body.length < 10` no-readable-content check runs strictly before the
+    `body.length > maxChars` truncation check (verified by reading the `if`/`if` sequence); the
+    header (`Source element: <sel>\n\n`), the no-readable-content message, and the truncation
+    notice all match the prompt's contract strings character for character (only the `${bestSel}`/
+    `${maxChars}` placeholders substituted); the old `Title:`/`URL:` lines are gone (grepped for
+    `Title:` and `URL:` in the new `pageText` body -- zero matches); the service worker's
+    `get_page_text` handler changed on exactly one line (the `content(...)` call), keeping the
+    `inGroup` gate, the `text(...)` wrap, and the `"Could not extract page text."` fallback
+    untouched; the content script's message-handler `case "pageText"` line is the only case
+    touched.
+  - `cargo test` (all 91 tests across the workspace -- 80 unit + 4 mcp_protocol + 1 peer_death + 6
+    tool_schema_fidelity -- plus 0 doc-tests) passes unchanged, confirming no Rust surface was
+    touched and the frozen `get_page_text` schema (including its `max_chars` advertisement) is
+    intact.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, exactly as the prompt's "Project context" predicted ("no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes), so no
+    reformatting side effect occurred this time.
+- Drift reconciled: only line-number drift, exactly as the prompt itself warned ("re-verify before
+  editing; line numbers may have drifted"). The prompt's Current-behavior section cited the
+  `// --- Page text ---` section at content.js lines 194-204 and the message-handler case at line
+  299; the actual working tree (after T01/T02 extended `accessibilityTree` earlier in the file)
+  had them at lines 279-289 and 428 respectively. Likewise the prompt's service-worker handler
+  citation (lines 484-488) was actually at lines 522-526. In every case the CODE SHAPE, selector
+  list contents/order, and exact string literals the prompt described matched the working tree
+  verbatim; only the line numbers had moved. No logic-level drift.
+- Decisions made:
+  - Reproduced the prompt's contract snippet verbatim (selectors, `normalizePageText`, `pageText`,
+    the message-handler case, the service-worker bridge line) rather than paraphrasing, per the
+    prompt's own instruction ("reproduce its behavior exactly... not logic, strings, or
+    defaults"). No trivial formatting adjustments were needed; the snippet's style (2-space indent,
+    double quotes for strings needing interpolation-safe quoting, template literals) already
+    matched the surrounding file.
+  - Kept the two comments from the contract snippet (`PAGE_TEXT_SELECTORS` selector-priority note,
+    `normalizePageText` conservative-cleanup note) as the only comments added, per constraint 7
+    ("the two short comments in the snippet above are the ceiling; do not add more"). No comment
+    was added to `pageText` itself.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01's and T02's logs already described.
+- Notes for later tasks:
+  - `get_page_text`'s output contract (`Source element: <sel>\n\n<body>`, the no-readable-content
+    one-liner, and the `[Truncated at N characters. ...]` notice) is now a byte-exact contract at
+    the same tier as T01's marker-line formats, T02's Note line, and T06's `[hop: ...]` contract --
+    do not reword any of the three strings in a later task without updating this note and the T03
+    BROWSER-TESTS.md entries.
+  - `PAGE_TEXT_SELECTORS` and `normalizePageText` are module-scope (inside the content script's
+    IIFE, alongside `accessibilityTree`'s helpers) and are NOT wired into `accessibilityTree`,
+    `find`, or any other function -- per the prompt's Out of scope section, this task intentionally
+    does not touch structural/interactive extraction, only free-text extraction.
+  - `content(tabId, { type: "pageText", max_chars })` and the content script's `case "pageText"`
+    now both pass `max_chars` through; `msg.max_chars` on the content-script side is validated
+    entirely inside `pageText()` (any non-finite/non->=1 value silently falls back to 50000) -- the
+    service worker performs zero validation of its own, by design (mechanism only, no policy in
+    the extension).
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `get_page_text` schema (and its existing
+    `max_chars` advertisement, already present before this task) was left untouched, per this
+    task's Constraints section.
+- Browser checks queued: T03-1, T03-2, T03-3, T03-4 in docs/tasks/release-1/BROWSER-TESTS.md
+  (appended after T02-4, preserving task order).
