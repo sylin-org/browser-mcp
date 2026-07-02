@@ -655,3 +655,58 @@ Steps:
 Expect: step 1 shows `[level] text` lines exactly as before this task (no note appended, no
 change to per-line format). Step 2 shows `<METHOD> <URL> -> <STATUS>` (or `(pending)` /
 `-> <STATUS> (<errorText>)` per T14) lines exactly as before this task (no note appended).
+
+## T08-1: type dispatches real keydown/keyup for every printable ASCII character
+Changed: the `type` action of `computer` no longer inserts every character via
+`Input.insertText` alone; it now dispatches a real `Input.dispatchKeyEvent` keyDown/keyUp pair
+per printable ASCII character (with a correct Shift bit for shifted characters), maps a newline
+to a real Enter press, and falls back to `Input.insertText` only for characters with no key
+mapping (control characters, non-ASCII). Extension-only change; reload the extension at
+chrome://extensions, no MCP client restart needed.
+Steps:
+1. `navigate` to https://example.com.
+2. `javascript_tool` to prepare a probe input and event log:
+   ```js
+   const inp = document.createElement("input");
+   inp.id = "t08probe";
+   document.body.prepend(inp);
+   window.__ev = [];
+   for (const t of ["keydown", "keyup", "input"]) {
+     inp.addEventListener(t, (e) => window.__ev.push(
+       t + "|" + (e.key || "") + "|" + (e.code || "") + "|" + (e.shiftKey ? 1 : 0)));
+   }
+   inp.focus();
+   ```
+3. `computer` with `{ "action": "type", "text": "Ab1!;:\n" }` on that tab.
+4. `javascript_tool` to read
+   `JSON.stringify({ v: document.getElementById("t08probe").value, ev: window.__ev })`.
+Expect: `v` is `Ab1!;:` (Enter adds no character to a single-line input). Every typed character
+produced a keydown and a keyup entry in `window.__ev`. `A` shows `keydown|A|KeyA|1` (shift bit
+set), `b` shows `keydown|b|KeyB|0`, `1` shows `keydown|1|Digit1|0`, `!` shows
+`keydown|!|Digit1|1`, `;` shows `keydown|;|Semicolon|0`, `:` shows `keydown|:|Semicolon|1`, and
+the final entries are `keydown|Enter|Enter|0` and `keyup|Enter|Enter|0`. The tool result text
+reads exactly `Typed 7 character(s).` (the raw length of `"Ab1!;:\n"`).
+
+## T08-2: Non-ASCII characters fall back to Input.insertText, ASCII characters still dispatch
+Changed: same rework as T08-1; this exercises the fallback path specifically.
+Steps:
+1. Continuing on the same tab/probe from T08-1 (or set up a fresh probe input per T08-1 steps
+   1-2 if starting fresh), clear `window.__ev = [];` and clear the probe input's value.
+2. `computer` with a `text` argument equal to the JSON string `caf` followed by the 6-character
+   escape sequence backslash-u-0-0-e-9 (the JSON escape keeps this file ASCII; it decodes to a
+   word ending in an accented e, U+00E9).
+3. `javascript_tool` to read
+   `JSON.stringify({ v: document.getElementById("t08probe").value, ev: window.__ev })`.
+Expect: `v` ends with the accented character (the word "cafe" with an accented final e).
+`window.__ev` shows keydown/keyup pairs for `c`, `a`, `f`, but only an `input` entry (no keydown,
+no keyup) for the accented character, proving the per-character `Input.insertText` fallback
+fired for that one character alone.
+
+## T08-3: CRLF collapses to a single Enter press
+Changed: same rework as T08-1; this exercises the `\r\n` collapsing rule.
+Steps:
+1. Continuing on the same probe (clear `window.__ev = [];` and the input's value first).
+2. `computer` with `{ "action": "type", "text": "a\r\nb" }`.
+3. `javascript_tool` to read `JSON.stringify(window.__ev)`.
+Expect: exactly one Enter keydown/keyup pair appears between the events for `a` and `b` (not
+two), confirming the `\r` before a `\n` is skipped rather than producing a second Enter press.

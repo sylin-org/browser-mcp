@@ -413,6 +413,7 @@ function keyCode(key) {
   if (key.length === 1) {
     if (/[a-zA-Z]/.test(key)) return "Key" + key.toUpperCase();
     if (/[0-9]/.test(key)) return "Digit" + key;
+    if (CODE_PUNCT[key]) return CODE_PUNCT[key];
   }
   return key; // named keys (Enter, Tab, ArrowUp, ...) use the key name as their code
 }
@@ -422,13 +423,44 @@ const VK_NAMED = {
   ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
   Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45,
 };
+// Windows virtual key codes for US-QWERTY punctuation keys (VK_OEM_*).
+const VK_PUNCT = {
+  ";": 186, "=": 187, ",": 188, "-": 189, ".": 190, "/": 191,
+  "`": 192, "[": 219, "\\": 220, "]": 221, "'": 222,
+};
+// DOM `code` values for US-QWERTY punctuation keys (and Space).
+const CODE_PUNCT = {
+  ";": "Semicolon", "=": "Equal", ",": "Comma", "-": "Minus",
+  ".": "Period", "/": "Slash", "`": "Backquote", "[": "BracketLeft",
+  "\\": "Backslash", "]": "BracketRight", "'": "Quote", " ": "Space",
+};
 function vkCode(key) {
   if (key.length === 1) {
     const up = key.toUpperCase();
     if (up >= "A" && up <= "Z") return up.charCodeAt(0); // A-Z -> 65-90
     if (key >= "0" && key <= "9") return key.charCodeAt(0); // 0-9 -> 48-57
+    if (VK_PUNCT[key]) return VK_PUNCT[key];
   }
   return VK_NAMED[key] || 0;
+}
+// US-QWERTY: shifted printable -> the unshifted character on the same key.
+const SHIFT_BASE = {
+  "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+  "&": "7", "*": "8", "(": "9", ")": "0",
+  "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";",
+  '"': "'", "<": ",", ">": ".", "?": "/", "~": "`",
+};
+// Resolve one typed character to Input.dispatchKeyEvent fields, or null when the character has no
+// key mapping (control characters, non-ASCII) and must fall back to Input.insertText instead.
+function charKeyInfo(ch) {
+  if (ch === "\n" || ch === "\r") {
+    return { key: "Enter", code: "Enter", vk: 13, shift: false, text: "\r", unmodifiedText: "\r" };
+  }
+  if (ch < " " || ch > "~") return null;
+  let base = ch, shift = false;
+  if (ch >= "A" && ch <= "Z") { base = ch.toLowerCase(); shift = true; }
+  else if (SHIFT_BASE[ch]) { base = SHIFT_BASE[ch]; shift = true; }
+  return { key: ch, code: keyCode(base), vk: vkCode(base), shift, text: ch, unmodifiedText: base };
 }
 function waitForLoad(tabId) {
   return new Promise((resolve) => {
@@ -480,7 +512,26 @@ async function computer(a) {
     case "type": {
       if (!a.text) return text("text is required for type.");
       await ensureAttached(tabId);
-      for (const ch of a.text) { await cdp(tabId, "Input.insertText", { text: ch }); await sleep(8); }
+      const chars = Array.from(a.text);
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        // Windows-style newlines: skip the \r, let the following \n press Enter once.
+        if (ch === "\r" && chars[i + 1] === "\n") continue;
+        const info = charKeyInfo(ch);
+        if (!info) {
+          await cdp(tabId, "Input.insertText", { text: ch });
+          await sleep(8);
+          continue;
+        }
+        const mods = info.shift ? 8 : 0;
+        const evt = {
+          key: info.key, code: info.code, modifiers: mods,
+          windowsVirtualKeyCode: info.vk, nativeVirtualKeyCode: info.vk,
+        };
+        await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...evt, text: info.text, unmodifiedText: info.unmodifiedText });
+        await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...evt });
+        await sleep(8);
+      }
       return text(`Typed ${a.text.length} character(s).`);
     }
     case "key": {

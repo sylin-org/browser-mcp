@@ -10,9 +10,9 @@ task's changes. Humans read it to understand exactly what happened.
 
 ## RESUME HERE
 
-- Current task: T08 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15 are done.
+- Current task: T09 (next pending). T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08 are done.
 - Branch: release-1-hardening (create from main if absent).
-- Last commit: feat(extension): T15 Empty-result guidance notes (this run)
+- Last commit: feat(extension): T08 type via real keyDown/keyUp events (this run)
 - Open concerns: pre-existing `cargo fmt` drift (unrelated to T04/T06/T07/T01/T02/T03/T12/T13) in
   `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` -- both reformat under the installed
   rustfmt 1.9.0 but were left untouched again because they are out of scope / forbidden. A
@@ -37,7 +37,7 @@ Order: T04, T06, T07, T01, T02, T03, T12, T13, T14, T15, T08, T09, T10, T11, T18
 | 8 | T13 | Runtime.exceptionThrown capture | - | done |
 | 9 | T14 | Network.loadingFailed status | - | done |
 | 10 | T15 | Empty-result guidance notes | - | done |
-| 11 | T08 | type via real keyDown/keyUp | - | pending |
+| 11 | T08 | type via real keyDown/keyUp | - | done |
 | 12 | T09 | Mouse click fidelity (clickCount sequence, buttons, force) | - | pending |
 | 13 | T10 | Scroll verify + scrollable-ancestor fallback | - | pending |
 | 14 | T11 | Real zoom region crop + coordinate-context update | - | pending |
@@ -1023,3 +1023,137 @@ Append one entry per task using this template. Newest at the bottom.
     schemas were left untouched, per this task's Constraints section.
 - Browser checks queued: T15-1, T15-2, T15-3, T15-4, T15-5, T15-6 in
   docs/tasks/release-1/BROWSER-TESTS.md (appended after T14-4, preserving task order).
+
+### T08 computer type dispatches real keyDown/keyUp per character with Enter mapping -- done -- 2026-07-02
+- Commit: (recorded after commit; see git log for `feat(extension): T08 ...`)
+- Files touched: extension/service-worker.js, docs/tasks/release-1/BROWSER-TESTS.md,
+  docs/tasks/release-1/LEDGER.md
+- Tests added: none in the Rust sense (this task touches only extension JS, which has no test
+  harness per project constraints). Verification performed instead:
+  - `node --check extension/service-worker.js` (syntax only), clean.
+  - A standalone throwaway Node script (not committed; written to the session scratchpad and not
+    copied into the repo) that copied `keyCode`/`vkCode`/`charKeyInfo` verbatim from the new code
+    and asserted: (a) all 95 printable ASCII characters (0x20-0x7E) resolve to a non-null
+    `charKeyInfo` result with a non-zero `vk`; (b) `"\t"` and the accented `"e"` (U+00E9) both
+    resolve to `null`; (c) `"\n"` maps to the exact `{ key: "Enter", code: "Enter", vk: 13,
+    shift: false, text: "\r", unmodifiedText: "\r" }` object from the spec; (d) the prompt's own
+    worked example (`"Ab1!;:\n"`) reproduces the exact seven-entry keydown sequence
+    (`keydown|A|KeyA|1`, `keydown|b|KeyB|0`, `keydown|1|Digit1|0`, `keydown|!|Digit1|1`,
+    `keydown|;|Semicolon|0`, `keydown|:|Semicolon|1`, `keydown|Enter|Enter|0`); (e) `"a\r\nb"`
+    collapses to exactly one Enter between `a` and `b` (CRLF-skip logic); (f) `"cafe"` + accented
+    `"e"` produces `dispatch, dispatch, dispatch, insertText` for the four characters, proving the
+    fallback fires only for the non-ASCII character. All checks passed.
+  - Full diff review confirming: `keyCode`/`vkCode` gained exactly one new branch each (`if
+    (CODE_PUNCT[key]) return CODE_PUNCT[key];` / `if (VK_PUNCT[key]) return VK_PUNCT[key];`),
+    inserted after the existing letter/digit branches and before the pre-existing fallback line,
+    which is otherwise byte-identical to before this task; `pressKey`'s own body (including the
+    reload-chord interception added by an earlier task) was not touched at all (confirmed via
+    `git diff` hunk boundaries -- no lines inside `pressKey` appear in the diff); the `key` action
+    case in `computer()` was not touched; `VK_PUNCT`, `CODE_PUNCT`, `SHIFT_BASE`, and
+    `charKeyInfo` are new top-level declarations placed directly after `VK_NAMED` and `vkCode`
+    respectively, matching the prompt's tables verbatim (including punctuation coverage and key
+    order); the `type` case's guard line and success-return line are byte-identical to before this
+    task (`if (!a.text) return text("text is required for type.");` and
+    `` return text(`Typed ${a.text.length} character(s).`); ``, still using `a.text.length`, the
+    raw string length, not the code-point count); the new loop body matches the prompt's exact
+    code block (the `mods`/`evt` shape, the `...evt` spreads, the `text`/`unmodifiedText` fields
+    only on `keyDown`) verbatim; no `try`/`catch` was added around any `cdp(...)` call in the new
+    loop.
+  - `cargo test` (all 91 tests across the workspace, including `tests/tool_schema_fidelity.rs`,
+    6/6) passes unchanged, confirming no Rust surface was touched.
+  - `git status --short -- '*.rs' src/ tests/` was empty throughout -- this task made zero Rust
+    changes, matching the prompt's "Build and test" note ("no Rust rebuild is required").
+  - `cargo clippy --all-targets -- -D warnings` clean (nothing to lint; no Rust changed).
+  - `cargo fmt --check` reports only the same two pre-existing drifted files every prior task in
+    this run has flagged (`src/policy/redact.rs`, `tests/tool_schema_fidelity.rs`); neither was
+    touched by this task, and there was nothing to run `cargo fmt` on (zero Rust changes).
+  - ASCII scan (the BOOTSTRAP.md python one-liner) on all three edited/touched files
+    (`extension/service-worker.js`, `docs/tasks/release-1/BROWSER-TESTS.md`,
+    `docs/tasks/release-1/LEDGER.md`) returned empty lists. Note: a first draft of the
+    BROWSER-TESTS.md T08-2 entry accidentally typed the literal accented "cafe" word (copying the
+    prompt's own prose) instead of describing the JSON escaped-accented-e sequence the prompt's
+    Verification step 3 actually specifies for the MCP call argument; caught by the ASCII scan before
+    committing and rewritten to describe the escape sequence in words instead of embedding the
+    literal character.
+- Drift reconciled: only line-number and one section-order drift, exactly as BOOTSTRAP.md warned
+  ("line numbers verified at authoring time and DRIFT as earlier tasks land"). The prompt's
+  "Current behavior" section cites `computer(a)` starting at line 357, the `type` case at lines
+  390-395, `modifierBits`/`pressKey` context at lines 260-268/288-320, `keyCode` at 322-328,
+  `VK_NAMED` at 330-334, `vkCode` at 335-342, and `KEY_MAP` at 253-259. The actual working tree
+  (after T04/T06/T07/T12/T13/T14/T15 all landed earlier in the fixed sequence and grew the file
+  from ~568 lines the prompt describes to 689 lines) had these at: `KEY_MAP` 341-347,
+  `modifierBits` 348-357, `pressKey` 378-410, `keyCode` 412-418, `VK_NAMED` 420-424, `vkCode`
+  425-432, `computer(a)` 447 (before this task's edits), `type` case 480-484. Every function name,
+  table contents (VK_NAMED's exact 15 entries), and code shape the prompt describes matched the
+  actual working tree verbatim once re-read at the drifted line numbers -- no logic-level drift.
+  One additional thing the prompt's "Current behavior" section does not mention (because it
+  predates this run's own earlier tasks): `pressKey` now contains a reload-chord interception
+  block (ctrl/cmd+r, F5) inserted by an earlier task, sitting between the `key`/`modifiers`
+  resolution and the `keyCode`/`vkCode` calls the prompt describes. This does not affect step 1's
+  "do not change the body of pressKey" instruction (still honored exactly: zero lines of
+  `pressKey` were touched) and does not affect anything else in this task's scope.
+- Decisions made:
+  - Placed `VK_PUNCT` and `CODE_PUNCT` directly after `VK_NAMED` (before `vkCode`), and
+    `SHIFT_BASE`/`charKeyInfo` directly after `vkCode` (before `waitForLoad`), rather than
+    scattering them by which function reads which table. This satisfies the prompt's "next to
+    VK_NAMED" / "place it after vkCode" placement instructions literally, keeps every
+    keyboard-mapping table and helper in one contiguous block, and is safe: `keyCode` (declared
+    just above `VK_NAMED`) references `CODE_PUNCT` only inside its function body, which is
+    evaluated on each call, long after all module-level `const` declarations have run -- there is
+    no temporal-dead-zone issue since `keyCode` is never invoked during module initialization
+    (verified by reading the file top to bottom: no top-level code calls `keyCode` or `vkCode`
+    outside of `pressKey`/`charKeyInfo`, both of which only run in response to a `computer` tool
+    call, long after the module has finished loading).
+  - Used `if (CODE_PUNCT[key])` / `if (VK_PUNCT[key])` (plain truthiness) rather than an
+    `Object.prototype.hasOwnProperty` or `!== undefined` check, matching the existing file's style
+    for every other lookup-table branch in this exact function pair (e.g. `VK_NAMED[key] || 0`)
+    and matching the prompt's own instruction to return the table's value "when present" -- every
+    value in both tables is a non-empty string or a positive number, so truthiness is exactly
+    equivalent to presence for this data.
+  - `charKeyInfo`'s printable-ASCII guard (`if (ch < " " || ch > "~") return null;`) was placed
+    after the newline/CR check, matching the prompt's own step ordering (newline mapping first,
+    then the printable-ASCII guard, then the shift/base computation) rather than reordering for
+    perceived efficiency; verified by hand that a surrogate-pair or astral code point from
+    `Array.from` (length 2) still correctly returns `null` via this same string comparison (its
+    leading UTF-16 code unit is always numerically greater than `"~"`, so the comparison holds
+    without a separate length check).
+  - Added exactly two short `//` comments beyond the prompt's own snippets: one above
+    `charKeyInfo` describing its null/non-null contract (matching the file's existing
+    one-line-doc-comment density on helpers like `pressKey`'s neighbors), and one inline comment
+    on the CRLF-skip line inside the new loop. No comment was added on the `mods`/`evt`
+    construction block or the two `cdp(...)` dispatch lines, since the prompt's own reference code
+    block for that part carries no comments and constraint 7 sets those snippets as the ceiling.
+  - Left `src/policy/redact.rs` and `tests/tool_schema_fidelity.rs` untouched (same pre-existing
+    rustfmt-version drift every prior task in this run has flagged). This task touched no Rust
+    files at all, so there was nothing to run `cargo fmt` on and no reformatting side effect to
+    revert this time; confirmed via `cargo fmt --check`, whose only reported diffs are in exactly
+    those same two files, byte-for-byte the same diffs T01/T02/T03/T12/T13/T14/T15's logs already
+    described.
+- Notes for later tasks:
+  - `charKeyInfo(ch)` is a new pure helper in `extension/service-worker.js`, module-scope, used
+    only by the new `type`-case loop. It has no dependency on and is not called by `pressKey` or
+    the `key` action; a later task should not need to touch it unless a new task prompt explicitly
+    requires it.
+  - `keyCode`/`vkCode` now also cover the eleven US-QWERTY punctuation characters (plus Space for
+    `keyCode`); this is a side effect `pressKey` (and therefore the `key` action) picks up for free
+    on any single-character combo containing punctuation (for example a hypothetical `key` call
+    with `text: ";"` now gets `code: "Semicolon"` / `vk: 186` instead of the old wrong
+    `code: ";"` / `vk: 0`) -- this was explicitly called out as an intended side effect by the
+    prompt's step 1, not a bug to "fix" differently in a later task.
+  - The `type` action's per-character dispatch contract (real `keyDown`/`keyUp` pairs with the
+    exact `evt` shape, the Shift-bit-only modifier approach, the `Input.insertText` fallback for
+    non-printable-ASCII/control characters, and the `\r\n`-collapsing rule) is now a byte-exact
+    behavioral contract at the same tier as T01's marker-line formats, T02's Note line, T03's
+    get_page_text contract, T06's `[hop: ...]` contract, T13's exception-text format, T14's
+    network per-line format, and T15's zero-result strings -- do not rework it in a later task
+    without updating this note and the T08 BROWSER-TESTS.md entries.
+  - No remaining release-1 task in the fixed sequence (T09, T10, T11, T18, T16, T17, T05) touches
+    `pressKey`, `keyCode`, `vkCode`, `VK_NAMED`, `KEY_MAP`, or the `type`/`key` cases of
+    `computer()` again, except T09 (mouse click fidelity) which is adjacent in the same `computer`
+    dispatcher but touches only the `click`/`resolveCoords` mouse-event path, not keyboard code.
+  - No `src/mcp/schemas/tools.json` edits were made or needed; `tests/tool_schema_fidelity.rs`
+    passed unchanged (6/6), confirming the frozen `computer` schema (whose `type` action
+    description does not describe implementation detail, only behavior) was left untouched, per
+    this task's Constraints section.
+- Browser checks queued: T08-1, T08-2, T08-3 in docs/tasks/release-1/BROWSER-TESTS.md (appended
+  after T15-6, preserving task order).
