@@ -122,7 +122,7 @@ actionable finding for each problem.
 ## Using it
 
 Once connected, the browser tools appear in your MCP client and the agent can drive your browser.
-Ghostlight works inside its own tab group (marked with a ghost, 👻), so agent activity is visually
+Ghostlight works inside its own tab group (labeled 👻Ghostlight), so agent activity is visually
 separated from your own tabs. A typical first request to the agent:
 
 > Open a new browser tab, go to example.com, and tell me what the page says.

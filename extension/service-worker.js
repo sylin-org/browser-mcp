@@ -13,9 +13,10 @@
 // null) with no matching or interpretation -- the binary's grant enforcement decides.
 
 const NATIVE_HOST = "org.sylin.ghostlight";
-// The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B). Written as an
-// escape so this source file stays ASCII; it renders as the emoji at runtime.
-const GROUP_TITLE = "\u{1F47B}";
+// The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
+// name. The emoji is written as an escape so this source file stays ASCII; it renders as
+// the glyph at runtime.
+const GROUP_TITLE = "\u{1F47B}Ghostlight";
 
 let nativePort = null;
 let groupId = null;
