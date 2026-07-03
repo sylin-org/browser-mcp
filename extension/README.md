@@ -32,5 +32,5 @@ Prefer to wire it by hand? See
 host-manifest paths per OS/browser.
 
 ## Verify
-Ask the agent to *navigate to a page and take a screenshot*: the "Ghostlight" tab group opens
+Ask the agent to *navigate to a page and take a screenshot*: the 👻 tab group opens
 and the screenshot returns.

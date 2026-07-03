@@ -13,7 +13,9 @@
 // null) with no matching or interpretation -- the binary's grant enforcement decides.
 
 const NATIVE_HOST = "org.sylin.ghostlight";
-const GROUP_TITLE = "Ghostlight";
+// The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B). Written as an
+// escape so this source file stays ASCII; it renders as the emoji at runtime.
+const GROUP_TITLE = "\u{1F47B}";
 
 let nativePort = null;
 let groupId = null;
@@ -148,7 +150,7 @@ function holdRequest(payload) {
 function updateHoldBadge(held) {
   if (held) {
     chrome.action.setBadgeText({ text: "II" });
-    chrome.action.setBadgeBackgroundColor({ color: "#D97757" });
+    chrome.action.setBadgeBackgroundColor({ color: "#38bdf8" });
   } else {
     chrome.action.setBadgeText({ text: "" });
   }
@@ -739,6 +741,12 @@ function showActivity(tabId) { sendToTab(tabId, { type: "SHOW_AGENT_INDICATORS" 
 // Move the phantom cursor to a (rescaled, CSS-px) point and wait for it to settle, so the user sees
 // the pointer arrive before the action fires. Resolves immediately if no indicator is present.
 function moveCursor(tabId, x, y) { return sendToTab(tabId, { type: "UPDATE_PHANTOM_CURSOR", x, y }); }
+// Emit a click ripple: one expanding ring per click, so a double-click pings twice and a
+// triple-click three times. Fire-and-forget (visual only), like showActivity.
+function clickRipple(tabId, x, y, count, button) { sendToTab(tabId, { type: "AGENT_CLICK_RIPPLE", x, y, count, button }); }
+// A comet-trail dot along a drag path, and a soft shimmer on the focused field when typing.
+function dragTrail(tabId, x, y) { sendToTab(tabId, { type: "AGENT_DRAG_TRAIL", x, y }); }
+function typeShimmer(tabId) { sendToTab(tabId, { type: "AGENT_TYPE_SHIMMER" }); }
 const KEY_MAP = {
   enter: "Enter", return: "Enter", tab: "Tab", escape: "Escape", esc: "Escape",
   backspace: "Backspace", delete: "Delete", space: " ",
@@ -764,6 +772,7 @@ async function click(tabId, x, y, opts) {
   const modifiers = opts.modifiers || 0, button = opts.button || "left", clickCount = opts.clickCount || 1;
   const bit = BUTTON_BITS[button] || 0;
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers, buttons: 0, force: 0 });
+  clickRipple(tabId, x, y, clickCount, button);
   await sleep(CLICK_GAP_MS);
   // Real N-clicks are N press/release pairs with clickCount incrementing 1..N, not one pair with
   // clickCount set to N.
@@ -992,6 +1001,7 @@ async function computer(a) {
     case "type": {
       if (!a.text) return text("text is required for type.");
       await ensureAttached(tabId);
+      typeShimmer(tabId);
       const chars = Array.from(a.text);
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
@@ -1093,7 +1103,9 @@ async function computer(a) {
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
       await sleep(40);
       for (let i = 1; i <= 10; i++) {
-        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx + ((ex - sx) * i) / 10, y: sy + ((ey - sy) * i) / 10, modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
+        const tx = sx + ((ex - sx) * i) / 10, ty = sy + ((ey - sy) * i) / 10;
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: tx, y: ty, modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
+        dragTrail(tabId, tx, ty);
         await sleep(16);
       }
       await moveCursor(tabId, ex, ey);
@@ -1109,7 +1121,7 @@ async function computer(a) {
 const handlers = {
   async tabs_context_mcp(a) {
     await ensureGroup(a.createIfEmpty);
-    if (groupId === null) return text("No Ghostlight tab group. Call with createIfEmpty: true.");
+    if (groupId === null) return text(`No ${GROUP_TITLE} tab group. Call with createIfEmpty: true.`);
     return tabContext(await groupTabs());
   },
   async tabs_create_mcp() {
