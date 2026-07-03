@@ -11,12 +11,13 @@
 //! interleaved mid-write.
 
 use crate::browser::pattern::HostOutcome;
-use crate::browser::{classify, pattern, redact, sacred};
+use crate::browser::{classify, pattern, redact, resource, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
+use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::source::{self, LoadedPolicy};
-use crate::governance::ports::{AuditSink, Denial};
+use crate::governance::ports::{AuditSink, Decision, Denial, GoverningResource};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -77,10 +78,20 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
         }
     });
 
-    let governance = Arc::new(Governance::all_open(
-        recorder as Arc<dyn AuditSink>,
-        classify::classify,
-    ));
+    // Grant enforcement (g13): governed once a manifest is active (org or user-sourced;
+    // `loaded_policy` already resolved which one wins), all-open otherwise. `LocalPdp` is the
+    // in-process decision point, wired with the browser plugin's real G07 matcher so the
+    // domain-agnostic core never names `browser::` directly (the a7 arch-test).
+    let governance = Arc::new(match &loaded_policy.manifest {
+        Some(manifest) => Governance::governed(
+            Box::new(LocalPdp::new(pattern::pattern_matches_normalized_host)),
+            recorder.clone() as Arc<dyn AuditSink>,
+            classify::classify,
+            manifest.grants.clone(),
+            manifest.hash.clone(),
+        ),
+        None => Governance::all_open(recorder as Arc<dyn AuditSink>, classify::classify),
+    });
 
     // Panic kill switch (g11, ADR-0018 step 2): the extension signals `session_killed` once it
     // has severed its own debugger attachments; the binary writes exactly one audit
@@ -322,18 +333,14 @@ async fn handle_tools_call(
         return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
     }
 
-    // Dispatch chokepoint. The decision seam is a literal STEP-0 short-circuit to Allow under
-    // all-open (no manifest, default config) that queries no port and resolves no resource, so
-    // behavior is byte-identical to the ungoverned engine; acting on a Deny (enforcement)
-    // attaches here in later stage-2 tasks. The audit seam records every call (ADR-0018 step 1)
-    // after it resolves, so the record carries the real duration and completion timestamp.
     let dispatch_started = Instant::now();
-    let _decision = governance.decide(name);
 
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
-    // "always-on carve-out". STEP A: an empty list (every preset's default) is the
-    // byte-identical fast path -- no extension traffic, no parsing, no allocation.
+    // "always-on carve-out", and ahead of grant evaluation below (g13: "if the sacred-domains
+    // check has already landed, leave it in place and ahead of grant evaluation"). STEP A: an
+    // empty list (every preset's default) is the byte-identical fast path -- no extension
+    // traffic, no parsing, no allocation.
     let sacred_domains = config.sacred_domains();
     let SacredCheck { tab_domain, denial } = if sacred_domains.is_empty() {
         SacredCheck {
@@ -346,6 +353,44 @@ async fn handle_tools_call(
     if let Some(denial) = denial {
         governance.record_deny(name, action, &denial, tab_domain.as_deref());
         return JsonRpcResponse::success(id, text_content(denial.message));
+    }
+
+    // Grant enforcement (g13, ADR-0018 step 3): resolve the governing resource for this call and
+    // consult the dispatch chokepoint. All-open (no manifest) skips resolution entirely -- STEP 0
+    // must add zero new frames and zero new latency (constraint 3); `Governance::decide` itself
+    // would short-circuit to Allow under all-open regardless, but there is nothing to gain from
+    // resolving a resource value it will never look at. `audit_domain` starts at the
+    // sacred-domains check's own tab resolution (the pre-g13 default for an ungoverned call) and
+    // is overwritten with the grant machinery's own resolved host once governed, per shared
+    // format doc section 6.1 ("domain: the parser-normalized host, or null"); the two mechanisms
+    // resolve the tab independently and deliberately (g08's sacred check and g13's grant check
+    // are separate, out-of-scope-for-each-other concerns; see RECONCILIATION.md section 1).
+    let mut audit_domain = tab_domain.clone();
+    let mut audit_grant_id: Option<String> = None;
+    let mut navigate_post_check = false;
+    if governance.is_governed() {
+        if let Some((resource, domain)) = resolve_governing_resource(browser, name, &args).await {
+            audit_domain = domain;
+            if name == "navigate" {
+                navigate_post_check = true;
+            }
+            match governance.decide(name, action, resource) {
+                Decision::Deny(d) => {
+                    governance.record_deny(name, action, &d, audit_domain.as_deref());
+                    return JsonRpcResponse::success(id, text_content(d.message));
+                }
+                Decision::Allow { grant_id } => audit_grant_id = grant_id,
+                // g13 always decides under `EffectiveMode::Enforce` (`Governance::decide`);
+                // `ShadowDeny` is g15's future overlay on top of this task's verdict and is not
+                // reachable through any path this task wires up.
+                Decision::ShadowDeny(_) => unreachable!(
+                    "g13 never resolves EffectiveMode::Observe; ShadowDeny is g15's overlay"
+                ),
+            }
+        }
+        // `None`: an unparseable `navigate` target. The extension refuses an invalid URL without
+        // navigating (an ordinary, non-isError "Invalid URL" text result), so there is nothing to
+        // govern here or at point 5; fall through to dispatch unconditionally.
     }
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
@@ -371,7 +416,34 @@ async fn handle_tools_call(
 
     let outcome = browser.call(name, &args).await;
     let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    governance.record_call(name, action, duration_ms, tab_domain.as_deref());
+
+    // Point 5 (g13): after a dispatched `navigate` succeeds, re-check the FINAL (post-redirect)
+    // landing. Only reachable when governed and the pre-check above actually ran (skipped for an
+    // unparseable target, per the fall-through comment above); a failed dispatch gets no
+    // post-check (nothing landed).
+    if navigate_post_check && outcome.is_ok() {
+        if let Some(tab_id) = args.get("tabId").and_then(Value::as_i64) {
+            if let Some((landing_denial, landing_domain)) =
+                post_navigate_landing_check(browser, governance, tab_id).await
+            {
+                governance.record_navigate_landing_deny(
+                    action,
+                    &landing_denial,
+                    landing_domain.as_deref(),
+                    duration_ms,
+                );
+                return JsonRpcResponse::success(id, text_content(landing_denial.message));
+            }
+        }
+    }
+
+    governance.record_call(
+        name,
+        action,
+        duration_ms,
+        audit_domain.as_deref(),
+        audit_grant_id.as_deref(),
+    );
 
     match outcome {
         // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
@@ -460,6 +532,92 @@ async fn sacred_check(
         tab_domain,
         denial: None,
     }
+}
+
+/// Resolve the g13 governing resource for one call (section 5's summary table). Only called
+/// once [`Governance::is_governed`] is true. Returns `None` only for an unparseable `navigate`
+/// target: nothing to govern (section 4: "dispatch without pre- or post-check"). Otherwise
+/// `Some((resource, domain))`, where `domain` is the resolved host for the audit record's
+/// `domain` field when `resource` is [`GoverningResource::Resource`], `None` otherwise (shared
+/// format doc section 6.1: never the denial message's `(unknown)` placeholder).
+async fn resolve_governing_resource(
+    browser: &Browser,
+    tool: &str,
+    args: &Value,
+) -> Option<(GoverningResource, Option<String>)> {
+    match tool {
+        "navigate" => match args.get("url").and_then(Value::as_str) {
+            // "back"/"forward" and a missing/non-string url argument have no target to check
+            // pre-dispatch (point 5 covers the landing for "back"/"forward"; the extension's own
+            // handling covers a missing url). The union rule (no host, tool/access still apply)
+            // is the closest faithful fit: it is never more permissive than a resolved host would
+            // be, and it does not require inventing a bypass-everything resource variant.
+            Some("back") | Some("forward") | None => Some((GoverningResource::None, None)),
+            Some(url_arg) => match resource::navigate_target_resource(url_arg) {
+                Some(GoverningResource::Resource(host)) => {
+                    Some((GoverningResource::Resource(host.clone()), Some(host)))
+                }
+                Some(other) => Some((other, None)),
+                None => None,
+            },
+        },
+        "tabs_context_mcp" | "tabs_create_mcp" | "update_plan" => {
+            Some((GoverningResource::None, None))
+        }
+        _ => {
+            let Some(tab_id) = args.get("tabId").and_then(Value::as_i64) else {
+                // Missing/non-integer tabId on a tab-scoped tool: fail closed (constraint 11).
+                return Some((GoverningResource::Indeterminate, None));
+            };
+            let resolved = match browser.tab_url(tab_id).await {
+                Ok(Some(url)) => resource::resolved_url_resource(&url),
+                Ok(None) | Err(_) => GoverningResource::Indeterminate,
+            };
+            let domain = match &resolved {
+                GoverningResource::Resource(h) => Some(h.clone()),
+                _ => None,
+            };
+            Some((resolved, domain))
+        }
+    }
+}
+
+/// Point 5 (g13, SPEC 5.2 step 5): after a dispatched `navigate` succeeds, re-query tab
+/// `tab_id`'s FINAL (post-redirect) URL and re-run the SAME governed decision `navigate` itself
+/// would get pre-dispatch (reusing [`Governance::decide`] rather than duplicating grant logic).
+/// `None` means the landing passed (the parking page, or a host matching a grant): the navigate
+/// result passes through unchanged. `Some((denial, domain))` means the tab is best-effort parked
+/// on `about:blank` (its own outcome is ignored: the agent's response is the denial regardless)
+/// and the navigate result must be replaced with it; `domain` is the real landing host for the
+/// audit record, `None` for a non-host landing -- never the denial message's `(unknown)`
+/// placeholder.
+async fn post_navigate_landing_check(
+    browser: &Browser,
+    governance: &Governance,
+    tab_id: i64,
+) -> Option<(Denial, Option<String>)> {
+    let resolved = match browser.tab_url(tab_id).await {
+        Ok(Some(url)) => resource::resolved_url_resource(&url),
+        Ok(None) | Err(_) => GoverningResource::Indeterminate,
+    };
+    let domain = match &resolved {
+        GoverningResource::Resource(h) => Some(h.clone()),
+        _ => None,
+    };
+    let denial = match governance.decide("navigate", None, resolved) {
+        Decision::Allow { .. } => return None,
+        Decision::Deny(d) => d,
+        Decision::ShadowDeny(_) => {
+            unreachable!("g13 never resolves EffectiveMode::Observe; ShadowDeny is g15's overlay")
+        }
+    };
+    let _ = browser
+        .call(
+            "navigate",
+            &json!({ "url": "about:blank", "tabId": tab_id }),
+        )
+        .await;
+    Some((denial, domain))
 }
 
 /// Resolve the current host of tab `tab_id` via the internal `tabs_context_mcp` lookup. This is
@@ -577,10 +735,24 @@ mod tests {
     /// in `responses` with that canned result and records the tool names seen, in arrival order,
     /// into the returned `Arc<Mutex<Vec<String>>>`. Panics if a `tool_request` arrives for a
     /// tool not in `responses` -- tests use this to prove a denied call never reaches the real
-    /// tool.
+    /// tool. No `tab_url_request` support: g13's point-5 tests use
+    /// [`attach_fake_extension_with_tab_urls`] instead.
     fn attach_fake_extension(
         browser: &Browser,
         responses: Vec<(&'static str, Value)>,
+    ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+        attach_fake_extension_with_tab_urls(browser, responses, Vec::new())
+    }
+
+    /// Like [`attach_fake_extension`], plus a `tab_url_request` answer table (g13): `tab_urls`
+    /// maps a `tabId` to the URL the fake extension reports for it (`None` for `url: null`, an
+    /// unknown/closed tab). A `tab_url_request` for a `tabId` absent from the table panics, same
+    /// posture as an unregistered `tool_request`. `seen` records a `"tab_url_request:<tabId>"`
+    /// entry for each query, distinguishable from the tool names `tool_request` entries record.
+    fn attach_fake_extension_with_tab_urls(
+        browser: &Browser,
+        responses: Vec<(&'static str, Value)>,
+        tab_urls: Vec<(i64, Option<&'static str>)>,
     ) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
         let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
         let attached = browser.clone();
@@ -592,12 +764,31 @@ mod tests {
         let seen_for_task = Arc::clone(&seen);
         let responses: std::collections::HashMap<&'static str, Value> =
             responses.into_iter().collect();
+        let tab_urls: std::collections::HashMap<i64, Option<&'static str>> =
+            tab_urls.into_iter().collect();
         let handle = tokio::spawn(async move {
             loop {
                 let Some(req) = host::read_message(&mut ext_side).await.unwrap() else {
                     break;
                 };
                 let v: Value = serde_json::from_slice(&req).unwrap();
+                if v["type"] == "tab_url_request" {
+                    let tab_id = v["tabId"]
+                        .as_i64()
+                        .expect("tab_url_request carries a tabId");
+                    seen_for_task
+                        .lock()
+                        .unwrap()
+                        .push(format!("tab_url_request:{tab_id}"));
+                    let url = *tab_urls
+                        .get(&tab_id)
+                        .unwrap_or_else(|| panic!("unexpected tab_url_request for tabId {tab_id}"));
+                    let reply = json!({ "id": v["id"], "type": "tab_url_response", "result": { "url": url } });
+                    host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 let tool = v["tool"].as_str().unwrap().to_string();
                 seen_for_task.lock().unwrap().push(tool.clone());
                 let result = responses
@@ -1050,6 +1241,135 @@ mod tests {
         assert_eq!(lines[0]["held"], true);
         assert_eq!(lines[0]["duration_ms"], 0);
         assert_eq!(lines[1]["held"], false);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- g13: grant enforcement, point 5 (navigate final-landing check) ---
+    //
+    // Every other g13 scenario (pre-dispatch domain/access/scheme/union-rule denials, the
+    // all-open invariant, denial-id determinism) is covered end to end by the black-box
+    // subprocess tests in `tests/tool_enforcement.rs`, which deliberately run with no extension
+    // connected at all. Point 5 needs a dispatched `navigate` to actually succeed and then be
+    // re-queried, which requires a connected (fake) extension; that is only practical here,
+    // inline, using the same fake-extension pattern g08's sacred-domain tests above already
+    // established.
+
+    use crate::governance::enforcement::LocalPdp;
+    use crate::governance::manifest::document::{Access, Grant};
+
+    fn full_grant(id: &str, domains: &[&str]) -> Grant {
+        Grant {
+            id: id.to_string(),
+            domains: domains.iter().map(|d| d.to_string()).collect(),
+            access: Access::All,
+            tools: None,
+            exclude_tools: None,
+            description: None,
+            mode: None,
+        }
+    }
+
+    fn governed_with_grants(grants: Vec<Grant>, sink: Arc<dyn AuditSink>) -> Governance {
+        Governance::governed(
+            Box::new(LocalPdp::new(pattern::pattern_matches_normalized_host)),
+            sink,
+            classify::classify,
+            grants,
+            "test-hash".to_string(),
+        )
+    }
+
+    /// A landing that stays on-grant: the navigate result passes through unchanged, no denial.
+    #[tokio::test]
+    async fn point5_navigate_landing_on_grant_passes_through() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(governed_with_grants(
+            vec![full_grant("g1", &["example.com"])],
+            recorder as Arc<dyn AuditSink>,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(
+            &browser,
+            vec![(
+                "navigate",
+                json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+            )],
+            vec![(5, Some("https://example.com/"))],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({
+            "name": "navigate",
+            "arguments": { "url": "https://example.com/", "tabId": 5 },
+        });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert_eq!(text, "navigated");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["navigate", "tab_url_request:5"],
+            "one dispatch, one point-5 re-query, no park"
+        );
+    }
+
+    /// A landing that drifts off-grant (e.g. a redirect): the tab is best-effort parked on
+    /// `about:blank`, the navigate result is replaced with a denial naming the FINAL host, and
+    /// the audit record is a deny with the real elapsed duration (not the pre-dispatch `0`).
+    #[tokio::test]
+    async fn point5_navigate_landing_off_grant_parks_and_denies() {
+        let path = temp_audit_path("point5-deny");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(governed_with_grants(
+            vec![full_grant("g1", &["example.com"])],
+            recorder as Arc<dyn AuditSink>,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(
+            &browser,
+            vec![(
+                "navigate",
+                json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+            )],
+            vec![(5, Some("https://evil.com/"))],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({
+            "name": "navigate",
+            "arguments": { "url": "https://example.com/", "tabId": 5 },
+        });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert!(text.starts_with("Denied (D-"), "{text}");
+        assert!(text.contains("evil.com"), "{text}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["navigate", "tab_url_request:5", "navigate"],
+            "the original dispatch, the point-5 re-query, then the best-effort park"
+        );
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1, "exactly one record for this call");
+        assert_eq!(lines[0]["decision"], "deny");
+        assert_eq!(lines[0]["domain"], "evil.com");
+        assert_eq!(lines[0]["grant_id"], Value::Null);
+        assert!(
+            lines[0]["duration_ms"].as_u64().is_some(),
+            "duration_ms present: {:?}",
+            lines[0]["duration_ms"]
+        );
 
         std::fs::remove_file(&path).ok();
     }

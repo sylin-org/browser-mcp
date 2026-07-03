@@ -273,6 +273,23 @@ pub fn first_match<'a>(
     patterns.iter().find(|p| p.matches(host))
 }
 
+/// Whether `pattern` (an already-validated grant or sacred-domain pattern string) matches
+/// `host` (an ALREADY-NORMALIZED host string, e.g. from
+/// [`crate::governance::ports::GoverningResource::Resource`]). Unlike [`first_match`]/
+/// [`DomainPattern::matches`], this takes a raw host string directly rather than a
+/// [`MatchHost`]: the governance core cannot hold or construct browser-specific types across
+/// its port boundary (the a7 arch-test), so [`crate::governance::enforcement::check_call`]
+/// consumes matching through this function, injected as a plain `fn` pointer. `host` is
+/// trusted to already be parser-normalized -- it was, by whoever produced the
+/// `GoverningResource` in the first place, via [`host_for_matching`]. Returns `false` (never
+/// panics) if `pattern` fails to parse; a `Grant`'s domains are validated at manifest-load
+/// time, so this should not happen in practice.
+pub fn pattern_matches_normalized_host(pattern: &str, host: &str) -> bool {
+    DomainPattern::parse(pattern)
+        .map(|dp| dp.matches(&MatchHost(host.to_string())))
+        .unwrap_or(false)
+}
+
 /// Why a pattern failed validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatternError {

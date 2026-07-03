@@ -63,10 +63,11 @@ pub struct IdentityBlock {
     pub resolved_at: Option<String>,
 }
 
-/// One resolved-at-load-time grant (shared format doc section 4.3). Grant EVALUATION (matching
-/// a resource against `domains`, applying `access`/`tools`/`exclude_tools` to a call) is G13's
-/// job; this task only validates shape and pattern syntax.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One resolved-at-load-time grant (shared format doc section 4.3). Consumed unchanged by
+/// [`crate::governance::ports::DecisionRequest`] (g13): this IS the type a2 anticipated when it
+/// called its own placeholder `Grant` "the manifest engine fleshes this out to
+/// `{ domains, access, tools, mode }`" -- there is exactly one `Grant` type in the crate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Grant {
     /// Required, non-empty, unique within the manifest.

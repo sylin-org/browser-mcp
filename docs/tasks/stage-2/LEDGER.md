@@ -16,8 +16,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   identity), `g06` (audit flight recorder), `g07` (domain matcher), `g08` (sacred domains,
   the FIRST real enforcement path), `g10` (take-the-wheel pause, the FIRST task touching
   `extension/`), `g11` (panic kill switch) landed. Phase C is COMPLETE. `g12` (manifest
-  engine: parse/validate/load, no enforcement yet) landed.
-- NEXT TASK: Phase D, task `g13` (`docs/tasks/stage-2/g13-grant-enforcement.md`).
+  engine: parse/validate/load, no enforcement yet) landed. `g13` (grant enforcement at
+  the five points -- the no-op policy seam is now real) landed.
+- NEXT TASK: Phase D, task `g14` (`docs/tasks/stage-2/g14-advertisement-filtering.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -1449,6 +1450,239 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Browser checks queued: none (this task needs no browser at all -- it is pure parsing,
   validation, and startup-time file/environment I/O; no extension file changes, no tool
   advertisement changes, no dispatch-chokepoint behavior changes of any kind).
+
+### g13 grant enforcement at the five points -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/enforcement.rs` (the pure decision core: `LocalPdp`,
+  `check_call` and its `decide_for_host`/`decide_no_page`/`first_matching_grant`/
+  `tool_list_denial`/`access_covers` helpers, the `unmatched_domain`/`scheme`/`tool`/
+  `access` denial builders, `unclassifiable_denial`; 10 inline tests, every named case the
+  doc's own test list requires); new `src/browser/resource.rs` (URL-to-`GoverningResource`
+  classification: `resolved_url_resource` for an already-resolved tab URL,
+  `navigate_target_resource` for a raw `navigate` argument mirroring the extension's own
+  normalization; 7 inline tests); `src/browser/mod.rs` (registers `pub mod resource;`,
+  module doc updated); `src/browser/sacred.rs` (factored the shared normalize-then-parse
+  step out of `navigate_target_host` into a new `pub(crate) normalize_navigate_target`, so
+  g08's sacred check and g13's pre-dispatch check provably agree on the exact same
+  extension-mirrored string; `navigate_target_host` itself is behaviorally unchanged, only
+  restructured); `src/governance/ports.rs` (deleted a2's placeholder `Grant` struct;
+  imports `governance::manifest::document::Grant` instead -- the ONE canonical `Grant` type
+  in the crate; `DecisionRequest` grows `action: Option<String>` and
+  `manifest_hash: String`; test module updated to match); `src/governance/manifest/
+  document.rs` (`Grant` derives `Eq`, needed for `DecisionRequest`'s own `Eq` derive; doc
+  comment updated to note it is no longer a stand-in for a2's retired placeholder);
+  `src/governance/mod.rs` (registers `pub mod enforcement;`); `src/governance/dispatch.rs`
+  (`GovernedState` grows `grants: Vec<Grant>` and `manifest_hash: String`;
+  `Governance::governed` grows two matching constructor parameters; `Governance::decide`
+  grows to `(tool, action, resource)`, classifies first and denies via
+  `enforcement::unclassifiable_denial` on a miss, else delegates to the held `PolicyDecisionPoint`;
+  new `Governance::is_governed`; `Governance::record_call` grows a `grant_id: Option<&str>`
+  parameter (see deviation 6); new `Governance::record_navigate_landing_deny` for point 5's
+  non-zero-duration deny; test module updated for every new/changed signature);
+  `src/transport/executor.rs` (new `Browser::tab_url`, sharing a new private
+  `send_and_await` helper factored out of `Browser::call`; module doc documents the
+  `tab_url_request`/`tab_url_response` pair); `src/transport/native/messages.rs` (doc-only
+  addition of the same wire pair, following the existing hold/kill-switch section style);
+  `extension/service-worker.js` (the ONE new mechanism-only branch in the native port's
+  `onMessage` listener: `tab_url_request` -> `chrome.tabs.get(tabId)` -> `tab_url_response`;
+  module doc comment updated); `src/transport/mcp/server.rs` (the dispatch-chokepoint
+  rewiring: `run` constructs `Governance::governed` with a `LocalPdp` when
+  `loaded_policy.manifest` is `Some`, `Governance::all_open` otherwise; `handle_tools_call`
+  runs the sacred check first (unchanged, still always-on and ahead of grant evaluation),
+  then, only when governed, resolves the `GoverningResource` for the call
+  (`resolve_governing_resource`, new) and consults `governance.decide`, denying before
+  dispatch on `Decision::Deny`; after a successful `navigate` dispatch under a manifest,
+  `post_navigate_landing_check` (new) re-queries the tab and re-decides, parking on
+  `about:blank` and replacing the result with a denial on an off-grant landing; the test
+  module's `attach_fake_extension` gained a `tab_url_request`-aware sibling,
+  `attach_fake_extension_with_tab_urls`, plus two new point-5 tests); `tests/
+  all_open_golden.rs` and `tests/audit_recorder.rs` (both had exactly one call site updated
+  for `Governance::decide`'s/`record_call`'s grown signatures; no behavior change); new
+  `tests/tool_enforcement.rs` (7 subprocess integration tests: permitted-passes-through +
+  denied-domain + audit-shows-both combined into one test since they share a session,
+  denied-access-names-the-grant, denied-scheme, fail-closed-on-unknowable-tab-url,
+  the `NoPage` union rule end to end under both an all-access and a read-only manifest,
+  the all-open invariant, denial-id determinism within and across spawns).
+- Summary: the documented no-op policy seam is now real, manifest-driven grant
+  enforcement at all five SPEC 5.2-5.5 points, exactly as RECONCILIATION.md section 2
+  anticipated: `check_call` (`enforcement.rs`) IS the pure `PolicyDecisionPoint::decide`
+  over a2's own `DecisionRequest`/`Decision`/`GoverningResource` seam, not a bespoke
+  `CallDomain`/`Verdict` type system (the g13 doc's own sketch of one, minus the
+  reconciled parts, was not built -- see deviation 1). With no manifest, behavior stays
+  byte-identical to today: `Governance::is_governed()` gates resource resolution (and
+  every `tab_url` round trip it would otherwise make) entirely, so STEP 0 adds zero new
+  frames and zero new latency, pinned by the all-open invariant. With a manifest active,
+  every tool call now resolves a governing resource (the `navigate` target pre-dispatch
+  and its final landing post-dispatch; the current tab URL for the 9 other tab-scoped
+  tools, queried fresh from the extension every call, never cached or read from tool
+  arguments; `GoverningResource::None` for the 3 no-`tabId` tools, decided by the `NoPage`
+  union rule) and is allowed or denied before it ever reaches the extension, with denials
+  rendered through G08's exact templates and ids and every decision -- allow and deny
+  alike -- landing in the audit record with its grant id (allows) or denial id (denies).
+- Deviations from the g-doc per RECONCILIATION.md and this session's own established
+  reconcile-and-document pattern:
+  1. **The entire bespoke `CallDomain`/`Verdict` type system the g13 doc sketches was not
+     built.** RECONCILIATION.md section 2 states this explicitly and in this task's own
+     name: "g13 `check_call` IS the pure `PolicyDecisionPoint::decide` over a serializable
+     `DecisionRequest`." `GoverningResource` (a2) already maps almost exactly onto the
+     doc's own `CallDomain` sketch (`Resource(host)`=`Host(host)`, `AlwaysAllow`=
+     `AboutBlank`, `OutOfScope(scheme)`=`NonHttp(scheme)`, `None`=`NoPage`,
+     `Indeterminate`=`Unknown`), and `Decision`/`Denial` already exist too -- a2's own
+     placeholder comments were written anticipating this exact shape. Implementing
+     `check_call` directly against these existing types, rather than inventing parallel
+     ones, is what this deviation actually is; no functional behavior described in the doc
+     was skipped.
+  2. **a2's placeholder `Grant { id: String }` is deleted; `DecisionRequest.grants` now
+     holds g12's real `Grant` type directly.** There is exactly one `Grant` type in the
+     crate. This forced two small, mechanical follow-on changes: `document::Grant` grows
+     an `Eq` derive (needed for `DecisionRequest`'s own `Eq`), and `ports.rs`'s test module
+     grew a `sample_grant` fixture builder using the real 7-field shape.
+  3. **`DecisionRequest` grows `action: Option<String>` and `manifest_hash: String`.**
+     Neither field existed when a2 built the placeholder request shape. `action` is
+     needed so a denial's `computer (<action>)` label renders correctly from the request
+     alone; `manifest_hash` is needed so the denial id is fully reproducible from the
+     request alone (load-bearing for g17's future replay-through-the-same-function
+     design, per `DecisionRequest`'s own doc comment).
+  4. **The URL-to-`GoverningResource` classification lives in a NEW browser-plugin module,
+     `src/browser/resource.rs`, not inside `governance/enforcement.rs`.** `check_call`
+     itself takes an already-resolved `GoverningResource`; producing one from a raw URL
+     string needs `browser::pattern`'s WHATWG-parser-backed matcher, which the governance
+     core may never depend on directly (the a7 arch-test). `browser::pattern`'s own module
+     doc is explicit that it "assigns no meaning" to a parsed host; `resource.rs` is the
+     browser-plugin module that assigns that meaning (parking page / out-of-scope scheme /
+     governed host) for g13's specific pre/post-dispatch checks, consuming
+     `governance::ports::GoverningResource` (browser depending on governance-core is the
+     correct, existing dependency direction; `browser::sacred` already does the same for
+     `Denial`).
+  5. **The `file:///etc/passwd` scheme-denial example in the g13 doc's own "Integration
+     tests" section 8 does not produce a scheme denial once the extension's real
+     `navigate` normalization is mirrored exactly (a hard requirement stated twice in the
+     doc, and already load-bearing for g08's `navigate_target_host`).** Verified directly
+     against `browser::sacred::navigate_target_host`'s own existing, already-passing test
+     suite: `"ftp://mybank.com/"` (a foreign, non-allowlisted scheme, exactly analogous to
+     `file://`) normalizes to `"https://mybank.com/"` (`Host("mybank.com")`), because the
+     extension's regex strips ANY non-`about`/`chrome`/`edge`/`brave` scheme's
+     `scheme:/+` prefix and retries the remainder as an `https://` host -- it does not
+     preserve the original scheme as a fact to check. Applying the identical transform to
+     `"file:///etc/passwd"` (`file` + `:` + three slashes, all consumed by the same
+     `scheme:/+` regex) yields `"https://etc/passwd"`, i.e. `Host("etc")`, not
+     `NonHttp("file")`. This is not a bug in this task's normalization mirror -- it is
+     the ALREADY-EXISTING, already-tested extension behavior for any foreign scheme,
+     simply not previously exercised against a `file://`-shaped input. `tests/
+     tool_enforcement.rs`'s scheme-denial test uses `"chrome://settings/"` instead (one of
+     the four allowlisted prefixes the extension leaves untouched, and already proven by
+     `browser::pattern`'s own `non_http_schemes_yield_no_matchable_host` test to classify
+     as `NonHttpScheme("chrome")`), and the module doc explains the substitution in full.
+     The underlying security property (an off-grant/ungranted target is denied one way or
+     another) is not weakened; only which specific rule string fires for a `file://`-shaped
+     `navigate` argument differs from the doc's own illustrative pick.
+  6. **`Governance::record_call` grows a `grant_id: Option<&str>` parameter.** Found via
+     live manual testing (see Verification), not by reading the doc: the pre-existing G06
+     signature hardcoded `grant_id: None` for every allow (correct before this task, since
+     no grant concept existed yet), so an allowed call under a manifest silently recorded
+     `grant_id: null` even though `Decision::Allow { grant_id: Some(..) }` had resolved
+     one -- directly contradicting shared format doc section 6.1 and this task's own
+     integration-test requirement (test 7: "one record with `decision: "allow"` and
+     `grant_id: "example-full"`"). Fixed by growing the signature and threading the
+     resolved grant id from the dispatch chokepoint's `Decision::Allow` arm through to the
+     call site; every pre-existing caller (in `dispatch.rs`'s own tests and
+     `tests/audit_recorder.rs`) updated to pass `None`, preserving their exact prior
+     behavior.
+  7. **`navigate`'s `"back"`/`"forward"` pre-dispatch check resolves to
+     `GoverningResource::None` (the `NoPage` union rule), not a bypass-everything
+     sentinel.** The doc states plainly and twice ("none pre-dispatch"; "no pre-check --
+     skip straight to dispatch") that these carry no domain to check pre-dispatch, but
+     does not say the grant's `tools`/`exclude_tools`/`access` checks should be skipped
+     too. Reusing the existing union rule (rather than inventing an unconditional-allow
+     path) means a manifest that excludes `navigate` entirely, or grants no write access
+     anywhere, still denies a `"back"`/`"forward"` call on tool/access grounds; only the
+     DOMAIN check is genuinely inapplicable (there is no target to resolve one from). A
+     missing/non-string `url` argument on `navigate` is treated identically, by the same
+     reasoning, as a conservative extrapolation beyond what the doc's own cases enumerate.
+     Point 5 (the post-navigate landing check) still runs for both cases, exactly as the
+     doc requires ("point 5 covers the landing").
+  8. **An unparseable `navigate` target (after the extension-mirror normalization) skips
+     BOTH the pre-dispatch check and point 5 entirely**, per the doc's own explicit
+     "dispatch without pre- or post-check ... nothing to govern": the extension's own
+     `new URL(url)` guard refuses to navigate on such an argument (returning `Invalid
+     URL: "..."` as an ordinary, non-`isError` text result), so there is no landing to
+     re-check either. Implemented as `resolve_governing_resource` returning `None`
+     specifically for this one case (distinct from `"back"`/`"forward"`'s `Some((None,
+     ..))`), which the dispatch chokepoint reads as "skip the grant machinery for this
+     call entirely."
+  9. **`Decision::ShadowDeny(_)` is handled with an explicit, commented `unreachable!()`
+     at both `match governance.decide(...)` sites in `server.rs`**, rather than folded
+     into either the Allow or Deny arm. `Decision`'s three variants predate this task
+     (a2); g13 constructs requests with `mode: EffectiveMode::Enforce` unconditionally
+     (`Governance::decide`), so `ShadowDeny` is provably unreachable through any path this
+     task wires up, and the g13 doc explicitly forbids adding real handling for it
+     ("Do not add a ShadowDeny variant... G15 wraps this task's verdict later"). An
+     `unreachable!()` is the most honest expression of that: it documents the
+     impossibility rather than silently picking a wrong default that could mask a future
+     g15 wiring mistake.
+  10. **`resolve_tab_host` (g08's sacred-check tab lookup, via `tabs_context_mcp`) and the
+      new grant-enforcement `Browser::tab_url` (via a dedicated `tab_url_request` wire
+      message) remain two fully independent mechanisms, each queried on its own round
+      trip when both the sacred-domains list and a manifest are active for the same
+      call.** The g13 doc explicitly introduces `tab_url_request` as a NEW, dedicated,
+      side-effect-free mechanism rather than reusing `tabs_context_mcp` (which does tab-
+      group management and `createIfEmpty` semantics g13 has no use for), and g08's own
+      mechanism/behavior is out of this task's scope to touch ("G13 neither implements
+      nor removes it"). The audit record's `domain` field follows the GRANT machinery's
+      own resolution when governed (matching shared format doc section 6.1's "the
+      parser-normalized host, or null" for a governed session), falling back to the
+      sacred check's resolution only when ungoverned or when grant resolution was
+      skipped entirely (the unparseable-navigate-target case, deviation 8) -- this is a
+      one-line precedence choice (`audit_domain` starts at `tab_domain`, is overwritten
+      when grant resolution runs), not a mechanism change to either check.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean (two real lints fixed along the way: a hand-written match in `access_covers`
+  collapsed to `matches!`, and a nested `if` in the point-5 wiring collapsed per
+  `collapsible_if`). `cargo test` green: 296 lib unit tests, up from 277 -- +10 in
+  `governance::enforcement::tests` (every named case section 8 of the doc requires:
+  `first_matching_grant_wins`, `unmatched_domain_denies`, `access_rules`,
+  `tool_list_rules`, `tool_check_precedes_access_check`, `computer_subactions_split`,
+  `scheme_and_about_blank`, `unknown_fails_closed`, `no_page_union_rule`,
+  `unclassifiable_denies_via_the_tool_rule`), +7 in `browser::resource::tests` (about:blank/
+  host/scheme/unparseable classification for both the resolved-URL and navigate-target
+  paths, including the back/forward and allowlisted-scheme cases), +2 in
+  `transport::mcp::server::tests` (point 5: landing on-grant passes through unchanged;
+  landing off-grant parks on `about:blank`, denies naming the final host, and records a
+  deny with the REAL elapsed `duration_ms`, not the pre-dispatch `0`) -- all other lib
+  suites unchanged in count, only in the handful of call sites whose signatures grew
+  (`governance::dispatch::tests`, `governance::ports::tests`); `tests/all_open_golden.rs`
+  3 and `tests/architecture.rs` 4 unchanged and green (the arch-test confirms the new
+  `enforcement.rs`/`resource.rs` introduce zero forbidden `governance -> browser/
+  transport` edges); `tests/audit_recorder.rs` 2, `tests/config_schema_golden.rs` 5,
+  `tests/manifest_validation.rs` 4, `tests/peer_death.rs` 1 unchanged;
+  `tests/mcp_protocol.rs` 4 and `tests/tool_schema_fidelity.rs` 6 pass UNCHANGED (no
+  edits to either file, confirmed via `git status`); new `tests/tool_enforcement.rs` 7,
+  covering every numbered integration-test scenario in the doc's section 8 plus
+  denial-id determinism (test 4 substitutes `chrome://settings/` for `file:///etc/passwd`
+  per deviation 5). A real, load-bearing bug was caught only by live manual testing, not
+  by any test written before running the binary by hand (see deviation 6): the FIRST
+  manual run showed an allow record with `grant_id: null` despite a resolving grant,
+  which is what led to growing `record_call`'s signature; after the fix, the same manual
+  scenario showed `grant_id: "example-full"` correctly. `git status --short` confirmed
+  the touched-file set matches this entry's list exactly, with NO diff to
+  `Cargo.toml`/`Cargo.lock` (no new dependency; `url` was already present since G07) or
+  to `src/transport/mcp/schemas/tools.json`. ASCII scan (`rg -n "[^\x00-\x7F]"`) clean on
+  every touched/new file, including `extension/service-worker.js`. Two subtle response-
+  ordering bugs surfaced and were fixed while writing `tests/tool_enforcement.rs` itself
+  (not in production code): `tools/call` runs concurrently (each spawns its own task, per
+  `server.rs`'s own module doc), so a near-instant denied call can and does finish before
+  a slower permitted call still waiting out the bounded extension-handshake window --
+  response order does not track request order, and the same is true of which audit line
+  lands first. Both the multi-call integration tests and the audit-line assertions were
+  rewritten to look up by `id`/`decision` rather than by position.
+- Browser checks queued: 3 (appended to `BROWSER-TESTS.md` as `g13-1`, `g13-2`, `g13-3`):
+  a restrictive-manifest session end to end (granted domain works, a mutate action on a
+  read-only domain denies while an observe action on the same domain works, hand-clicking
+  to an off-grant domain then calling a tool is caught by the per-call drift check, and a
+  redirect off-grant parks the tab on `about:blank`); the audit file showing one record
+  per call with consistent grant/denial ids across a repeated denial; removing the
+  manifest and confirming all-open behaves exactly as before with zero `tab_url_request`
+  frames (observable via `--debug`).
 
 ## Reminders before running BROWSER-TESTS.md
 

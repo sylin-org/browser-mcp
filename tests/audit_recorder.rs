@@ -28,7 +28,7 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
         Governance::all_open(Arc::new(recorder) as Arc<dyn AuditSink>, classify::classify);
 
     governance.set_client("claude-code", "2.1.0");
-    governance.record_call("computer", Some("left_click"), 42, None);
+    governance.record_call("computer", Some("left_click"), 42, None, None);
 
     let content = std::fs::read_to_string(&path).expect("audit file exists");
     assert!(content.ends_with('\n'), "file ends with a single LF");
@@ -85,7 +85,7 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
     chrono::DateTime::parse_from_rfc3339(ts).expect("ts parses as rfc3339");
 
     // Append, not truncate: a second call must add a second line.
-    governance.record_call("navigate", None, 5, None);
+    governance.record_call("navigate", None, 5, None, None);
     let content = std::fs::read_to_string(&path).expect("audit file exists");
     assert_eq!(content.lines().count(), 2, "second call appends a line");
 

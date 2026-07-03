@@ -7,6 +7,10 @@
 // are optional and are mechanism tags (which layer threw), never policy; an absent `hop` means the
 // binary attributes the failure to the extension itself. Chrome frames native messages (4-byte LE)
 // for us via the Port.
+//
+// Tab-URL query (g13): { id, type: "tab_url_request", tabId } gets
+// { id, type: "tab_url_response", result: { url } }, reporting chrome.tabs.get(tabId).url (or
+// null) with no matching or interpretation -- the binary's grant enforcement decides.
 
 const NATIVE_HOST = "org.sylin.browser_mcp";
 const GROUP_TITLE = "Browser MCP";
@@ -62,6 +66,20 @@ async function connect() {
           return;
         }
         dispatch(msg.id, msg.tool, msg.args || {});
+        return;
+      }
+      // Tab-URL query (g13): mechanism only. Reports chrome.tabs.get(tabId).url verbatim (or
+      // null for an unknown/closed tab); the binary decides what it means. No matching, no
+      // classification, no denial text here.
+      if (msg && msg.type === "tab_url_request" && msg.id) {
+        chrome.tabs.get(msg.tabId).then(
+          (tab) => {
+            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: tab.url || null } }); } catch { /* port gone */ }
+          },
+          () => {
+            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: null } }); } catch { /* port gone */ }
+          }
+        );
         return;
       }
       if (msg && (msg.type === "hold_state" || msg.type === "hold_error") && msg.id) {

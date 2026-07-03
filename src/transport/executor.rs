@@ -13,6 +13,13 @@
 //! logged with `tracing::debug!` and never reaches the tool result. Messages without an `id`
 //! (events, heartbeats) are ignored here (Phase 3 buffers events).
 //!
+//! Tab-URL query (g13, [`Browser::tab_url`]): the mcp-server sends
+//! `{ "id", "type": "tab_url_request", "tabId" }`; the extension replies with
+//! `{ "id", "type": "tab_url_response", "result": { "url" } }`. This routes through the same
+//! `pending` map and generic reply path as a tool call (any non-`tool_error` reply already
+//! becomes `Ok(result)`); mechanism only, feeding the dispatch chokepoint's grant enforcement --
+//! never a decision made by the extension.
+//!
 //! Take-the-wheel hold (g10, ADR-0018 step 2): the extension's popup/shortcut sends
 //! `get_hold` / `set_hold` / `toggle_hold` requests over the same channel; [`Browser`] holds
 //! the flag (mcp-server process memory only -- no disk persistence, no survival across a
@@ -216,10 +223,6 @@ impl Browser {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id.clone(), tx);
-        self.debug.tool_begin(&id, tool);
-
         let request = json!({ "id": id, "type": "tool_request", "tool": tool, "args": args });
         let framed = match serde_json::to_vec(&request)
             .map_err(|e| e.to_string())
@@ -227,12 +230,57 @@ impl Browser {
         {
             Ok(framed) => framed,
             Err(e) => {
-                self.pending.lock().unwrap().remove(&id);
                 let err = ToolError::binary(format!("failed to encode the tool request: {e}"));
+                self.debug.tool_begin(&id, tool);
                 self.debug.tool_end(&id, false, &err.to_string());
                 return Err(err);
             }
         };
+        self.send_and_await(id, framed, tool).await
+    }
+
+    /// Query the current URL of tab `tab_id` from the extension (g13): mechanism only, reporting
+    /// `chrome.tabs.get(tab_id).url` verbatim, never matched or interpreted here. The dispatch
+    /// chokepoint uses this to resolve the governing domain for every tab-scoped tool other than
+    /// `navigate`'s pre-check (which governs the target URL argument instead, before any tab
+    /// exists to query) -- shared format doc section 4.3: the URL feeds policy only and is never
+    /// trusted from tool call parameters. `Ok(None)` covers both an unknown/closed tab (the
+    /// extension reports `url: null`) and a reply missing the expected shape; either way the
+    /// caller fails closed.
+    pub async fn tab_url(&self, tab_id: i64) -> std::result::Result<Option<String>, ToolError> {
+        if self.killed.load(Ordering::SeqCst) {
+            return Err(kill_error());
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
+        let request = json!({ "id": id, "type": "tab_url_request", "tabId": tab_id });
+        let framed = match serde_json::to_vec(&request)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| host::encode(&bytes).map_err(|e| e.to_string()))
+        {
+            Ok(framed) => framed,
+            Err(e) => {
+                let err = ToolError::binary(format!("failed to encode the tab url request: {e}"));
+                self.debug.tool_begin(&id, "tab_url_request");
+                self.debug.tool_end(&id, false, &err.to_string());
+                return Err(err);
+            }
+        };
+        let result = self.send_and_await(id, framed, "tab_url_request").await?;
+        Ok(result
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    }
+
+    /// Shared send-and-await core behind [`Browser::call`] and [`Browser::tab_url`] (g13):
+    /// register the pending reply slot, enqueue the already-framed bytes if a native-host is
+    /// connected (fail fast otherwise), and await the correlated reply up to [`TOOL_TIMEOUT`].
+    /// Each caller frames its own request first, since their encode-failure messages differ.
+    async fn send_and_await(&self, id: String, framed: Vec<u8>, debug_label: &str) -> CallResult {
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id.clone(), tx);
+        self.debug.tool_begin(&id, debug_label);
 
         // Enqueue only if a native-host is connected; otherwise fail fast. The lock is scoped so it
         // is never held across the await below.

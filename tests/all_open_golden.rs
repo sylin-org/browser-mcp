@@ -12,7 +12,7 @@
 //!      unchanged `content.security.secrets.redact` key), exercised end-to-end over stdio.
 
 use browser_mcp::governance::dispatch::Governance;
-use browser_mcp::governance::ports::{AuditRecord, AuditSink, Decision};
+use browser_mcp::governance::ports::{AuditRecord, AuditSink, Decision, GoverningResource};
 use browser_mcp::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -78,7 +78,10 @@ fn facade_decide_is_all_open_after_the_move() {
     let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink), no_classification);
     for name in GOLDEN_TOOL_NAMES {
         assert!(
-            matches!(governance.decide(name), Decision::Allow { grant_id: None }),
+            matches!(
+                governance.decide(name, None, GoverningResource::None),
+                Decision::Allow { grant_id: None }
+            ),
             "{name} must be allowed in the all-open engine"
         );
     }

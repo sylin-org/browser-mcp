@@ -177,3 +177,74 @@ Expect: step 1 reconnects within a few seconds, the fresh flow works end to end,
 binary no longer reports the kill message. Step 2's tool call after the client restart
 fails with the ordinary not-connected error (the extension still refuses to reconnect)
 until `Start new session` is clicked.
+
+## g13-1: restrictive-manifest session end to end (grant/access/drift/redirect)
+Changed: g13 wires real grant enforcement at all five dispatch points, including a new
+`tab_url_request` extension mechanism queried fresh on every tab-scoped call. Everything
+here is exercised by unit/integration tests with no extension (or a fake one) connected;
+this is the first time it runs against a REAL Chrome tab with the REAL extension in the
+loop, which is the only way to see the actual drift-catching and redirect-parking
+behavior land correctly.
+Manifest (schema 2, `--manifest file://<path>`):
+```json
+{
+  "schema": 2, "name": "g13-manual-check", "version": "1",
+  "grants": [
+    { "id": "example-full", "domains": ["example.com", "*.example.com"], "access": "all" },
+    { "id": "research-read", "domains": ["research.example.org"], "access": "read" }
+  ]
+}
+```
+Steps:
+1. Start the MCP client with the manifest above active. Ask the agent to `navigate` to
+   `https://example.com/`. Confirm it works exactly as it would with no manifest.
+2. Ask the agent to `navigate` to `https://research.example.org/`, then issue a `computer`
+   `left_click` on that page.
+3. On the same `research.example.org` tab, ask for a `computer` `screenshot`.
+4. On the `research.example.org` tab, click a link BY HAND to any off-grant domain (or
+   type a new URL into the omnibox yourself), then ask the agent to call `read_page` on
+   that same tab.
+5. Ask the agent to `navigate` to a URL you know redirects off-grant (e.g. a link shortener
+   pointing away from `example.com`/`research.example.org`).
+Expect: step 1 navigates normally. Step 2's `left_click` returns
+`Denied (D-...): 'computer (left_click)' needs write access on research.example.org, and
+grant 'research-read' allows read only. ...` and the click visibly does not happen on the
+page. Step 3's `screenshot` succeeds normally (observe is permitted). Step 4's `read_page`
+returns `Denied (D-...): no grant covers <the off-grant host>. ...` -- proving the
+per-call check re-queries the CURRENT tab URL rather than trusting a cached one from
+step 1/2. Step 5: the tab visibly lands on `about:blank` and the agent receives a
+`Denied (D-...)` text naming the final (redirected-to) host, not the originally-typed
+allowed URL.
+
+## g13-2: audit file shows consistent grant/denial ids across the session
+Changed: every decision in g13-1 above should have produced exactly one audit record,
+with allows carrying the grant id and denials carrying a denial id that repeats
+identically for the same rule/grant/manifest combination (ADR-0020). This can only be
+confirmed against the real resolved audit file location, populated by the real session
+just run.
+Steps: with `audit.enabled` resolving true (the Minimal default), run through g13-1's five
+steps, then open the resolved audit file (default `%LOCALAPPDATA%\browser-mcp\audit.jsonl`
+on Windows) and find the five corresponding lines.
+Expect: one line per call (five total, not counting the sacred-domains/tabs_context_mcp
+machinery, which writes none). Step 1's line: `decision: "allow"`,
+`grant_id: "example-full"`. Step 2's line: `decision: "deny"`, `grant_id: "research-read"`,
+a `denial_id` present. Step 3's line: `decision: "allow"`, `grant_id: "research-read"`.
+Step 4's line: `decision: "deny"`, `grant_id: null`, `domain` equal to the off-grant host
+you clicked to (not `"(unknown)"`). Step 5's line: `decision: "deny"`, `grant_id: null`,
+`domain` equal to the FINAL redirected-to host, and `duration_ms` clearly non-zero (the
+navigation actually ran before the landing was checked) -- contrast this against every
+other deny record's `duration_ms: 0`. Repeat step 2 or step 4 once more and confirm the
+new denial's `D-...` id is byte-identical to the first one for the same rule/grant/host.
+
+## g13-3: removing the manifest restores all-open with zero new extension traffic
+Changed: `Governance::is_governed()` is meant to gate away every bit of g13's new
+extension traffic (the `tab_url_request` query) when no manifest is active, so all-open
+stays byte-identical and adds no latency. `--debug` observability is the only way to see
+the actual frame count on a live session.
+Steps: start the MCP client with NO `--manifest` flag and `--debug` enabled. Run the same
+navigate/click/screenshot sequence as g13-1 (there is no manifest now, so everything
+should simply work). Inspect the debug state/event log (`browser-mcp status`, or the raw
+log file `--debug` writes).
+Expect: every call behaves exactly as it did before g13 landed (no `Denied (` text ever
+appears). The debug log shows ONLY the familiar `tool_request`/`tool_response` frame
+pairs for each call -- no `tab_url_request` frame appears anywhere in the session.

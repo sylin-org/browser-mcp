@@ -39,24 +39,8 @@ pub fn first_match<'a>(host: &MatchHost, patterns: &'a [String]) -> Option<&'a s
 /// result comes only from [`pattern::host_for_matching`], so it composes directly with
 /// [`first_match`] without a second, unnormalized round trip through a plain string.
 pub fn navigate_target_host(url_arg: &str) -> Option<MatchHost> {
-    if url_arg == "back" || url_arg == "forward" {
-        return None;
-    }
-
-    let lower = url_arg.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        return host_of(url_arg);
-    }
-    if ["about:", "chrome:", "edge:", "brave:"]
-        .iter()
-        .any(|scheme| lower.starts_with(scheme))
-    {
-        return None;
-    }
-
-    let stripped = strip_one_leading_scheme(url_arg);
-    let candidate = format!("https://{stripped}");
-    host_of(&candidate)
+    let normalized = normalize_navigate_target(url_arg)?;
+    host_of(&normalized)
 }
 
 fn host_of(url: &str) -> Option<MatchHost> {
@@ -64,6 +48,34 @@ fn host_of(url: &str) -> Option<MatchHost> {
         HostOutcome::Host(h) => Some(h),
         HostOutcome::NonHttpScheme(_) | HostOutcome::Unparseable => None,
     }
+}
+
+/// Mirror the extension's `navigate` URL normalization exactly (its handler in
+/// `extension/service-worker.js`), returning the string the extension will actually attempt to
+/// parse and navigate to. `None` for `"back"`/`"forward"`: there is no URL to normalize, since
+/// the extension replays browser history instead of parsing one. Shared by
+/// [`navigate_target_host`] (g08, the sacred-domains check) and
+/// [`crate::browser::resource::navigate_target_resource`] (g13, the grant-enforcement
+/// pre-dispatch check): both MUST agree with the extension on the exact same string, or a
+/// schemeless or scheme-mangled target could pass one check and fail the other.
+pub(crate) fn normalize_navigate_target(url_arg: &str) -> Option<String> {
+    if url_arg == "back" || url_arg == "forward" {
+        return None;
+    }
+
+    let lower = url_arg.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some(url_arg.to_string());
+    }
+    if ["about:", "chrome:", "edge:", "brave:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+    {
+        return Some(url_arg.to_string());
+    }
+
+    let stripped = strip_one_leading_scheme(url_arg);
+    Some(format!("https://{stripped}"))
 }
 
 /// Strip one leading scheme prefix if present: 1 to 6 ASCII alphabetic characters, then `:`,

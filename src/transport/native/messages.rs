@@ -68,3 +68,22 @@
 //! in-flight and subsequent tool call with a truthful hop-attributed error until a fresh
 //! native-host connection attaches, and writes one audit session-event record. No framing
 //! change; the native-host relays this event verbatim like any other frame.
+//!
+//! ## Tab-URL query (g13, grant enforcement)
+//!
+//! ## binary -> extension
+//! ```json
+//! { "id": "<string>", "type": "tab_url_request", "tabId": <number> }
+//! ```
+//!
+//! ## extension -> binary
+//! ```json
+//! { "id": "<string>", "type": "tab_url_response", "result": { "url": "<string or null>" } }
+//! ```
+//!
+//! Mechanism only: the extension reports `chrome.tabs.get(tabId).url` verbatim (`null` for an
+//! unknown/closed tab or a lookup failure) and makes no policy decision about it. The
+//! mcp-server's dispatch chokepoint ([`crate::transport::executor::Browser::tab_url`]) uses the
+//! reported URL to resolve the governing domain for a tab-scoped tool call; it is never trusted
+//! from tool call parameters. This reply routes through the same generic (non-`tool_error`)
+//! reply path as a `tool_response` -- no new routing logic, only a new `type` value.

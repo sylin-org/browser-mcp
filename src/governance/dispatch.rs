@@ -23,6 +23,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::governance::manifest::document::Grant;
 use crate::governance::ports::{
     AuditRecord, AuditSink, ClientInfo, Decision, DecisionRequest, Denial, EffectiveMode,
     GoverningResource, PolicyDecisionPoint, RwClass, SessionEventRecord,
@@ -84,20 +85,25 @@ pub struct Governance {
 }
 
 /// The two shapes of the decision path. `AllOpen` holds nothing so its decide path is a
-/// zero-cost short-circuit; `Governed` holds the decision port later tasks drive.
+/// zero-cost short-circuit; `Governed` holds the decision port plus the active manifest's
+/// grants and content hash (g13).
 enum Mode {
     /// STEP-0: the ungoverned engine. No manifest, default config. Every call is `Allow`.
     AllOpen,
-    /// The governed overlay. Populated by later stage-2 tasks; the pure/impure browser plugin
-    /// halves (DomainPolicy classify/match, ResourceResolver) attach through builder methods added
-    /// by G07/G13.
+    /// The governed overlay, active once a manifest is loaded (g13).
     Governed(GovernedState),
 }
 
-/// The decision port a governed facade holds. `dyn` here is deliberate: the decision point has
-/// multiple impls (Noop today, Local in stage 2, a future Remote).
+/// The decision port a governed facade holds, plus the request fields that come from the
+/// active manifest itself rather than from any one call (g13): the resolved grants (in
+/// manifest order; the pure decision core re-resolves the matching grant per call) and the
+/// manifest's content hash (denial ids are computed from it, shared format doc section 7.1).
+/// `dyn` on the PDP is deliberate: the decision point has multiple impls (Noop today, `LocalPdp`
+/// in stage 2, a future Remote).
 struct GovernedState {
     pdp: Box<dyn PolicyDecisionPoint>,
+    grants: Vec<Grant>,
+    manifest_hash: String,
 }
 
 impl Governance {
@@ -116,17 +122,23 @@ impl Governance {
         }
     }
 
-    /// A governed facade over the given decision point, audit sink, and classifier. Not yet
-    /// used by any production path; exercised by the facade unit tests. Later tasks add builder
-    /// methods to attach the browser plugin's `DomainPolicy` (classify/match) and
-    /// `ResourceResolver`.
+    /// A governed facade over the given decision point, audit sink, classifier, the active
+    /// manifest's resolved grants, and its content hash (g13). `transport::mcp::server::run`
+    /// constructs this with a `LocalPdp` once a manifest is active; `all_open` stays the
+    /// facade for a session with no manifest.
     pub fn governed(
         pdp: Box<dyn PolicyDecisionPoint>,
         audit: Arc<dyn AuditSink>,
         classify: fn(&str, Option<&str>) -> Option<RwClass>,
+        grants: Vec<Grant>,
+        manifest_hash: String,
     ) -> Self {
         Self {
-            mode: Mode::Governed(GovernedState { pdp }),
+            mode: Mode::Governed(GovernedState {
+                pdp,
+                grants,
+                manifest_hash,
+            }),
             audit,
             classify,
             client: Mutex::new(None),
@@ -139,27 +151,51 @@ impl Governance {
         self.audit.as_ref()
     }
 
+    /// True when a manifest is active ([`Mode::Governed`]); false under all-open. The dispatch
+    /// chokepoint (`transport::mcp::server`) uses this to skip grant-resource resolution --
+    /// including every extension tab-URL round trip it would otherwise make -- entirely under
+    /// all-open (g13 constraint 3: STEP 0 must add zero new frames and zero new latency).
+    pub fn is_governed(&self) -> bool {
+        matches!(self.mode, Mode::Governed(_))
+    }
+
     /// The single inbound governance decision for one tool call, taken at the dispatch chokepoint
     /// before the tool executes.
     ///
     /// Under [`Mode::AllOpen`] this is a literal STEP-0 short-circuit: it returns
     /// [`Decision::Allow`] without touching any port or resolving any resource, so all-open output
-    /// is byte-identical to stage 1. Under [`Mode::Governed`] it asks the held decision point; the
-    /// real pipeline (classify -> resolve resource -> grant check -> effective mode) is filled in by
-    /// G07/G13/G15, and with the Noop decision point the result is still `Allow`.
-    pub fn decide(&self, tool: &str) -> Decision {
+    /// is byte-identical to stage 1. Under [`Mode::Governed`] the call is classified first
+    /// (`action` is the `computer` sub-action, `None` for every other tool); a classification
+    /// miss denies via the same tool-name rule the pure decision core uses for a known-unlisted
+    /// tool (g13, `enforcement::unclassifiable_denial`), since an unclassifiable call must never
+    /// be presented as harmless. A classification hit builds the full [`DecisionRequest`] from
+    /// the held grants and manifest hash plus the caller-resolved `resource`, and delegates to
+    /// the held decision point. `mode` is always [`EffectiveMode::Enforce`]: shadow mode (g15)
+    /// is a future overlay on top of this result, not a value this call site produces itself.
+    pub fn decide(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        resource: GoverningResource,
+    ) -> Decision {
         match &self.mode {
             Mode::AllOpen => Decision::Allow { grant_id: None },
             Mode::Governed(state) => {
-                // Wiring stub. Placeholder request fields: the resolver task resolves the
-                // governing resource, G12/G13 supply grants, G15 resolves the effective mode.
-                // The Noop PDP ignores them and allows.
+                let Some(rw) = (self.classify)(tool, action) else {
+                    return Decision::Deny(crate::governance::enforcement::unclassifiable_denial(
+                        tool,
+                        action,
+                        &state.manifest_hash,
+                    ));
+                };
                 let req = DecisionRequest {
-                    grants: Vec::new(),
+                    grants: state.grants.clone(),
                     tool: tool.to_string(),
-                    rw: RwClass::Observe,
-                    resource: GoverningResource::None,
-                    mode: EffectiveMode::Observe,
+                    action: action.map(str::to_string),
+                    rw,
+                    resource,
+                    mode: EffectiveMode::Enforce,
+                    manifest_hash: state.manifest_hash.clone(),
                 };
                 state.pdp.decide(&req)
             }
@@ -183,11 +219,16 @@ impl Governance {
     /// the flight recorder). Called at the dispatch chokepoint after the call resolves, so the
     /// record carries the real duration. `action` is the `computer` sub-action when
     /// `tool == "computer"`, `None` otherwise. `domain` is the current tab's host at decision
-    /// time when the sacred-domains check (g08) resolved one, `None` otherwise (shared format
-    /// doc section 6.1: `domain` is a decision-time fact, not derived from tool arguments).
+    /// time when the sacred-domains check (g08) or the grant machinery (g13) resolved one,
+    /// `None` otherwise (shared format doc section 6.1: `domain` is a decision-time fact, not
+    /// derived from tool arguments). `grant_id` is the resolving grant's id under a manifest
+    /// (from `Decision::Allow { grant_id }`, g13), `None` under all-open or when no grant
+    /// participates (`AlwaysAllow`, the `NoPage` union rule with no candidate... every allow
+    /// path that reaches this far always has one, but the type stays optional to mirror
+    /// [`Decision::Allow`] exactly).
     ///
-    /// `identity`, `grant_id`, and `manifest` are always `None` until the manifest task (G12)
-    /// lands; `decision` is always `"allow"` (a denied call goes through [`Self::record_deny`]
+    /// `identity` and `manifest` are always `None` until the identity/manifest-audit tasks land;
+    /// `decision` is always `"allow"` (a denied call goes through [`Self::record_deny`]
     /// instead). A classification miss (`self.classify` returns `None`: an unknown tool, or a
     /// `computer` call with a missing or unknown action) records [`RwClass::Mutate`]: the
     /// record vocabulary is only observe/mutate, and an unclassifiable call must never be
@@ -198,13 +239,14 @@ impl Governance {
         action: Option<&str>,
         duration_ms: u64,
         domain: Option<&str>,
+        grant_id: Option<&str>,
     ) {
         let record = self.build_record(
             tool,
             action,
             domain,
             "allow",
-            None,
+            grant_id.map(str::to_string),
             None,
             duration_ms,
             false,
@@ -237,6 +279,32 @@ impl Governance {
             denial.grant_id.clone(),
             Some(denial.denial_id.clone()),
             0,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Build and record one audit record for `navigate`'s point-5 post-landing denial (g13,
+    /// shared format doc section 6.1): unlike [`Self::record_deny`], the call DID dispatch and
+    /// the browser actually navigated before landing off-grant, so `duration_ms` is the real
+    /// elapsed time, not `0`. Always `tool: "navigate"`. `domain` is the FINAL (post-redirect)
+    /// host the tab landed on, or `None` for a non-host landing (a scheme, or an unresolvable
+    /// re-query) -- never the denial message's `(unknown)` placeholder.
+    pub fn record_navigate_landing_deny(
+        &self,
+        action: Option<&str>,
+        denial: &Denial,
+        domain: Option<&str>,
+        duration_ms: u64,
+    ) {
+        let record = self.build_record(
+            "navigate",
+            action,
+            domain,
+            "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            duration_ms,
             false,
         );
         self.audit.record(&record);
@@ -393,19 +461,28 @@ mod tests {
         let sink = Arc::new(CountingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
         assert!(matches!(
-            g.decide("navigate"),
+            g.decide("navigate", None, GoverningResource::None),
             Decision::Allow { grant_id: None }
         ));
-        g.record_call("navigate", None, 5, None);
+        g.record_call("navigate", None, 5, None, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn governed_over_noop_still_allows_and_holds_the_sink() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::governed(Box::new(NoopPdp), sink.clone(), no_classification);
-        assert!(matches!(g.decide("navigate"), Decision::Allow { .. }));
-        g.record_call("navigate", None, 0, None);
+        let g = Governance::governed(
+            Box::new(NoopPdp),
+            sink.clone(),
+            sample_classify,
+            Vec::new(),
+            String::new(),
+        );
+        assert!(matches!(
+            g.decide("read_page", None, GoverningResource::None),
+            Decision::Allow { .. }
+        ));
+        g.record_call("navigate", None, 0, None, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
@@ -413,9 +490,9 @@ mod tests {
     fn classification_miss_records_mutate() {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
-        g.record_call("no_such_tool", None, 0, None);
+        g.record_call("no_such_tool", None, 0, None, None);
         assert_eq!(sink.last().rw, RwClass::Mutate);
-        g.record_call("computer", None, 0, None);
+        g.record_call("computer", None, 0, None, None);
         assert_eq!(
             sink.last().rw,
             RwClass::Mutate,
@@ -428,15 +505,15 @@ mod tests {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), sample_classify);
 
-        g.record_call("computer", Some("screenshot"), 0, None);
+        g.record_call("computer", Some("screenshot"), 0, None, None);
         let rec = sink.last();
         assert_eq!(rec.rw, RwClass::Observe);
         assert_eq!(rec.action.as_deref(), Some("screenshot"));
 
-        g.record_call("computer", Some("left_click"), 0, None);
+        g.record_call("computer", Some("left_click"), 0, None, None);
         assert_eq!(sink.last().rw, RwClass::Mutate);
 
-        g.record_call("read_page", None, 0, None);
+        g.record_call("read_page", None, 0, None, None);
         let rec = sink.last();
         assert_eq!(rec.rw, RwClass::Observe);
         assert_eq!(rec.action, None);
@@ -453,7 +530,7 @@ mod tests {
         assert_eq!(stored.as_ref().unwrap().version, "1");
         drop(stored);
 
-        g.record_call("navigate", None, 0, None);
+        g.record_call("navigate", None, 0, None, None);
         let client = sink.last().client.expect("client info recorded");
         assert_eq!(client.name, "a");
         assert_eq!(client.version, "1");
@@ -463,7 +540,7 @@ mod tests {
     fn record_call_passes_the_resolved_domain_through() {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
-        g.record_call("read_page", None, 0, Some("www.mybank.com"));
+        g.record_call("read_page", None, 0, Some("www.mybank.com"), None);
         assert_eq!(sink.last().domain.as_deref(), Some("www.mybank.com"));
     }
 
@@ -509,7 +586,7 @@ mod tests {
     fn record_call_and_record_deny_leave_held_false() {
         let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
-        g.record_call("navigate", None, 5, None);
+        g.record_call("navigate", None, 5, None, None);
         assert!(!sink.last().held);
 
         let denial = Denial {

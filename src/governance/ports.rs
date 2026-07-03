@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::governance::manifest::document::Grant;
+
 // --- Supporting placeholder and axis types ---
 
 /// Read/write classification of a tool call: the observe-vs-mutate axis (the core owns the
@@ -47,15 +49,6 @@ impl RwClass {
 pub enum EffectiveMode {
     Observe,
     Enforce,
-}
-
-/// One resolved manifest grant. Placeholder: g12 (manifest engine) fleshes this out to
-/// `{ domains, access, tools, mode }`. Only `id` is defined now, so `Decision::Allow` can
-/// attribute the matching grant (g13). Kept minimal and serde-round-trippable on purpose.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Grant {
-    /// Stable identifier of this grant, used for allow-attribution and audit.
-    pub id: String,
 }
 
 /// A tool identifier as advertised on the MCP surface. Placeholder newtype; g07/g14 flesh
@@ -215,12 +208,22 @@ pub struct DecisionRequest {
     pub grants: Vec<Grant>,
     /// The tool being called.
     pub tool: String,
+    /// The `computer` sub-action, when `tool == "computer"`; `None` otherwise. Carried only
+    /// for denial-message rendering (`computer (<action>)`, shared format doc section 7.2);
+    /// grant `tools`/`exclude_tools` checks and rule strings use the bare `tool` name, never
+    /// this field.
+    pub action: Option<String>,
     /// The tool call's read/write classification.
     pub rw: RwClass,
     /// The resolved governing resource.
     pub resource: GoverningResource,
     /// The effective enforcement mode.
     pub mode: EffectiveMode,
+    /// The active manifest's content hash (g09), empty string when no manifest is active.
+    /// Part of the request (not read from live state) so a denial id is fully reproducible
+    /// from the request alone -- g17 (simulate) replays a recorded request through the same
+    /// decision function and must get the same `D-...` id back.
+    pub manifest_hash: String,
 }
 
 /// The outcome of a policy decision. `Allow` optionally names the grant that permitted the
@@ -321,6 +324,18 @@ impl AuditSink for NullSink {
 mod tests {
     use super::*;
 
+    fn sample_grant(id: &str) -> Grant {
+        Grant {
+            id: id.to_string(),
+            domains: vec!["example.com".to_string()],
+            access: crate::governance::manifest::document::Access::All,
+            tools: None,
+            exclude_tools: None,
+            description: None,
+            mode: None,
+        }
+    }
+
     fn sample_request(
         rw: RwClass,
         resource: GoverningResource,
@@ -329,9 +344,11 @@ mod tests {
         DecisionRequest {
             grants: Vec::new(),
             tool: "navigate".to_string(),
+            action: None,
             rw,
             resource,
             mode,
+            manifest_hash: String::new(),
         }
     }
 
@@ -350,13 +367,13 @@ mod tests {
                 EffectiveMode::Enforce,
             ),
             DecisionRequest {
-                grants: vec![Grant {
-                    id: "g1".to_string(),
-                }],
+                grants: vec![sample_grant("g1")],
                 tool: "computer".to_string(),
+                action: Some("left_click".to_string()),
                 rw: RwClass::Mutate,
                 resource: GoverningResource::AlwaysAllow,
                 mode: EffectiveMode::Enforce,
+                manifest_hash: String::new(),
             },
         ];
         for req in &requests {
@@ -524,13 +541,13 @@ mod tests {
     #[test]
     fn decision_request_round_trips_through_serde() {
         let req = DecisionRequest {
-            grants: vec![Grant {
-                id: "servicenow-full".to_string(),
-            }],
+            grants: vec![sample_grant("servicenow-full")],
             tool: "navigate".to_string(),
+            action: None,
             rw: RwClass::Mutate,
             resource: GoverningResource::Resource("example.com".to_string()),
             mode: EffectiveMode::Enforce,
+            manifest_hash: "abc123".to_string(),
         };
         let json = serde_json::to_string(&req).expect("serializes");
         let round_tripped: DecisionRequest = serde_json::from_str(&json).expect("deserializes");
