@@ -134,7 +134,7 @@ fn resolve_manifest_mode(manifest: &Manifest) -> (EffectiveMode, &'static str) {
     if let Some(mode) = manifest_mode_config_entry(manifest, Level::Recommended) {
         return (mode, " This mode is a default the user may change.");
     }
-    let built_in = EffectiveMode::from_config_str(Config::minimal().governance_mode());
+    let built_in = Config::minimal().governance_mode();
     (
         built_in,
         " This policy sets no mode; the built-in default applies.",

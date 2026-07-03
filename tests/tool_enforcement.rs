@@ -488,3 +488,45 @@ fn requires_empty_call_records_capability_none() {
     std::fs::remove_file(&audit_path).ok();
     std::fs::remove_file(&manifest).ok();
 }
+
+/// ADR-0024 Decision 3, the sanctioned delta this task owns: a GOVERNED directory miss (a known
+/// tool, unknown sub-action) is DENIED with `unknown_action` instead of dispatching ungoverned --
+/// the deliberate fix of the `b4b2faf` fail-open regression, restoring ADR-0022's
+/// absent-means-DENY. `computer` with an unrecognized `action` string is the concrete case: the
+/// extension's own schema would reject it too, but governance must not rely on that, and the
+/// denial fires before any extension traffic (no probe, no dispatch).
+#[test]
+fn governed_unknown_computer_action_is_denied_unknown_action() {
+    let audit_path = temp_path("case-unknown-action-audit");
+    let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
+    let manifest = write_manifest(
+        "case-unknown-action",
+        &manifest_value("case-unknown-action", grants, &audit_path),
+    );
+
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("computer", json!({ "action": "bogus_action", "tabId": 1 })),
+    );
+    let resp = by_id(&responses, 2);
+    assert_ne!(
+        resp["result"]["isError"], true,
+        "a denial is not isError: {resp:?}"
+    );
+    let text = text_of(resp);
+    assert!(text.starts_with("Denied (D-"), "{text}");
+    assert!(
+        text.contains("computer (bogus_action)"),
+        "the label must name the tool and the unknown action: {text}"
+    );
+    let denial_id = extract_denial_id(text).to_string();
+
+    let lines = read_audit_lines(&audit_path);
+    assert_eq!(lines.len(), 1, "one record for the call: {lines:?}");
+    assert_eq!(lines[0]["decision"], "deny");
+    assert_eq!(lines[0]["capability"], "none");
+    assert_eq!(lines[0]["denial_id"], denial_id);
+
+    std::fs::remove_file(&audit_path).ok();
+    std::fs::remove_file(&manifest).ok();
+}

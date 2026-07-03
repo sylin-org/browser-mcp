@@ -198,8 +198,7 @@ fn governance_section_lines() -> Vec<String> {
         Ok(store) => store.current(),
         Err(e) => return vec![format!("  config resolution is broken: {e}")],
     };
-    let config_mode =
-        crate::governance::ports::EffectiveMode::from_config_str(config.governance_mode());
+    let config_mode = config.governance_mode();
 
     let Some(manifest) = &loaded_policy.manifest else {
         return render_governance_status(None);

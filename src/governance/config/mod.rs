@@ -44,6 +44,8 @@ pub mod presets;
 pub mod reload;
 pub mod schema;
 
+use crate::governance::ports::EffectiveMode;
+
 /// A configuration preset: a named bundle of layer-4 defaults (shared format doc section 2).
 /// The built-in Minimal defaults (layer 5) equal the Safe preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,7 +558,7 @@ pub struct Config {
     audit_enabled: bool,
     audit_destination: String,
     audit_file_path: String,
-    governance_mode: String,
+    governance_mode: EffectiveMode,
 }
 
 impl Config {
@@ -570,7 +572,10 @@ impl Config {
             audit_enabled: preset_bool(AUDIT_ENABLED, preset),
             audit_destination: preset_string_like(AUDIT_DESTINATION, preset),
             audit_file_path: preset_string_like(AUDIT_FILE_PATH, preset),
-            governance_mode: preset_string_like(GOVERNANCE_MODE, preset),
+            governance_mode: EffectiveMode::from_config_str(&preset_string_like(
+                GOVERNANCE_MODE,
+                preset,
+            )),
         }
     }
 
@@ -595,7 +600,10 @@ impl Config {
             audit_enabled: resolved_bool(resolution, AUDIT_ENABLED),
             audit_destination: resolved_string_like(resolution, AUDIT_DESTINATION),
             audit_file_path: resolved_string_like(resolution, AUDIT_FILE_PATH),
-            governance_mode: resolved_string_like(resolution, GOVERNANCE_MODE),
+            governance_mode: EffectiveMode::from_config_str(&resolved_string_like(
+                resolution,
+                GOVERNANCE_MODE,
+            )),
         }
     }
 
@@ -631,9 +639,9 @@ impl Config {
         &self.audit_file_path
     }
 
-    /// The default enforcement mode (`governance.mode`).
-    pub fn governance_mode(&self) -> &str {
-        &self.governance_mode
+    /// The default enforcement mode (`governance.mode`), parsed once at resolution time.
+    pub fn governance_mode(&self) -> EffectiveMode {
+        self.governance_mode
     }
 }
 
@@ -794,7 +802,18 @@ mod tests {
         );
         assert_eq!(
             cfg.governance_mode(),
-            preset_string_like(GOVERNANCE_MODE, Preset::Safe)
+            EffectiveMode::from_config_str(&preset_string_like(GOVERNANCE_MODE, Preset::Safe))
+        );
+    }
+
+    /// t03 (ADR-0024 Decision 3, typed `governance_mode`): minimal and preset configs yield
+    /// `EffectiveMode` values directly, with no `from_config_str` round-trip at the call site.
+    #[test]
+    fn governance_mode_is_typed() {
+        assert_eq!(Config::minimal().governance_mode(), EffectiveMode::Enforce);
+        assert_eq!(
+            Config::from_preset(Preset::FullyOpen).governance_mode(),
+            EffectiveMode::Observe
         );
     }
 
@@ -811,7 +830,7 @@ mod tests {
         let cfg = Config::from_preset(Preset::FullyOpen);
         assert!(!cfg.secrets_redact());
         assert!(!cfg.audit_enabled());
-        assert_eq!(cfg.governance_mode(), "observe");
+        assert_eq!(cfg.governance_mode(), EffectiveMode::Observe);
         assert_eq!(cfg.first_call_wait_ms(), 5000);
     }
 

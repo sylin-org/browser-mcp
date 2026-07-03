@@ -1,29 +1,32 @@
 //! Tool-call dispatch chokepoint -- the single Policy Enforcement Point (PEP).
 //!
-//! Every `tools/call` passes through [`Governance::decide`] exactly once, before the tool
-//! executes, and through [`Governance::record_call`] exactly once after it resolves. The
-//! [`Governance`] facade holds the governance ports (a
+//! Every `tools/call` opens a per-call audit scope ([`Governance::begin`], producing a
+//! [`CallAudit`]) and passes through [`Governance::authorize`] exactly once, before the tool
+//! executes; the scope is then completed through one of its own consuming methods (`held`,
+//! `sacred_deny`, `landing_allow`/`landing_deny`, `complete`) after the call resolves (ADR-0024
+//! Decision 3). The [`Governance`] facade holds the governance ports (a
 //! [`PolicyDecisionPoint`](crate::governance::ports::PolicyDecisionPoint), an
 //! [`AuditSink`](crate::governance::ports::AuditSink), and later the browser plugin halves) and is
 //! the one place the stage-2 overlay attaches.
 //!
-//! [`Governance::all_open`] is the ungoverned engine: its decide path is a literal STEP-0
-//! short-circuit to [`Decision::Allow`](crate::governance::ports::Decision) that queries no port and
-//! resolves no resource, so a session with no manifest and default config is byte-identical to
-//! stage 1 (ADR-0013). Audit is orthogonal to that STEP-0 short-circuit (shared format doc
-//! section 4.5: the flight recorder still records under all-open when `audit.enabled` is true), so
-//! the audit sink is a field of `Governance` itself, not nested inside the governed-only state.
+//! [`Governance::all_open`] is the ungoverned engine: [`Governance::authorize`] short-circuits to
+//! `Gate::Proceed` for it, querying no port and resolving no resource, so a session with no
+//! manifest and default config is byte-identical to stage 1 (ADR-0013). Audit is orthogonal to
+//! that short-circuit (shared format doc section 4.5: the flight recorder still records under
+//! all-open when `audit.enabled` is true), so the audit sink is a field of `Governance` itself,
+//! not nested inside the governed-only state.
 //!
-//! `requires` is injected as a function pointer rather than named directly: this module lives
-//! in the domain-agnostic governance core, and the concrete action directory is browser-domain
+//! `Governance` holds no browser-domain fn pointer at all: this module lives in the
+//! domain-agnostic governance core, and the concrete action directory is browser-domain
 //! (`browser::directory::requires`, ADR-0022 Decision 2; the a7 arch-test forbids a
-//! `governance -> browser` edge). The crate-root binary supplies the browser plugin's real
-//! implementation at construction. The audit `capability` field (ADR-0022 Decision 8) is
-//! derived from the SAME `requires` slice the caller looked up for `decide`, threaded in by
-//! every public record function -- there is no second, browser-supplied fn pointer for audit.
+//! `governance -> browser` edge). The transport layer performs the ONE per-call directory lookup
+//! itself and hands the result to [`Governance::begin`]; [`CallAudit`] carries that same result
+//! forward to both [`Governance::authorize`] (the decision) and the eventual audit record's
+//! `capability` field (ADR-0022 Decision 8) -- there is no second, independent lookup anywhere
+//! in this module.
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::governance::manifest::document::Grant;
 use crate::governance::ports::{
@@ -45,10 +48,7 @@ pub const HOLD_HINT_AFTER: Duration = Duration::from_secs(120);
 /// [`HOLD_HINT_AFTER`], a second sentence names the only way to resume: the user, from the
 /// extension.
 pub fn hold_message(tool: &str, action: Option<&str>, held_for: Duration) -> String {
-    let label = match (tool, action) {
-        ("computer", Some(action)) => format!("computer ({action})"),
-        _ => tool.to_string(),
-    };
+    let label = crate::governance::ports::call_label(tool, action);
     let mut message = format!(
         "Paused: the user has taken control of the browser (take-the-wheel). The '{label}' \
          call was NOT executed. This is not an error, and retrying will not help: every \
@@ -108,15 +108,6 @@ pub struct Governance {
     /// Always present; `NullSink` when audit is disabled. Recording is orthogonal to
     /// [`Mode`] (shared format doc section 4.5).
     audit: Arc<dyn AuditSink>,
-    /// The browser plugin's action directory lookup (ADR-0022 Decision 2), injected so this
-    /// core module never names the browser plugin directly. `None` is a directory miss (fail
-    /// closed); `Some(&[])` is an unconditionally-allowed action; `Some(reqs)` is the bound
-    /// capability requirement set a `DecisionRequest` carries. Consumed by [`Self::decide`].
-    /// This is the ONLY browser-supplied fn pointer `Governance` holds: every public record
-    /// function now takes its own `requires: &[Capability]` parameter (the caller's own
-    /// lookup through this same table, ADR-0022 Decision 8), rather than `Governance` looking
-    /// it up a second time for audit purposes.
-    requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
     /// The MCP client identity captured from the `initialize` request, first-wins for the
     /// whole session (shared format doc section 6.1 `client` field).
     client: Mutex<Option<ClientInfo>>,
@@ -148,29 +139,25 @@ struct GovernedState {
 }
 
 impl Governance {
-    /// The ungoverned engine: a zero-port decision path whose decide path short-circuits to
-    /// `Allow`, paired with an audit sink built independently from config (audit is orthogonal
-    /// to all-open). This is the facade used in production until the manifest task lands.
-    pub fn all_open(
-        audit: Arc<dyn AuditSink>,
-        requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
-    ) -> Self {
+    /// The ungoverned engine: a zero-port decision path whose `authorize` short-circuits to
+    /// `Gate::Proceed`, paired with an audit sink built independently from config (audit is
+    /// orthogonal to all-open). This is the facade used in production until the manifest task
+    /// lands.
+    pub fn all_open(audit: Arc<dyn AuditSink>) -> Self {
         Self {
             mode: Mode::AllOpen,
             audit,
-            requires,
             client: Mutex::new(None),
         }
     }
 
-    /// A governed facade over the given decision point, audit sink, action directory lookup,
-    /// the active manifest's resolved grants, its content hash (g13), and its own `mode` field,
-    /// if any (g15). `transport::mcp::server::run` constructs this with a `LocalPdp` once a
-    /// manifest is active; `all_open` stays the facade for a session with no manifest.
+    /// A governed facade over the given decision point, audit sink, the active manifest's
+    /// resolved grants, its content hash (g13), and its own `mode` field, if any (g15).
+    /// `transport::mcp::server::run` constructs this with a `LocalPdp` once a manifest is
+    /// active; `all_open` stays the facade for a session with no manifest.
     pub fn governed(
         pdp: Box<dyn PolicyDecisionPoint>,
         audit: Arc<dyn AuditSink>,
-        requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
         grants: Vec<Grant>,
         manifest_hash: String,
         manifest_mode: Option<EffectiveMode>,
@@ -183,7 +170,6 @@ impl Governance {
                 manifest_mode,
             }),
             audit,
-            requires,
             client: Mutex::new(None),
         }
     }
@@ -231,60 +217,163 @@ impl Governance {
         }
     }
 
-    /// The single inbound governance decision for one tool call, taken at the dispatch chokepoint
-    /// before the tool executes.
+    /// The single inbound governance decision for one ALREADY-CLASSIFIED tool call, taken at the
+    /// dispatch chokepoint before the tool executes.
     ///
-    /// Under [`Mode::AllOpen`] this is a literal STEP-0 short-circuit: it returns
-    /// [`Decision::Allow`] without touching any port or resolving any resource, so all-open output
-    /// is byte-identical to stage 1. Under [`Mode::Governed`] the call's bound capability
-    /// requirement set is looked up first (`action` is the `computer` sub-action, `None` for
-    /// every other tool; ADR-0022 Decision 2): a directory miss (`None`) denies via the
-    /// `unknown_action` rule (`enforcement::unknown_action_denial`), then passes through the SAME
-    /// mode switch (g15, `enforcement::apply_mode`) a classified would-deny does, since a
-    /// directory miss is an ordinary rule, not a sacred one -- it is just as eligible for shadow
-    /// enforcement as any other would-deny. `Some(&[])` short-circuits to `Allow` immediately,
-    /// without building a `DecisionRequest` (ADR-0022 Decision 5 step 2: no resource resolution,
-    /// no grant scan). `Some(reqs)` builds the full [`DecisionRequest`] from the held grants,
-    /// manifest hash, and manifest-level mode, plus the caller-resolved `resource` and
-    /// `config_mode`, and delegates to the held decision point (which applies the same mode
-    /// switch internally, `LocalPdp`/`check_call`, g15).
+    /// A pure pass-through into [`DecisionRequest`] (ADR-0024 Decision 3): unlike its pre-ADR-0024
+    /// shape, this performs no directory lookup and no miss handling of its own -- `requires` is
+    /// the caller's own bound capability requirement set (ADR-0022 Decision 2), supplied
+    /// directly. [`Self::authorize`] is the only in-crate caller for a governed, resource-bearing
+    /// call (its precedence table's arm 5); it is also called directly for the navigate landing
+    /// re-check (`transport::mcp::server::post_navigate_landing_check`) and by tests. Under
+    /// [`Mode::AllOpen`] this returns [`Decision::Allow`] without touching any port or resolving
+    /// any resource, so all-open output is byte-identical to stage 1. Under [`Mode::Governed`] it
+    /// builds the full [`DecisionRequest`] from the held grants, manifest hash, and
+    /// manifest-level mode, plus the caller-supplied `requires`/`resource`/`config_mode`, and
+    /// delegates to the held decision point (`LocalPdp`/`check_call`, which applies the mode
+    /// switch internally, g15, and short-circuits an empty `requires` to `Allow` on its own --
+    /// callers that already know `requires` is empty should prefer [`Self::authorize`]'s free-action
+    /// arm, which skips this call entirely rather than building a `DecisionRequest` for nothing).
     pub fn decide(
         &self,
         tool: &str,
         action: Option<&str>,
+        requires: &[Capability],
         resource: GoverningResource,
         config_mode: EffectiveMode,
     ) -> Decision {
         match &self.mode {
             Mode::AllOpen => Decision::Allow { grant_id: None },
             Mode::Governed(state) => {
-                let Some(reqs) = (self.requires)(tool, action) else {
-                    let denial = crate::governance::enforcement::unknown_action_denial(
-                        tool,
-                        action,
-                        &state.manifest_hash,
-                    );
-                    return crate::governance::enforcement::apply_mode(
-                        Decision::Deny(denial),
-                        &state.grants,
-                        state.manifest_mode,
-                        config_mode,
-                    );
-                };
-                if reqs.is_empty() {
-                    return Decision::Allow { grant_id: None };
-                }
                 let req = DecisionRequest {
                     grants: state.grants.clone(),
                     tool: tool.to_string(),
                     action: action.map(str::to_string),
-                    requires: reqs.to_vec(),
+                    requires: requires.to_vec(),
                     resource,
                     manifest_mode: state.manifest_mode,
                     config_mode,
                     manifest_hash: state.manifest_hash.clone(),
                 };
                 state.pdp.decide(&req)
+            }
+        }
+    }
+
+    /// Phase 0 (ADR-0024 Decision 3): open the per-call audit scope. `requires` is THE one
+    /// directory lookup's result the transport layer performed (`None` is a registry/variant
+    /// miss; [`Self::authorize`] turns it into the `unknown_action` denial). For the eventual
+    /// record's `capability` field a miss renders `"none"`, exactly as the pre-ADR-0024
+    /// `unwrap_or(&[])` convention did. Captures the sink handle, the tool/action strings, the
+    /// `requires` result, the current client identity, and a start [`Instant`]; domain, grant,
+    /// and shadow state all start empty.
+    pub fn begin(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        requires: Option<&'static [Capability]>,
+    ) -> CallAudit {
+        CallAudit {
+            audit: Arc::clone(&self.audit),
+            client: self.current_client(),
+            tool: tool.to_string(),
+            action: action.map(str::to_string),
+            requires,
+            started: Instant::now(),
+            domain: None,
+            grant_id: None,
+            shadow: None,
+            duration_ms: None,
+        }
+    }
+
+    /// Phase 1 (ADR-0024 Decision 3): the one policy gate. `resource: None` means no resource
+    /// applies (all-open, a free action, or an unresolvable navigate target falling through
+    /// ungoverned). Precedence, each arm terminal:
+    ///
+    /// 1. All-open: `Gate::Proceed`, a literal short-circuit before any lookup use -- an
+    ///    all-open miss still dispatches.
+    /// 2. `requires == Some(&[])` (free action): `Gate::Proceed`, no grant attribution, no PDP
+    ///    consultation.
+    /// 3. `requires == None` (a governed directory miss): builds the `unknown_action` denial and
+    ///    routes it through [`crate::governance::enforcement::apply_mode`] (the only call site
+    ///    outside `check_call`) -- `Deny` records via the scope and returns `Gate::Deny`;
+    ///    `ShadowDeny` stores the shadow denial on the scope and returns `Gate::Proceed`. This is
+    ///    the ADR-0024 sanctioned delta: a GOVERNED miss is now denied (restoring ADR-0022's
+    ///    absent-means-DENY), where the pre-ADR-0024 code let it dispatch ungoverned.
+    /// 4. `resource == None` (non-empty `requires`, unresolvable/ungoverned target):
+    ///    `Gate::Proceed` (today's fall-through).
+    /// 5. `Some(resource)`, governed: delegates to [`Self::decide`] exactly as before this ADR;
+    ///    `Allow { grant_id }` stores attribution and proceeds; `Deny` records via the scope and
+    ///    returns `Gate::Deny`; `ShadowDeny` stores the shadow denial (attribution from the
+    ///    denial) and proceeds.
+    ///
+    /// On `Gate::Deny` the audit record is already written when this returns; the caller renders
+    /// `message` as the denial text and drops the (already-recorded) scope.
+    pub fn authorize(
+        &self,
+        audit: &mut CallAudit,
+        resource: Option<GoverningResource>,
+        config_mode: EffectiveMode,
+    ) -> Gate {
+        let state = match &self.mode {
+            Mode::AllOpen => return Gate::Proceed,
+            Mode::Governed(state) => state,
+        };
+
+        let Some(reqs) = audit.requires else {
+            let denial = crate::governance::enforcement::unknown_action_denial(
+                &audit.tool,
+                audit.action.as_deref(),
+                &state.manifest_hash,
+            );
+            return match crate::governance::enforcement::apply_mode(
+                Decision::Deny(denial),
+                &state.grants,
+                state.manifest_mode,
+                config_mode,
+            ) {
+                Decision::Deny(d) => {
+                    audit.record_terminal_deny(&d, 0);
+                    Gate::Deny { message: d.message }
+                }
+                Decision::ShadowDeny(d) => {
+                    audit.shadow = Some(d);
+                    Gate::Proceed
+                }
+                Decision::Allow { .. } => {
+                    unreachable!("apply_mode never turns a Deny into an Allow")
+                }
+            };
+        };
+
+        if reqs.is_empty() {
+            return Gate::Proceed;
+        }
+
+        let Some(resource) = resource else {
+            return Gate::Proceed;
+        };
+
+        match self.decide(
+            &audit.tool,
+            audit.action.as_deref(),
+            reqs,
+            resource,
+            config_mode,
+        ) {
+            Decision::Allow { grant_id } => {
+                audit.grant_id = grant_id;
+                Gate::Proceed
+            }
+            Decision::Deny(d) => {
+                audit.record_terminal_deny(&d, 0);
+                Gate::Deny { message: d.message }
+            }
+            Decision::ShadowDeny(d) => {
+                audit.grant_id = d.grant_id.clone();
+                audit.shadow = Some(d);
+                Gate::Proceed
             }
         }
     }
@@ -299,182 +388,6 @@ impl Governance {
                 name: name.to_string(),
                 version: version.to_string(),
             });
-        }
-    }
-
-    /// Build and record one audit record for a completed, ALLOWED tool call (ADR-0018 step 1:
-    /// the flight recorder). Called at the dispatch chokepoint after the call resolves, so the
-    /// record carries the real duration. `action` is the `computer` sub-action when
-    /// `tool == "computer"`, `None` otherwise. `domain` is the current tab's host at decision
-    /// time when the sacred-domains check (g08) or the grant machinery (g13) resolved one,
-    /// `None` otherwise (shared format doc section 6.1: `domain` is a decision-time fact, not
-    /// derived from tool arguments). `grant_id` is the resolving grant's id under a manifest
-    /// (from `Decision::Allow { grant_id }`, g13), `None` under all-open or when no grant
-    /// participates (`AlwaysAllow`, the `NoPage` union rule with no candidate... every allow
-    /// path that reaches this far always has one, but the type stays optional to mirror
-    /// [`Decision::Allow`] exactly).
-    ///
-    /// `identity` and `manifest` are always `None` until the identity/manifest-audit tasks land;
-    /// `decision` is always `"allow"` (a denied call goes through [`Self::record_deny`]
-    /// instead). `requires` is the call's bound capability requirement set (ADR-0022 Decision
-    /// 2), looked up by the caller from the same action directory `decide` consulted; a
-    /// directory miss maps to an empty requires slice at the call site and records `"none"`;
-    /// the `decision` and denial-rule fields carry the deny story.
-    pub fn record_call(
-        &self,
-        tool: &str,
-        action: Option<&str>,
-        requires: &[Capability],
-        duration_ms: u64,
-        domain: Option<&str>,
-        grant_id: Option<&str>,
-    ) {
-        let record = self.build_record(
-            tool,
-            action,
-            requires,
-            domain,
-            "allow",
-            grant_id.map(str::to_string),
-            None,
-            duration_ms,
-            false,
-        );
-        self.audit.record(&record);
-    }
-
-    /// Build and record one audit record for a call DENIED before dispatch (the sacred-domains
-    /// rule, g08; later the grant-enforcement rules, g13). No tool call ever ran, so
-    /// `duration_ms` is `0` per shared format doc section 6.1. `action` is the `computer`
-    /// sub-action when `tool == "computer"`, `None` otherwise. `requires` is the call's bound
-    /// capability requirement set (ADR-0022 Decision 2); a denial is still recorded with its
-    /// true requirement set, since the record's `capability` field is about the call's nature,
-    /// not its outcome. `domain` is the current tab's host at decision time when a current-tab
-    /// check resolved one, `None` otherwise -- this is independent of which host the denial
-    /// itself names (`denial.domain`): a navigate-target denial with an unresolvable current
-    /// tab still records `domain: null` even though the denial message names the target
-    /// (shared format doc section 6.1).
-    pub fn record_deny(
-        &self,
-        tool: &str,
-        action: Option<&str>,
-        requires: &[Capability],
-        denial: &Denial,
-        domain: Option<&str>,
-    ) {
-        let record = self.build_record(
-            tool,
-            action,
-            requires,
-            domain,
-            "deny",
-            denial.grant_id.clone(),
-            Some(denial.denial_id.clone()),
-            0,
-            false,
-        );
-        self.audit.record(&record);
-    }
-
-    /// Build and record one audit record for `navigate`'s point-5 post-landing denial (g13,
-    /// shared format doc section 6.1): unlike [`Self::record_deny`], the call DID dispatch and
-    /// the browser actually navigated before landing off-grant, so `duration_ms` is the real
-    /// elapsed time, not `0`. Always `tool: "navigate"`. `domain` is the FINAL (post-redirect)
-    /// host the tab landed on, or `None` for a non-host landing (a scheme, or an unresolvable
-    /// re-query) -- never the denial message's `(unknown)` placeholder.
-    pub fn record_navigate_landing_deny(
-        &self,
-        action: Option<&str>,
-        requires: &[Capability],
-        denial: &Denial,
-        domain: Option<&str>,
-        duration_ms: u64,
-    ) {
-        let record = self.build_record(
-            "navigate",
-            action,
-            requires,
-            domain,
-            "deny",
-            denial.grant_id.clone(),
-            Some(denial.denial_id.clone()),
-            duration_ms,
-            false,
-        );
-        self.audit.record(&record);
-    }
-
-    /// Build and record one audit record for a call that WOULD have been denied under enforce
-    /// but ran because the effective mode resolved to observe (g15, shadow enforcement,
-    /// ADR-0020 commitment 4): the tool executed exactly as an allow would, so `decision` is
-    /// `"shadow_deny"` with the SAME `grant_id`/`denial_id` an enforce-mode deny of the
-    /// identical call would carry (they are derived from the same `Denial`, never recomputed),
-    /// and `duration_ms` is the real elapsed time, never the pre-dispatch `0`. The agent's
-    /// response carries no denial text; only this record tells the truth about what would have
-    /// happened under enforce.
-    pub fn record_shadow_deny(
-        &self,
-        tool: &str,
-        action: Option<&str>,
-        requires: &[Capability],
-        denial: &Denial,
-        domain: Option<&str>,
-        duration_ms: u64,
-    ) {
-        let record = self.build_record(
-            tool,
-            action,
-            requires,
-            domain,
-            "shadow_deny",
-            denial.grant_id.clone(),
-            Some(denial.denial_id.clone()),
-            duration_ms,
-            false,
-        );
-        self.audit.record(&record);
-    }
-
-    /// Build and record one audit record for a call answered with the take-the-wheel pause
-    /// text instead of executing (a user hold, g10). The call was not policy-denied (policy
-    /// was never consulted) and no tool ran, so `decision` is `"allow"` and `duration_ms` is
-    /// `0`, exactly like [`Self::record_deny`]'s zero-duration convention -- but `held` is
-    /// `true` and `grant_id`/`denial_id` stay `None`. `domain` is always `None`: a held call
-    /// must not touch the extension, so no current-tab host is ever resolved for it.
-    pub fn record_held(&self, tool: &str, action: Option<&str>, requires: &[Capability]) {
-        let record = self.build_record(tool, action, requires, None, "allow", None, None, 0, true);
-        self.audit.record(&record);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn build_record(
-        &self,
-        tool: &str,
-        action: Option<&str>,
-        requires: &[Capability],
-        domain: Option<&str>,
-        decision: &'static str,
-        grant_id: Option<String>,
-        denial_id: Option<String>,
-        duration_ms: u64,
-        held: bool,
-    ) -> AuditRecord {
-        let capability = requires.first().map(Capability::as_str).unwrap_or("none");
-        AuditRecord {
-            event_id: uuid::Uuid::new_v4().to_string(),
-            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            identity: None,
-            client: self.current_client(),
-            tool: tool.to_string(),
-            action: action.map(str::to_string),
-            capability,
-            domain: domain.map(str::to_string),
-            decision,
-            grant_id,
-            denial_id,
-            duration_ms,
-            manifest: None,
-            held,
         }
     }
 
@@ -506,15 +419,216 @@ impl Governance {
     }
 }
 
+/// The outcome of [`Governance::authorize`]: either a terminal denial (the audit record is
+/// already written; the caller renders `message` as the denial text and does nothing further
+/// with the scope) or proceed (the caller dispatches the tool and later completes the scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gate {
+    Deny { message: String },
+    Proceed,
+}
+
+/// The per-call audit scope (ADR-0024 Decision 3): opened by [`Governance::begin`] right after
+/// the registry lookup, threaded through [`Governance::authorize`], and completed through
+/// exactly one of its own consuming methods. Fields are private; every mutation goes through a
+/// method so the one-record-per-call invariant lives in the type, not in caller discipline.
+pub struct CallAudit {
+    audit: Arc<dyn AuditSink>,
+    client: Option<ClientInfo>,
+    tool: String,
+    action: Option<String>,
+    requires: Option<&'static [Capability]>,
+    started: Instant,
+    domain: Option<String>,
+    grant_id: Option<String>,
+    shadow: Option<Denial>,
+    duration_ms: Option<u64>,
+}
+
+impl CallAudit {
+    /// Overwrite the audit-record `domain` field. Called unconditionally right after the sacred
+    /// check passes (seeding the pre-grant tab host so an all-open or free-action allow still
+    /// carries it), and again whenever grant-stage resource resolution produces one.
+    pub fn set_domain(&mut self, domain: Option<String>) {
+        self.domain = domain;
+    }
+
+    /// Record a held call (g10, the take-the-wheel pause): `decision: "allow"`, `held: true`,
+    /// `duration_ms: 0`, `domain: null` (a held call must never touch the extension, so no
+    /// current-tab host is ever resolved for it). Terminal: consumes the scope.
+    pub fn held(self) {
+        let record = self.build_record(None, "allow", None, None, 0, true);
+        self.audit.record(&record);
+    }
+
+    /// Record a pre-dispatch sacred-domains denial (g08): `decision: "deny"`, `duration_ms: 0`
+    /// per shared format doc section 6.1 (no tool call ever ran). `domain` is the current tab's
+    /// host at decision time (independent of which host the denial message itself names).
+    /// Terminal: consumes the scope.
+    pub fn sacred_deny(self, denial: &Denial, domain: Option<&str>) {
+        let record = self.build_record(
+            domain,
+            "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            0,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Freeze the call's duration at elapsed-since-[`Governance::begin`]. Called immediately
+    /// after `Browser::call` returns, transcribing today's clock stop at that exact point, so
+    /// [`Self::complete`]/[`Self::landing_deny`] reproduce the pre-ADR-0024 duration bytes even
+    /// when the navigate landing probe runs after this. A no-op if called more than once (the
+    /// first freeze wins); if never called, [`Self::duration`] falls back to elapsed-at-completion.
+    pub fn dispatch_finished(&mut self) {
+        if self.duration_ms.is_none() {
+            self.duration_ms = Some(self.elapsed_ms());
+        }
+    }
+
+    /// Amend the scope's attribution after a successful navigate landing re-check (g13/g15,
+    /// point 5): overwrites `grant_id`/`domain` with the landing's own resolution and clears any
+    /// shadow denial captured pre-dispatch (an on-grant landing is a real allow, not a shadow).
+    pub fn landing_allow(&mut self, grant_id: Option<String>, domain: Option<String>) {
+        self.grant_id = grant_id;
+        self.domain = domain;
+        self.shadow = None;
+    }
+
+    /// Amend the scope after a navigate landing re-check that resolves to a SHADOW deny (g15):
+    /// unlike [`Self::landing_allow`], this does not clear the shadow state -- it REPLACES
+    /// whatever shadow denial the pre-dispatch check may have captured with the landing's own,
+    /// and updates the domain to the landing host, so [`Self::complete`] later records a
+    /// `shadow_deny` attributed to the landing rather than the pre-dispatch check. Not named in
+    /// the pinned `CallAudit` method list (which covers only the landing-allow and landing-deny
+    /// `Decision` variants); added because the third `Decision::ShadowDeny` variant the landing
+    /// re-check can also produce (g15's mode switch applies there exactly as it does
+    /// pre-dispatch) must still be recorded as a `shadow_deny` -- reusing `landing_allow` would
+    /// silently clear that shadow state and misrecord it as a plain `allow`.
+    pub fn landing_shadow_deny(&mut self, denial: Denial, domain: Option<String>) {
+        self.domain = domain;
+        self.shadow = Some(denial);
+    }
+
+    /// Record the navigate point-5 post-landing denial (g13, shared format doc section 6.1):
+    /// unlike [`Self::sacred_deny`], the call DID dispatch and the browser actually navigated
+    /// before landing off-grant, so `duration_ms` is the frozen real elapsed time (via
+    /// [`Self::dispatch_finished`]), not `0`. `domain` is the FINAL (post-redirect) host the tab
+    /// landed on, or `None` for a non-host landing -- never the denial message's `(unknown)`
+    /// placeholder. Terminal: consumes the scope.
+    pub fn landing_deny(self, denial: &Denial, domain: Option<&str>) {
+        let duration_ms = self.duration();
+        let record = self.build_record(
+            domain,
+            "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            duration_ms,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Record the scope's final outcome (ADR-0024 Decision 3): a shadow denial captured along
+    /// the way (g15, shadow enforcement) yields a `"shadow_deny"` record with that denial's
+    /// `grant_id`/`denial_id`; otherwise an `"allow"` record with whatever attribution the scope
+    /// accumulated. Uses the frozen duration when [`Self::dispatch_finished`] ran (an ordinary
+    /// dispatched call), else elapsed-at-completion (the `explain` free action, answered with no
+    /// dispatch at all). Terminal: consumes the scope.
+    pub fn complete(self) {
+        let duration_ms = self.duration();
+        let domain = self.domain.clone();
+        let (decision, grant_id, denial_id) = match &self.shadow {
+            Some(denial) => (
+                "shadow_deny",
+                denial.grant_id.clone(),
+                Some(denial.denial_id.clone()),
+            ),
+            None => ("allow", self.grant_id.clone(), None),
+        };
+        let record = self.build_record(
+            domain.as_deref(),
+            decision,
+            grant_id,
+            denial_id,
+            duration_ms,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Record a terminal denial from inside [`Governance::authorize`] WITHOUT consuming the
+    /// scope (`authorize` only borrows `&mut CallAudit`): the caller drops the scope naturally
+    /// on its own early return, so no further completion call is needed or possible. Always
+    /// `duration_ms: 0` (pre-dispatch), matching [`Self::sacred_deny`]'s convention.
+    fn record_terminal_deny(&self, denial: &Denial, duration_ms: u64) {
+        let record = self.build_record(
+            self.domain.as_deref(),
+            "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            duration_ms,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Elapsed time since [`Governance::begin`], in milliseconds.
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// The duration to record: the frozen value from [`Self::dispatch_finished`] if it ran,
+    /// else elapsed-at-completion.
+    fn duration(&self) -> u64 {
+        self.duration_ms.unwrap_or_else(|| self.elapsed_ms())
+    }
+
+    /// Build one [`AuditRecord`] from the scope's captured fields plus this call's own outcome
+    /// fields. `domain` is taken as a parameter (not always `self.domain`): [`Self::sacred_deny`]
+    /// and [`Self::landing_deny`] each name a domain that differs from whatever the scope has
+    /// accumulated so far (the sacred check's own tab resolution; the post-landing host).
+    #[allow(clippy::too_many_arguments)]
+    fn build_record(
+        &self,
+        domain: Option<&str>,
+        decision: &'static str,
+        grant_id: Option<String>,
+        denial_id: Option<String>,
+        duration_ms: u64,
+        held: bool,
+    ) -> AuditRecord {
+        let capability = self
+            .requires
+            .and_then(|r| r.first())
+            .map(Capability::as_str)
+            .unwrap_or("none");
+        AuditRecord {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            identity: None,
+            client: self.client.clone(),
+            tool: self.tool.clone(),
+            action: self.action.clone(),
+            capability,
+            domain: domain.map(str::to_string),
+            decision,
+            grant_id,
+            denial_id,
+            duration_ms,
+            manifest: None,
+            held,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::governance::ports::NoopPdp;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn no_requires(_tool: &str, _action: Option<&str>) -> Option<&'static [Capability]> {
-        None
-    }
 
     /// A stand-in for the browser plugin's real action directory: `computer`/`screenshot` and
     /// `read_page` require `read`; `computer`/`left_click` requires `action`; `tabs_create_mcp`
@@ -541,6 +655,23 @@ mod tests {
                 denial_id: "D-00000000".to_string(),
                 domain: String::new(),
                 message: "the PDP was consulted when it should not have been".to_string(),
+            })
+        }
+    }
+
+    /// A PDP that denies naming exactly the `requires` slice it was handed, so a test can prove
+    /// WHICH capability set actually reached the decision (ADR-0024 Decision 3: `authorize`
+    /// consults `Governance`'s own held decision point with the CALLER's `requires`, never a
+    /// second, independently looked-up one -- there is no fn pointer left to look one up with).
+    struct EchoRequiresPdp;
+    impl PolicyDecisionPoint for EchoRequiresPdp {
+        fn decide(&self, req: &DecisionRequest) -> Decision {
+            Decision::Deny(Denial {
+                rule: "echo".to_string(),
+                grant_id: None,
+                denial_id: "D-00000002".to_string(),
+                domain: String::new(),
+                message: format!("saw requires={:?}", req.requires),
             })
         }
     }
@@ -601,206 +732,147 @@ mod tests {
         }
     }
 
+    /// Test 1: `begin` + `set_domain` + `complete` reproduces the pre-ADR-0024
+    /// `record_call_passes_the_resolved_domain_through` assertion PLUS the 14-key field order
+    /// pin transcribed from `tests/audit_recorder.rs` (there is no single pinned JSON blob
+    /// today; these two named sources are the oracle).
     #[test]
-    fn all_open_decide_is_allow_and_still_records() {
-        let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        assert!(matches!(
-            g.decide(
-                "navigate",
-                None,
-                GoverningResource::None,
-                EffectiveMode::Enforce
-            ),
-            Decision::Allow { grant_id: None }
-        ));
-        g.record_call("navigate", None, &[], 5, None, None);
-        assert_eq!(sink.count.load(Ordering::SeqCst), 1);
-    }
+    fn begin_complete_produces_the_allow_record_bytes() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone());
+        let mut audit = g.begin("read_page", None, None);
+        audit.set_domain(Some("www.mybank.com".to_string()));
+        audit.complete();
+        let rec = sink.last();
+        assert_eq!(rec.domain.as_deref(), Some("www.mybank.com"));
+        assert_eq!(rec.decision, "allow");
+        assert_eq!(rec.capability, "none");
+        assert_eq!(rec.grant_id, None);
+        assert!(!rec.held);
 
-    #[test]
-    fn governed_over_noop_still_allows_and_holds_the_sink() {
-        let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::governed(
-            Box::new(NoopPdp),
-            sink.clone(),
-            sample_requires,
-            Vec::new(),
-            String::new(),
-            None,
+        // The 14-key field order pin, transcribed from tests/audit_recorder.rs.
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
+        let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                "event_id",
+                "ts",
+                "identity",
+                "client",
+                "tool",
+                "action",
+                "capability",
+                "domain",
+                "decision",
+                "grant_id",
+                "denial_id",
+                "duration_ms",
+                "manifest",
+                "held",
+            ],
+            "field order matches the shared format"
         );
-        assert!(matches!(
-            g.decide(
-                "read_page",
-                None,
-                GoverningResource::None,
-                EffectiveMode::Enforce
-            ),
-            Decision::Allow { .. }
-        ));
-        g.record_call("navigate", None, &[], 0, None, None);
-        assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
-    /// A directory miss (`requires` returns `None`) denies via the `unknown_action` rule, and
-    /// that denial goes through the SAME mode switch a classified would-deny does (ADR-0022;
-    /// `enforcement::unknown_action_denial`, `enforcement::apply_mode`).
+    /// Test 2: a GOVERNED directory miss (`requires: None`) denies via `unknown_action` through
+    /// the mode switch (enforce -> real Gate::Deny; observe -> Proceed, with `complete()` later
+    /// recording the SAME denial id as a shadow_deny); an ALL-OPEN miss still dispatches
+    /// (Proceed), the precedence table's arm 1. Transcribes the pre-ADR-0024
+    /// `directory_miss_denies_via_unknown_action_through_the_mode_switch` expectations.
     #[test]
-    fn directory_miss_denies_via_unknown_action_through_the_mode_switch() {
-        let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::governed(
+    fn authorize_miss_is_unknown_action_through_the_mode_switch() {
+        // Enforce: a real Gate::Deny, already recorded with rule unknown_action.
+        let enforce_sink = Arc::new(CapturingAuditSink::default());
+        let enforce_g = Governance::governed(
             Box::new(NoopPdp),
-            sink,
-            no_requires,
+            enforce_sink.clone(),
             Vec::new(),
             "hash".to_string(),
             None,
         );
-        match g.decide(
-            "no_such_tool",
+        let mut enforce_audit = enforce_g.begin("no_such_tool", None, None);
+        let denial_id = match enforce_g.authorize(&mut enforce_audit, None, EffectiveMode::Enforce)
+        {
+            Gate::Deny { message } => {
+                assert!(message.starts_with("Denied (D-"), "{message}");
+                let rec = enforce_sink.last();
+                assert_eq!(rec.decision, "deny");
+                assert_eq!(rec.capability, "none");
+                assert_eq!(rec.duration_ms, 0);
+                rec.denial_id.expect("denial id present")
+            }
+            Gate::Proceed => panic!("expected a deny for a governed miss"),
+        };
+
+        // Observe: Proceed (the tool dispatches), then complete() records a shadow_deny with the
+        // SAME denial id as the enforce run above.
+        let observe_sink = Arc::new(CapturingAuditSink::default());
+        let observe_g = Governance::governed(
+            Box::new(NoopPdp),
+            observe_sink.clone(),
+            Vec::new(),
+            "hash".to_string(),
             None,
-            GoverningResource::None,
-            EffectiveMode::Enforce,
-        ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "unknown_action"),
-            other => panic!("expected an unknown_action deny, got {other:?}"),
-        }
-        match g.decide(
-            "no_such_tool",
-            None,
-            GoverningResource::None,
-            EffectiveMode::Observe,
-        ) {
-            Decision::ShadowDeny(d) => assert_eq!(d.rule, "unknown_action"),
-            other => panic!("expected an unknown_action shadow deny, got {other:?}"),
-        }
+        );
+        let mut observe_audit = observe_g.begin("no_such_tool", None, None);
+        assert!(matches!(
+            observe_g.authorize(&mut observe_audit, None, EffectiveMode::Observe),
+            Gate::Proceed
+        ));
+        observe_audit.complete();
+        let observe_rec = observe_sink.last();
+        assert_eq!(observe_rec.decision, "shadow_deny");
+        assert_eq!(observe_rec.denial_id.as_deref(), Some(denial_id.as_str()));
+
+        // All-open: a miss still dispatches (Proceed), never even reaching the mode switch.
+        let all_open_sink = Arc::new(CountingAuditSink::default());
+        let all_open_g = Governance::all_open(all_open_sink);
+        let mut all_open_audit = all_open_g.begin("no_such_tool", None, None);
+        assert!(matches!(
+            all_open_g.authorize(&mut all_open_audit, None, EffectiveMode::Enforce),
+            Gate::Proceed
+        ));
     }
 
-    /// `requires: []` allows immediately, with no grant id, WITHOUT ever consulting the decision
-    /// point (ADR-0022 Decision 5 step 2): proven here by wiring a PDP that always denies and
-    /// showing the call still allows.
+    /// Test 3: `requires: Some(&[])` (a free action) proceeds without ever consulting the
+    /// decision point (ADR-0022 Decision 5 step 2, ADR-0024 Decision 3 arm 2), proven by wiring
+    /// a PDP that always denies and showing the call still allows; `complete()` records the
+    /// allow with no grant attribution and `capability: "none"`.
     #[test]
-    fn requires_empty_allows_without_consulting_the_pdp() {
-        let sink = Arc::new(CountingAuditSink::default());
+    fn authorize_free_action_proceeds_without_grant_attribution() {
+        let sink = Arc::new(CapturingAuditSink::default());
         let g = Governance::governed(
             Box::new(AlwaysDenyPdp),
-            sink,
-            sample_requires,
+            sink.clone(),
             Vec::new(),
             "hash".to_string(),
             None,
         );
-        assert_eq!(
-            g.decide(
-                "tabs_create_mcp",
-                None,
-                GoverningResource::None,
+        let mut audit = g.begin("tabs_create_mcp", None, Some(&[]));
+        assert!(matches!(
+            g.authorize(
+                &mut audit,
+                Some(GoverningResource::None),
                 EffectiveMode::Enforce
             ),
-            Decision::Allow { grant_id: None }
-        );
-    }
-
-    #[test]
-    fn computer_action_requires_flows_into_capability() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_requires);
-
-        g.record_call(
-            "computer",
-            Some("screenshot"),
-            &[Capability::Read],
-            0,
-            None,
-            None,
-        );
+            Gate::Proceed
+        ));
+        audit.complete();
         let rec = sink.last();
-        assert_eq!(rec.capability, "read");
-        assert_eq!(rec.action.as_deref(), Some("screenshot"));
-
-        g.record_call(
-            "computer",
-            Some("left_click"),
-            &[Capability::Action],
-            0,
-            None,
-            None,
-        );
-        assert_eq!(sink.last().capability, "action");
-
-        g.record_call("read_page", None, &[Capability::Read], 0, None, None);
-        let rec = sink.last();
-        assert_eq!(rec.capability, "read");
-        assert_eq!(rec.action, None);
-    }
-
-    /// `requires_empty_records_capability_none`: a directory-less/empty-requires call records
-    /// `capability: "none"` and `decision: "allow"` (ADR-0022 Decision 8).
-    #[test]
-    fn requires_empty_records_capability_none() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        g.record_call("tabs_create_mcp", None, &[], 0, None, None);
-        let rec = sink.last();
-        assert_eq!(rec.capability, "none");
         assert_eq!(rec.decision, "allow");
+        assert_eq!(rec.grant_id, None);
+        assert_eq!(rec.capability, "none");
     }
 
-    /// `deny_record_carries_the_capability_of_the_denied_call`: a deny record's `capability`
-    /// reflects the call's own requirement set, not the outcome.
+    /// Test 4: transcribed from the pre-ADR-0024 `record_deny_writes_a_zero_duration_deny_record`
+    /// and `record_held_writes_an_allow_record_with_held_true_and_no_domain`.
     #[test]
-    fn deny_record_carries_the_capability_of_the_denied_call() {
+    fn sacred_deny_and_held_records_are_byte_stable() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        let denial = Denial {
-            rule: "capability".to_string(),
-            grant_id: None,
-            denial_id: "D-00000001".to_string(),
-            domain: String::new(),
-            message: "Denied (D-00000001): javascript_tool needs the 'execute' capability."
-                .to_string(),
-        };
-        g.record_deny(
-            "javascript_tool",
-            None,
-            &[Capability::Execute],
-            &denial,
-            None,
-        );
-        let rec = sink.last();
-        assert_eq!(rec.capability, "execute");
-        assert_eq!(rec.decision, "deny");
-    }
+        let g = Governance::all_open(sink.clone());
 
-    #[test]
-    fn set_client_first_capture_wins() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        g.set_client("a", "1");
-        g.set_client("b", "2");
-        let stored = g.client.lock().unwrap();
-        assert_eq!(stored.as_ref().unwrap().name, "a");
-        assert_eq!(stored.as_ref().unwrap().version, "1");
-        drop(stored);
-
-        g.record_call("navigate", None, &[], 0, None, None);
-        let client = sink.last().client.expect("client info recorded");
-        assert_eq!(client.name, "a");
-        assert_eq!(client.version, "1");
-    }
-
-    #[test]
-    fn record_call_passes_the_resolved_domain_through() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        g.record_call("read_page", None, &[], 0, Some("www.mybank.com"), None);
-        assert_eq!(sink.last().domain.as_deref(), Some("www.mybank.com"));
-    }
-
-    #[test]
-    fn record_deny_writes_a_zero_duration_deny_record() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_requires);
         let denial = Denial {
             rule: "sacred/*.mybank.com".to_string(),
             grant_id: None,
@@ -809,13 +881,8 @@ mod tests {
             message: "Denied (D-af6633ec): www.mybank.com is on the user's never-touch list."
                 .to_string(),
         };
-        g.record_deny(
-            "read_page",
-            None,
-            &[Capability::Read],
-            &denial,
-            Some("www.mybank.com"),
-        );
+        let audit = g.begin("read_page", None, sample_requires("read_page", None));
+        audit.sacred_deny(&denial, Some("www.mybank.com"));
         let rec = sink.last();
         assert_eq!(rec.decision, "deny");
         assert_eq!(rec.denial_id.as_deref(), Some("D-af6633ec"));
@@ -823,13 +890,14 @@ mod tests {
         assert_eq!(rec.duration_ms, 0);
         assert_eq!(rec.domain.as_deref(), Some("www.mybank.com"));
         assert_eq!(rec.capability, "read");
-    }
+        assert!(!rec.held);
 
-    #[test]
-    fn record_held_writes_an_allow_record_with_held_true_and_no_domain() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_requires);
-        g.record_held("computer", Some("screenshot"), &[Capability::Read]);
+        let held_audit = g.begin(
+            "computer",
+            Some("screenshot"),
+            sample_requires("computer", Some("screenshot")),
+        );
+        held_audit.held();
         let rec = sink.last();
         assert_eq!(rec.decision, "allow");
         assert!(rec.held);
@@ -841,23 +909,100 @@ mod tests {
         assert_eq!(rec.action.as_deref(), Some("screenshot"));
     }
 
+    /// Test 5: `landing_allow` overwrites attribution, then `complete` reflects the amendment;
+    /// `landing_deny` reproduces the field assertions transcribed from
+    /// `server.rs::point5_navigate_landing_off_grant_parks_and_denies` (decision deny, the
+    /// landing domain, `grant_id` null, a real duration, tool `navigate` now coming from the
+    /// scope itself rather than a hardcoded literal).
     #[test]
-    fn record_call_and_record_deny_leave_held_false() {
+    fn landing_amendments_match_the_old_navigate_records() {
+        // landing_allow: overwrites attribution; complete reflects the amended allow.
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
-        g.record_call("navigate", None, &[], 5, None, None);
-        assert!(!sink.last().held);
+        let g = Governance::all_open(sink.clone());
+        let mut audit = g.begin("navigate", None, Some(&[Capability::Read][..]));
+        audit.set_domain(Some("example.com".to_string()));
+        audit.dispatch_finished();
+        audit.landing_allow(Some("g1".to_string()), Some("example.com".to_string()));
+        audit.complete();
+        let rec = sink.last();
+        assert_eq!(rec.decision, "allow");
+        assert_eq!(rec.grant_id.as_deref(), Some("g1"));
+        assert_eq!(rec.domain.as_deref(), Some("example.com"));
+        assert_eq!(rec.tool, "navigate");
 
+        // landing_deny: transcribed from point5_navigate_landing_off_grant_parks_and_denies.
+        let sink2 = Arc::new(CapturingAuditSink::default());
+        let g2 = Governance::all_open(sink2.clone());
+        let mut audit2 = g2.begin("navigate", None, Some(&[Capability::Read][..]));
+        std::thread::sleep(Duration::from_millis(2));
+        audit2.dispatch_finished();
         let denial = Denial {
-            rule: "sacred/mybank.com".to_string(),
+            rule: "unmatched_domain".to_string(),
             grant_id: None,
-            denial_id: "D-171052e3".to_string(),
-            domain: "mybank.com".to_string(),
-            message: "Denied (D-171052e3): mybank.com is on the user's never-touch list."
+            denial_id: "D-00000003".to_string(),
+            domain: "evil.com".to_string(),
+            message: "Denied (D-00000003): no grant covers evil.com. Tool use is limited to \
+                      domains your policy grants."
                 .to_string(),
         };
-        g.record_deny("navigate", None, &[], &denial, None);
-        assert!(!sink.last().held);
+        audit2.landing_deny(&denial, Some("evil.com"));
+        let rec2 = sink2.last();
+        assert_eq!(rec2.decision, "deny");
+        assert_eq!(rec2.domain.as_deref(), Some("evil.com"));
+        assert_eq!(rec2.grant_id, None);
+        assert_eq!(rec2.tool, "navigate");
+        assert!(
+            rec2.duration_ms > 0,
+            "a landing deny carries the real elapsed duration, not the pre-dispatch 0: {}",
+            rec2.duration_ms
+        );
+    }
+
+    /// Test 6: structural (ADR-0024 Decision 3) -- `Governance` no longer holds a `requires` fn
+    /// pointer at all (this call would not compile against the old fn-pointer-taking
+    /// constructor), and `authorize` drives the decision from exactly the `requires` value the
+    /// caller handed `begin`, never a second, independent lookup: proven by handing a
+    /// deliberately WRONG value to a PDP that echoes back what it saw.
+    #[test]
+    fn one_lookup_feeds_decision_and_audit() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::governed(
+            Box::new(EchoRequiresPdp),
+            sink,
+            Vec::new(),
+            "hash".to_string(),
+            None,
+        );
+        let mut audit = g.begin("read_page", None, Some(&[Capability::Execute][..]));
+        match g.authorize(
+            &mut audit,
+            Some(GoverningResource::Resource("example.com".to_string())),
+            EffectiveMode::Enforce,
+        ) {
+            Gate::Deny { message } => assert!(
+                message.contains("Execute"),
+                "the PDP must see exactly the caller's own requires value: {message}"
+            ),
+            Gate::Proceed => panic!("expected the echo PDP's deny"),
+        }
+    }
+
+    #[test]
+    fn set_client_first_capture_wins() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone());
+        g.set_client("a", "1");
+        g.set_client("b", "2");
+        let stored = g.client.lock().unwrap();
+        assert_eq!(stored.as_ref().unwrap().name, "a");
+        assert_eq!(stored.as_ref().unwrap().version, "1");
+        drop(stored);
+
+        let audit = g.begin("navigate", None, None);
+        audit.complete();
+        let client = sink.last().client.expect("client info recorded");
+        assert_eq!(client.name, "a");
+        assert_eq!(client.version, "1");
     }
 
     #[test]
@@ -896,7 +1041,7 @@ mod tests {
     #[test]
     fn record_session_killed_writes_a_session_event_with_no_tool_call_fields() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_requires);
+        let g = Governance::all_open(sink.clone());
         g.set_client("claude-code", "2.1.0");
         g.record_session_killed();
         let rec = sink.last_session_event();
@@ -924,7 +1069,7 @@ mod tests {
     #[test]
     fn governance_status_is_none_under_all_open() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink, no_requires);
+        let g = Governance::all_open(sink);
         assert_eq!(g.governance_status(EffectiveMode::Enforce), None);
     }
 
@@ -983,7 +1128,6 @@ mod tests {
         let g = Governance::governed(
             Box::new(NoopPdp),
             sink,
-            no_requires,
             vec![one_grant()],
             String::new(),
             Some(EffectiveMode::Observe),

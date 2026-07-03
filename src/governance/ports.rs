@@ -48,6 +48,21 @@ impl EffectiveMode {
     }
 }
 
+/// Render a call's display label (shared format doc section 7.2): a tool with a
+/// sub-action renders as `{tool} ({action})`; every other call renders the bare tool
+/// name. The one implementation; hold messages and denial messages share it. NOTE the
+/// generalization from the pre-ADR-0024 formatters, which keyed on `tool == "computer"`:
+/// this one keys on `action.is_some()` instead. The two are equivalent today because only
+/// `computer` calls ever carry an action (the transport layer extracts `action` only for
+/// `computer`); if a future tool ever carries its own sub-action, this formatter already
+/// renders it correctly without a further change.
+pub fn call_label(tool: &str, action: Option<&str>) -> String {
+    match action {
+        Some(action) => format!("{tool} ({action})"),
+        None => tool.to_string(),
+    }
+}
+
 /// One capability primitive of the ADR-0022 Decision 1 taxonomy. Capabilities categorize
 /// an operation by EPISTEMIC STATUS -- what the governor can PROVE about it -- never by
 /// its (unknowable) downstream effect. `Read` is provably retrieval/observation only;

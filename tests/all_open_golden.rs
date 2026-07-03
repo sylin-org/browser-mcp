@@ -70,20 +70,19 @@ impl AuditSink for NullAuditSink {
     fn record_session_event(&self, _record: &browser_mcp::governance::ports::SessionEventRecord) {}
 }
 
-fn no_requires(
-    _tool: &str,
-    _action: Option<&str>,
-) -> Option<&'static [browser_mcp::governance::ports::Capability]> {
-    None
-}
-
 #[test]
 fn facade_decide_is_all_open_after_the_move() {
-    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink), no_requires);
+    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink));
     for name in GOLDEN_TOOL_NAMES {
         assert!(
             matches!(
-                governance.decide(name, None, GoverningResource::None, EffectiveMode::Enforce),
+                governance.decide(
+                    name,
+                    None,
+                    &[],
+                    GoverningResource::None,
+                    EffectiveMode::Enforce
+                ),
                 Decision::Allow { grant_id: None }
             ),
             "{name} must be allowed in the all-open engine"

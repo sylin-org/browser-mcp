@@ -87,15 +87,6 @@ pub(crate) fn apply_mode(
     }
 }
 
-/// Render a tool's label for a denial message (shared format doc section 7.2): `computer`
-/// calls render as `computer (<action>)`; every other tool renders its bare name.
-fn tool_label(tool: &str, action: Option<&str>) -> String {
-    match (tool, action) {
-        ("computer", Some(action)) => format!("computer ({action})"),
-        _ => tool.to_string(),
-    }
-}
-
 /// The pure per-call grant-resolution decision (ADR-0022 Decision 5). STEP 0 (no manifest ->
 /// allow) lives at the caller ([`crate::governance::dispatch::Governance::decide`]); this
 /// function always assumes a manifest is active. Order is load-bearing (the denial id depends
@@ -286,12 +277,12 @@ fn scheme_denial(scheme: &str, manifest_hash: &str) -> Denial {
 /// The denial for a call whose action directory lookup missed (`requires` returned `None`: an
 /// unknown tool, or a `computer` call with a missing/unknown action). Under a manifest, an
 /// unclassifiable call is never authorized. Public: [`crate::governance::dispatch
-/// ::Governance::decide`] (the caller) builds this BEFORE constructing a `DecisionRequest`,
+/// ::Governance::authorize`] (the caller) builds this BEFORE constructing a `DecisionRequest`,
 /// since without a resolved `requires` set there is no request to build.
 pub fn unknown_action_denial(tool: &str, action: Option<&str>, manifest_hash: &str) -> Denial {
     let rule = "unknown_action".to_string();
     let denial_id = denial::denial_id(manifest_hash, "", &rule);
-    let label = tool_label(tool, action);
+    let label = crate::governance::ports::call_label(tool, action);
     let message = format!(
         "Denied ({denial_id}): no grant permits '{label}'. Give this denial id to your \
          administrator to request '{label}'."
@@ -315,7 +306,7 @@ fn capability_denial(
 ) -> Denial {
     let rule = "capability".to_string();
     let denial_id = denial::denial_id(manifest_hash, &grant.id, &rule);
-    let label = tool_label(tool, action);
+    let label = crate::governance::ports::call_label(tool, action);
     let missing = requires
         .iter()
         .find(|c| !grant.allowed.contains(c))

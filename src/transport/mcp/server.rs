@@ -14,7 +14,7 @@ use crate::browser::pattern::HostOutcome;
 use crate::browser::{advertise, directory, pattern, polarity, redact, resource, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
-use crate::governance::dispatch::{hold_message, Governance};
+use crate::governance::dispatch::{hold_message, Gate, Governance};
 use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::source::LoadedPolicy;
 use crate::governance::ports::{
@@ -86,12 +86,11 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
         Some(manifest) => Governance::governed(
             Box::new(LocalPdp::new(polarity::evaluate_host)),
             recorder.clone() as Arc<dyn AuditSink>,
-            directory::requires,
             manifest.grants.clone(),
             manifest.hash.clone(),
             manifest.mode,
         ),
-        None => Governance::all_open(recorder as Arc<dyn AuditSink>, directory::requires),
+        None => Governance::all_open(recorder as Arc<dyn AuditSink>),
     });
 
     // Panic kill switch (g11, ADR-0018 step 2): the extension signals `session_killed` once it
@@ -326,26 +325,24 @@ async fn handle_tools_call(
         None
     };
 
-    // The single per-call action-directory lookup (ADR-0022 Decision 2): a pure static table
-    // scan, no I/O, performed once and reused for every audit record this call produces
-    // (`requires` feeds the `capability` field, ADR-0022 Decision 8). A directory miss maps to
-    // an empty slice at every record site; `governance.decide` performs its own equivalent
-    // lookup internally for the decision path, so this is not the only lookup in the request,
-    // but it is the only one the server itself performs.
-    let requires: &[Capability] = directory::requires(name, action).unwrap_or(&[]);
+    // The single per-call action-directory lookup (ADR-0022 Decision 2, ADR-0024 Decision 3): a
+    // pure static table scan, no I/O, performed ONCE and kept as the `Option` it is (a registry
+    // miss is `None`, never coerced to an empty slice here): `governance.begin` and
+    // `governance.authorize` both consume this SAME value, so there is exactly one lookup for
+    // the whole call, feeding both the decision and the audit `capability` field.
+    let lookup: Option<&'static [Capability]> = directory::requires(name, action);
+    let mut audit = governance.begin(name, action, lookup);
 
     // Take-the-wheel hold (g10, ADR-0018 step 2): a user gesture, not a policy decision, so it
-    // is checked before ANY dispatch machinery -- before governance.decide, before the sacred
+    // is checked before ANY dispatch machinery -- before governance.authorize, before the sacred
     // check, before any extension traffic. A held call is answered immediately with a
     // successful (never isError) text result and is never queued, deferred, or replayed;
     // resuming affects only future calls. Held calls still produce one audit record
     // (`decision: "allow"`, `held: true`, `duration_ms: 0`).
     if let Some(held_for) = browser.held_for() {
-        governance.record_held(name, action, requires);
+        audit.held();
         return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
     }
-
-    let dispatch_started = Instant::now();
 
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
@@ -363,72 +360,62 @@ async fn handle_tools_call(
         sacred_check(browser, sacred_domains, name, &args).await
     };
     if let Some(denial) = denial {
-        governance.record_deny(name, action, requires, &denial, tab_domain.as_deref());
+        audit.sacred_deny(&denial, tab_domain.as_deref());
         return JsonRpcResponse::success(id, text_content(denial.message));
     }
+
+    // Seed the audit domain from the sacred check's own tab resolution (the pre-grant default
+    // for an ungoverned/free-action call) unconditionally, so an all-open or free-action allow
+    // on a resolvable (non-sacred) tab still carries that tab's host on its record (shared
+    // format doc section 6.1). Grant-stage resource resolution below overwrites this with its
+    // own resolved host once governed (the two mechanisms resolve the tab independently and
+    // deliberately, g08's sacred check and g13's grant check being out-of-scope-for-each-other
+    // concerns; see RECONCILIATION.md section 1).
+    audit.set_domain(tab_domain.clone());
 
     // Free actions (ADR-0022 Decision 5 step 2 and Decision 7): an action whose directory
     // requirement is empty provably touches no page and no server, so it is allowed
     // unconditionally -- no resource resolution and no grant scan. This runs AFTER the always-on
-    // sacred check (step 1) and BEFORE grant enforcement, which the `!requires.is_empty()` guard
+    // sacred check (step 1) and BEFORE grant enforcement, which the resource-resolution gate
     // below skips for these tools, so no `tab_url` probe ever fires for them (the sharp case is
     // `computer` `wait`: requirement `[]`, yet it carries a `tabId`). `explain` (Decision 7) is
     // the one free action with a server-side body and no extension action, so it is answered
     // right here (no native-messaging frame is ever produced for it); every other free action
     // (`tabs_create_mcp`, `resize_window`, `update_plan`, `computer` `wait`) falls through to an
-    // ordinary allowed dispatch below. All are audited as an allow with no grant attribution and
-    // a real (not hardcoded) `duration_ms`.
+    // ordinary allowed dispatch below, and to `governance.authorize`'s own free-action arm. All
+    // are audited as an allow with no grant attribution and a real (not hardcoded) `duration_ms`.
     if name == "explain" {
         let text = directory::explain_text();
-        let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        governance.record_call(name, action, requires, duration_ms, None, None);
+        audit.complete();
         return JsonRpcResponse::success(id, text_content(text));
     }
 
-    // Grant enforcement (g13, ADR-0018 step 3): resolve the governing resource for this call and
-    // consult the dispatch chokepoint. All-open (no manifest) skips resolution entirely -- STEP 0
-    // must add zero new frames and zero new latency (constraint 3); `Governance::decide` itself
-    // would short-circuit to Allow under all-open regardless, but there is nothing to gain from
-    // resolving a resource value it will never look at. Free actions (empty `requires`) are
-    // likewise skipped by the `!requires.is_empty()` guard: they were already allowed above
-    // without touching a resource (ADR-0022 Decision 5 step 2), so resolving one here would only
-    // add a pointless `tab_url` round-trip. `audit_domain` starts at the
-    // sacred-domains check's own tab resolution (the pre-g13 default for an ungoverned call) and
-    // is overwritten with the grant machinery's own resolved host once governed, per shared
-    // format doc section 6.1 ("domain: the parser-normalized host, or null"); the two mechanisms
-    // resolve the tab independently and deliberately (g08's sacred check and g13's grant check
-    // are separate, out-of-scope-for-each-other concerns; see RECONCILIATION.md section 1).
-    //
-    // `config_mode` (g15) feeds the mode precedence (per-grant > manifest > `governance.mode`);
-    // `shadow_denial` carries the would-deny `Denial` forward when the effective mode resolves to
-    // observe, so the call still dispatches (exactly like an allow) but the eventual audit record
-    // is `shadow_deny`, not `allow`.
-    let config_mode = EffectiveMode::from_config_str(config.governance_mode());
-    let mut audit_domain = tab_domain.clone();
-    let mut audit_grant_id: Option<String> = None;
-    let mut shadow_denial: Option<Denial> = None;
+    // Grant enforcement (g13, ADR-0018 step 3, ADR-0024 Decision 3): resolve the governing
+    // resource for this call, then consult the single policy gate. Resource resolution stays
+    // gated on being governed with a KNOWN, non-empty requirement set (a miss resolves nothing --
+    // no wasted probe before its `unknown_action` denial; a free action was already allowed
+    // above); `governance.authorize` itself is called for EVERY call that reaches this point
+    // (governed or not, miss or not) -- its own precedence table makes the ungoverned/free/miss
+    // arms cheap and correct, restoring ADR-0022's absent-means-DENY for a governed miss (the
+    // ADR-0024 sanctioned delta this task owns) while leaving all-open and free-action behavior
+    // byte-identical.
+    let config_mode = config.governance_mode();
     let mut navigate_post_check = false;
-    if governance.is_governed() && !requires.is_empty() {
-        if let Some((resource, domain)) = resolve_governing_resource(browser, name, &args).await {
-            audit_domain = domain;
-            if name == "navigate" {
-                navigate_post_check = true;
-            }
-            match governance.decide(name, action, resource, config_mode) {
-                Decision::Deny(d) => {
-                    governance.record_deny(name, action, requires, &d, audit_domain.as_deref());
-                    return JsonRpcResponse::success(id, text_content(d.message));
-                }
-                Decision::Allow { grant_id } => audit_grant_id = grant_id,
-                Decision::ShadowDeny(d) => {
-                    audit_grant_id = d.grant_id.clone();
-                    shadow_denial = Some(d);
-                }
-            }
+    let resolved = if governance.is_governed() && matches!(lookup, Some(r) if !r.is_empty()) {
+        resolve_governing_resource(browser, name, &args).await
+    } else {
+        None
+    };
+    if let Some((_, domain)) = &resolved {
+        audit.set_domain(domain.clone());
+        if name == "navigate" {
+            navigate_post_check = true;
         }
-        // `None`: an unparseable `navigate` target. The extension refuses an invalid URL without
-        // navigating (an ordinary, non-isError "Invalid URL" text result), so there is nothing to
-        // govern here or at point 5; fall through to dispatch unconditionally.
+    }
+    let resource = resolved.map(|(r, _)| r);
+    match governance.authorize(&mut audit, resource, config_mode) {
+        Gate::Deny { message } => return JsonRpcResponse::success(id, text_content(message)),
+        Gate::Proceed => {}
     }
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
@@ -453,7 +440,7 @@ async fn handle_tools_call(
     }
 
     let outcome = browser.call(name, &args).await;
-    let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    audit.dispatch_finished();
 
     // Point 5 (g13/g15): after a dispatched `navigate` succeeds, re-check the FINAL
     // (post-redirect) landing -- authoritative over the pre-dispatch verdict above for the
@@ -463,52 +450,30 @@ async fn handle_tools_call(
     // (nothing landed).
     if navigate_post_check && outcome.is_ok() {
         if let Some(tab_id) = args.get("tabId").and_then(Value::as_i64) {
-            let (landing, landing_domain) =
-                post_navigate_landing_check(browser, governance, tab_id, config_mode).await;
+            let (landing, landing_domain) = post_navigate_landing_check(
+                browser,
+                governance,
+                lookup.unwrap_or(&[]),
+                tab_id,
+                config_mode,
+            )
+            .await;
             match landing {
                 Decision::Allow { grant_id } => {
-                    audit_grant_id = grant_id;
-                    audit_domain = landing_domain;
-                    shadow_denial = None;
+                    audit.landing_allow(grant_id, landing_domain);
                 }
                 Decision::Deny(d) => {
-                    governance.record_navigate_landing_deny(
-                        action,
-                        requires,
-                        &d,
-                        landing_domain.as_deref(),
-                        duration_ms,
-                    );
+                    audit.landing_deny(&d, landing_domain.as_deref());
                     return JsonRpcResponse::success(id, text_content(d.message));
                 }
                 Decision::ShadowDeny(d) => {
-                    audit_grant_id = d.grant_id.clone();
-                    audit_domain = landing_domain;
-                    shadow_denial = Some(d);
+                    audit.landing_shadow_deny(d, landing_domain);
                 }
             }
         }
     }
 
-    if let Some(denial) = &shadow_denial {
-        governance.record_shadow_deny(
-            name,
-            action,
-            requires,
-            denial,
-            audit_domain.as_deref(),
-            duration_ms,
-        );
-    } else {
-        governance.record_call(
-            name,
-            action,
-            requires,
-            duration_ms,
-            audit_domain.as_deref(),
-            audit_grant_id.as_deref(),
-        );
-    }
+    audit.complete();
 
     match outcome {
         // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
@@ -661,6 +626,7 @@ async fn resolve_governing_resource(
 async fn post_navigate_landing_check(
     browser: &Browser,
     governance: &Governance,
+    requires: &[Capability],
     tab_id: i64,
     config_mode: EffectiveMode,
 ) -> (Decision, Option<String>) {
@@ -672,7 +638,7 @@ async fn post_navigate_landing_check(
         GoverningResource::Resource(h) => Some(h.clone()),
         _ => None,
     };
-    let decision = governance.decide("navigate", None, resolved, config_mode);
+    let decision = governance.decide("navigate", None, requires, resolved, config_mode);
     if let Decision::Deny(_) = &decision {
         let _ = browser
             .call(
@@ -888,10 +854,7 @@ mod tests {
         let path = temp_audit_path("sacred-tab");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["*.mybank.com"]),
         );
@@ -953,10 +916,7 @@ mod tests {
     #[tokio::test]
     async fn navigate_target_denied_even_when_tab_is_clean() {
         let recorder = Arc::new(Recorder::disabled());
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["mybank.com"]),
         );
@@ -1023,10 +983,7 @@ mod tests {
     #[tokio::test]
     async fn empty_list_is_byte_identical() {
         let recorder = Arc::new(Recorder::disabled());
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         assert!(store.current().sacred_domains().is_empty());
@@ -1079,10 +1036,7 @@ mod tests {
         let path = temp_audit_path("deny-record");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["*.mybank.com"]),
         );
@@ -1129,10 +1083,7 @@ mod tests {
         let path = temp_audit_path("basic");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
@@ -1178,10 +1129,7 @@ mod tests {
         let path = temp_audit_path("computer");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
@@ -1205,10 +1153,7 @@ mod tests {
         let path = temp_audit_path("no-name");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
@@ -1227,10 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn held_call_returns_the_pause_text_before_the_not_connected_error() {
         let recorder = Arc::new(Recorder::disabled());
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
@@ -1293,10 +1235,7 @@ mod tests {
         let path = temp_audit_path("held");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
@@ -1372,7 +1311,6 @@ mod tests {
         Governance::governed(
             Box::new(LocalPdp::new(polarity::evaluate_host)),
             sink,
-            directory::requires,
             grants,
             "test-hash".to_string(),
             manifest_mode,
@@ -1520,6 +1458,53 @@ mod tests {
             vec!["computer"],
             "the free action dispatched once and NEVER probed a tab_url for grant resolution"
         );
+    }
+
+    /// t03 section 3 (ADR-0024 Decision 3): the pre-grant `audit.set_domain(tab_domain)` seeding
+    /// that runs unconditionally right after the sacred check passes means an ALL-OPEN call on a
+    /// resolvable, non-sacred tab still carries that tab's host on its allow record, even though
+    /// all-open never resolves a GOVERNING resource at all (transcribes the pre-ADR-0024
+    /// `audit_domain = tab_domain.clone()` pre-g13 seeding).
+    #[tokio::test]
+    async fn sacred_domain_seeding_survives_on_allow_records() {
+        let path = temp_audit_path("sacred-seeding");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["*.mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, _seen) = attach_fake_extension(
+            &browser,
+            vec![
+                (
+                    "tabs_context_mcp",
+                    tabs_context_reply(5, "https://example.com/"),
+                ),
+                (
+                    "read_page",
+                    json!({ "content": [{ "type": "text", "text": "ok" }] }),
+                ),
+            ],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let result = resp.result.as_ref().expect("tool result present");
+        assert_ne!(
+            result["isError"], true,
+            "example.com is not sacred: {result:?}"
+        );
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["decision"], "allow");
+        assert_eq!(lines[0]["domain"], "example.com");
+
+        std::fs::remove_file(&path).ok();
     }
 
     /// g15 constraint 9 (the sacred carve-out): a sacred-domain denial is ALWAYS a real
@@ -1758,10 +1743,7 @@ mod tests {
         let path = temp_audit_path("explain");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
-        let governance = Arc::new(Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            directory::requires,
-        ));
+        let governance = Arc::new(Governance::all_open(recorder as Arc<dyn AuditSink>));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();

@@ -15,8 +15,17 @@ then continue. Never rely on remembering earlier work; re-read files.
   deleted. t02 landed: `src/browser/directory.rs` generalized in place into the ADR-0024
   Decision 1 `ToolDescriptor` registry (14 rows, 26 variants); `requires()` and
   `explain_text()` keep their exact contracts and byte-identical output; nothing outside the
-  module consumes the new fields yet.
-- NEXT TASK: `t03` (`docs/tasks/stage-4/t03-governance-authorize.md`).
+  module consumes the new fields yet. t03 landed: ADR-0024 Decision 3's audit-ownership
+  inversion. `Governance::begin`/`Governance::authorize` plus the consuming `CallAudit` scope
+  (`held`/`sacred_deny`/`dispatch_finished`/`landing_allow`/`landing_shadow_deny`/`landing_deny`/
+  `complete`) replace the five public `record_*` methods; `Governance` no longer holds a
+  `requires` fn pointer at all (`server.rs` performs the one directory lookup and hands the
+  `Option` to `begin`). `handle_tools_call` is adapted in place (still name-branched; t04 owns
+  the pipeline extraction). The sanctioned delta lands: a GOVERNED directory miss (known tool,
+  unknown sub-action) now denies `unknown_action` through the mode switch instead of
+  dispatching ungoverned. `Config.governance_mode` is now a typed `EffectiveMode`. `call_label`
+  (`ports.rs`) is the one label formatter; `enforcement::tool_label` is deleted.
+- NEXT TASK: `t04` (`docs/tasks/stage-4/t04-generic-ingest-pipeline.md`).
 - Authority: ADR-0023/0024/0025 (each in its own scope) over task prompts over ADR-0022 over
   the stage-2 shared-format doc over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -181,3 +190,138 @@ then continue. Never rely on remembering earlier work; re-read files.
   `mod.rs`) clean.
 - Browser checks queued: none (pure data/lookup change; nothing observable live yet, per the
   task's own Verification section).
+
+### t03 governance authorize and call audit -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: `src/governance/ports.rs`, `src/governance/enforcement.rs`,
+  `src/governance/dispatch.rs`, `src/governance/config/mod.rs`, `src/governance/explain.rs`,
+  `src/doctor.rs`, `src/transport/mcp/server.rs`, `tests/all_open_golden.rs`,
+  `tests/audit_recorder.rs`, `tests/tool_enforcement.rs`, this file.
+- Summary: implemented ADR-0024 Decision 3 in full. `ports.rs` gained `call_label(tool, action)`
+  (the one label formatter, keyed on `action.is_some()` rather than `tool == "computer"`, proven
+  equivalent today since only `computer` ever carries an action); `enforcement::tool_label` and
+  `hold_message`'s inline match are deleted in its favor. `dispatch.rs`: `Governance` no longer
+  holds a `requires` fn pointer at all (deleted from the struct and from `all_open`/`governed`'s
+  constructor parameters); `decide` is reshaped into a pure pass-through into `DecisionRequest`
+  taking `requires: &[Capability]` directly (its own directory-miss handling and empty-requires
+  shortcut are deleted -- both move to `authorize`). Added `pub struct CallAudit` (private
+  fields: sink handle, client snapshot, tool/action strings, the `requires` result, a start
+  `Instant`, domain/grant/shadow state) and `pub enum Gate { Deny { message: String }, Proceed }`.
+  `Governance::begin(tool, action, requires)` opens the scope (captures the current client via
+  the existing `current_client()` helper). `Governance::authorize(&mut CallAudit, Option
+  <GoverningResource>, EffectiveMode) -> Gate` is the one policy gate, implementing the five-arm
+  precedence pinned in the prompt exactly (all-open Proceed; free-action Proceed; a governed miss
+  builds `unknown_action_denial` and routes it through `apply_mode` -- the ONLY `apply_mode` call
+  site outside `check_call` now -- recording a terminal deny via a private `CallAudit::
+  record_terminal_deny` helper on `Deny`, storing shadow on `ShadowDeny`; an unresolved resource
+  Proceeds; a resolved resource delegates to `decide` exactly as before). `CallAudit`'s public
+  consuming/mutating methods (`set_domain`, `held`, `sacred_deny`, `dispatch_finished`,
+  `landing_allow`, `landing_deny`, `complete`) transcribe every pinned semantic (pre-dispatch
+  denials hardcode `duration_ms: 0`; `dispatch_finished` freezes the duration at the exact point
+  `Browser::call` returns, exactly transcribing today's clock stop, so `complete`/`landing_deny`
+  reproduce the pre-ADR-0024 duration bytes even when the navigate landing probe runs after it).
+  The five public `record_*` methods and the private `build_record` on `Governance` are deleted;
+  their bodies fold into `CallAudit`'s own private `build_record`, which now derives `capability`
+  from `self.requires.and_then(|r| r.first())...unwrap_or("none")` -- a miss renders "none"
+  exactly as the old `unwrap_or(&[])` convention did. `record_session_killed` is untouched.
+  `server.rs::handle_tools_call` is adapted in place (same stage structure, same name branches;
+  t04 owns the pipeline extraction): one `directory::requires` lookup kept as the `Option`
+  (`lookup`) feeds `governance.begin(name, action, lookup)` before the hold check; held ->
+  `audit.held()`; sacred deny -> `audit.sacred_deny(...)`; immediately after the sacred stage
+  passes, `audit.set_domain(tab_domain.clone())` unconditionally (seeding the pre-grant domain so
+  an all-open/free-action allow on a resolvable tab still carries it); explain -> `audit.
+  complete()`; resource resolution stays gated on `is_governed() && matches!(lookup, Some(r) if
+  !r.is_empty())`, then `governance.authorize(&mut audit, resource, config_mode)` runs for EVERY
+  call reaching that point, overwriting the domain when resolution produced one and rendering
+  `Gate::Deny{message}` exactly as the old denial text path; after `Browser::call` returns ->
+  `audit.dispatch_finished()`; the point-5 navigate landing re-check maps `Decision::Allow` to
+  `audit.landing_allow(...)` and `Decision::Deny` to `audit.landing_deny(...)`; final ->
+  `audit.complete()`. The four caller-side mutables (`audit_domain`/`audit_grant_id`/
+  `shadow_denial`/`navigate_post_check`) are gone except `navigate_post_check` itself (still a
+  local bool driving which branch runs, not audit state). `post_navigate_landing_check` gained a
+  `requires: &[Capability]` parameter (the same `lookup` value, unwrapped) since `decide` no
+  longer looks it up itself. `Config.governance_mode` is now `EffectiveMode` (parsed once via
+  `EffectiveMode::from_config_str` at `from_preset`/`from_resolution`); the getter returns
+  `EffectiveMode` (Copy). `server.rs` and `doctor.rs` drop their own `from_config_str` calls;
+  `explain.rs`'s minimal-config site (~137) simplifies to the direct enum; its manifest-entry
+  site (~149) and `cli.rs`'s raw-`Resolution` site keep `from_config_str` (they read raw string
+  values, not `Config`). New/reworked tests, transcribing every pinned byte from the pre-ADR-0024
+  sources named in the prompt: `begin_complete_produces_the_allow_record_bytes`,
+  `authorize_miss_is_unknown_action_through_the_mode_switch`,
+  `governed_unknown_computer_action_is_denied_unknown_action` (black-box, `tool_enforcement.rs`),
+  `authorize_free_action_proceeds_without_grant_attribution`,
+  `sacred_deny_and_held_records_are_byte_stable`,
+  `landing_amendments_match_the_old_navigate_records`,
+  `sacred_domain_seeding_survives_on_allow_records` (`server.rs`, proves the unconditional
+  pre-grant domain seeding), `one_lookup_feeds_decision_and_audit` (a hand-rolled
+  `EchoRequiresPdp` proves `authorize` drives the PDP from exactly the caller's own `requires`
+  value, never a second lookup), `governance_mode_is_typed` (`config/mod.rs`). `audit_recorder.rs`
+  reworked its two record-driving sites onto `begin`/`dispatch_finished`/`complete`; its one
+  literal-duration assertion (`42`) becomes `rec["duration_ms"].as_u64().is_some()`, the sanctioned
+  edit constraint 2 names (every other field assertion, including the 14-key order, is
+  byte-unchanged).
+- Deviations from the prompt/ADR:
+  1. `CallAudit` also captures the current client identity (`client: Option<ClientInfo>`,
+     snapshotted at `begin` via the pre-existing `current_client()` helper), which the prompt's
+     "captures... the sink handle, tool/action strings, the requires result, a start Instant, and
+     empty domain/grant/shadow state" sentence does not enumerate. Necessary: `AuditRecord`'s
+     `client` field must still be populated, and `CallAudit`'s consuming methods take `self`/
+     `&mut self` with no back-reference to `Governance` to read it from at completion time.
+     Conservative, no pinned byte affected (every record's `client` field is unchanged).
+  2. Added `pub fn landing_shadow_deny(&mut self, denial: Denial, domain: Option<String>)` to
+     `CallAudit`, not in the prompt's seven-method pinned list (`set_domain`, `held`,
+     `sacred_deny`, `dispatch_finished`, `landing_allow`, `landing_deny`, `complete`). The
+     pre-ADR-0024 code's point-5 navigate landing re-check can resolve to `Decision::ShadowDeny`
+     (g15's mode switch applies there exactly as it does pre-dispatch), and that outcome must
+     still be recorded as a `shadow_deny` with the landing's own domain -- `landing_allow`'s own
+     doc comment says it "clears shadow", so reusing it for this arm would have silently
+     misrecorded a would-be shadow_deny as a plain allow, an unsanctioned behavior change (rule
+     8/constraint 2: audit record bytes byte-identical). No black-box test exercises this exact
+     arm today (would require an observe-mode manifest whose grant covers the pre-dispatch host
+     but not the landing host); the method is transcribed from the pre-existing inline
+     `audit_grant_id = d.grant_id.clone(); audit_domain = landing_domain; shadow_denial =
+     Some(d);` assignment set, minus the (dead-for-this-arm) `grant_id` write `complete`'s shadow
+     branch never reads (`complete` derives `grant_id`/`denial_id` from the stored `Denial`
+     itself when `shadow` is `Some`, matching the pre-ADR-0024 `record_shadow_deny`'s own
+     behavior of never consulting the caller-passed grant id).
+- Deletions performed: `Governance::record_call`, `Governance::record_deny`,
+  `Governance::record_navigate_landing_deny`, `Governance::record_shadow_deny`,
+  `Governance::record_held`, and the private `Governance::build_record` they shared (folded into
+  `CallAudit`'s own private `build_record`); the `Governance.requires` fn-pointer field and the
+  `requires` parameter on `all_open`/`governed`; `decide`'s internal directory-miss branch and
+  empty-requires shortcut; `enforcement::tool_label`; the `no_requires` test helper (both
+  `dispatch.rs` and `tests/all_open_golden.rs`); the four `handle_tools_call` mutables
+  (`audit_domain`, `audit_grant_id`, `shadow_denial`) -- `navigate_post_check` stays, as noted
+  above. Eleven dispatch.rs inline tests directly driving the deleted API
+  (`all_open_decide_is_allow_and_still_records`,
+  `governed_over_noop_still_allows_and_holds_the_sink`,
+  `directory_miss_denies_via_unknown_action_through_the_mode_switch`,
+  `requires_empty_allows_without_consulting_the_pdp`,
+  `computer_action_requires_flows_into_capability`, `requires_empty_records_capability_none`,
+  `deny_record_carries_the_capability_of_the_denied_call`,
+  `record_call_passes_the_resolved_domain_through`,
+  `record_deny_writes_a_zero_duration_deny_record`,
+  `record_held_writes_an_allow_record_with_held_true_and_no_domain`,
+  `record_call_and_record_deny_leave_held_false`) are replaced by their six reworked/new
+  registry-shaped equivalents named above (every pinned assertion each one carried survives in
+  its replacement, folded or transcribed).
+- Verification: `cargo fmt` (applied) then `cargo fmt --check` clean; `cargo clippy
+  --all-targets -- -D warnings` clean; `cargo test` fully green, 465 -> 463 (net -2: -11 old
+  dispatch.rs record tests, +6 reworked/new dispatch.rs tests, +1
+  `governed_unknown_computer_action_is_denied_unknown_action` (tool_enforcement.rs), +1
+  `governance_mode_is_typed` (config/mod.rs), +1 `sacred_domain_seeding_survives_on_allow_records`
+  (server.rs); audit_recorder.rs's two tests reworked in place with no count change).
+  `tests/architecture.rs` (4 tests), `tests/all_open_golden.rs` (3 tests), `tests/mcp_protocol.rs`
+  (6 tests), and `tests/tool_schema_fidelity.rs` (7 tests) all pass unchanged. `git diff HEAD --
+  src/transport/mcp/schemas/tools.json tests/tool_schema_fidelity.rs` and `git diff HEAD --
+  Cargo.toml Cargo.lock` both empty. Constraint-5 checks: `rg -n
+  "record_call|record_deny|record_shadow_deny|record_held|record_navigate_landing_deny" src/` ->
+  only two historical doc-comment mentions in `dispatch.rs` (naming the pre-ADR-0024 test sources
+  the new tests transcribe from), no functional hits; `rg -n "tool_label" src/` -> nothing; `rg -n
+  "from_config_str" src/` -> `ports.rs` (definition), `config/mod.rs` (the two `Config`-building
+  call sites plus a doc-comment mention and a test assertion), `cli.rs` (~156, raw `Resolution`
+  value), `explain.rs` (~149, raw entry value) -- matches the constraint exactly. ASCII scan on
+  all 10 touched files clean.
+- Browser checks queued: none (behavior identical to the pre-ADR-0024 tree except the one
+  sanctioned miss->deny delta, itself covered by the new black-box test; the stage-3 s-live
+  backlog already covers the observable surface, per the task's own Verification section).
