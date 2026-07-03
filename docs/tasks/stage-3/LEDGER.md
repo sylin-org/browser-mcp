@@ -110,8 +110,8 @@ remembering earlier work; re-read files.
   `capability_subset_truth_table`, all in `src/governance/ports.rs`'s `mod tests`, which is
   part of the lib unit-test binary, 370 -> 373), all passing, 0 failed. Baseline of 431 was
   independently reconfirmed by stashing this task's diff and re-running the full suite
-  before restoring it. Confirmed unchanged and green: `tests/architecture.rs` (3 tests),
-  `tests/all_open_golden.rs` (4 tests), `tests/mcp_protocol.rs` (4 tests),
+  before restoring it. Confirmed unchanged and green: `tests/architecture.rs` (4 tests),
+  `tests/all_open_golden.rs` (3 tests), `tests/mcp_protocol.rs` (4 tests),
   `tests/tool_schema_fidelity.rs` (6 tests) -- none of these four files appear in this
   task's `git diff --stat` (only `src/governance/ports.rs` and this ledger changed). ASCII
   scan (`rg -n "[^\x00-\x7F]" src/governance/ports.rs`) printed nothing.
@@ -673,3 +673,34 @@ throughout) but has NOT been verified end to end against a live browser. Stage 3
 described in any public-facing copy as shipped-but-unverified-end-to-end until a human runs
 the BROWSER-TESTS.md backlog above against real Chrome. This branch (`stage-3`) has not been
 pushed or merged; a human decides when it merges into `stage-2`/`main`.
+
+## Post-batch follow-up: minor gap closures -- 2026-07-03
+
+Two minor gaps surfaced by the per-task independent verification (both graded non-blocking at
+the time) plus one ledger typo, closed together in one follow-up commit after `s08`. No task
+commit was amended; this is a new commit on top.
+
+- Gap A (s05 follow-up): `handle_tools_call` now short-circuits every free action (empty
+  directory requirement) BEFORE grant resource resolution, per ADR-0022 Decision 5 step 2 --
+  the governed grant-enforcement block is guarded on `!requires.is_empty()`, so a governed
+  `computer` `wait` / `resize_window` no longer fires a pointless `tab_url` CDP probe (and can
+  no longer stall on one). The `explain` server-side handler was moved to sit with this
+  unified free-actions gate (after the always-on sacred check, matching the ADR step order),
+  removing the earlier standalone special-case seam. New test:
+  `governed_free_action_is_allowed_without_probing_the_tab_url` (server.rs inline) drives a
+  governed `computer` `wait` against a fake extension with NO `tab_url` answers registered (a
+  probe would panic) and asserts `seen == ["computer"]`.
+- Gap B (s07 follow-up): `explain_output_is_byte_identical_across_manifest_postures`
+  (`tests/mcp_protocol.rs`) pins the real invariant -- `explain` returns byte-identical output
+  under no-manifest, an empty-grants manifest, and a restrictive read-only manifest -- via a
+  new manifest-capable `drive_with_manifest` spawn helper. This closes s07's named-minimum-test
+  shortfall (only the no-manifest posture had a live `tools/call explain` integration test).
+- Gap C: corrected the s02 entry's transposed unchanged-suite counts (`architecture.rs` is 4
+  tests, `all_open_golden.rs` is 3; they were swapped). Prose-only; no functional effect.
+
+Verification: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean;
+`cargo test` 459 -> 461 (Gap A +1 lib unit test, Gap B +1 `mcp_protocol` test), 0 failed;
+`tests/architecture.rs` (4), `tests/all_open_golden.rs` (3), `tests/mcp_protocol.rs` (6),
+`tests/tool_schema_fidelity.rs` (7) all green; `src/transport/mcp/schemas/tools.json` and
+`tests/tool_schema_fidelity.rs` byte-untouched (`git diff --stat` shows only server.rs,
+mcp_protocol.rs, and this ledger). ASCII scan clean on all touched files.

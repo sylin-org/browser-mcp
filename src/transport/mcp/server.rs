@@ -349,19 +349,6 @@ async fn handle_tools_call(
 
     let dispatch_started = Instant::now();
 
-    // The `explain` tool (ADR-0022 Decision 7): a server-side, argument-less governance tool
-    // that is handled entirely here, ahead of the sacred-domains check and grant machinery
-    // below. Neither applies to it: it carries no `tabId` and no URL, and its directory
-    // requirement is always `[]`, so it is unconditionally allowed. It never touches the
-    // extension (no native-messaging frame is ever produced for it) and is still audited like
-    // any other allowed call, with a real (not hardcoded) `duration_ms`.
-    if name == "explain" {
-        let text = directory::explain_text();
-        let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        governance.record_call(name, action, requires, duration_ms, None, None);
-        return JsonRpcResponse::success(id, text_content(text));
-    }
-
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
     // "always-on carve-out", and ahead of grant evaluation below (g13: "if the sacred-domains
@@ -382,11 +369,32 @@ async fn handle_tools_call(
         return JsonRpcResponse::success(id, text_content(denial.message));
     }
 
+    // Free actions (ADR-0022 Decision 5 step 2 and Decision 7): an action whose directory
+    // requirement is empty provably touches no page and no server, so it is allowed
+    // unconditionally -- no resource resolution and no grant scan. This runs AFTER the always-on
+    // sacred check (step 1) and BEFORE grant enforcement, which the `!requires.is_empty()` guard
+    // below skips for these tools, so no `tab_url` probe ever fires for them (the sharp case is
+    // `computer` `wait`: requirement `[]`, yet it carries a `tabId`). `explain` (Decision 7) is
+    // the one free action with a server-side body and no extension action, so it is answered
+    // right here (no native-messaging frame is ever produced for it); every other free action
+    // (`tabs_create_mcp`, `resize_window`, `update_plan`, `computer` `wait`) falls through to an
+    // ordinary allowed dispatch below. All are audited as an allow with no grant attribution and
+    // a real (not hardcoded) `duration_ms`.
+    if name == "explain" {
+        let text = directory::explain_text();
+        let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        governance.record_call(name, action, requires, duration_ms, None, None);
+        return JsonRpcResponse::success(id, text_content(text));
+    }
+
     // Grant enforcement (g13, ADR-0018 step 3): resolve the governing resource for this call and
     // consult the dispatch chokepoint. All-open (no manifest) skips resolution entirely -- STEP 0
     // must add zero new frames and zero new latency (constraint 3); `Governance::decide` itself
     // would short-circuit to Allow under all-open regardless, but there is nothing to gain from
-    // resolving a resource value it will never look at. `audit_domain` starts at the
+    // resolving a resource value it will never look at. Free actions (empty `requires`) are
+    // likewise skipped by the `!requires.is_empty()` guard: they were already allowed above
+    // without touching a resource (ADR-0022 Decision 5 step 2), so resolving one here would only
+    // add a pointless `tab_url` round-trip. `audit_domain` starts at the
     // sacred-domains check's own tab resolution (the pre-g13 default for an ungoverned call) and
     // is overwritten with the grant machinery's own resolved host once governed, per shared
     // format doc section 6.1 ("domain: the parser-normalized host, or null"); the two mechanisms
@@ -402,7 +410,7 @@ async fn handle_tools_call(
     let mut audit_grant_id: Option<String> = None;
     let mut shadow_denial: Option<Denial> = None;
     let mut navigate_post_check = false;
-    if governance.is_governed() {
+    if governance.is_governed() && !requires.is_empty() {
         if let Some((resource, domain)) = resolve_governing_resource(browser, name, &args).await {
             audit_domain = domain;
             if name == "navigate" {
@@ -1465,6 +1473,55 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// ADR-0022 Decision 5 step 2 (free-action short-circuit): a governed "free action" -- one
+    /// whose directory requirement is empty -- is allowed without resolving a governing resource,
+    /// so no `tab_url` probe fires even when the call carries a `tabId` under an active manifest.
+    /// `computer` `wait` is the sharp case: requirement `[]`, yet it carries a `tabId`, so before
+    /// this short-circuit the grant path pointlessly probed the tab's URL. The fake extension
+    /// registers NO `tab_url` answers, so a resource-resolution probe would panic; the explicit
+    /// `seen` assertion gives a clearer failure if the short-circuit ever regresses.
+    #[tokio::test]
+    async fn governed_free_action_is_allowed_without_probing_the_tab_url() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(governed_with_grants(
+            vec![full_grant("g1", &["example.com"])],
+            recorder as Arc<dyn AuditSink>,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(
+            &browser,
+            vec![(
+                "computer",
+                json!({ "content": [{ "type": "text", "text": "waited" }] }),
+            )],
+            vec![],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({
+            "name": "computer",
+            "arguments": { "action": "wait", "tabId": 7, "duration": 1 },
+        });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let result = resp.result.as_ref().expect("tool result present");
+        assert_ne!(
+            result["isError"], true,
+            "a free action is allowed, never denied: {result:?}"
+        );
+        assert_eq!(
+            result["content"][0]["text"], "waited",
+            "the free action dispatched to the extension: {result:?}"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["computer"],
+            "the free action dispatched once and NEVER probed a tab_url for grant resolution"
+        );
     }
 
     /// g15 constraint 9 (the sacred carve-out): a sacred-domain denial is ALWAYS a real
