@@ -1,0 +1,18 @@
+Ghostlight is licensed under an open-core model (see
+docs/adr/0027-open-core-business-model-and-licensing.md).
+
+- Everything in this repository EXCEPT the src/governance/ directory is
+  licensed under either the Apache License 2.0 (LICENSE-APACHE) or the
+  MIT License (LICENSE-MIT), at your option.
+  SPDX-License-Identifier: Apache-2.0 OR MIT
+
+- The src/governance/ directory is source-available under the Ghostlight
+  Commercial License (LICENSE-GOVERNANCE): free for personal and solo
+  use, development, testing, evaluation, all-open operation, and
+  noncommercial nonprofit or open-source use; production use with
+  governance configured by an organization requires a commercial
+  subscription.
+  SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
+
+Unless a file states otherwise, the directory rule above determines each
+file's license. See LICENSING.md for a plain-language guide.

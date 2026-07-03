@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Governed browser automation over the user's own authenticated Chromium session -- for AI coding agents."
 publish = false
-# license: TBD (intended open-source) -- see docs/SPEC.md.
+# Open-core (ADR-0027): engine is Apache-2.0 OR MIT; src/governance/ is the Ghostlight
+# Commercial License. LICENSE at the repo root holds the split notice.
+license-file = "LICENSE"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync", "time", "process"] }

@@ -37,8 +37,7 @@ has been verified against a real browser:
 
 Maturity: this is a developer setup. The extension is loaded unpacked, and Windows is the platform
 it has been verified on end to end. The macOS and Linux code paths exist but are not yet verified
-against a live browser. There is no published package or cross-platform release build yet, and the
-license is still to be decided.
+against a live browser. There is no published package or cross-platform release build yet.
 
 ## What makes it different
 
@@ -245,7 +244,7 @@ single dispatch chokepoint inside the binary without touching any tool code.
   configuration and org policy locks; the `explain` tool; and live manifest hot-reload. Built and
   live-verified against a real browser on Windows.
 - **Packaging (partial).** Cross-platform release builds, CI, and macOS/Linux live verification are
-  still to do, along with `syslog`/`http` audit destinations and a license decision.
+  still to do, along with `syslog`/`http` audit destinations.
 
 ## Documentation
 
@@ -273,4 +272,11 @@ for the naming decision.
 
 ## License
 
-TBD (intended open-source).
+Ghostlight is open-core. The engine -- everything outside `src/governance/` -- is open source
+under Apache-2.0 OR MIT, at your option. The governance module (`src/governance/`) is
+source-available under the Ghostlight Commercial License: free for individuals and solo
+developers, development, testing, evaluation, all-open operation, and noncommercial
+nonprofit/open-source use; production use with governance configured by an organization
+requires a commercial subscription. See [LICENSING.md](LICENSING.md) for the plain-language
+guide and [docs/adr/0027-open-core-business-model-and-licensing.md](docs/adr/0027-open-core-business-model-and-licensing.md)
+for the decision.
