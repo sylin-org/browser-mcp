@@ -75,7 +75,26 @@ then continue. Never rely on remembering earlier work; re-read files.
   iff the advertised set changed, and records `user_manifest_ignored` on a transition
   (`ports::user_manifest_ignored_transitioned`, `Governance::record_user_manifest_ignored`).
   `docs/tasks/stage-2/BROWSER-TESTS.md` gained t06-1/t06-2 (verbatim from the task prompt).
-- NEXT TASK: `t07` (`docs/tasks/stage-4/t07-dead-seam-deletions.md`).
+- Progress (continued): t07 landed: ADR-0024 Decision 5's dead-seam and stub deletions.
+  `src/governance/ports.rs` loses its four unwired placeholder items (`ToolId`,
+  `ResourcePattern`, `DomainPolicy`, `ResourceResolver`; none had an impl, a consumer, or a
+  dedicated inline test anywhere in the tree, confirmed by `rg` before deletion), 793 -> 748
+  lines (still above the ~600 optional-split threshold; the split is SKIPPED this task, see
+  deviation below). `src/browser/tools/` (11 zero-function doc-stub files carrying the stale
+  observe/mutate classification table) is deleted outright; `src/browser/mod.rs` drops
+  `pub mod tools;` and its module doc's roster sentence is rewritten to name the registry
+  (`directory`) as the sole per-tool authority with no per-tool code homes, dropping its
+  `DomainPolicy::requires` cross-reference. `ports.rs`'s own module doc and its
+  `DecisionRequest` field doc (the one comment mentioning `ResourceResolver` outside the
+  deleted trait itself) are reworded to describe resource resolution as an injected
+  concrete value at the enforcement point (ADR-0024 Decision 5), naming that a future
+  remote-PDP ADR reintroduces whatever seam it needs on its own terms. The two remaining
+  `observe/mutate` mentions in `src/browser/directory.rs` and the (rewritten)
+  `src/browser/mod.rs` are left as-is: both already name the current authority (the
+  registry / ADR-0024) and state the classification table IS deleted, which is now true;
+  they need no further edit per the task's own constraint 3 wording ("rewrite every
+  survivor to name the current authority" -- these already do).
+- NEXT TASK: `t08` (`docs/tasks/stage-4/t08-documentation-sync.md`).
 - Authority: ADR-0023/0024/0025 (each in its own scope) over task prompts over ADR-0022 over
   the stage-2 shared-format doc over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -691,3 +710,79 @@ then continue. Never rely on remembering earlier work; re-read files.
   `cargo test` run (475 tests across 17 binaries) is fully green.
 - Browser checks queued: 2 (`t06-1`, `t06-2`, appended verbatim from the task prompt's
   Verification section to `docs/tasks/stage-2/BROWSER-TESTS.md`).
+
+### t07 dead-seam and stub deletions -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: `src/governance/ports.rs`, `src/browser/mod.rs`, `src/browser/tools/`
+  (deleted: `computer.rs`, `find.rs`, `form_input.rs`, `javascript.rs`, `manage.rs`, `mod.rs`,
+  `navigate.rs`, `network.rs`, `page_text.rs`, `read_page.rs`, `tabs.rs`), this file.
+- Summary: implemented ADR-0024 Decision 5 in full. Deleted the four unwired placeholder
+  items from `ports.rs`: `ToolId` (newtype), `ResourcePattern` (newtype), `DomainPolicy`
+  (trait, with its `requires`/`matches`/`is_sacred`/`tool_surface` methods), `ResourceResolver`
+  (async-fn-in-trait, with its `governing_resource` method). Verified via `rg -n
+  "DomainPolicy|ResourceResolver|ToolId|ResourcePattern" src/ tests/` before deletion that
+  every hit was the item's own definition, its own doc comment, or a doc-comment
+  cross-reference from `browser/mod.rs` -- zero impls, zero consumers, zero dedicated inline
+  tests anywhere in the tree, so no test needed retyping (constraint 1's "if a test uses one
+  incidentally, retype it" did not apply; no test used any of the four at all). `ports.rs`'s
+  module doc (top-of-file) and the one `DecisionRequest` field doc that named
+  `ResourceResolver` (the only surviving mention outside the deleted trait's own doc comment)
+  are reworded to describe resource resolution as an injected concrete value/fn at the
+  enforcement point, never a port trait in the core (ADR-0024 Decision 5), naming that a
+  future remote-PDP ADR reintroduces whatever resolver/policy seam it needs on its own terms.
+  `src/browser/tools/` (11 files, zero functions, `mod.rs`'s doc table restating all 13 tool
+  names under the deleted observe/mutate/manage classification) is deleted in full;
+  `src/browser/mod.rs` drops `pub mod tools;` and its module doc's roster sentence is
+  rewritten: it no longer claims to own "tool wrappers" via `[`tools`]`, instead naming
+  `directory` as the sole per-tool authority with no per-tool code homes, and drops the
+  `[`crate::governance::ports::DomainPolicy::requires`]` cross-reference (that path no
+  longer exists). Constraint-3 sweep (`rg -n
+  "DomainPolicy|ResourceResolver|observe/mutate|Observe tier|Mutate tier" src/`) confirms the
+  only two survivors are `src/browser/directory.rs` line 6 and the rewritten
+  `src/browser/mod.rs`'s own line naming the deletion -- both already name the current
+  authority (the registry / ADR-0024) and state the classification table IS deleted (now
+  true), so neither needed further editing per the constraint's own wording ("rewrite every
+  survivor to name the current authority" -- these already do, they are not stale, they are
+  the historical record of the deletion itself).
+- Deviations from the prompt/ADR:
+  1. The task's OPTIONAL `ports.rs` split (section 4: "if `ports.rs` still exceeds ~600
+     lines, split it into a `ports/` directory... with `pub use` re-exports") is SKIPPED.
+     After the four deletions `ports.rs` is 748 lines (down from 793), still above the ~600
+     guideline. The task prompt explicitly sanctions skipping ("skip if the task is running
+     heavy, and say so in the ledger"). Conservative choice per BOOTSTRAP rule 4 (fewer moving
+     parts; behavior preservation over structure preservation): the file's remaining bulk is
+     roughly half production code (types, `EffectiveMode`/`Capability`/`Denial`/`AuditRecord`/
+     `SessionEventRecord`/`DecisionRequest`/`Decision`, the two zero-policy impls) and half
+     inline tests (`#[cfg(test)] mod tests`, ~360 lines), all one cohesive concern (the S4
+     policy-decision-point/policy-enforcement-point contract types); a directory split would
+     touch every one of these type definitions and their re-export shims purely for line-count
+     hygiene, adding surface area and re-export risk in an unattended run for a change the
+     prompt itself frames as optional tidiness, not a required behavior or structural fix. No
+     pinned signature, string, test, or `crate::governance::ports::X` path is affected either
+     way (a split would have needed to keep every path compiling unchanged regardless).
+- Deletions performed: `governance::ports::ToolId` (struct), `governance::ports::
+  ResourcePattern` (struct), `governance::ports::DomainPolicy` (trait), `governance::ports::
+  ResourceResolver` (trait); no inline tests were deleted with them (none existed -- the four
+  items had zero dedicated test coverage in the pre-t07 tree, confirmed by the completeness
+  `rg` above). `src/browser/tools/` subtree in full: `computer.rs`, `find.rs`,
+  `form_input.rs`, `javascript.rs`, `manage.rs`, `mod.rs` (the roster/doc-table file),
+  `navigate.rs`, `network.rs`, `page_text.rs`, `read_page.rs`, `tabs.rs` -- 11 files, zero
+  functions, zero tests, stale observe/mutate/manage prose only.
+- Verification: `cargo fmt` (applied) then `cargo fmt --check` clean; `cargo clippy
+  --all-targets -- -D warnings` clean; `cargo test` fully green, 475 -> 475 (net 0: no test
+  was deleted with its subject, since none of the four deleted items nor the deleted
+  `browser/tools/` subtree carried any dedicated test). `tests/architecture.rs` (4 tests),
+  `tests/all_open_golden.rs` (3 tests), `tests/mcp_protocol.rs` (6 tests), and
+  `tests/tool_schema_fidelity.rs` (7 tests) all pass unchanged. `git diff HEAD --
+  src/transport/mcp/schemas/tools.json tests/tool_schema_fidelity.rs` and `git diff HEAD --
+  Cargo.toml Cargo.lock` both empty. Completeness checks: `rg -n
+  "DomainPolicy|ResourceResolver|ToolId|ResourcePattern" src/ tests/` -> no hits; `rg -n
+  "browser/tools|browser::tools" src/ tests/` -> no hits. `git diff --stat` touches exactly
+  `src/browser/mod.rs`, `src/governance/ports.rs`, the 11 deleted `src/browser/tools/*.rs`
+  files, and this ledger -- no `dispatch.rs` edit was needed (the live tree carried no
+  `DomainPolicy`/`ResourceResolver`/etc. reference in `dispatch.rs`; the prompt's own
+  Verification section's file list is a superset description, not a mandate that every named
+  file must change). ASCII scan on both touched source files (`src/browser/mod.rs`,
+  `src/governance/ports.rs`) clean.
+- Browser checks queued: none (pure deletion/tidy; zero behavior change, zero new
+  capability, per the task's own Goal and Out of scope sections).

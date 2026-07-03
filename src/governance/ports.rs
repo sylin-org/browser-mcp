@@ -1,13 +1,14 @@
 //! The governance seam -- the S4 policy-decision-point / policy-enforcement-point contract.
 //!
 //! The decision is a PURE, serializable function so it can run in-process today and
-//! out-of-process later (the persistent-service direction, ADR-0021). The pure half
-//! ([`DomainPolicy`]) travels WITH the decision; the impure half ([`ResourceResolver`])
-//! stays at the enforcement point, since it needs live state. Single-impl ports
-//! ([`DomainPolicy`], [`ResourceResolver`]) are consumed via generics/concrete types (zero
-//! vtable); `dyn` is used only for [`PolicyDecisionPoint`] and [`AuditSink`], each of which
-//! has more than one impl today ([`NoopPdp`]/a future Local PDP/a future out-of-process
-//! Remote PDP) or a known future one (file/stderr/syslog sinks).
+//! out-of-process later (the persistent-service direction, ADR-0021). Resource resolution
+//! is IMPURE (it needs live state, e.g. a CDP round-trip for the browser plugin) and stays
+//! at the enforcement point, injected as a concrete value/fn (never a port trait here,
+//! ADR-0024 Decision 5); its result is baked into [`DecisionRequest::resource`] before the
+//! pure decision runs. `dyn` is used only for [`PolicyDecisionPoint`] and [`AuditSink`], each
+//! of which has more than one impl today ([`NoopPdp`]/a future Local PDP/a future
+//! out-of-process Remote PDP) or a known future one (file/stderr/syslog sinks). A future
+//! remote-PDP ADR reintroduces whatever resolver/policy seam it needs on its own terms.
 
 use serde::{Deserialize, Serialize};
 
@@ -141,18 +142,6 @@ pub enum HostRuleOutcome {
     /// Neither list matched (or the allow list is empty): the grant does not cover the host.
     Unmatched,
 }
-
-/// A tool identifier as advertised on the MCP surface. Placeholder newtype; g07/g14 flesh
-/// out the tool-surface handling. The sacred tool schemas (ADR-0007) are the source of
-/// truth for the actual names; this type never mutates them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolId(pub String);
-
-/// A resource-matching pattern (a domain pattern for the browser plugin). Placeholder
-/// newtype; g07 (the CVE-hardened matcher) and g12 (grant domains) flesh out the semantics.
-/// Only syntax/shape is a wrapper here; no matching logic lives in the core.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResourcePattern(pub String);
 
 /// A structured policy denial (shared format doc section 7). Carried by `Decision::Deny` and
 /// `Decision::ShadowDeny`; its `denial_id` (via [`crate::governance::denial::denial_id`]) goes
@@ -296,8 +285,9 @@ pub enum GoverningResource {
 /// The complete, self-contained input to a policy decision. PURE and serde-serializable so
 /// the decision can run in-process today and out-of-process later without a rewrite, and so
 /// g17 (simulate) can replay a recorded request through the same decision function. Nothing
-/// here references live state: resource resolution already happened (see `ResourceResolver`)
-/// and its result is baked into `resource`.
+/// here references live state: resource resolution already happened at the enforcement
+/// point (an injected concrete resolver, ADR-0024 Decision 5) and its result is baked into
+/// `resource`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionRequest {
     /// The grants in force for this subject (empty under all-open).
@@ -356,41 +346,6 @@ pub enum Decision {
 pub trait PolicyDecisionPoint: Send + Sync {
     /// Decide the outcome for a fully-resolved request. Must be pure: no I/O, no live state.
     fn decide(&self, req: &DecisionRequest) -> Decision;
-}
-
-/// The domain plugin's PURE half: the action directory, resource matching, sacred detection,
-/// and the advertised tool surface. It travels WITH the decision (it can relocate
-/// out-of-process with the PDP). Single-impl (the browser plugin); consumed via a concrete
-/// type or a generic bound, never `dyn`. g07 provides `matches`, g08 provides `is_sacred`,
-/// g07/g14 provide `tool_surface`; the trait MAY be minimally adjusted when they land (for
-/// example splitting `requires`/`matches` into sub-traits if that reads cleaner).
-pub trait DomainPolicy {
-    /// The bound capability requirement set for an action (ADR-0022 Decision 2). `action` is
-    /// consulted only when `tool` is `"computer"`. `None` is a directory miss (fail closed);
-    /// `Some(&[])` is unconditionally allowed.
-    fn requires(&self, tool: &str, action: Option<&str>) -> Option<&'static [Capability]>;
-    /// True if `pattern` matches `resource` under the plugin's matching semantics.
-    fn matches(&self, pattern: &ResourcePattern, resource: &GoverningResource) -> bool;
-    /// True if `resource` is a sacred never-touch resource (always enforced).
-    fn is_sacred(&self, resource: &GoverningResource) -> bool;
-    /// The tools this plugin advertises on the MCP surface.
-    fn tool_surface(&self) -> &[ToolId];
-}
-
-/// The domain plugin's IMPURE half: resolve the governing resource from live state (browser:
-/// the active tab's URL). It stays at the enforcement point forever and NEVER relocates
-/// out-of-process (it needs live state). Single-impl; consumed via a concrete type or a
-/// generic bound, never `dyn`. Async because resolving the resource is I/O (a CDP round-trip
-/// for the browser plugin). g07/g13 provide the browser impl.
-///
-/// This uses a native `async fn` in a trait (stable since Rust 1.75) rather than the
-/// `async-trait` crate: the port is single-impl and consumed concretely, so it does not need
-/// to be `dyn`-compatible, and avoiding `async-trait` keeps the dependency set lean (no
-/// per-call boxing). The `async_fn_in_trait` lint is allowed for exactly this reason.
-#[allow(async_fn_in_trait)]
-pub trait ResourceResolver {
-    /// Resolve the governing resource for a tool call from its arguments and live state.
-    async fn governing_resource(&self, tool: &str, args: &serde_json::Value) -> GoverningResource;
 }
 
 /// A sink for audit records. `dyn` because it has multiple impls (the `NullSink` here, plus
