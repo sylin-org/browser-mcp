@@ -135,11 +135,14 @@ hot-reload end to end, org policy swaps, corrupt-and-recover, and deletion back 
 all-open, all with zero restarts). The closing statement in
 `docs/tasks/stage-4/LEDGER.md` that predates that pass and says stage 4 is not
 verified end to end is corrected by an appended note pointing to 44db1f3, rather
-than an edit, keeping the ledger append-only. What remains owed to a human,
-tracked in `BROWSER-TESTS.md`: the stage-3 `s-live-1` through `s-live-4`
-consolidated pass, and macOS and Linux live checks. That owed surface shrinks as
-Decision 6's automation grows. One known gap from the `t-live-1` pass stands on
-the record: it could not confirm the expected ERROR-level server log line for the
+than an edit, keeping the ledger append-only. The 44db1f3 pass also covered the
+stage-3 `s-live-1` through `s-live-4` checks and `t01-1`, `t05-1`, `t06-1`, and
+`t06-2`, all PASS. What remains owed to a human, per the not-covered notes in
+`docs/tasks/stage-2/BROWSER-TESTS.md`: `g13-1` steps 4 and 5, `g13-3`'s governed
+half, `g15-1` and `g15-2` (mode switch), and macOS and Linux live checks. That
+owed surface shrinks as Decision 6's automation grows. One known gap from the
+`t-live-1` pass stands on the record: it could not confirm the expected
+ERROR-level server log line for the
 invalid mid-edit, because that session had no access to the server's stderr; the
 behavioral guarantee (the last good manifest keeps enforcing) was confirmed by an
 identical denial id before and after the corrupt edit.
