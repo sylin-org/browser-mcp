@@ -94,7 +94,23 @@ then continue. Never rely on remembering earlier work; re-read files.
   registry / ADR-0024) and state the classification table IS deleted, which is now true;
   they need no further edit per the task's own constraint 3 wording ("rewrite every
   survivor to name the current authority" -- these already do).
-- NEXT TASK: `t08` (`docs/tasks/stage-4/t08-documentation-sync.md`).
+- Progress (continued): t08 landed: documentation sync (docs-only, no code/test changes).
+  `docs/adr/README.md`'s 0023/0024/0025 index rows were already present at task start (a prior
+  commit added them); section 0 was a verified no-op. `docs/tasks/stage-2/00-shared-format.md`
+  gained the ADR-0025 hot-reload NOTE after section 1.3's selection-rule text, the ADR-0022/
+  ADR-0023 schema-3/duplicate-key SUPERSEDED banner immediately before the `schema` field-rule
+  line in section 4.1 (the fourth such banner; three already existed from the s08 pass), and
+  items 18-20 appended verbatim to section 10 (`SPEC updates needed`), covering ADR-0023/0024/
+  0025 respectively. `docs/tasks/stage-2/BROWSER-TESTS.md` gained the `t-live-1` consolidated
+  live-check pointer (re-run s-live-1..4 plus t01-1/t05-1/t06-1/t06-2 against the stage-4 tree)
+  appended after the existing `t06-2` entry. `CLAUDE.md`, `docs/SPEC.md`, and every ADR body are
+  untouched (out of scope). This is the last stage-4 task; the run is complete pending human
+  live-verification (see RUN SUMMARY below).
+- NEXT TASK: none. Stage 4 (t01-t08) is complete. Manifest hot-reload (ADR-0025) and the
+  org-policy loading fix (ADR-0023) are shipped-but-unverified-end-to-end until a human runs the
+  live backlog in `docs/tasks/stage-2/BROWSER-TESTS.md` (the stage-3 s-live-1..4 backlog, t01-1,
+  t05-1, t06-1, t06-2, and the new `t-live-1` consolidated pointer) against a live browser. A
+  human decides when `stage-4` merges; no push, no merge performed by this run.
 - Authority: ADR-0023/0024/0025 (each in its own scope) over task prompts over ADR-0022 over
   the stage-2 shared-format doc over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -786,3 +802,135 @@ then continue. Never rely on remembering earlier work; re-read files.
   `src/governance/ports.rs`) clean.
 - Browser checks queued: none (pure deletion/tidy; zero behavior change, zero new
   capability, per the task's own Goal and Out of scope sections).
+
+### t08 documentation sync -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: `docs/tasks/stage-2/00-shared-format.md`, `docs/tasks/stage-2/BROWSER-TESTS.md`,
+  this file. `docs/adr/README.md` was NOT touched (its 0023/0024/0025 rows were already present
+  at task start; verified via `rg -c "0023-|0024-|0025-" docs/adr/README.md` -> `3` before any
+  edit, so Required Behavior 0 was a confirmed no-op, exactly as the prompt's own Current
+  Behavior section anticipated as a possibility).
+- Summary: docs-only sync, no code or test changes. In
+  `docs/tasks/stage-2/00-shared-format.md`: inserted the ADR-0025 hot-reload NOTE immediately
+  after section 1.3 (`User-supplied manifest`)'s selection-rule text and before the 1.4 heading,
+  verbatim from the prompt; inserted the ADR-0022/ADR-0023 SUPERSEDED banner immediately before
+  the `schema` field-rule bullet in section 4.1 (found at the prompt's predicted ~282, confirmed
+  against the live tree before editing), verbatim from the prompt -- this is the fourth
+  `SUPERSEDED by ADR-0022` banner in the file (three already existed from the stage-3 s08 pass
+  at 4.1's grant-fields bullet, section 8's `rw` row, and section 8's whole-section note; this
+  task's banner is a fourth, distinct insertion at the schema field, matching the prompt's own
+  "the three s08 banners plus this task's schema banner" framing of the `rg -c` test); appended
+  items 18/19/20 to section 10 (`SPEC updates needed`), verbatim from the prompt, covering
+  ADR-0023/0024/0025 respectively (the list previously ended at item 17). In
+  `docs/tasks/stage-2/BROWSER-TESTS.md`: appended the `t-live-1` consolidated live-check pointer
+  (re-run stage-3's s-live-1..4 plus t01-1/t05-1/t06-1/t06-2 against the stage-4 tree) immediately
+  after the existing `t06-2` entry, verbatim from the prompt. No SPEC.md edit, no ADR body edit,
+  no CLAUDE.md edit (all out of scope per the prompt's own Constraints/Out of scope sections).
+- Deviations from the prompt/ADR: none. Every inserted string (the ADR-0025 NOTE, the schema
+  SUPERSEDED banner, items 18-20, and the `t-live-1` entry) is a verbatim transcription of the
+  prompt's Required Behavior text; the ADR README rows required no action since a prior commit
+  had already added them (an anticipated, not surprising, outcome per the prompt's own wording).
+- Deletions performed: none (docs-only insertions; nothing superseded or removed this task).
+- Verification: `cargo fmt` (applied; no diff, since no code changed) then `cargo fmt --check`
+  clean; `cargo clippy --all-targets -- -D warnings` clean; `cargo test` fully green, 475 -> 475
+  (net 0, as expected for a docs-only task; no test added or removed). `tests/architecture.rs`
+  (4 tests), `tests/all_open_golden.rs` (3 tests), `tests/mcp_protocol.rs` (6 tests), and
+  `tests/tool_schema_fidelity.rs` (7 tests) all pass unchanged. `git diff HEAD --
+  src/transport/mcp/schemas/tools.json tests/tool_schema_fidelity.rs` and `git diff HEAD --
+  Cargo.toml Cargo.lock` both empty. All five prompt-pinned `rg` assertions confirmed exactly:
+  `rg -c "SUPERSEDED by ADR-0022" docs/tasks/stage-2/00-shared-format.md` -> `4`; `rg -c
+  "ADR-0025" docs/tasks/stage-2/00-shared-format.md` -> `2` (at least 1, satisfied); `rg -n
+  "^20\." docs/tasks/stage-2/00-shared-format.md` -> exactly one line (item 20); `rg -c "^##
+  t-live-1" docs/tasks/stage-2/BROWSER-TESTS.md` -> `1`; `rg -c "0023-|0024-|0025-"
+  docs/adr/README.md` -> `3`. ASCII scan of every added line (`git diff -U0 | grep "^+" | rg -n
+  "[^\x00-\x7F]"`) -> no output (clean) on both touched files.
+- Browser checks queued: none (this task adds a documentation pointer to existing deferred
+  checks; it defers no new live check of its own).
+
+## RUN SUMMARY (stage 4 complete: t01-t08)
+
+Tasks completed, in order: t01 (one loader for the policy file, ADR-0023) -> t02 (the tool
+registry, ADR-0024 Decision 1) -> t03 (governance authorize + `CallAudit`, ADR-0024 Decision 3)
+-> t04 (the generic ingest pipeline, ADR-0024 Decision 2) -> t05 (one tab-URL resolution per
+call, ADR-0024 Decision 4) -> t06 (manifest hot-reload, ADR-0025) -> t07 (dead-seam and stub
+deletions, ADR-0024 Decision 5) -> t08 (this task: documentation sync). Commit range:
+`b8225ef` (t01) through `c16cb44` (t07) landed before this task; this task's own commit
+(`docs(architecture): t08 documentation sync`) follows immediately, closing the range at the
+branch tip. Branch point: `stage-3` head (`b4b2faf`, 461 tests passing).
+
+Every conservative choice made across the stage (one entry per task; full reasoning lives in
+each task's own log entry above):
+- t01: added `org_config_from_policy` as a small shared helper (not literally named in the
+  prompt) so the origin-gated org-layer rule has exactly one implementation; reworded one
+  historical sentence in the new integration test's doc comment to avoid tripping the prompt's
+  own `rg` completeness check on its own substring.
+- t02: retargeted `advertise.rs::tool_has_a_reachable_variant`'s direct `DIRECTORY` iteration
+  onto `REGISTRY` (a third consumer the prompt's survey missed, unavoidable once `DIRECTORY` was
+  deleted); added `#[allow(clippy::type_complexity)]` on the pinned `EXPECTED_TOOLS` tuple type
+  rather than restructure a byte-pinned shape.
+- t03: `CallAudit` additionally captures the client identity (necessary for `AuditRecord.client`
+  with no back-reference to `Governance`); added the unpinned `landing_shadow_deny` method to
+  correctly record a landing-recheck shadow-deny outcome (the seven-method pinned list omitted
+  this arm, and reusing `landing_allow` would have silently misrecorded a shadow-deny as an
+  allow).
+- t04: reworded one `directory.rs` doc-comment line naming the deleted `is_known_tool` (a
+  prompt self-inconsistency between "add nothing to directory.rs" and its own `rg` hygiene
+  check); reworded `server.rs`'s module doc to describe the post-move pipeline location.
+- t05: none (the `LazyTabUrl` shape is schematic in the prompt, not a pin).
+- t06: additionally folds a user-sourced manifest's config entries into the user layer on every
+  reload, not just at startup (otherwise the newly-watched user source would be observably inert
+  for config); `#[allow(clippy::large_enum_variant)]` on the pinned `Outbound` enum rather than
+  restructure it; fixed a real shutdown bug discovered while authoring the flagship test (the
+  policy-subscription task's `JoinHandle` is now aborted before shutdown, or the process could
+  never exit); the flagship test takes over the REAL default audit path (backed up and restored
+  via a `Drop` guard) since `LOCALAPPDATA` override has no effect on the `dirs` crate's Windows
+  backend.
+- t07: skipped the OPTIONAL `ports.rs` directory split (748 lines, still above the ~600
+  guideline but the prompt explicitly sanctions skipping with a ledger note).
+- t08: none (every insertion is a verbatim transcription; the ADR README rows needed no action).
+
+The DELETIONS LEDGER (this stage's deliverable is what got REMOVED; aggregated from every
+task's own "Deletions performed" list above):
+- t01: `governance::config::load::parse_org_config` (and its test
+  `org_file_violations_are_errors`); `governance::config::load::load_and_resolve` (dead, zero
+  callers); `ConfigStore::load_initial_with_manifest_config` (renamed/reshaped to
+  `load_initial_with_policy`).
+- t02: `browser::directory::ActionDescriptor` (struct) and `browser::directory::DIRECTORY`
+  (const), absorbed into `REGISTRY[*].variants`; three superseded inline tests
+  (`directory_covers_the_sacred_surface_exactly`, `directory_requires_match_the_adr_table`,
+  `explain_text_is_the_vocabulary_block_then_one_line_per_row`), replaced by their reworked
+  registry-shaped equivalents.
+- t03: `Governance::record_call`, `record_deny`, `record_navigate_landing_deny`,
+  `record_shadow_deny`, `record_held`, and their shared private `build_record`; the
+  `Governance.requires` fn-pointer field and the `requires` parameter on `all_open`/`governed`;
+  `decide`'s internal directory-miss branch and empty-requires shortcut; `enforcement::
+  tool_label`; the `no_requires` test helper (both `dispatch.rs` and `tests/all_open_golden.rs`);
+  the four `handle_tools_call` mutables (`audit_domain`, `audit_grant_id`, `shadow_denial`);
+  eleven dispatch.rs inline tests directly driving the deleted API.
+- t04: `transport::mcp::tools::is_known_tool` and its two unit tests; the now-empty `#[cfg(test)]
+  mod tests` block in `tools.rs`.
+- t05: `resolve_tab_host` (the sacred check's former internal `tabs_context_mcp` call plus its
+  result-shape parsing); the now-orphaned test fixture helper `tabs_context_reply`.
+- t06: `governance::config::reload::read_and_parse_org` (superseded by
+  `apply_policy_and_config`'s single `source::load_policy` call).
+- t07: `governance::ports::ToolId`, `ResourcePattern`, `DomainPolicy`, `ResourceResolver` (four
+  unwired placeholder items, zero prior test coverage); the entire `src/browser/tools/` subtree
+  (11 files: `computer.rs`, `find.rs`, `form_input.rs`, `javascript.rs`, `manage.rs`, `mod.rs`,
+  `navigate.rs`, `network.rs`, `page_text.rs`, `read_page.rs`, `tabs.rs` -- zero functions, zero
+  tests, stale observe/mutate/manage prose only).
+- t08: none (docs-only task, no deletions).
+
+State of `docs/tasks/stage-2/BROWSER-TESTS.md`: carries the full stage-2/stage-3 backlog
+(g08/g10/g11/g13/g15, s01, s05, s07) plus the stage-3 s-live-1..4 entries, plus this stage's
+four per-task entries (`t01-1`, `t05-1`, `t06-1`, `t06-2`) and this task's consolidated
+`t-live-1` pointer tying the whole stage-4 regression pass together. Nothing in this file has
+been run against a live browser during stage 4 itself (the executor has no live browser); every
+entry remains queued for a human pass.
+
+PLAIN STATEMENT (per BOOTSTRAP Completion): manifest hot-reload (ADR-0025) and the org-policy
+loading fix (ADR-0023) are shipped in code and fully covered by the automated test wall (475
+tests green, including the `tests/hot_reload.rs` flagship end-to-end test spawning the real
+binary), but neither is verified end-to-end against a live browser and a live MCP client. A
+human must run the stage-3 s-live-1..4 backlog plus `t01-1`, `t05-1`, `t06-1`, `t06-2`, and
+`t-live-1` from `docs/tasks/stage-2/BROWSER-TESTS.md` before stage 4 is considered verified end
+to end. No push, no merge performed; `stage-4` is left for a human to merge when ready.

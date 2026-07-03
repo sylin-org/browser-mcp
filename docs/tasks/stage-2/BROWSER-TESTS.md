@@ -551,3 +551,12 @@ call outside the grants; then fix the file.
 Expect: enforcement continues on the last-good manifest (same denials, same hash) with
 an ERROR in the server log and NO manifest_reload event until the fixed save, which
 swaps normally.
+
+## t-live-1: stage-4 regression pass (pipeline rewrite)
+Changed: stage 4 rewrote the dispatch pipeline (registry-driven, ADR-0024) with
+behavior pinned byte-identical by the test wall; only a live pass proves the wall had
+no holes.
+Steps: re-run the stage-3 backlog s-live-1 through s-live-4 unchanged against the
+stage-4 tree, plus t01-1, t05-1, t06-1, and t06-2.
+Expect: every expectation in those entries holds unchanged; any divergence is a
+stage-4 regression (file it against the pipeline rewrite, not the entry).

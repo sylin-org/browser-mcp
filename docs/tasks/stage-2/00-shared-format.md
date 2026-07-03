@@ -88,6 +88,12 @@ Config entries inside a user-supplied manifest apply at the user layer (never lo
 warning. Only the org policy file can populate the org-mandatory and org-recommended
 layers.
 
+NOTE (ADR-0025, docs/adr/0025-manifest-hot-reload.md): as of stage 4 the active manifest
+hot-reloads. The org policy path and a file:// user source are watched; the selection
+rule above is re-evaluated on every change (including file creation and deletion); an
+invalid edit keeps the last-good manifest (fail closed). The startup-fixed description
+below this point is retained as history for the stage-2 implementation record.
+
 ### 1.4. Default audit file path
 
 Used when `audit.file.path` resolves to the empty string (section 3.4):
@@ -278,6 +284,11 @@ JSON document. Delivered as the org policy file (section 1.2) or user-supplied
 ```
 
 Field rules:
+
+SUPERSEDED by ADR-0022 (docs/adr/0022-intent-calibrated-capabilities.md): the schema
+version is 3; schema 2 never shipped and is rejected. Additionally, per ADR-0023
+(docs/adr/0023-one-loader-for-the-policy-file.md), duplicate config keys in one manifest
+are a validation error. The text below is retained as history.
 
 - `schema`: integer, required. Stage 2 defines schema `2`. The binary rejects unknown
   schema versions with a clear error.
@@ -807,3 +818,18 @@ SPEC text. Amend the SPEC accordingly.
 17. **Advertised surface is 13 plus 1 (ADR-0022 Decision 7; SPEC 3, 5.1).** The 13 trained
     tool schemas remain byte-identical; exactly one additive, argument-less governance tool
     named `explain` is sanctioned on top, advertised under every manifest and always allowed.
+18. **One loader for the policy file (ADR-0023; SPEC 4.4).** The policy file has exactly
+    one parser and one schema authority (the manifest parser, schema 3); org config
+    layers derive from the parsed manifest's `config` entries; duplicate config keys are
+    a validation error; every load path performs one parse per invocation or change.
+19. **Tool registry and generic ingest pipeline (ADR-0024; SPEC 3, 5).** One per-tool
+    descriptor table (capability variants, resource shape, handler kind, hooks) drives
+    validity, classification, enforcement input, advertisement, explain, and result
+    post-processing; governance owns audit-record selection through a per-call scope;
+    the sacred check and grant path share one tab-URL resolution per call. The 13
+    trained tool schemas plus `explain` remain byte-identical (ADR-0022 Decision 7).
+20. **Manifest hot-reload (ADR-0025; SPEC 4.4, 2).** The org policy path and a file://
+    user manifest source are watched; grants/mode/hash swap atomically per call
+    snapshot; an advertised-set change emits `notifications/tools/list_changed`; policy
+    transitions record `manifest_reload` / `user_manifest_ignored` session events;
+    invalid edits keep the last-good manifest.
