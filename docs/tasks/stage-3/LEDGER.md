@@ -10,8 +10,8 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02`, `s03` landed.
-- NEXT TASK: `s04` (`docs/tasks/stage-3/s04-host-polarity.md`).
+- Progress: `s01`, `s02`, `s03`, `s04` landed.
+- NEXT TASK: `s05` (`docs/tasks/stage-3/s05-schema3-switch.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -151,3 +151,54 @@ remembering earlier work; re-read files.
   nothing.
 - Browser checks queued: none (pure static data; nothing observable in a live browser
   yet, per the task prompt's Verification section).
+
+### s04 host polarity evaluation in the browser plugin -- 2026-07-03
+- Commit: (see this task's commit, `feat(governance): s04 host polarity evaluation in the
+  browser plugin`)
+- Files touched: `src/governance/ports.rs`, `src/browser/polarity.rs` (new),
+  `src/browser/mod.rs`, `docs/tasks/stage-3/LEDGER.md`.
+- Summary: added the ADR-0022 Decision 4 host-polarity evaluator as a pure, additive
+  addition, split across the core and the browser plugin exactly as the prompt specified.
+  `HostRuleOutcome` (`Allowed`/`Denied`/`Unmatched`, no serde derives, doc comment naming
+  no `crate::browser` path) was inserted verbatim into `src/governance/ports.rs`
+  immediately after `capability_subset` and before `ToolId` -- the prompt said "immediately
+  after the `EffectiveMode` impl block and before `ToolId`", but s02 already occupies that
+  exact span with the `Capability` enum/impl/`capability_subset`, so "before `ToolId`" (the
+  literal, still-true half of the placement instruction) governed; see deviation 1. The new
+  module `src/browser/polarity.rs` holds `is_valid_host_rule` (`pattern == "*" ||
+  is_valid_pattern(pattern)`), `evaluate_host` (empty-allow short-circuits to `Unmatched`;
+  otherwise computes best specificity per list via the pinned `specificity`/`rule_matches`/
+  `best_specificity` helpers and applies the `(None,None)`/`(Some,None)`/`(None,Some)`/
+  `(Some(a),Some(d)) if d>=a` decision table, tie-to-deny via `>=`), transcribed verbatim
+  from the prompt's reference implementation. Registered `pub mod polarity;` in
+  `src/browser/mod.rs` between `pattern` and `redact` and wove the pinned polarity clause
+  into the module doc comment immediately after the `pattern` clause and before the
+  `sacred` clause, rewrapping the whole paragraph to the file's existing line width by hand
+  (rustfmt does not reflow doc comments by default). Nothing in the tree consumes
+  `HostRuleOutcome`/`evaluate_host`/`is_valid_host_rule` yet (s05 wires them into manifest
+  parsing and enforcement); `classify.rs`, `resource.rs`, `sacred.rs`, enforcement, and
+  dispatch were not opened for editing.
+- Deviations from the prompt/ADR: 1. The prompt's insertion point ("immediately after the
+  `EffectiveMode` impl block and before `ToolId`") describes the pre-s02 tree; s02 already
+  inserted `Capability`/`capability_subset` in that exact span. Per BOOTSTRAP.md's
+  standing instruction to trust names/prose over stale line references, and since the ADR
+  states no ordering requirement among ports.rs types, `HostRuleOutcome` was placed
+  immediately after `capability_subset` and before `ToolId`, satisfying the literal,
+  still-current half of the instruction ("before `ToolId`") without disturbing s02's
+  already-landed insertion. No semantic effect; purely a documentation-order
+  reconciliation, recorded here per BOOTSTRAP.md rule 4.
+- Verification: `cargo fmt` (no changes beyond the hand-wrapped doc-comment paragraph,
+  which rustfmt leaves alone since it does not reflow comments) then `cargo fmt --check`
+  clean; `cargo clippy --all-targets -- -D warnings` clean; `cargo test` 438 -> 449 (eleven
+  net new tests, all pinned by name in `src/browser/polarity.rs`'s `mod tests`: lib unit
+  test binary 377 -> 388), all passing, 0 failed. Confirmed unchanged and green:
+  `tests/architecture.rs` (4 tests), `tests/all_open_golden.rs` (3 tests),
+  `tests/mcp_protocol.rs` (4 tests), `tests/tool_schema_fidelity.rs` (6 tests) -- `git
+  status --short` shows only `src/governance/ports.rs`, `src/browser/mod.rs` modified plus
+  the new untracked `src/browser/polarity.rs` (and this ledger); none of the four guard
+  files appear in the diff. `rg -n "HostRuleOutcome|evaluate_host|is_valid_host_rule"
+  src/` hits only `src/governance/ports.rs` and `src/browser/polarity.rs`, confirming the
+  task is purely additive. ASCII scan (`rg -n "[^\x00-\x7F]" src/governance/ports.rs
+  src/browser/polarity.rs src/browser/mod.rs`) printed nothing.
+- Browser checks queued: none (a pure function; no BROWSER-TESTS.md entry, per the task
+  prompt's Verification section).

@@ -130,6 +130,21 @@ pub fn capability_subset(requires: &[Capability], allowed: &[Capability]) -> boo
     requires.iter().all(|r| allowed.contains(r))
 }
 
+/// Outcome of evaluating one grant's host rules (`hosts.allow` / `hosts.deny`) against a
+/// normalized host (ADR-0022 Decision 4). `Unmatched` means the grant does not cover the
+/// host at all: the grant-level default is DENY (Decision 4 rule 1), so an unmatched
+/// grant simply never resolves the call. Produced by the domain plugin's polarity
+/// evaluator and consumed by enforcement (s05) through an injected function pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRuleOutcome {
+    /// An allow pattern is the winning match: the grant covers the host.
+    Allowed,
+    /// A deny pattern matched and won: the grant explicitly excludes the host.
+    Denied,
+    /// Neither list matched (or the allow list is empty): the grant does not cover the host.
+    Unmatched,
+}
+
 /// A tool identifier as advertised on the MCP surface. Placeholder newtype; g07/g14 flesh
 /// out the tool-surface handling. The sacred tool schemas (ADR-0007) are the source of
 /// truth for the actual names; this type never mutates them.
