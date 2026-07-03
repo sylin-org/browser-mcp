@@ -618,17 +618,45 @@ vocabulary in the governance core; `s03` the action directory in the browser plu
 host polarity evaluation in the browser plugin; `s05` the schema-3 switch (manifest grants,
 enforcement, dispatch, advertisement, explain, simulate, examples, templates); `s06` audit
 `capability` field, deletion of `classify.rs` and `RwClass`; `s07` the `explain` directory
-tool (the one sanctioned tools.json addition); `s08` documentation sync. Commit range: one
-commit per task on branch `stage-3` (plus the earlier task-batch setup commit), from `s01`
-through this `s08` commit (`docs(governance): s08 documentation sync`); run
-`git log stage-2..stage-3 --oneline` to see the exact commit range. Final `cargo test` total:
-459 passed, 0 failed (baseline before any stage-3 task: 430).
+tool (the one sanctioned tools.json addition); `s08` documentation sync. Commit range: 9
+commits on branch `stage-3`, branched from `stage-2` at `1f22126` (`feat(governance): g18
+presets and templates`): `b0a1164` (docs: ADR-0022 + stage-3 task batch setup), `2074786`
+(s01), `15ef9fa` (s02), `7f9a54e` (s03), `bb5fdc2` (s04), `8ed5f82` (s05), `2215b02` (s06),
+`f977c34` (s07), `0c829d5` (s08, docs sync -- the last commit before this RUN SUMMARY entry
+was added). Final `cargo test` total: 459 passed, 0 failed (baseline before any stage-3
+task: 430).
 
 Every conservative choice made across the run is recorded as a numbered deviation in that
-task's own log entry above; none altered observable behavior of anything except the
-deliberate, ADR-sanctioned changes (navigate reclassified read, the schema-3 grant model
-replacing schema-2, the audit `rw` -> `capability` rename, and the one sanctioned `explain`
-tool addition). No task skipped, reverted, or left the tree dirty.
+task's own log entry above; summarized together here by task: `s01`, `s02`, `s03`, `s07`,
+`s08` -- none (every literal, table, rename, and test name transcribed verbatim from the
+prompt/ADR with no conflict). `s04` -- one purely cosmetic reconciliation: the prompt's
+insertion-point instruction ("immediately after the `EffectiveMode` impl block") described
+the pre-s02 tree; s02 had already claimed that span, so `HostRuleOutcome` was placed after
+`capability_subset` instead (still "before `ToolId`," the still-current half of the
+instruction), with no semantic effect. `s05` -- six recorded choices, all read-preserving:
+(1) `Governance` kept both `classify` and the new `requires` fn pointers instead of a
+literal replacement, because `build_record`'s `rw` derivation cannot cross the
+`governance -> browser` architecture boundary the arch test forbids; (2) the manifest's
+domain-pattern validator stayed the strict checker with an inline `pattern == "*"` carve-out
+at the two `hosts` call sites only, keeping sacred-domain config still rejecting bare `*`;
+(3) the `capability`/`denied_domain` denial templates were implemented WITH the
+`Denied ({id}): ` prefix for voice consistency with every other denial rule, reading the
+prompt's quoted text as omitting shared boilerplate rather than specifying a divergent
+voice; (4) two would-deny integration-test scenarios were moved from `tabs_create_mcp` (now
+a `requires: []` tool that can never deny under ADR-0022) to `tabs_context_mcp`, preserving
+each test's original intent; (5) `tests/all_open_golden.rs` and `tests/audit_recorder.rs`
+needed compile-only signature threading with no assertion or golden-text change; (6) one
+structurally-invalid-manifest test was rewritten to use an invalid capability name instead
+of the now-deleted `exclude_tools` field, proving the same invariant. `s06` -- three
+recorded choices, all editorial: (1)/(2) two pre-existing or newly-written doc-comment
+lines were reworded to avoid the bare substring "classify" (to satisfy the task's own `rg`
+verification command) and two doc-comment lines were hand-rewrapped after `rw` became the
+longer `capability`, both with no semantic effect; (3) a test's capability assertion needed
+no further translation because s05 had not changed which tool it drove. None of these
+altered observable behavior of anything except the deliberate, ADR-sanctioned changes
+themselves (navigate reclassified read, the schema-3 grant model replacing schema-2, the
+audit `rw` -> `capability` rename, and the one sanctioned `explain` tool addition). No task
+skipped, reverted, or left the tree dirty.
 
 State of `docs/tasks/stage-2/BROWSER-TESTS.md`: it now carries every stage-2 entry
 (unmodified) plus stage-3's live-check backlog: `s01-1` (navigate-is-read on a read grant),
