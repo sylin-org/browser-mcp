@@ -40,7 +40,9 @@ fn permissive_manifest_yields_zero_would_denies() {
         stdout.contains("result: no would-denies (exit 0)"),
         "{stdout}"
     );
+    assert!(stdout.contains("would allow: 9"), "{stdout}");
     assert!(stdout.contains("would deny: 0"), "{stdout}");
+    assert!(stdout.contains("not evaluable: 4"), "{stdout}");
     assert!(!stdout.contains("would-deny groups"), "{stdout}");
 
     for line in [
@@ -74,8 +76,8 @@ fn restrictive_manifest_golden() {
 
     let expected_groups = [
         "count=1 grant=- domain=unknown.example tool=read_page rule=unmatched_domain",
-        "count=3 grant=docs-read domain=docs.example.com tool=computer rule=access",
-        "count=1 grant=forms-noscript domain=forms.example.net tool=javascript_tool rule=tool/javascript_tool",
+        "count=3 grant=docs-read domain=docs.example.com tool=computer rule=capability",
+        "count=1 grant=forms-noscript domain=forms.example.net tool=javascript_tool rule=capability",
     ];
     for group in expected_groups {
         assert!(
@@ -171,7 +173,7 @@ fn structurally_invalid_manifest_exits_one() {
     ));
     std::fs::write(
         &path,
-        r#"{"schema":2,"name":"x","version":"1","grants":[{"id":"g","domains":["example.com"],"access":"all","exclude_tools":["not_a_real_tool"]}]}"#,
+        r#"{"schema":3,"name":"x","version":"1","grants":[{"id":"g","hosts":{"allow":["example.com"]},"allowed":["mutate"]}]}"#,
     )
     .unwrap();
 

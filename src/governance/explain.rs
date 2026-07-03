@@ -1,4 +1,5 @@
-//! Deterministic plain-language policy rendering (ADR-0020 commitment 2, g16).
+//! Deterministic plain-language policy rendering (ADR-0020 commitment 2, g16; grant rendering
+//! updated for ADR-0022 Decisions 3/4/8).
 //!
 //! `policy explain` is a trust surface: an administrator reads exactly what a policy manifest
 //! does, in sentences generated from the same parsed structures the engine enforces, before
@@ -13,19 +14,18 @@
 //! anywhere in the output path (manifest and config types preserve author order via
 //! `preserve_order`; the key registry is an ordered const slice). Identical input yields
 //! byte-identical output on every platform. [`explain_file`] is the one impure entry point (it
-//! reads a path); `domain_pattern_valid`/`is_known_tool` are injected function pointers, the
-//! same "known integration point" shape used everywhere else in `governance/`, so this
-//! domain-agnostic core module never names `browser::`/`transport::` directly (the a7
-//! arch-test).
+//! reads a path); `domain_pattern_valid` is an injected function pointer, the same "known
+//! integration point" shape used everywhere else in `governance/`, so this domain-agnostic core
+//! module never names `browser::`/`transport::` directly (the a7 arch-test).
 
 use std::path::Path;
 
 use crate::governance::config::layers::validate_value;
 use crate::governance::config::{key_def, Config, Preset};
 use crate::governance::manifest::document::{
-    parse_manifest, Access, ConfigEntry, Grant, IdentityBlock, Level, Manifest, ManifestError,
+    parse_manifest, ConfigEntry, Grant, IdentityBlock, Level, Manifest, ManifestError,
 };
-use crate::governance::ports::EffectiveMode;
+use crate::governance::ports::{Capability, EffectiveMode};
 
 /// Why [`explain_file`] could not produce a rendering. A manifest that parses but fails
 /// validation surfaces as [`ExplainError::Manifest`] -- explain never renders a best-effort
@@ -200,26 +200,52 @@ fn grants_block(grants: &[Grant], mode: EffectiveMode) -> String {
     lines.join("\n")
 }
 
-fn grant_line(grant: &Grant) -> String {
-    let domains = grant.domains.join(", ");
-    let mut sentences = vec![match grant.access {
-        Access::Read => {
-            format!("Read-only on {domains}: agents may read pages but not act on them.")
-        }
-        Access::Write => format!(
-            "Write-only on {domains}: agents may act on pages but not read them (write does \
-             not include read)."
-        ),
-        Access::All => format!("Full access on {domains}: agents may read and act."),
-    }];
+/// The fixed capability -> agent-facing phrase table (ADR-0022 Decision 1), rendered in this
+/// exact order regardless of the manifest's authored order in `allowed`. The `action` phrase
+/// carries the ADR's mandated warning inline: `action` is not a weaker `write`; it can cause
+/// one.
+const CAPABILITY_PHRASES: &[(Capability, &str)] = &[
+    (Capability::Read, "read pages"),
+    (
+        Capability::Action,
+        "operate page controls (clicks and typing; this can trigger writes)",
+    ),
+    (Capability::Write, "submit forms and structured writes"),
+    (Capability::Execute, "run arbitrary JavaScript"),
+];
 
-    if let Some(tools) = &grant.tools {
-        sentences.push(format!("Only these tools: {}.", tools.join(", ")));
-    } else if let Some(excluded) = &grant.exclude_tools {
-        sentences.push(format!(
-            "All tools in the access class except: {}.",
-            excluded.join(", ")
-        ));
+/// Render `hosts.allow` (ADR-0022 Decision 4): the single pattern `*` renders as `every site`;
+/// an empty list renders as `no sites`; otherwise the patterns, comma-joined, verbatim.
+fn render_hosts(allow: &[String]) -> String {
+    if allow == ["*"] {
+        "every site".to_string()
+    } else if allow.is_empty() {
+        "no sites".to_string()
+    } else {
+        allow.join(", ")
+    }
+}
+
+/// The `Allowed on {hosts}: {phrases}.` sentence (ADR-0022 Decision 8 point 1): an empty
+/// `allowed` renders the explicit "nothing granted" wording rather than an empty phrase list.
+fn allowed_sentence(grant: &Grant) -> String {
+    let hosts = render_hosts(&grant.hosts.allow);
+    if grant.allowed.is_empty() {
+        return format!("Allowed on {hosts}: nothing (no capabilities granted).");
+    }
+    let phrases: Vec<&str> = CAPABILITY_PHRASES
+        .iter()
+        .filter(|(cap, _)| grant.allowed.contains(cap))
+        .map(|(_, phrase)| *phrase)
+        .collect();
+    format!("Allowed on {hosts}: {}.", phrases.join(", "))
+}
+
+fn grant_line(grant: &Grant) -> String {
+    let mut sentences = vec![allowed_sentence(grant)];
+
+    if !grant.hosts.deny.is_empty() {
+        sentences.push(format!("Excluded: {}.", grant.hosts.deny.join(", ")));
     }
 
     match grant.mode {
@@ -316,23 +342,30 @@ fn warnings_block(warnings: &[String]) -> String {
 }
 
 /// Warning collection order is deterministic (Required behavior section 3, block 7): iterate
-/// grants in manifest order; for each grant emit first the bare-write lint (shared format
-/// 4.3), then one non-ASCII-pattern lint per offending pattern in `domains` order (shared
-/// format 5.1). The non-ASCII lint is unreachable via [`explain_file`]'s own pipeline today (a
-/// manifest that parsed successfully already passed `domain_pattern_valid`, which rejects
-/// non-ASCII patterns outright) but is exercised directly by this module's own tests, since
-/// [`explain_manifest`] makes no assumption about how its caller validated its input.
+/// grants in manifest order; for each grant emit first the acting-without-read lint (ADR-0022
+/// Decision 3), then one non-ASCII-host-pattern lint per offending pattern across `hosts.allow`
+/// then `hosts.deny`, in that order. The non-ASCII lint is unreachable via [`explain_file`]'s
+/// own pipeline today (a manifest that parsed successfully already passed
+/// `host_pattern_valid`, which rejects non-ASCII patterns outright) but is exercised directly
+/// by this module's own tests, since [`explain_manifest`] makes no assumption about how its
+/// caller validated its input.
 fn collect_manifest_warnings(grants: &[Grant]) -> Vec<String> {
     let mut warnings = Vec::new();
     for grant in grants {
-        if matches!(grant.access, Access::Write) {
+        let acts_without_reading = grant.allowed.iter().any(|c| {
+            matches!(
+                c,
+                Capability::Action | Capability::Write | Capability::Execute
+            )
+        }) && !grant.allowed.contains(&Capability::Read);
+        if acts_without_reading {
             warnings.push(format!(
-                "grant '{}': access \"write\" does not include read; agents can act on pages \
-                 they cannot read. Most policies want \"read\" or \"all\".",
+                "grant '{}': allowed includes acting capabilities without 'read'; agents can \
+                 act on pages they cannot see.",
                 grant.id
             ));
         }
-        for pattern in &grant.domains {
+        for pattern in grant.hosts.allow.iter().chain(grant.hosts.deny.iter()) {
             if !pattern.is_ascii() {
                 warnings.push(format!(
                     "grant '{}': domain pattern '{pattern}' contains non-ASCII characters; \
@@ -437,14 +470,12 @@ fn parse_user_config_file(
 /// (shared format 1.1; unknown keys and invalid values become warnings, not errors).
 ///
 /// Reads exactly the one named file: no live org policy file, no live user config file, no
-/// environment variable, no platform path. `domain_pattern_valid`/`is_known_tool` are the
-/// browser plugin's and the MCP tool surface's real checkers, injected by the caller (the
-/// composition root) so this governance-core module never names `browser::`/`transport::`
-/// directly (the a7 arch-test).
+/// environment variable, no platform path. `domain_pattern_valid` is the browser plugin's real
+/// host-pattern checker, injected by the caller (the composition root) so this
+/// governance-core module never names `browser::`/`transport::` directly (the a7 arch-test).
 pub fn explain_file(
     path: &Path,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
 ) -> Result<String, ExplainError> {
     let path_str = path.display().to_string();
     let bytes = std::fs::read(path).map_err(|e| ExplainError::Io {
@@ -468,7 +499,7 @@ pub fn explain_file(
         .unwrap_or(false);
 
     if is_manifest {
-        let manifest = parse_manifest(text, &path_str, domain_pattern_valid, is_known_tool)?;
+        let manifest = parse_manifest(text, &path_str, domain_pattern_valid)?;
         let hash = manifest.hash.clone();
         Ok(explain_manifest(&manifest, &hash))
     } else {
@@ -480,21 +511,20 @@ pub fn explain_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance::manifest::document::HostRules;
 
     fn always_valid_pattern(_: &str) -> bool {
         true
     }
-    fn is_known_tool(_: &str) -> bool {
-        true
-    }
 
-    fn sample_grant(id: &str, access: Access) -> Grant {
+    fn sample_grant(id: &str, allowed: &[Capability]) -> Grant {
         Grant {
             id: id.to_string(),
-            domains: vec!["example.com".to_string()],
-            access,
-            tools: None,
-            exclude_tools: None,
+            hosts: HostRules {
+                allow: vec!["example.com".to_string()],
+                deny: Vec::new(),
+            },
+            allowed: allowed.to_vec(),
             description: None,
             mode: None,
         }
@@ -502,7 +532,7 @@ mod tests {
 
     fn sample_manifest(mode: Option<EffectiveMode>, grants: Vec<Grant>) -> Manifest {
         Manifest {
-            schema: 2,
+            schema: 3,
             name: "a".to_string(),
             version: "1".to_string(),
             mode,
@@ -514,45 +544,108 @@ mod tests {
     }
 
     #[test]
-    fn access_sentences_are_exact() {
+    fn allowed_sentences_are_exact_per_capability() {
         assert_eq!(
-            grant_line(&sample_grant("g", Access::Read)),
-            "Read-only on example.com: agents may read pages but not act on them."
+            grant_line(&sample_grant("g", &[Capability::Read])),
+            "Allowed on example.com: read pages."
         );
         assert_eq!(
-            grant_line(&sample_grant("g", Access::Write)),
-            "Write-only on example.com: agents may act on pages but not read them (write does \
-             not include read)."
+            grant_line(&sample_grant("g", &[Capability::Action])),
+            "Allowed on example.com: operate page controls (clicks and typing; this can \
+             trigger writes)."
         );
         assert_eq!(
-            grant_line(&sample_grant("g", Access::All)),
-            "Full access on example.com: agents may read and act."
+            grant_line(&sample_grant("g", &[Capability::Write])),
+            "Allowed on example.com: submit forms and structured writes."
+        );
+        assert_eq!(
+            grant_line(&sample_grant("g", &[Capability::Execute])),
+            "Allowed on example.com: run arbitrary JavaScript."
+        );
+        assert_eq!(
+            grant_line(&sample_grant(
+                "g",
+                &[
+                    Capability::Read,
+                    Capability::Action,
+                    Capability::Write,
+                    Capability::Execute
+                ]
+            )),
+            "Allowed on example.com: read pages, operate page controls (clicks and typing; \
+             this can trigger writes), submit forms and structured writes, run arbitrary \
+             JavaScript."
         );
     }
 
     #[test]
-    fn bare_write_lint_fires_only_for_write() {
-        let write_grant = sample_grant("w", Access::Write);
-        let warnings = collect_manifest_warnings(std::slice::from_ref(&write_grant));
+    fn empty_allowed_renders_the_nothing_granted_wording() {
         assert_eq!(
-            warnings,
-            vec![
-                "grant 'w': access \"write\" does not include read; agents can act on pages \
-                 they cannot read. Most policies want \"read\" or \"all\"."
-                    .to_string()
-            ]
+            grant_line(&sample_grant("g", &[])),
+            "Allowed on example.com: nothing (no capabilities granted)."
         );
+    }
 
-        for access in [Access::Read, Access::All] {
-            let g = sample_grant("g", access);
-            assert!(collect_manifest_warnings(&[g]).is_empty());
+    #[test]
+    fn hosts_render_star_as_every_site_and_empty_as_no_sites() {
+        let mut star = sample_grant("g", &[Capability::Read]);
+        star.hosts.allow = vec!["*".to_string()];
+        assert_eq!(grant_line(&star), "Allowed on every site: read pages.");
+
+        let mut empty = sample_grant("g", &[Capability::Read]);
+        empty.hosts.allow = vec![];
+        assert_eq!(grant_line(&empty), "Allowed on no sites: read pages.");
+    }
+
+    #[test]
+    fn deny_list_renders_the_excluded_sentence() {
+        let mut g = sample_grant("g", &[Capability::Read]);
+        g.hosts.allow = vec!["*".to_string()];
+        g.hosts.deny = vec!["evil.com".to_string(), "bad.example.com".to_string()];
+        assert_eq!(
+            grant_line(&g),
+            "Allowed on every site: read pages. Excluded: evil.com, bad.example.com."
+        );
+    }
+
+    #[test]
+    fn acting_without_read_lint_fires_for_action_write_or_execute_without_read() {
+        for caps in [
+            vec![Capability::Action],
+            vec![Capability::Write],
+            vec![Capability::Execute],
+            vec![Capability::Action, Capability::Write],
+        ] {
+            let g = sample_grant("w", &caps);
+            let warnings = collect_manifest_warnings(std::slice::from_ref(&g));
+            assert_eq!(
+                warnings,
+                vec![
+                    "grant 'w': allowed includes acting capabilities without 'read'; agents \
+                     can act on pages they cannot see."
+                        .to_string()
+                ],
+                "{caps:?}"
+            );
+        }
+
+        for caps in [
+            vec![Capability::Read],
+            vec![Capability::Read, Capability::Write],
+            vec![],
+        ] {
+            let g = sample_grant("g", &caps);
+            assert!(
+                collect_manifest_warnings(&[g]).is_empty(),
+                "{caps:?} must not warn"
+            );
         }
     }
 
     #[test]
     fn non_ascii_pattern_lint_is_exact() {
-        let mut g = sample_grant("g", Access::Read);
-        g.domains = vec!["b\u{fc}cher.de".to_string()];
+        let mut g = sample_grant("g", &[Capability::Read]);
+        g.hosts.allow = vec!["b\u{fc}cher.de".to_string()];
         let warnings = collect_manifest_warnings(&[g]);
         assert_eq!(
             warnings,
@@ -566,19 +659,19 @@ mod tests {
 
     #[test]
     fn per_grant_mode_sentences_are_exact() {
-        let mut enforce_grant = sample_grant("g", Access::Read);
+        let mut enforce_grant = sample_grant("g", &[Capability::Read]);
         enforce_grant.mode = Some(EffectiveMode::Enforce);
         assert!(grant_line(&enforce_grant).ends_with(
             "This grant always enforces: its denials block even when the policy mode is observe."
         ));
 
-        let mut observe_grant = sample_grant("g", Access::Read);
+        let mut observe_grant = sample_grant("g", &[Capability::Read]);
         observe_grant.mode = Some(EffectiveMode::Observe);
         assert!(grant_line(&observe_grant).ends_with(
             "This grant is always observe-only: its denials are recorded, never blocked."
         ));
 
-        let no_mode_grant = sample_grant("g", Access::Read);
+        let no_mode_grant = sample_grant("g", &[Capability::Read]);
         let line = grant_line(&no_mode_grant);
         assert!(!line.contains("This grant"));
     }
@@ -709,11 +802,11 @@ mod tests {
 
     #[test]
     fn determinism_and_line_endings() {
-        let json = r#"{"schema":2,"name":"a","version":"1","grants":[
-            {"id":"g1","domains":["example.com"],"access":"read"}
+        let json = r#"{"schema":3,"name":"a","version":"1","grants":[
+            {"id":"g1","hosts":{"allow":["example.com"]},"allowed":["read"]}
         ]}"#;
-        let m1 = parse_manifest(json, "t", always_valid_pattern, is_known_tool).unwrap();
-        let m2 = parse_manifest(json, "t", always_valid_pattern, is_known_tool).unwrap();
+        let m1 = parse_manifest(json, "t", always_valid_pattern).unwrap();
+        let m2 = parse_manifest(json, "t", always_valid_pattern).unwrap();
         let out1 = explain_manifest(&m1, &m1.hash);
         let out2 = explain_manifest(&m2, &m2.hash);
         assert_eq!(out1, out2);

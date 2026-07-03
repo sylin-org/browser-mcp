@@ -24,7 +24,6 @@ use browser_mcp::governance::manifest::source;
 use browser_mcp::install::{InstallOptions, Selection, UninstallOptions};
 use browser_mcp::native::ipc;
 use browser_mcp::transport::executor::Browser;
-use browser_mcp::transport::mcp::tools;
 use clap::{Args, Parser, Subcommand};
 
 /// Browser MCP -- the user's own authenticated browser, for AI agents.
@@ -331,7 +330,6 @@ fn main() -> Result<()> {
         } => browser_mcp::governance::config::cli::run(
             args.into(),
             browser_mcp::browser::pattern::is_valid_pattern,
-            browser_mcp::transport::mcp::tools::is_known_tool,
         )?,
         Cli {
             command:
@@ -343,7 +341,6 @@ fn main() -> Result<()> {
             let text = browser_mcp::governance::explain::explain_file(
                 &file,
                 browser_mcp::browser::pattern::is_valid_pattern,
-                browser_mcp::transport::mcp::tools::is_known_tool,
             )?;
             print!("{text}");
         }
@@ -359,9 +356,8 @@ fn main() -> Result<()> {
                 &manifest,
                 &replay,
                 browser_mcp::browser::pattern::is_valid_pattern,
-                browser_mcp::transport::mcp::tools::is_known_tool,
-                browser_mcp::browser::classify::classify,
-                browser_mcp::browser::pattern::pattern_matches_normalized_host,
+                browser_mcp::browser::directory::requires,
+                browser_mcp::browser::polarity::evaluate_host,
             )?;
             print!("{}", outcome.report);
             std::io::stdout().flush().ok();
@@ -443,12 +439,8 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     // parsed, or validated is a fatal startup error (an org policy that fails open is worse
     // than a crash), so this must happen before a single JSON-RPC line is served.
     let user_source = manifest.or_else(|| std::env::var("BROWSER_MCP_MANIFEST").ok());
-    let loaded_policy = source::load_policy(
-        user_source.as_deref(),
-        pattern::is_valid_pattern,
-        tools::is_known_tool,
-    )
-    .with_context(|| "loading the governance manifest")?;
+    let loaded_policy = source::load_policy(user_source.as_deref(), pattern::is_valid_pattern)
+        .with_context(|| "loading the governance manifest")?;
 
     match (&loaded_policy.manifest, &loaded_policy.origin) {
         (Some(m), Some(origin)) => tracing::info!(

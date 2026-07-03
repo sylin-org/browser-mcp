@@ -33,12 +33,12 @@ fn file_uri(path: &Path) -> String {
     }
 }
 
-/// A schema-2 manifest with `grants`, audit enabled and pointed at `audit_path` (so tests can
+/// A schema-3 manifest with `grants`, audit enabled and pointed at `audit_path` (so tests can
 /// read back what was recorded), all at the user config layer (`level` is downgraded from
 /// `mandatory` for a user-sourced manifest regardless, per `manifest::source`).
 fn manifest_value(name: &str, grants: Value, audit_path: &Path) -> Value {
     json!({
-        "schema": 2,
+        "schema": 3,
         "name": name,
         "version": "1",
         "grants": grants,
@@ -142,8 +142,8 @@ fn init_and_call(name: &str, arguments: Value) -> Vec<Value> {
 }
 
 const EXAMPLE_FULL_AND_RESEARCH_READ: &str = r#"[
-    { "id": "example-full", "domains": ["example.com", "*.example.com"], "access": "all" },
-    { "id": "research-read", "domains": ["research.example.org"], "access": "read" }
+    { "id": "example-full", "hosts": {"allow": ["example.com", "*.example.com"]}, "allowed": ["read", "action", "write"] },
+    { "id": "research-read", "hosts": {"allow": ["research.example.org"]}, "allowed": ["read"] }
 ]"#;
 
 /// Test 1 + test 2 + test 7 (g13 doc "Integration tests"): a permitted call passes policy (it
@@ -207,28 +207,35 @@ fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
     std::fs::remove_file(&manifest).ok();
 }
 
-/// Test 3: a mutate call (`tabs_create_mcp`, domain-less, via the union rule since s01) under a
-/// read-only grant denies `access`, naming the grant and the read-only wording. `navigate` no
-/// longer serves as the mutate-on-read example here: it is reclassified observe by ADR-0022/s01,
-/// so it is the only tab-scoped tool that resolves a host in this no-extension harness and it
-/// is now PERMITTED on a read-only grant (see `navigate_is_permitted_on_a_read_only_grant`).
-/// `EXAMPLE_FULL_AND_RESEARCH_READ` is deliberately not reused here: its all-access
-/// `example-full` grant would satisfy the union rule and mask the denial.
+/// Test 3: a call requiring `read` (`tabs_context_mcp`, domain-less, via the union rule) under a
+/// grant that permits `action`/`write` but not `read` denies `capability`, naming the grant and
+/// the missing capability. `tabs_create_mcp` no longer serves as the would-deny example here: it
+/// requires `[]` under ADR-0022 and short-circuits to Allow unconditionally, so it can no longer
+/// demonstrate a union-rule denial (see `navigate_is_permitted_on_a_read_only_grant` for the
+/// analogous `navigate` reclassification). `EXAMPLE_FULL_AND_RESEARCH_READ` is deliberately not
+/// reused here: its all-access `example-full` grant would satisfy the union rule and mask the
+/// denial.
 #[test]
-fn denied_access_names_the_grant_and_read_only_wording() {
+fn denied_capability_names_the_grant_and_the_missing_capability() {
     let audit_path = temp_path("case3-audit");
-    let grants =
-        json!([{ "id": "research-read", "domains": ["research.example.org"], "access": "read" }]);
+    let grants = json!([{
+        "id": "research-write",
+        "hosts": {"allow": ["research.example.org"]},
+        "allowed": ["action", "write"]
+    }]);
     let manifest = write_manifest("case3", &manifest_value("case3", grants, &audit_path));
 
     let responses = drive(
         Some(&manifest),
-        &init_and_call("tabs_create_mcp", json!({})),
+        &init_and_call("tabs_context_mcp", json!({})),
     );
     let denied_text = text_of(&responses[1]);
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
-    assert!(denied_text.contains("research-read"), "{denied_text}");
-    assert!(denied_text.contains("read only"), "{denied_text}");
+    assert!(denied_text.contains("research-write"), "{denied_text}");
+    assert!(
+        denied_text.contains("needs the 'read' capability"),
+        "{denied_text}"
+    );
 
     std::fs::remove_file(&audit_path).ok();
     std::fs::remove_file(&manifest).ok();
@@ -318,41 +325,51 @@ fn fail_closed_when_tab_url_is_unknowable() {
     std::fs::remove_file(&manifest).ok();
 }
 
-/// Test 6: the `NoPage` union rule for the 3 no-`tabId` tools, end to end. `tabs_create_mcp`
-/// (mutate) is allowed (reaches `not connected`) under an `all`-access grant; the same call is
-/// denied under a read-only manifest.
+/// Test 6: the `NoPage` union rule, end to end. `tabs_context_mcp` (the only domain-less tool
+/// with a non-empty capability requirement under ADR-0022: `tabs_create_mcp`/`update_plan`/
+/// `resize_window` all require `[]` and short-circuit to Allow unconditionally) is allowed
+/// (reaches `not connected`) under a grant that includes `read`; the same call is denied under a
+/// grant that omits it.
 #[test]
 fn union_rule_end_to_end() {
     let all_audit = temp_path("case6-all-audit");
-    let all_grants = json!([{ "id": "g-all", "domains": ["example.com"], "access": "all" }]);
+    let all_grants = json!([{
+        "id": "g-all",
+        "hosts": {"allow": ["example.com"]},
+        "allowed": ["read", "action", "write"]
+    }]);
     let all_manifest = write_manifest(
         "case6-all",
         &manifest_value("case6-all", all_grants, &all_audit),
     );
     let responses = drive(
         Some(&all_manifest),
-        &init_and_call("tabs_create_mcp", json!({})),
+        &init_and_call("tabs_context_mcp", json!({})),
     );
     let allowed_text = text_of(&responses[1]);
     assert!(
         allowed_text.starts_with("[hop: extension]") && allowed_text.contains("not connected"),
-        "allowed under an all-access grant: {allowed_text}"
+        "allowed under a grant that includes read: {allowed_text}"
     );
 
-    let read_audit = temp_path("case6-read-audit");
-    let read_grants = json!([{ "id": "g-read", "domains": ["example.com"], "access": "read" }]);
-    let read_manifest = write_manifest(
-        "case6-read",
-        &manifest_value("case6-read", read_grants, &read_audit),
+    let write_audit = temp_path("case6-write-audit");
+    let write_grants = json!([{
+        "id": "g-write",
+        "hosts": {"allow": ["example.com"]},
+        "allowed": ["action", "write"]
+    }]);
+    let write_manifest_path = write_manifest(
+        "case6-write",
+        &manifest_value("case6-write", write_grants, &write_audit),
     );
     let responses = drive(
-        Some(&read_manifest),
-        &init_and_call("tabs_create_mcp", json!({})),
+        Some(&write_manifest_path),
+        &init_and_call("tabs_context_mcp", json!({})),
     );
     let denied_text = text_of(&responses[1]);
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
 
-    for p in [all_audit, all_manifest, read_audit, read_manifest] {
+    for p in [all_audit, all_manifest, write_audit, write_manifest_path] {
         std::fs::remove_file(p).ok();
     }
 }

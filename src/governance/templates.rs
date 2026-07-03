@@ -126,26 +126,6 @@ mod tests {
         })
     }
 
-    /// Every tool name the three templates reference in `exclude_tools`/`tools`.
-    fn test_is_known_tool(name: &str) -> bool {
-        [
-            "computer",
-            "navigate",
-            "read_page",
-            "get_page_text",
-            "form_input",
-            "javascript_tool",
-            "find",
-            "read_console_messages",
-            "read_network_requests",
-            "tabs_context",
-            "tabs_create",
-            "resize_window",
-            "update_plan",
-        ]
-        .contains(&name)
-    }
-
     #[test]
     fn unknown_template_name_lists_the_three_valid_names() {
         assert!(template_bytes("bogus").is_none());
@@ -176,7 +156,6 @@ mod tests {
                 bytes,
                 name,
                 test_domain_pattern_valid,
-                test_is_known_tool,
             )
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         }
@@ -189,7 +168,6 @@ mod tests {
             QA_STAGING,
             "qa-staging",
             test_domain_pattern_valid,
-            test_is_known_tool,
         )
         .unwrap();
         let ids: Vec<&str> = manifest.grants.iter().map(|g| g.id.as_str()).collect();

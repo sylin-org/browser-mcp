@@ -14,19 +14,19 @@
 //! section 4.5: the flight recorder still records under all-open when `audit.enabled` is true), so
 //! the audit sink is a field of `Governance` itself, not nested inside the governed-only state.
 //!
-//! `classify` is injected as a function pointer rather than named directly: this module lives in
-//! the domain-agnostic governance core, and the concrete tool+action classification table is
-//! browser-domain (`browser::classify`, g05's RECONCILIATION-driven placement; the a7 arch-test
-//! forbids a `governance -> browser` edge). The crate-root binary supplies the browser plugin's
-//! real classifier at construction.
+//! `classify` and `requires` are injected as function pointers rather than named directly: this
+//! module lives in the domain-agnostic governance core, and the concrete tool+action tables are
+//! browser-domain (`browser::classify` for the audit `rw` field, `browser::directory::requires`
+//! for the ADR-0022 decision path; the a7 arch-test forbids a `governance -> browser` edge). The
+//! crate-root binary supplies the browser plugin's real implementations at construction.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::governance::manifest::document::Grant;
 use crate::governance::ports::{
-    AuditRecord, AuditSink, ClientInfo, Decision, DecisionRequest, Denial, EffectiveMode,
-    GoverningResource, PolicyDecisionPoint, RwClass, SessionEventRecord,
+    AuditRecord, AuditSink, Capability, ClientInfo, Decision, DecisionRequest, Denial,
+    EffectiveMode, GoverningResource, PolicyDecisionPoint, RwClass, SessionEventRecord,
 };
 
 /// How long a take-the-wheel hold may last before [`hold_message`] appends the resume hint
@@ -107,8 +107,15 @@ pub struct Governance {
     /// [`Mode`] (shared format doc section 4.5).
     audit: Arc<dyn AuditSink>,
     /// The browser plugin's tool+action -> observe/mutate table, injected so this core module
-    /// never names the browser plugin directly.
+    /// never names the browser plugin directly. Consumed ONLY by [`Self::build_record`] for the
+    /// audit `rw` field; the decision path uses [`Self::requires`] instead (ADR-0022). Retired
+    /// in s06 alongside the audit `rw` field itself.
     classify: fn(&str, Option<&str>) -> Option<RwClass>,
+    /// The browser plugin's action directory lookup (ADR-0022 Decision 2), injected so this
+    /// core module never names the browser plugin directly. `None` is a directory miss (fail
+    /// closed); `Some(&[])` is an unconditionally-allowed action; `Some(reqs)` is the bound
+    /// capability requirement set a `DecisionRequest` carries.
+    requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
     /// The MCP client identity captured from the `initialize` request, first-wins for the
     /// whole session (shared format doc section 6.1 `client` field).
     client: Mutex<Option<ClientInfo>>,
@@ -146,23 +153,28 @@ impl Governance {
     pub fn all_open(
         audit: Arc<dyn AuditSink>,
         classify: fn(&str, Option<&str>) -> Option<RwClass>,
+        requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
     ) -> Self {
         Self {
             mode: Mode::AllOpen,
             audit,
             classify,
+            requires,
             client: Mutex::new(None),
         }
     }
 
-    /// A governed facade over the given decision point, audit sink, classifier, the active
-    /// manifest's resolved grants, its content hash (g13), and its own `mode` field, if any
-    /// (g15). `transport::mcp::server::run` constructs this with a `LocalPdp` once a manifest
-    /// is active; `all_open` stays the facade for a session with no manifest.
+    /// A governed facade over the given decision point, audit sink, classifier, action
+    /// directory lookup, the active manifest's resolved grants, its content hash (g13), and its
+    /// own `mode` field, if any (g15). `transport::mcp::server::run` constructs this with a
+    /// `LocalPdp` once a manifest is active; `all_open` stays the facade for a session with no
+    /// manifest.
+    #[allow(clippy::too_many_arguments)]
     pub fn governed(
         pdp: Box<dyn PolicyDecisionPoint>,
         audit: Arc<dyn AuditSink>,
         classify: fn(&str, Option<&str>) -> Option<RwClass>,
+        requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
         grants: Vec<Grant>,
         manifest_hash: String,
         manifest_mode: Option<EffectiveMode>,
@@ -176,6 +188,7 @@ impl Governance {
             }),
             audit,
             classify,
+            requires,
             client: Mutex::new(None),
         }
     }
@@ -228,16 +241,18 @@ impl Governance {
     ///
     /// Under [`Mode::AllOpen`] this is a literal STEP-0 short-circuit: it returns
     /// [`Decision::Allow`] without touching any port or resolving any resource, so all-open output
-    /// is byte-identical to stage 1. Under [`Mode::Governed`] the call is classified first
-    /// (`action` is the `computer` sub-action, `None` for every other tool); a classification
-    /// miss denies via the same tool-name rule the pure decision core uses for a known-unlisted
-    /// tool (g13, `enforcement::unclassifiable_denial`), then passes through the SAME mode
-    /// switch (g15, `enforcement::apply_mode`) a classified would-deny does, since an
-    /// unclassifiable call is an ordinary `tool/<name>` rule, not a sacred one -- it is just as
-    /// eligible for shadow enforcement as any other would-deny. A classification hit builds the
-    /// full [`DecisionRequest`] from the held grants, manifest hash, and manifest-level mode,
-    /// plus the caller-resolved `resource` and `config_mode`, and delegates to the held decision
-    /// point (which applies the same mode switch internally, `LocalPdp`/`check_call`, g15).
+    /// is byte-identical to stage 1. Under [`Mode::Governed`] the call's bound capability
+    /// requirement set is looked up first (`action` is the `computer` sub-action, `None` for
+    /// every other tool; ADR-0022 Decision 2): a directory miss (`None`) denies via the
+    /// `unknown_action` rule (`enforcement::unknown_action_denial`), then passes through the SAME
+    /// mode switch (g15, `enforcement::apply_mode`) a classified would-deny does, since a
+    /// directory miss is an ordinary rule, not a sacred one -- it is just as eligible for shadow
+    /// enforcement as any other would-deny. `Some(&[])` short-circuits to `Allow` immediately,
+    /// without building a `DecisionRequest` (ADR-0022 Decision 5 step 2: no resource resolution,
+    /// no grant scan). `Some(reqs)` builds the full [`DecisionRequest`] from the held grants,
+    /// manifest hash, and manifest-level mode, plus the caller-resolved `resource` and
+    /// `config_mode`, and delegates to the held decision point (which applies the same mode
+    /// switch internally, `LocalPdp`/`check_call`, g15).
     pub fn decide(
         &self,
         tool: &str,
@@ -248,8 +263,8 @@ impl Governance {
         match &self.mode {
             Mode::AllOpen => Decision::Allow { grant_id: None },
             Mode::Governed(state) => {
-                let Some(rw) = (self.classify)(tool, action) else {
-                    let denial = crate::governance::enforcement::unclassifiable_denial(
+                let Some(reqs) = (self.requires)(tool, action) else {
+                    let denial = crate::governance::enforcement::unknown_action_denial(
                         tool,
                         action,
                         &state.manifest_hash,
@@ -261,11 +276,14 @@ impl Governance {
                         config_mode,
                     );
                 };
+                if reqs.is_empty() {
+                    return Decision::Allow { grant_id: None };
+                }
                 let req = DecisionRequest {
                     grants: state.grants.clone(),
                     tool: tool.to_string(),
                     action: action.map(str::to_string),
-                    rw,
+                    requires: reqs.to_vec(),
                     resource,
                     manifest_mode: state.manifest_mode,
                     config_mode,
@@ -492,6 +510,39 @@ mod tests {
         None
     }
 
+    fn no_requires(_tool: &str, _action: Option<&str>) -> Option<&'static [Capability]> {
+        None
+    }
+
+    /// A stand-in for the browser plugin's real action directory: `computer`/`screenshot` and
+    /// `read_page` require `read`; `computer`/`left_click` requires `action`; `tabs_create_mcp`
+    /// requires nothing (ADR-0022 `requires: []`); everything else misses.
+    fn sample_requires(tool: &str, action: Option<&str>) -> Option<&'static [Capability]> {
+        match (tool, action) {
+            ("computer", Some("screenshot")) => Some(&[Capability::Read]),
+            ("computer", Some("left_click")) => Some(&[Capability::Action]),
+            ("read_page", None) => Some(&[Capability::Read]),
+            ("tabs_create_mcp", None) => Some(&[]),
+            _ => None,
+        }
+    }
+
+    /// A PDP that always denies, so a test built on it can prove a call NEVER reached it
+    /// (ADR-0022 Decision 5 step 2: a `requires: []` action short-circuits to `Allow` before any
+    /// decision-point consultation).
+    struct AlwaysDenyPdp;
+    impl PolicyDecisionPoint for AlwaysDenyPdp {
+        fn decide(&self, _req: &DecisionRequest) -> Decision {
+            Decision::Deny(Denial {
+                rule: "would-have-fired".to_string(),
+                grant_id: None,
+                denial_id: "D-00000000".to_string(),
+                domain: String::new(),
+                message: "the PDP was consulted when it should not have been".to_string(),
+            })
+        }
+    }
+
     /// A sink that counts records instead of dropping them, so tests can assert recording
     /// actually happened without pulling in the G06 file/stderr sinks.
     #[derive(Default)]
@@ -562,7 +613,7 @@ mod tests {
     #[test]
     fn all_open_decide_is_allow_and_still_records() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         assert!(matches!(
             g.decide(
                 "navigate",
@@ -583,6 +634,7 @@ mod tests {
             Box::new(NoopPdp),
             sink.clone(),
             sample_classify,
+            sample_requires,
             Vec::new(),
             String::new(),
             None,
@@ -600,10 +652,71 @@ mod tests {
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
+    /// A directory miss (`requires` returns `None`) denies via the `unknown_action` rule, and
+    /// that denial goes through the SAME mode switch a classified would-deny does (ADR-0022;
+    /// `enforcement::unknown_action_denial`, `enforcement::apply_mode`).
+    #[test]
+    fn directory_miss_denies_via_unknown_action_through_the_mode_switch() {
+        let sink = Arc::new(CountingAuditSink::default());
+        let g = Governance::governed(
+            Box::new(NoopPdp),
+            sink,
+            no_classification,
+            no_requires,
+            Vec::new(),
+            "hash".to_string(),
+            None,
+        );
+        match g.decide(
+            "no_such_tool",
+            None,
+            GoverningResource::None,
+            EffectiveMode::Enforce,
+        ) {
+            Decision::Deny(d) => assert_eq!(d.rule, "unknown_action"),
+            other => panic!("expected an unknown_action deny, got {other:?}"),
+        }
+        match g.decide(
+            "no_such_tool",
+            None,
+            GoverningResource::None,
+            EffectiveMode::Observe,
+        ) {
+            Decision::ShadowDeny(d) => assert_eq!(d.rule, "unknown_action"),
+            other => panic!("expected an unknown_action shadow deny, got {other:?}"),
+        }
+    }
+
+    /// `requires: []` allows immediately, with no grant id, WITHOUT ever consulting the decision
+    /// point (ADR-0022 Decision 5 step 2): proven here by wiring a PDP that always denies and
+    /// showing the call still allows.
+    #[test]
+    fn requires_empty_allows_without_consulting_the_pdp() {
+        let sink = Arc::new(CountingAuditSink::default());
+        let g = Governance::governed(
+            Box::new(AlwaysDenyPdp),
+            sink,
+            no_classification,
+            sample_requires,
+            Vec::new(),
+            "hash".to_string(),
+            None,
+        );
+        assert_eq!(
+            g.decide(
+                "tabs_create_mcp",
+                None,
+                GoverningResource::None,
+                EffectiveMode::Enforce
+            ),
+            Decision::Allow { grant_id: None }
+        );
+    }
+
     #[test]
     fn classification_miss_records_mutate() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         g.record_call("no_such_tool", None, 0, None, None);
         assert_eq!(sink.last().rw, RwClass::Mutate);
         g.record_call("computer", None, 0, None, None);
@@ -617,7 +730,7 @@ mod tests {
     #[test]
     fn computer_action_classification_flows_into_rw() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify);
+        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
 
         g.record_call("computer", Some("screenshot"), 0, None, None);
         let rec = sink.last();
@@ -636,7 +749,7 @@ mod tests {
     #[test]
     fn set_client_first_capture_wins() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         g.set_client("a", "1");
         g.set_client("b", "2");
         let stored = g.client.lock().unwrap();
@@ -653,7 +766,7 @@ mod tests {
     #[test]
     fn record_call_passes_the_resolved_domain_through() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         g.record_call("read_page", None, 0, Some("www.mybank.com"), None);
         assert_eq!(sink.last().domain.as_deref(), Some("www.mybank.com"));
     }
@@ -661,7 +774,7 @@ mod tests {
     #[test]
     fn record_deny_writes_a_zero_duration_deny_record() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify);
+        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
         let denial = Denial {
             rule: "sacred/*.mybank.com".to_string(),
             grant_id: None,
@@ -683,7 +796,7 @@ mod tests {
     #[test]
     fn record_held_writes_an_allow_record_with_held_true_and_no_domain() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify);
+        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
         g.record_held("computer", Some("screenshot"));
         let rec = sink.last();
         assert_eq!(rec.decision, "allow");
@@ -699,7 +812,7 @@ mod tests {
     #[test]
     fn record_call_and_record_deny_leave_held_false() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         g.record_call("navigate", None, 5, None, None);
         assert!(!sink.last().held);
 
@@ -751,7 +864,7 @@ mod tests {
     #[test]
     fn record_session_killed_writes_a_session_event_with_no_tool_call_fields() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification);
+        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
         g.set_client("claude-code", "2.1.0");
         g.record_session_killed();
         let rec = sink.last_session_event();
@@ -766,10 +879,11 @@ mod tests {
     fn one_grant() -> Grant {
         Grant {
             id: "g1".to_string(),
-            domains: vec!["example.com".to_string()],
-            access: crate::governance::manifest::document::Access::All,
-            tools: None,
-            exclude_tools: None,
+            hosts: crate::governance::manifest::document::HostRules {
+                allow: vec!["example.com".to_string()],
+                deny: Vec::new(),
+            },
+            allowed: vec![Capability::Read, Capability::Action, Capability::Write],
             description: None,
             mode: None,
         }
@@ -778,7 +892,7 @@ mod tests {
     #[test]
     fn governance_status_is_none_under_all_open() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink, no_classification);
+        let g = Governance::all_open(sink, no_classification, no_requires);
         assert_eq!(g.governance_status(EffectiveMode::Enforce), None);
     }
 
@@ -838,6 +952,7 @@ mod tests {
             Box::new(NoopPdp),
             sink,
             no_classification,
+            no_requires,
             vec![one_grant()],
             String::new(),
             Some(EffectiveMode::Observe),

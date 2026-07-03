@@ -1,5 +1,5 @@
 //! Policy simulation: replay recorded audit events through a candidate manifest (ADR-0020
-//! commitment 3, g17).
+//! commitment 3, g17; the classification step updated for ADR-0022 Decision 8).
 //!
 //! Because the audit flight recorder ships before enforcement (ADR-0018), an organization can
 //! baseline real agent traffic in observe mode, then test a candidate manifest against actual
@@ -20,13 +20,19 @@
 //! `Decision::ShadowDeny`) counts as a would-deny; the sacred-domain list is always empty
 //! (a candidate manifest simulation must be reproducible in CI, where no local
 //! `content.security.sacred_domains` exists), so rule `sacred` can never appear in a report.
+//!
+//! Old (`rw`-era) audit files remain replayable: this module never trusted the recorded `rw`
+//! (or, before that, `decision`/`grant_id`) value; it always re-derives the bound capability
+//! requirement set from `requires_fn` and replays the action fresh.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::governance::enforcement::check_call;
 use crate::governance::manifest::document::{parse_manifest, Manifest, ManifestError};
-use crate::governance::ports::{Decision, Denial, EffectiveMode, GoverningResource, RwClass};
+use crate::governance::ports::{
+    Capability, Decision, Denial, EffectiveMode, GoverningResource, HostRuleOutcome,
+};
 
 /// Why [`run_simulate`] could not produce an outcome. A malformed LINE inside the replay file
 /// is never an error (it is a not-evaluable record, counted and reported); only failure to
@@ -59,19 +65,17 @@ pub struct SimulateOutcome {
 
 /// Load the candidate manifest and the replay file, run the simulation, and render the report.
 /// `replay_path_display` is the path exactly as given on the command line (the report echoes
-/// it verbatim, per Required behavior section 5). `domain_pattern_valid`/`is_known_tool` are
-/// the manifest loader's real checkers; `classify`/`domain_matches` are the same function
-/// pointers live enforcement injects into [`check_call`] -- all four the "known integration
+/// it verbatim, per Required behavior section 5). `domain_pattern_valid` is the manifest
+/// loader's real host-pattern checker; `requires_fn`/`evaluate_host` are the same function
+/// pointers live enforcement injects into [`check_call`] -- all three the "known integration
 /// point" shape used everywhere else in `governance/`, so this domain-agnostic core module
 /// never names `browser::`/`transport::` directly (the a7 arch-test).
-#[allow(clippy::too_many_arguments)]
 pub fn run_simulate(
     manifest_path: &Path,
     replay_path: &Path,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
-    classify: fn(&str, Option<&str>) -> Option<RwClass>,
-    domain_matches: fn(&str, &str) -> bool,
+    requires_fn: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
 ) -> Result<SimulateOutcome, SimulateError> {
     let manifest_text =
         std::fs::read_to_string(manifest_path).map_err(|e| SimulateError::ManifestIo {
@@ -82,7 +86,6 @@ pub fn run_simulate(
         &manifest_text,
         &manifest_path.display().to_string(),
         domain_pattern_valid,
-        is_known_tool,
     )?;
 
     let replay_text =
@@ -94,8 +97,8 @@ pub fn run_simulate(
     let report = simulate_lines(
         &manifest,
         numbered_lines(&replay_text),
-        classify,
-        domain_matches,
+        requires_fn,
+        evaluate_host,
     );
     let would_deny = report.would_deny;
     let text = render_report(&manifest, &replay_path.display().to_string(), &report);
@@ -135,8 +138,8 @@ struct Report {
 fn simulate_lines<'a>(
     manifest: &Manifest,
     lines: impl Iterator<Item = (usize, &'a str)>,
-    classify: fn(&str, Option<&str>) -> Option<RwClass>,
-    domain_matches: fn(&str, &str) -> bool,
+    requires_fn: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
 ) -> Report {
     let mut would_allow = 0u64;
     let mut would_deny = 0u64;
@@ -148,7 +151,7 @@ fn simulate_lines<'a>(
         if line.trim().is_empty() {
             continue;
         }
-        match evaluate_line(manifest, line, classify, domain_matches) {
+        match evaluate_line(manifest, line, requires_fn, evaluate_host) {
             LineOutcome::Allow => would_allow += 1,
             LineOutcome::Deny {
                 domain,
@@ -204,8 +207,8 @@ enum LineOutcome {
 fn evaluate_line(
     manifest: &Manifest,
     line: &str,
-    classify: fn(&str, Option<&str>) -> Option<RwClass>,
-    domain_matches: fn(&str, &str) -> bool,
+    requires_fn: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
 ) -> LineOutcome {
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -232,7 +235,7 @@ fn evaluate_line(
         Some(_) => return LineOutcome::NotEvaluable("missing field: action".to_string()),
     };
 
-    let Some(rw) = classify(tool, action.as_deref()) else {
+    let Some(requires) = requires_fn(tool, action.as_deref()) else {
         return LineOutcome::NotEvaluable(if tool != "computer" {
             format!("unknown tool: {tool}")
         } else if let Some(a) = &action {
@@ -253,10 +256,10 @@ fn evaluate_line(
         &manifest.grants,
         tool,
         action.as_deref(),
-        rw,
+        requires,
         &resource,
         &manifest.hash,
-        domain_matches,
+        evaluate_host,
         None,
         EffectiveMode::Enforce,
     );
@@ -318,30 +321,40 @@ fn render_report(manifest: &Manifest, replay_path_display: &str, report: &Report
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::manifest::document::{Access, Grant};
+    use crate::governance::manifest::document::{Grant, HostRules};
 
-    fn stub_classify(tool: &str, action: Option<&str>) -> Option<RwClass> {
+    fn stub_requires(tool: &str, action: Option<&str>) -> Option<&'static [Capability]> {
         match (tool, action) {
-            ("computer", Some("screenshot")) => Some(RwClass::Observe),
-            ("computer", Some("left_click")) => Some(RwClass::Mutate),
-            ("read_page", None) => Some(RwClass::Observe),
-            ("navigate", None) => Some(RwClass::Observe),
-            ("javascript_tool", None) => Some(RwClass::Mutate),
-            ("update_plan", None) => Some(RwClass::Observe),
+            ("computer", Some("screenshot")) => Some(&[Capability::Read]),
+            ("computer", Some("left_click")) => Some(&[Capability::Action]),
+            ("read_page", None) => Some(&[Capability::Read]),
+            ("navigate", None) => Some(&[Capability::Read]),
+            ("javascript_tool", None) => Some(&[Capability::Execute]),
+            ("update_plan", None) => Some(&[]),
             _ => None,
         }
     }
 
-    fn stub_domain_matches(pattern: &str, host: &str) -> bool {
-        match pattern.strip_prefix("*.") {
-            Some(suffix) => host.ends_with(&format!(".{suffix}")),
-            None => pattern == host,
+    fn stub_evaluate_host(host: &str, allow: &[String], deny: &[String]) -> HostRuleOutcome {
+        fn matches(pattern: &str, host: &str) -> bool {
+            pattern == "*"
+                || match pattern.strip_prefix("*.") {
+                    Some(suffix) => host.ends_with(&format!(".{suffix}")),
+                    None => pattern == host,
+                }
+        }
+        let allowed = allow.iter().any(|p| matches(p, host));
+        let denied = deny.iter().any(|p| matches(p, host));
+        match (allowed, denied) {
+            (false, false) => HostRuleOutcome::Unmatched,
+            (true, false) => HostRuleOutcome::Allowed,
+            (false, true) | (true, true) => HostRuleOutcome::Denied,
         }
     }
 
     fn sample_manifest(grants: Vec<Grant>) -> Manifest {
         Manifest {
-            schema: 2,
+            schema: 3,
             name: "t".to_string(),
             version: "1".to_string(),
             mode: None,
@@ -352,13 +365,14 @@ mod tests {
         }
     }
 
-    fn grant(id: &str, domains: &[&str], access: Access) -> Grant {
+    fn grant(id: &str, allow_hosts: &[&str], allowed: &[Capability]) -> Grant {
         Grant {
             id: id.to_string(),
-            domains: domains.iter().map(|d| d.to_string()).collect(),
-            access,
-            tools: None,
-            exclude_tools: None,
+            hosts: HostRules {
+                allow: allow_hosts.iter().map(|d| d.to_string()).collect(),
+                deny: Vec::new(),
+            },
+            allowed: allowed.to_vec(),
             description: None,
             mode: None,
         }
@@ -370,8 +384,8 @@ mod tests {
         simulate_lines(
             manifest,
             numbered.into_iter(),
-            stub_classify,
-            stub_domain_matches,
+            stub_requires,
+            stub_evaluate_host,
         )
     }
 
@@ -483,7 +497,7 @@ mod tests {
 
     #[test]
     fn bucket_table_evaluable_allow_and_deny() {
-        let m = sample_manifest(vec![grant("g", &["example.com"], Access::Read)]);
+        let m = sample_manifest(vec![grant("g", &["example.com"], &[Capability::Read])]);
         let allow = run(&m, &[r#"{"tool":"read_page","domain":"example.com"}"#]);
         assert_eq!(allow.would_allow, 1);
         let deny = run(
@@ -495,7 +509,7 @@ mod tests {
 
     #[test]
     fn totals_arithmetic_holds() {
-        let m = sample_manifest(vec![grant("g", &["example.com"], Access::Read)]);
+        let m = sample_manifest(vec![grant("g", &["example.com"], &[Capability::Read])]);
         let r = run(
             &m,
             &[
@@ -509,7 +523,7 @@ mod tests {
 
     #[test]
     fn group_sort_order_dash_entries_sort_first() {
-        let m = sample_manifest(vec![grant("g", &["example.com"], Access::Read)]);
+        let m = sample_manifest(vec![grant("g", &["example.com"], &[Capability::Read])]);
         let r = run(
             &m,
             &[
@@ -532,7 +546,7 @@ mod tests {
         let m = sample_manifest(vec![grant(
             "docs-read",
             &["docs.example.com"],
-            Access::Read,
+            &[Capability::Read],
         )]);
         let line = r#"{"tool":"javascript_tool","domain":"docs.example.com"}"#;
 
@@ -541,16 +555,16 @@ mod tests {
         assert_eq!(grant, "docs-read");
         assert_eq!(domain, "docs.example.com");
         assert_eq!(tool, "javascript_tool");
-        assert_eq!(rule, "access");
+        assert_eq!(rule, "capability");
 
         let direct = check_call(
             &m.grants,
             "javascript_tool",
             None,
-            RwClass::Mutate,
+            &[Capability::Execute],
             &GoverningResource::Resource("docs.example.com".to_string()),
             &m.hash,
-            stub_domain_matches,
+            stub_evaluate_host,
             None,
             EffectiveMode::Enforce,
         );

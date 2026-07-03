@@ -75,9 +75,20 @@ fn no_classification(
     None
 }
 
+fn no_requires(
+    _tool: &str,
+    _action: Option<&str>,
+) -> Option<&'static [browser_mcp::governance::ports::Capability]> {
+    None
+}
+
 #[test]
 fn facade_decide_is_all_open_after_the_move() {
-    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink), no_classification);
+    let governance = Governance::all_open(
+        std::sync::Arc::new(NullAuditSink),
+        no_classification,
+        no_requires,
+    );
     for name in GOLDEN_TOOL_NAMES {
         assert!(
             matches!(

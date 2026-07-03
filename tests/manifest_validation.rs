@@ -8,7 +8,6 @@
 
 use browser_mcp::browser::pattern;
 use browser_mcp::governance::manifest::document::parse_manifest;
-use browser_mcp::transport::mcp::tools;
 
 fn read_example(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -33,10 +32,9 @@ fn enterprise_healthcare_example_parses() {
         &text,
         "enterprise-healthcare.json",
         pattern::is_valid_pattern,
-        tools::is_known_tool,
     )
     .expect("enterprise-healthcare.json should parse and validate");
-    assert_eq!(m.schema, 2);
+    assert_eq!(m.schema, 3);
     assert_eq!(m.name, "enterprise-healthcare");
     assert_eq!(m.grants.len(), 4);
     assert_valid_hash(&m.hash);
@@ -45,14 +43,9 @@ fn enterprise_healthcare_example_parses() {
 #[test]
 fn developer_observe_example_parses() {
     let text = read_example("developer-observe.json");
-    let m = parse_manifest(
-        &text,
-        "developer-observe.json",
-        pattern::is_valid_pattern,
-        tools::is_known_tool,
-    )
-    .expect("developer-observe.json should parse and validate");
-    assert_eq!(m.schema, 2);
+    let m = parse_manifest(&text, "developer-observe.json", pattern::is_valid_pattern)
+        .expect("developer-observe.json should parse and validate");
+    assert_eq!(m.schema, 3);
     assert_eq!(m.name, "developer-observe");
     assert_eq!(m.grants.len(), 0);
     assert_valid_hash(&m.hash);
@@ -65,14 +58,9 @@ fn developer_observe_example_parses() {
 #[test]
 fn qa_staging_example_parses() {
     let text = read_example("qa-staging.json");
-    let m = parse_manifest(
-        &text,
-        "qa-staging.json",
-        pattern::is_valid_pattern,
-        tools::is_known_tool,
-    )
-    .expect("qa-staging.json should parse and validate");
-    assert_eq!(m.schema, 2);
+    let m = parse_manifest(&text, "qa-staging.json", pattern::is_valid_pattern)
+        .expect("qa-staging.json should parse and validate");
+    assert_eq!(m.schema, 3);
     assert_eq!(m.name, "qa-staging");
     assert_eq!(m.grants.len(), 3);
     assert_valid_hash(&m.hash);
@@ -89,10 +77,9 @@ fn developer_unrestricted_example_parses() {
         &text,
         "developer-unrestricted.json",
         pattern::is_valid_pattern,
-        tools::is_known_tool,
     )
     .expect("developer-unrestricted.json should parse and validate");
-    assert_eq!(m.schema, 2);
+    assert_eq!(m.schema, 3);
     assert_eq!(m.name, "developer-unrestricted");
     assert_eq!(m.grants.len(), 0);
     assert_valid_hash(&m.hash);
@@ -101,14 +88,9 @@ fn developer_unrestricted_example_parses() {
 #[test]
 fn research_read_only_example_parses() {
     let text = read_example("research-read-only.json");
-    let m = parse_manifest(
-        &text,
-        "research-read-only.json",
-        pattern::is_valid_pattern,
-        tools::is_known_tool,
-    )
-    .expect("research-read-only.json should parse and validate");
-    assert_eq!(m.schema, 2);
+    let m = parse_manifest(&text, "research-read-only.json", pattern::is_valid_pattern)
+        .expect("research-read-only.json should parse and validate");
+    assert_eq!(m.schema, 3);
     assert_eq!(m.name, "research-read-only");
     assert_eq!(m.grants.len(), 1);
     assert_valid_hash(&m.hash);
@@ -132,12 +114,9 @@ fn no_manifest_sources_yields_all_open() {
         return;
     }
 
-    let loaded = browser_mcp::governance::manifest::source::load_policy(
-        None,
-        pattern::is_valid_pattern,
-        tools::is_known_tool,
-    )
-    .expect("no sources present: loading must not fail");
+    let loaded =
+        browser_mcp::governance::manifest::source::load_policy(None, pattern::is_valid_pattern)
+            .expect("no sources present: loading must not fail");
     assert_eq!(loaded.manifest, None);
     assert_eq!(loaded.origin, None);
     assert!(!loaded.user_manifest_ignored);

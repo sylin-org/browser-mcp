@@ -122,17 +122,11 @@ fn select(org_present: bool, user_present: bool) -> (bool, bool) {
 fn load_org_manifest_at(
     path: &Path,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
 ) -> Result<Option<Manifest>, LoadError> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let label = path.display().to_string();
-            Ok(Some(parse_manifest(
-                &text,
-                &label,
-                domain_pattern_valid,
-                is_known_tool,
-            )?))
+            Ok(Some(parse_manifest(&text, &label, domain_pattern_valid)?))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(LoadError::Io {
@@ -148,7 +142,6 @@ fn load_org_manifest_at(
 fn load_user_manifest(
     source_string: &str,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
 ) -> Result<(Manifest, ManifestOrigin), LoadError> {
     match parse_source_string(source_string)? {
         UserSource::EnvVar(name) => {
@@ -157,7 +150,7 @@ fn load_user_manifest(
                 return Err(LoadError::EmptyEnvVar(name));
             };
             let label = format!("env://{name}");
-            let manifest = parse_manifest(&text, &label, domain_pattern_valid, is_known_tool)?;
+            let manifest = parse_manifest(&text, &label, domain_pattern_valid)?;
             Ok((manifest, ManifestOrigin::UserEnv))
         }
         UserSource::FilePath(path) => {
@@ -166,7 +159,7 @@ fn load_user_manifest(
                 source: e,
             })?;
             let label = path.display().to_string();
-            let manifest = parse_manifest(&text, &label, domain_pattern_valid, is_known_tool)?;
+            let manifest = parse_manifest(&text, &label, domain_pattern_valid)?;
             Ok((manifest, ManifestOrigin::UserFile))
         }
     }
@@ -182,15 +175,13 @@ fn load_user_manifest(
 pub fn load_policy(
     user_source_string: Option<&str>,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
 ) -> Result<LoadedPolicy, LoadError> {
     let org = load_org_manifest_at(
         &crate::governance::config::load::org_policy_path(),
         domain_pattern_valid,
-        is_known_tool,
     )?;
     let user = user_source_string
-        .map(|s| load_user_manifest(s, domain_pattern_valid, is_known_tool))
+        .map(|s| load_user_manifest(s, domain_pattern_valid))
         .transpose()?;
     Ok(combine(org, user))
 }
@@ -272,12 +263,6 @@ mod tests {
     fn always_valid_pattern(_: &str) -> bool {
         true
     }
-    // Never the transport module's own tool-list path (the a7 arch-test forbids that edge
-    // even in test code); none of this module's test manifests use `tools`/`exclude_tools`, so
-    // a trivial stub is enough here.
-    fn is_known_tool(_name: &str) -> bool {
-        true
-    }
 
     #[test]
     fn env_scheme_extracts_the_variable_name() {
@@ -348,28 +333,15 @@ mod tests {
     }
 
     fn minimal_manifest(name: &str) -> String {
-        format!(r#"{{"schema":2,"name":"{name}","version":"1","grants":[]}}"#)
+        format!(r#"{{"schema":3,"name":"{name}","version":"1","grants":[]}}"#)
     }
 
     #[test]
     fn combine_prefers_org_and_marks_user_ignored() {
-        let org = Some(
-            parse_manifest(
-                &minimal_manifest("org"),
-                "org",
-                always_valid_pattern,
-                is_known_tool,
-            )
-            .unwrap(),
-        );
+        let org =
+            Some(parse_manifest(&minimal_manifest("org"), "org", always_valid_pattern).unwrap());
         let user = Some((
-            parse_manifest(
-                &minimal_manifest("user"),
-                "user",
-                always_valid_pattern,
-                is_known_tool,
-            )
-            .unwrap(),
+            parse_manifest(&minimal_manifest("user"), "user", always_valid_pattern).unwrap(),
             ManifestOrigin::UserFile,
         ));
         let loaded = combine(org, user);
@@ -381,13 +353,7 @@ mod tests {
     #[test]
     fn combine_uses_user_when_org_absent() {
         let user = Some((
-            parse_manifest(
-                &minimal_manifest("user"),
-                "user",
-                always_valid_pattern,
-                is_known_tool,
-            )
-            .unwrap(),
+            parse_manifest(&minimal_manifest("user"), "user", always_valid_pattern).unwrap(),
             ManifestOrigin::UserEnv,
         ));
         let loaded = combine(None, user);
@@ -412,7 +378,7 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         assert!(matches!(
-            load_org_manifest_at(&path, always_valid_pattern, is_known_tool),
+            load_org_manifest_at(&path, always_valid_pattern),
             Ok(None)
         ));
     }
@@ -424,7 +390,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&path, minimal_manifest("org-file")).unwrap();
-        let result = load_org_manifest_at(&path, always_valid_pattern, is_known_tool);
+        let result = load_org_manifest_at(&path, always_valid_pattern);
         std::fs::remove_file(&path).ok();
         assert_eq!(result.unwrap().unwrap().name, "org-file");
     }
@@ -436,16 +402,16 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&path, "not json").unwrap();
-        let result = load_org_manifest_at(&path, always_valid_pattern, is_known_tool);
+        let result = load_org_manifest_at(&path, always_valid_pattern);
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(LoadError::Manifest(_))));
     }
 
     #[test]
     fn manifest_config_as_user_layer_downgrades_mandatory_and_ignores_org_origin() {
-        let json = r#"{"schema":2,"name":"a","version":"1","grants":[],
+        let json = r#"{"schema":3,"name":"a","version":"1","grants":[],
             "config":[{"key":"audit.enabled","value":true,"level":"mandatory"}]}"#;
-        let manifest = parse_manifest(json, "test", always_valid_pattern, is_known_tool).unwrap();
+        let manifest = parse_manifest(json, "test", always_valid_pattern).unwrap();
 
         let user_loaded = LoadedPolicy {
             manifest: Some(manifest.clone()),

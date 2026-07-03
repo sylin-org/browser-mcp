@@ -5,7 +5,7 @@
 //! `set_client`/`record_call` live on `Governance`, not on `Recorder` directly (Recorder only
 //! implements the bare `AuditSink::record`).
 
-use browser_mcp::browser::classify;
+use browser_mcp::browser::{classify, directory};
 use browser_mcp::governance::dispatch::Governance;
 use browser_mcp::governance::ports::AuditSink;
 use serde_json::Value;
@@ -24,8 +24,11 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
     let _ = std::fs::remove_file(&path);
 
     let recorder = browser_mcp::governance::audit::Recorder::to_file(path.clone());
-    let governance =
-        Governance::all_open(Arc::new(recorder) as Arc<dyn AuditSink>, classify::classify);
+    let governance = Governance::all_open(
+        Arc::new(recorder) as Arc<dyn AuditSink>,
+        classify::classify,
+        directory::requires,
+    );
 
     governance.set_client("claude-code", "2.1.0");
     governance.record_call("computer", Some("left_click"), 42, None, None);
@@ -104,6 +107,7 @@ fn session_killed_writes_one_session_event_record() {
     let governance = Arc::new(Governance::all_open(
         Arc::new(recorder) as Arc<dyn AuditSink>,
         classify::classify,
+        directory::requires,
     ));
     governance.set_client("claude-code", "2.1.0");
 

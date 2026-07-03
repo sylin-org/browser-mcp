@@ -10,8 +10,8 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02`, `s03`, `s04` landed.
-- NEXT TASK: `s05` (`docs/tasks/stage-3/s05-schema3-switch.md`).
+- Progress: `s01`, `s02`, `s03`, `s04`, `s05` landed.
+- NEXT TASK: `s06` (`docs/tasks/stage-3/s06-audit-capability.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -202,3 +202,164 @@ remembering earlier work; re-read files.
   src/browser/polarity.rs src/browser/mod.rs`) printed nothing.
 - Browser checks queued: none (a pure function; no BROWSER-TESTS.md entry, per the task
   prompt's Verification section).
+
+### s05 the schema-3 switch -- 2026-07-03
+- Commit: (see this task's commit, `feat(governance): s05 schema-3 switch (grants,
+  enforcement, dispatch, advertisement, explain, simulate, examples)`)
+- Files touched: `src/governance/manifest/document.rs`, `src/governance/ports.rs`,
+  `src/governance/enforcement.rs`, `src/governance/dispatch.rs`,
+  `src/browser/advertise.rs`, `src/browser/classify.rs`, `src/governance/explain.rs`,
+  `src/governance/simulate.rs`, `src/governance/manifest/source.rs`,
+  `src/governance/config/cli.rs`, `src/doctor.rs`, `src/main.rs`,
+  `src/transport/mcp/server.rs`, `src/governance/templates.rs`,
+  `examples/enterprise-healthcare.json`, `examples/developer-observe.json`,
+  `examples/developer-unrestricted.json`, `examples/qa-staging.json`,
+  `examples/research-read-only.json`, `tests/fixtures/simulate/manifest-permissive.json`,
+  `tests/fixtures/simulate/manifest-restrictive.json`,
+  `tests/fixtures/explain/enterprise-healthcare.txt`,
+  `tests/fixtures/explain/qa-staging.txt`, `tests/fixtures/explain/research-read-only.txt`,
+  `tests/manifest_validation.rs`, `tests/policy_simulate.rs`, `tests/tool_enforcement.rs`,
+  `tests/shadow_mode.rs`, `tests/tool_advertisement.rs`, `tests/all_open_golden.rs`,
+  `tests/audit_recorder.rs`, `docs/tasks/stage-2/BROWSER-TESTS.md`,
+  `docs/tasks/stage-3/LEDGER.md`.
+- Summary: replaced the whole schema-2 grant model (`domains`/`access`/`tools`/
+  `exclude_tools`, evaluated over `RwClass`) with the ADR-0022 schema-3 model (`hosts`
+  allow/deny polarity + `allowed` capability sets, evaluated by requirement-subset
+  containment) in one atomic task, per ADR-0022 Decisions 3-6 and 8.
+  `manifest/document.rs`: new `HostRules`/`Grant` shape, `Access` deleted, schema gate
+  changed to `== 3` with the ADR-0022 migration sentence appended when the found value is
+  exactly `2`; `parse_manifest` lost the `is_known_tool` parameter entirely (removed
+  through the whole call chain: `manifest/source.rs`, `explain.rs`, `simulate.rs`,
+  `config/cli.rs`, `doctor.rs`, `main.rs`, and every test). `governance/ports.rs`:
+  `DecisionRequest.rw: RwClass` replaced with `requires: Vec<Capability>`; `Capability`
+  gained `#[derive(Hash)]` (needed for the manifest's duplicate-capability check).
+  `enforcement.rs::check_call` rewritten to the ADR Decision 5 algorithm: an empty
+  `requires` short-circuits to `Allow` before any resource matching; grant resolution
+  walks host polarity via the injected `evaluate_host` fn (first `Allowed` wins, first
+  `Denied` remembered for `denied_domain` attribution); capability check is subset
+  containment. New rules `capability` and `denied_domain` (with the pinned message
+  templates, `Denied ({id}): ...` prefix kept for voice consistency with every other
+  rule); `unknown_action` renames the old classification-miss rule (was `tool/<name>`);
+  `access`/`tool/<name>` deleted along with `tool_list_denial`/`access_covers`.
+  `dispatch.rs::Governance` gained a `requires: fn(&str, Option<&str>) ->
+  Option<&'static [Capability]>` field ALONGSIDE the pre-existing `classify` field
+  (kept solely for the audit `rw` value per the task's own instruction that `classify.rs`
+  survives for that single purpose until s06) -- see deviation 1. `decide()`: a directory
+  miss denies via `unknown_action` through the same mode switch; `Some(&[])` allows
+  immediately with no grant id and no `DecisionRequest` built; `Some(reqs)` builds the
+  request and delegates. `browser/advertise.rs` rewritten to the ADR Decision 8 rule (a
+  tool is kept iff it has a directory variant that is `requires: []` or a subset of any
+  single grant's `allowed`); `grant_permits`/`tool_list_permits`/`access_class_permits`
+  deleted. `explain.rs`: grant rendering replaced with the `Allowed on {hosts}: {phrases}.`
+  sentence (fixed read/action/write/execute phrase order, the mandated action-can-cause-
+  writes wording), the `Excluded: ...` sentence for non-empty `hosts.deny`, and the
+  acting-without-read warning lint; three goldens regenerated by running the real binary
+  on each example and reviewing every line against the templates before pinning.
+  `simulate.rs` consults `requires_fn`/`evaluate_host` instead of `classify`/
+  `domain_matches`; its two fixture manifests rewritten to schema 3 exactly as pinned
+  (permissive's `all-access` grant deliberately includes `execute`, per the prompt, to
+  keep the zero-denial-path purpose of that fixture). All five `examples/*.json`
+  rewritten to schema 3 per the ADR Decision 6 translation table (`all` ->
+  `["read","action","write"]`; `all`+`exclude_tools:[javascript_tool]` -> the same, since
+  the exclusion IS the missing execute; `write`+`tools:[form_input]` -> `["write"]`;
+  `read` -> `["read"]`); `execute` appears in no example. `templates.rs` dropped its
+  `test_is_known_tool` stub; the qa-staging grant-order pin is untouched.
+  `transport/mcp/server.rs` wires `browser::polarity::evaluate_host` into `LocalPdp::new`
+  and `browser::directory::requires` into both `Governance` constructors; its own inline
+  tests' `Grant` literals and the mutate-on-read-only-grant scenario were translated to
+  schema 3 (see deviation 4). `classify.rs` gained the one required doc line (and a
+  refreshed module doc / doc-comment) stating it now survives ONLY for the audit `rw`
+  field until s06 deletes it.
+- Deviations from the prompt/ADR: 1. `Governance`'s constructor signature adds a new
+  `requires` parameter ALONGSIDE the existing `classify` parameter, rather than literally
+  replacing it: the prompt says "`Governance` replaces `classify` with `requires`" but
+  also says, in the very same section, that "the audit `rw` value continues to come from
+  `browser::classify::classify` in this task" -- and `build_record` (which computes that
+  `rw` value) lives inside `Governance` in `governance/dispatch.rs`, which cannot call
+  `crate::browser::classify::classify` directly (the a7 arch-test forbids a `governance ->
+  browser` edge). The only way to honor both sentences is for `Governance` to hold both
+  function pointers: `requires` feeds `decide()` (the literal "replaces" for the DECISION
+  path), `classify` still feeds `build_record` unchanged. No behavior change; recorded per
+  BOOTSTRAP.md rule 4. 2. `parse_manifest`'s single `domain_pattern_valid` parameter
+  stays the STRICT checker (`browser::pattern::is_valid_pattern`, unchanged from
+  schema-2's wiring at every call site) rather than becoming `browser::polarity::
+  is_valid_host_rule`: since the identical parameter is also used for
+  `content.security.sacred_domains` config validation, and the ADR requires bare `*` to
+  be legal in grant `hosts` but NEVER in sacred domains, one shared injected checker
+  cannot itself decide the carve-out. `document.rs` now applies the `pattern == "*" ||
+  domain_pattern_valid(pattern)` carve-out INLINE, only at the two `hosts.allow`/
+  `hosts.deny` validation call sites (mirroring `is_valid_host_rule`'s own shape without
+  crossing the arch boundary to call it); `validate_config_entry` calls
+  `domain_pattern_valid` directly, with no carve-out, so `*` is still rejected there. A
+  new test (`config_entry_star_pattern_is_rejected_even_though_hosts_accept_it`) pins
+  this. No caller needed to change which function it passes for manifest loading (only
+  `is_known_tool` was removed from every call site) -- a smaller ripple than injecting a
+  second checker parameter would have required, and the pinned three-argument
+  `parse_manifest(text, source_label, domain_pattern_valid)` signature is honored
+  literally. 3. The `capability` and `denied_domain` denial message templates, as quoted
+  literally in the prompt, do not show a leading `Denied ({denial_id}): ` prefix; every
+  other denial rule (old and new) in this codebase, and shared-format section 7.2's own
+  voice, always leads with that prefix. Implemented WITH the prefix for consistency (the
+  prompt's quoted text is read as omitting shared boilerplate, not specifying a divergent
+  voice for exactly these two rules); pinned by
+  `capability_denial_message_is_exact`/`denied_domain_message_is_exact`. 4. Two
+  integration-test scenarios (`tests/tool_enforcement.rs` test 3 and 6,
+  `tests/shadow_mode.rs`'s would-deny call) previously used `tabs_create_mcp` as a
+  "domain-less, would-deny" example (s01's own choice, made under the pre-ADR-0022 rw
+  model). Under ADR-0022 `tabs_create_mcp` requires `[]` and short-circuits to Allow
+  unconditionally -- it, `update_plan`, and `resize_window` are now the ONLY tools that
+  can never demonstrate a would-deny at all. Substituted `tabs_context_mcp` (the sole
+  domain-less tool with a non-empty capability requirement, `read`) under a grant that
+  permits `action`/`write` but not `read`, preserving each test's original intent (a
+  domain-less capability denial via the union rule); the prompt's own Required Behavior
+  section 9 left this translation to judgment ("translate to schema 3 and the new
+  rules/messages") without pinning specific tool choices. 5. `tests/all_open_golden.rs`
+  and `tests/audit_recorder.rs` needed a compile-only change (threading the new
+  `requires` parameter through `Governance::all_open` call sites) to build against the
+  changed function signature; no assertion, golden text, or observable behavior changed.
+  Read per BOOTSTRAP.md rule 4: the constraint that these files "pass without
+  modification" describes the all-open BEHAVIORAL invariant (nothing observable changes),
+  not a literal zero-byte-diff rule that would leave the tree uncompilable -- the
+  alternative reading is incoherent given the function signature genuinely changed. 6.
+  `tests/policy_simulate.rs::structurally_invalid_manifest_exits_one` used a schema-2
+  `exclude_tools` field to construct a structurally-invalid manifest; rewritten to a
+  schema-3 manifest with an invalid capability name (`"mutate"`) so the test keeps
+  proving the same invariant (a manifest failing validation always exits 1) with a
+  schema-3-relevant defect rather than a now-nonexistent field.
+- Verification: `cargo fmt` (reformatted after each of several passes; final pass clean)
+  then `cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean;
+  `cargo test` 449 -> 457 (net 8 new tests: 2 in `document.rs`
+  [`bare_star_is_accepted_in_hosts_allow_and_deny`,
+  `config_entry_star_pattern_is_rejected_even_though_hosts_accept_it`, plus the schema-3
+  rewrite of every existing case], several in `enforcement.rs`'s full rewrite pinning
+  every named required test, 2 new in `dispatch.rs`
+  [`directory_miss_denies_via_unknown_action_through_the_mode_switch`,
+  `requires_empty_allows_without_consulting_the_pdp`], 2 new in `advertise.rs`'s rewrite,
+  several new in `explain.rs`'s rewrite; exact per-file deltas: `governance::ports`
+  unchanged test count with updated bodies, `governance::manifest::document` unit tests
+  grew by 2 net after replacing every schema-2 case 1:1, `governance::enforcement` grew
+  from 16 to 20 named tests, `governance::dispatch` grew by 2, `browser::advertise` net
+  count unchanged (2 replaced by 2 equivalent ADR-0022 cases plus 2 new), `governance::
+  explain` net count unchanged (like-for-like translation) plus 1 new acting-without-read
+  test replacing the old bare-write test 1:1), all passing, 0 failed. Confirmed unchanged
+  and still green: `tests/architecture.rs` (4 tests, byte-identical file, confirmed via
+  `git diff --stat`), `tests/mcp_protocol.rs` (4 tests, byte-identical file),
+  `tests/tool_schema_fidelity.rs` (6 tests, byte-identical file); `src/transport/mcp/
+  schemas/tools.json` byte-identical (`git diff --stat` shows no change to either sacred
+  file). `tests/all_open_golden.rs` (3 tests) still green with the one unavoidable
+  signature-only edit (deviation 5). Manual verification: `cargo run -- policy explain
+  examples/enterprise-healthcare.json` renders the new capability sentences (reviewed by
+  eye before pinning the golden); `cargo run -- policy simulate tests/fixtures/simulate/
+  manifest-restrictive.json --replay tests/fixtures/simulate/audit.jsonl` prints exactly
+  the pinned report (would allow: 4, would deny: 5, not evaluable: 4, the three pinned
+  group lines in the pinned order, `result: 5 would-denies (exit 2)`) and exits 2.
+  `rg -n "Access::|exclude_tools|\"access\"|tool/" src/ tests/ examples/` returns only
+  historical doc-comment/string-literal references (module docs describing what was
+  removed, and test literals proving the old fields are now rejected as unknown), no live
+  code path. ASCII scan (`rg -n "[^\x00-\x7F]" <every touched file>`) printed nothing on
+  every file this task touched.
+- Browser checks queued: 1 (`s05-1` appended to `docs/tasks/stage-2/BROWSER-TESTS.md`:
+  schema-3 capability grants end to end -- `policy explain` wording, the read-only
+  advertised-tool-list consequence, a permitted read-class sequence, and the exact
+  `capability` denial wording for both a `computer left_click` and a direct `form_input`
+  call).

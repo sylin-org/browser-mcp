@@ -1,5 +1,5 @@
 Policy 'research-read-only', version 1.
-Content hash: 3138f424912293e7180b52c24d9ce2b2916c565e9f8b06ea890da1d3524a90c0.
+Content hash: ec836a03e1eece4455a498c0e77664705f4d5710723ce5c9756a3893563e62a6.
 
 No identity block: this policy does not name a principal.
 
@@ -7,7 +7,7 @@ Mode: enforce. Calls the grants below do not permit are blocked. This policy set
 
 Where agents may read and write, in match order (the first matching domain wins):
 (a pattern like 'example.com' matches only that exact host; '*.example.com' matches its subdomains and never example.com itself)
-  1. Read-only on *.arxiv.org, scholar.google.com: agents may read pages but not act on them.
+  1. Allowed on *.arxiv.org, scholar.google.com: read pages.
 Any domain not matched above is denied.
 
 This policy locks no settings and sets no defaults; users keep control of every setting.

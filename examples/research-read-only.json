@@ -1,12 +1,12 @@
 {
-  "schema": 2,
+  "schema": 3,
   "name": "research-read-only",
   "version": "1",
   "grants": [
     {
       "id": "research",
-      "domains": ["*.arxiv.org", "scholar.google.com"],
-      "access": "read"
+      "hosts": { "allow": ["*.arxiv.org", "scholar.google.com"] },
+      "allowed": ["read"]
     }
   ]
 }

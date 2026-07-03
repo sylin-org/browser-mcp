@@ -1,8 +1,8 @@
-//! The authoritative read/write classification of the sacred tool surface (shared format doc
-//! section 8, ADR-0018 step 1). This supersedes SPEC 3.1/3.3/5.4's older three-tier
-//! Observe/Mutate/Manage model; consult only shared format doc section 8 for class
-//! assignments, never the SPEC. Both the audit recorder (`rw` field, g06) and grant
-//! enforcement (`access: read | write | all`, later tasks) consume [`classify`].
+//! The read/write classification of the sacred tool surface (shared format doc section 8,
+//! ADR-0018 step 1). This supersedes SPEC 3.1/3.3/5.4's older three-tier Observe/Mutate/Manage
+//! model; consult only shared format doc section 8 for class assignments, never the SPEC. Only
+//! the audit recorder (`rw` field, g06) consumes [`classify`] as of s05 (ADR-0022 Decision 8);
+//! grant enforcement and tool advertisement consult the action directory instead.
 //!
 //! This is the browser PLUGIN half of classification: the observe/mutate axis type itself
 //! ([`crate::governance::ports::RwClass`]) is domain-agnostic core; the concrete 13-tool table
@@ -11,6 +11,10 @@
 //!
 //! The module is pure: no I/O, no allocation beyond what slice iteration needs, no
 //! dependencies beyond `core`/`std`.
+//!
+//! Superseded as the enforcement/advertisement authority by [`crate::browser::directory`]
+//! (ADR-0022 Decision 2, wired in s05): [`classify`] survives ONLY to compute the audit
+//! record's `rw` field until s06 replaces that field with `capability` and deletes this module.
 
 use crate::governance::ports::RwClass;
 
@@ -67,9 +71,9 @@ pub const COMPUTER_ACTION_CLASSES: &[(&str, RwClass)] = &[
 /// a `computer` call whose action is absent or unknown. `None` is a classification miss, not a
 /// denial; what callers do with it is decided by the consuming tasks, not here.
 ///
-/// Note for future consumers: grant-level `tools` / `exclude_tools` checks match the literal
-/// tool name `"computer"`, never an action name (shared format doc section 4.3); this function
-/// is for the observe/mutate axis only.
+/// Note for future consumers: this function is for the audit `rw` field only (ADR-0022); the
+/// governed decision path consults [`crate::browser::directory::requires`] instead, which is
+/// keyed the same way (`action` consulted only for `"computer"`, ignored otherwise).
 pub fn classify(tool: &str, action: Option<&str>) -> Option<RwClass> {
     if tool == "computer" {
         let action = action?;

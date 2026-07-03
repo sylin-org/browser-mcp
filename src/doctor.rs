@@ -185,7 +185,6 @@ fn governance_section_lines() -> Vec<String> {
     let loaded_policy = match crate::governance::manifest::source::load_policy(
         user_manifest_source.as_deref(),
         crate::browser::pattern::is_valid_pattern,
-        crate::transport::mcp::tools::is_known_tool,
     ) {
         Ok(loaded) => loaded,
         Err(e) => return vec![format!("  manifest source is broken: {e}")],

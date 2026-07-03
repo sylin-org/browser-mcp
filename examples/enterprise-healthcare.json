@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "name": "enterprise-healthcare",
   "version": "2026.07.1",
   "mode": "enforce",
@@ -12,27 +12,26 @@
   "grants": [
     {
       "id": "servicenow",
-      "domains": ["servicenow.geisinger.org"],
-      "access": "all",
-      "exclude_tools": ["javascript_tool"],
+      "hosts": { "allow": ["servicenow.geisinger.org"] },
+      "allowed": ["read", "action", "write"],
       "description": "ServiceNow incident and change management without arbitrary JS"
     },
     {
       "id": "epic-read",
-      "domains": ["epic.geisinger.org"],
-      "access": "read",
+      "hosts": { "allow": ["epic.geisinger.org"] },
+      "allowed": ["read"],
       "description": "EHR read-only for clinical data review"
     },
     {
       "id": "research",
-      "domains": ["*.gartner.com", "*.ieee.org", "scholar.google.com"],
-      "access": "read",
+      "hosts": { "allow": ["*.gartner.com", "*.ieee.org", "scholar.google.com"] },
+      "allowed": ["read"],
       "description": "External research resources"
     },
     {
       "id": "internal-docs",
-      "domains": ["confluence.geisinger.org", "sharepoint.geisinger.org"],
-      "access": "read",
+      "hosts": { "allow": ["confluence.geisinger.org", "sharepoint.geisinger.org"] },
+      "allowed": ["read"],
       "description": "Internal documentation"
     }
   ],

@@ -1,34 +1,31 @@
-//! Per-call grant enforcement (ADR-0018 step 3, g13): the pure decision core. This IS the
-//! `PolicyDecisionPoint::decide` the a2 seam anticipated (RECONCILIATION.md section 2: "g13
-//! `check_call` IS the pure `PolicyDecisionPoint::decide` over a serializable
-//! `DecisionRequest`"); [`LocalPdp`] is the concrete, in-process implementation
-//! `Governance::governed` uses once a manifest is active, alongside the `NoopPdp` (a2)
-//! all-open placeholder.
+//! Per-call grant enforcement (ADR-0022 Decision 5): the pure decision core. This IS the
+//! `PolicyDecisionPoint::decide` the a2 seam anticipated; [`LocalPdp`] is the concrete,
+//! in-process implementation `Governance::governed` uses once a manifest is active, alongside
+//! the `NoopPdp` (a2) all-open placeholder.
 //!
-//! Pure: no I/O, no async, no clock. Grant-domain matching is injected as a function pointer
-//! (`domain_matches: fn(pattern, host) -> bool`), supplied by the composition root using the
-//! browser plugin's real G07 matcher, so this core module never names `browser::` directly
-//! (the a7 arch-test forbids it) -- the same "known integration point" shape already used for
-//! `classify` and `domain_pattern_valid` elsewhere in `governance/`.
+//! Pure: no I/O, no async, no clock. Host polarity evaluation is injected as a function pointer
+//! (`evaluate_host: fn(host, allow, deny) -> HostRuleOutcome`), supplied by the composition
+//! root using the browser plugin's real ADR-0022 Decision 4 evaluator, so this core module
+//! never names the browser plugin directly (the a7 arch-test forbids it).
 
 use crate::governance::denial;
-use crate::governance::manifest::document::{Access, Grant};
+use crate::governance::manifest::document::Grant;
 use crate::governance::ports::{
-    Decision, DecisionRequest, Denial, EffectiveMode, GoverningResource, PolicyDecisionPoint,
-    RwClass,
+    Capability, Decision, DecisionRequest, Denial, EffectiveMode, GoverningResource,
+    HostRuleOutcome, PolicyDecisionPoint,
 };
 
 /// The in-process policy decision point wrapping [`check_call`]. `Governance::governed` uses
 /// this once a manifest is active.
 pub struct LocalPdp {
-    domain_matches: fn(&str, &str) -> bool,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
 }
 
 impl LocalPdp {
-    /// `domain_matches(pattern, host)`: true when the ALREADY-VALIDATED grant domain `pattern`
-    /// matches the ALREADY-NORMALIZED `host` (the browser plugin's real G07 matcher).
-    pub fn new(domain_matches: fn(&str, &str) -> bool) -> Self {
-        Self { domain_matches }
+    /// `evaluate_host(host, allow, deny)`: the ALREADY-NORMALIZED `host` against one grant's
+    /// host rules (the browser plugin's real ADR-0022 Decision 4 evaluator).
+    pub fn new(evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome) -> Self {
+        Self { evaluate_host }
     }
 }
 
@@ -38,10 +35,10 @@ impl PolicyDecisionPoint for LocalPdp {
             &req.grants,
             &req.tool,
             req.action.as_deref(),
-            req.rw,
+            &req.requires,
             &req.resource,
             &req.manifest_hash,
-            self.domain_matches,
+            self.evaluate_host,
             req.manifest_mode,
             req.config_mode,
         )
@@ -99,24 +96,32 @@ fn tool_label(tool: &str, action: Option<&str>) -> String {
     }
 }
 
-/// The pure per-call grant-resolution decision (shared format doc sections 4.3, 4.5, 7, 8).
-/// STEP 0 (no manifest -> allow) lives at the caller ([`crate::governance::dispatch::Governance::decide`]);
-/// this function always assumes a manifest is active. Order is load-bearing (the denial id
-/// depends on the rule string, so the first failing rule must be deterministic): resource-kind
-/// dispatch first (`AlwaysAllow`/`OutOfScope`/`Indeterminate`/`None`/`Resource`), then, for a
-/// resolved host, grant resolution, THEN the tool-list check, THEN the access check.
+/// The pure per-call grant-resolution decision (ADR-0022 Decision 5). STEP 0 (no manifest ->
+/// allow) lives at the caller ([`crate::governance::dispatch::Governance::decide`]); this
+/// function always assumes a manifest is active. Order is load-bearing (the denial id depends
+/// on the rule string, so the first failing rule must be deterministic):
+///
+/// 1. `requires.is_empty()` short-circuits to `Allow` BEFORE any resource matching or grant
+///    walk (ADR-0022 Decision 5 step 2).
+/// 2. Resource-kind dispatch (`AlwaysAllow`/`OutOfScope`/`Indeterminate`/`None`/`Resource`).
+/// 3. For a resolved host, grant resolution (host polarity, first `Allowed` wins; remember the
+///    first `Denied`), THEN the capability (subset containment) check.
 #[allow(clippy::too_many_arguments)]
 pub fn check_call(
     grants: &[Grant],
     tool: &str,
     action: Option<&str>,
-    rw: RwClass,
+    requires: &[Capability],
     resource: &GoverningResource,
     manifest_hash: &str,
-    domain_matches: fn(&str, &str) -> bool,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
     manifest_mode: Option<EffectiveMode>,
     config_mode: EffectiveMode,
 ) -> Decision {
+    if requires.is_empty() {
+        return Decision::Allow { grant_id: None };
+    }
+
     let raw = match resource {
         GoverningResource::AlwaysAllow => Decision::Allow { grant_id: None },
         GoverningResource::OutOfScope(scheme) => {
@@ -129,125 +134,102 @@ pub fn check_call(
             grants,
             tool,
             action,
-            rw,
+            requires,
             host,
             manifest_hash,
-            domain_matches,
+            evaluate_host,
         ),
-        GoverningResource::None => decide_no_page(grants, tool, action, rw, manifest_hash),
+        GoverningResource::None => decide_no_page(grants, tool, action, requires, manifest_hash),
     };
     apply_mode(raw, grants, manifest_mode, config_mode)
+}
+
+/// Grant resolution for a resolved host (ADR-0022 Decision 5 step 4): walk grants in manifest
+/// order, evaluating each one's host polarity. The first grant whose polarity evaluates to
+/// `Allowed` is the resolving grant (stop walking); a grant returning `Denied` does not cover
+/// the host, but its id is remembered (first one only) for the `denied_domain` attribution if
+/// no grant ever resolves.
+fn resolve_grant<'a>(
+    grants: &'a [Grant],
+    host: &str,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
+) -> (Option<&'a Grant>, Option<&'a Grant>) {
+    let mut first_denying: Option<&Grant> = None;
+    for grant in grants {
+        match evaluate_host(host, &grant.hosts.allow, &grant.hosts.deny) {
+            HostRuleOutcome::Allowed => return (Some(grant), first_denying),
+            HostRuleOutcome::Denied => {
+                if first_denying.is_none() {
+                    first_denying = Some(grant);
+                }
+            }
+            HostRuleOutcome::Unmatched => {}
+        }
+    }
+    (None, first_denying)
 }
 
 fn decide_for_host(
     grants: &[Grant],
     tool: &str,
     action: Option<&str>,
-    rw: RwClass,
+    requires: &[Capability],
     host: &str,
     manifest_hash: &str,
-    domain_matches: fn(&str, &str) -> bool,
+    evaluate_host: fn(&str, &[String], &[String]) -> HostRuleOutcome,
 ) -> Decision {
-    let Some(grant) = first_matching_grant(grants, host, domain_matches) else {
-        return Decision::Deny(unmatched_domain_denial(host, manifest_hash));
+    let (resolving, first_denying) = resolve_grant(grants, host, evaluate_host);
+    let Some(grant) = resolving else {
+        return Decision::Deny(match first_denying {
+            Some(g) => denied_domain_denial(g, host, manifest_hash),
+            None => unmatched_domain_denial(host, manifest_hash),
+        });
     };
-    if let Some(denial) = tool_list_denial(grant, tool, action, host, manifest_hash) {
-        return Decision::Deny(denial);
-    }
-    if !access_covers(grant.access, rw) {
-        return Decision::Deny(access_denial(grant, tool, action, rw, host, manifest_hash));
+    if !crate::governance::ports::capability_subset(requires, &grant.allowed) {
+        return Decision::Deny(capability_denial(
+            grant,
+            tool,
+            action,
+            requires,
+            host,
+            manifest_hash,
+        ));
     }
     Decision::Allow {
         grant_id: Some(grant.id.clone()),
     }
 }
 
-/// The `NoPage` union rule (shared format doc section 4.3, mirroring G14's advertisement
-/// membership test so per-call is never more permissive than advertisement): candidates are
-/// the grants passing the tool-list check, in manifest order; allow if any candidate's access
-/// covers `rw`; else deny `access` attributed to the first candidate; no candidates at all ->
-/// deny `tool/<tool>` with no grant id.
+/// The `NoPage` union rule (ADR-0022 Decision 5 step 6, domain-less calls with non-empty
+/// `requires`): allow iff ANY grant's `allowed` covers `requires`, attributed to the first such
+/// grant; else deny rule `capability` attributed to the first grant; with zero grants, rule
+/// `unmatched_domain` over `"(unknown)"`.
 fn decide_no_page(
     grants: &[Grant],
     tool: &str,
     action: Option<&str>,
-    rw: RwClass,
+    requires: &[Capability],
     manifest_hash: &str,
 ) -> Decision {
-    let candidates: Vec<&Grant> = grants
-        .iter()
-        .filter(|g| tool_list_denial(g, tool, action, "(unknown)", manifest_hash).is_none())
-        .collect();
-    let Some(first) = candidates.first() else {
-        return Decision::Deny(tool_denial(tool, action, None, "(unknown)", manifest_hash));
+    let Some(first) = grants.first() else {
+        return Decision::Deny(unmatched_domain_denial("(unknown)", manifest_hash));
     };
-    if let Some(grant) = candidates.iter().find(|g| access_covers(g.access, rw)) {
+    if let Some(grant) = grants
+        .iter()
+        .find(|g| crate::governance::ports::capability_subset(requires, &g.allowed))
+    {
         return Decision::Allow {
             grant_id: Some(grant.id.clone()),
         };
     }
-    Decision::Deny(access_denial(
+    Decision::Deny(capability_denial(
         first,
         tool,
         action,
-        rw,
+        requires,
         "(unknown)",
         manifest_hash,
     ))
-}
-
-/// First grant, in manifest order, with any domain pattern matching `host` (shared format doc
-/// section 4.3: first match wins).
-fn first_matching_grant<'a>(
-    grants: &'a [Grant],
-    host: &str,
-    domain_matches: fn(&str, &str) -> bool,
-) -> Option<&'a Grant> {
-    grants.iter().find(|g| {
-        g.domains
-            .iter()
-            .any(|pattern| domain_matches(pattern, host))
-    })
-}
-
-/// `None` when `tool` passes the grant's `tools`/`exclude_tools` check (shared format doc
-/// section 4.3: a non-null `tools` list is an allow-list; otherwise `exclude_tools`, if
-/// present, is a deny-list). Checked as the literal tool name (`"computer"`, never an action).
-fn tool_list_denial(
-    grant: &Grant,
-    tool: &str,
-    action: Option<&str>,
-    domain: &str,
-    manifest_hash: &str,
-) -> Option<Denial> {
-    let allowed = match &grant.tools {
-        Some(list) => list.iter().any(|t| t == tool),
-        None => match &grant.exclude_tools {
-            Some(excluded) => !excluded.iter().any(|t| t == tool),
-            None => true,
-        },
-    };
-    if allowed {
-        None
-    } else {
-        Some(tool_denial(
-            tool,
-            action,
-            Some(grant),
-            domain,
-            manifest_hash,
-        ))
-    }
-}
-
-/// Whether `access` authorizes a call of class `rw` (shared format doc section 8): `Observe`
-/// requires `read` or `all`; `Mutate` requires `write` or `all` (`write` does NOT imply
-/// `read`).
-fn access_covers(access: Access, rw: RwClass) -> bool {
-    matches!(
-        (access, rw),
-        (Access::All, _) | (Access::Read, RwClass::Observe) | (Access::Write, RwClass::Mutate)
-    )
 }
 
 fn unmatched_domain_denial(domain: &str, manifest_hash: &str) -> Denial {
@@ -261,6 +243,24 @@ fn unmatched_domain_denial(domain: &str, manifest_hash: &str) -> Denial {
     Denial {
         rule,
         grant_id: None,
+        denial_id,
+        domain: domain.to_string(),
+        message,
+    }
+}
+
+fn denied_domain_denial(grant: &Grant, domain: &str, manifest_hash: &str) -> Denial {
+    let rule = "denied_domain".to_string();
+    let denial_id = denial::denial_id(manifest_hash, &grant.id, &rule);
+    let message = format!(
+        "Denied ({denial_id}): {domain} is excluded by grant '{grant_id}': your policy denies \
+         this site explicitly. Do not retry or work around this; ask the user or an \
+         administrator if access is needed.",
+        grant_id = grant.id
+    );
+    Denial {
+        rule,
+        grant_id: Some(grant.id.clone()),
         denial_id,
         domain: domain.to_string(),
         message,
@@ -283,72 +283,60 @@ fn scheme_denial(scheme: &str, manifest_hash: &str) -> Denial {
     }
 }
 
-/// The denial for a call whose read/write class could not be determined (`classify` returned
-/// `None`: an unknown tool, or a `computer` call with a missing/unknown action). Under a
-/// manifest, an unclassifiable call is never authorized. Public: [`crate::governance::dispatch
+/// The denial for a call whose action directory lookup missed (`requires` returned `None`: an
+/// unknown tool, or a `computer` call with a missing/unknown action). Under a manifest, an
+/// unclassifiable call is never authorized. Public: [`crate::governance::dispatch
 /// ::Governance::decide`] (the caller) builds this BEFORE constructing a `DecisionRequest`,
-/// since without a resolved `RwClass` there is no request to build.
-pub fn unclassifiable_denial(tool: &str, action: Option<&str>, manifest_hash: &str) -> Denial {
-    tool_denial(tool, action, None, "(unknown)", manifest_hash)
-}
-
-fn tool_denial(
-    tool: &str,
-    action: Option<&str>,
-    grant: Option<&Grant>,
-    domain: &str,
-    manifest_hash: &str,
-) -> Denial {
-    let rule = format!("tool/{tool}");
-    let grant_id_str = grant.map(|g| g.id.as_str()).unwrap_or("");
-    let denial_id = denial::denial_id(manifest_hash, grant_id_str, &rule);
+/// since without a resolved `requires` set there is no request to build.
+pub fn unknown_action_denial(tool: &str, action: Option<&str>, manifest_hash: &str) -> Denial {
+    let rule = "unknown_action".to_string();
+    let denial_id = denial::denial_id(manifest_hash, "", &rule);
     let label = tool_label(tool, action);
-    let message = match grant {
-        Some(g) => format!(
-            "Denied ({denial_id}): grant '{grant_id}' does not permit '{label}' on {domain}. \
-             Other tools in your access class remain available. Give this denial id to your \
-             administrator to request '{label}'.",
-            grant_id = g.id
-        ),
-        None => format!(
-            "Denied ({denial_id}): no grant permits '{label}'. Give this denial id to your \
-             administrator to request '{label}'."
-        ),
-    };
+    let message = format!(
+        "Denied ({denial_id}): no grant permits '{label}'. Give this denial id to your \
+         administrator to request '{label}'."
+    );
     Denial {
         rule,
-        grant_id: grant.map(|g| g.id.clone()),
+        grant_id: None,
         denial_id,
-        domain: domain.to_string(),
+        domain: "(unknown)".to_string(),
         message,
     }
 }
 
-fn access_denial(
+fn capability_denial(
     grant: &Grant,
     tool: &str,
     action: Option<&str>,
-    rw: RwClass,
+    requires: &[Capability],
     domain: &str,
     manifest_hash: &str,
 ) -> Denial {
-    let rule = "access".to_string();
+    let rule = "capability".to_string();
     let denial_id = denial::denial_id(manifest_hash, &grant.id, &rule);
     let label = tool_label(tool, action);
-    let message = match rw {
-        RwClass::Mutate => format!(
-            "Denied ({denial_id}): '{label}' needs write access on {domain}, and grant \
-             '{grant_id}' allows read only. Observation tools (read_page, get_page_text, find, \
-             screenshot) remain available. Give this denial id to your administrator to \
-             request write access.",
-            grant_id = grant.id
-        ),
-        RwClass::Observe => format!(
-            "Denied ({denial_id}): '{label}' needs read access on {domain}, and grant \
-             '{grant_id}' allows write only. Give this denial id to your administrator.",
-            grant_id = grant.id
-        ),
+    let missing = requires
+        .iter()
+        .find(|c| !grant.allowed.contains(c))
+        .expect("capability_denial is only called when the subset check failed")
+        .as_str();
+    let allowed = if grant.allowed.is_empty() {
+        "no capabilities".to_string()
+    } else {
+        grant
+            .allowed
+            .iter()
+            .map(Capability::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
+    let message = format!(
+        "'{label}' needs the '{missing}' capability on {domain}, and grant '{grant_id}' allows \
+         {allowed}. Give this denial id to your administrator to request '{missing}' access.",
+        grant_id = grant.id
+    );
+    let message = format!("Denied ({denial_id}): {message}");
     Denial {
         rule,
         grant_id: Some(grant.id.clone()),
@@ -361,41 +349,80 @@ fn access_denial(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance::manifest::document::HostRules;
 
-    /// A stand-in for the real G07 matcher: exact string equality, or a `*.` prefix meaning
-    /// "any host ending in `.suffix`" -- just enough grammar for these pure tests, never the
-    /// authoritative grammar (that lives in `browser::pattern`'s own exhaustive tests).
-    fn stub_domain_matches(pattern: &str, host: &str) -> bool {
-        match pattern.strip_prefix("*.") {
-            Some(suffix) => host.ends_with(&format!(".{suffix}")),
-            None => pattern == host,
+    /// A stand-in for the real ADR-0022 Decision 4 evaluator: exact string equality, or a `*.`
+    /// prefix meaning "any host ending in `.suffix`", or the bare `*` token -- just enough
+    /// grammar for these pure tests, never the authoritative grammar (that lives in
+    /// `browser::polarity`'s own exhaustive tests).
+    fn stub_evaluate_host(host: &str, allow: &[String], deny: &[String]) -> HostRuleOutcome {
+        fn matches(pattern: &str, host: &str) -> bool {
+            pattern == "*"
+                || match pattern.strip_prefix("*.") {
+                    Some(suffix) => host.ends_with(&format!(".{suffix}")),
+                    None => pattern == host,
+                }
+        }
+        let allowed = allow.iter().any(|p| matches(p, host));
+        let denied = deny.iter().any(|p| matches(p, host));
+        match (allowed, denied) {
+            (false, false) => HostRuleOutcome::Unmatched,
+            (true, false) => HostRuleOutcome::Allowed,
+            (false, true) => HostRuleOutcome::Denied,
+            (true, true) => HostRuleOutcome::Denied,
         }
     }
 
-    fn grant(id: &str, domains: &[&str], access: Access) -> Grant {
+    fn grant(id: &str, allow_hosts: &[&str], allowed: &[Capability]) -> Grant {
         Grant {
             id: id.to_string(),
-            domains: domains.iter().map(|d| d.to_string()).collect(),
-            access,
-            tools: None,
-            exclude_tools: None,
+            hosts: HostRules {
+                allow: allow_hosts.iter().map(|d| d.to_string()).collect(),
+                deny: Vec::new(),
+            },
+            allowed: allowed.to_vec(),
             description: None,
             mode: None,
         }
     }
 
-    /// The g13-era convenience wrapper: always `manifest_mode: None, config_mode: Enforce`, so
-    /// every pre-g15 test keeps asserting `Deny` for a would-deny exactly as before. Tests that
-    /// specifically exercise the g15 mode switch use [`check_with_mode`] instead.
-    fn check(grants: &[Grant], tool: &str, rw: RwClass, resource: &GoverningResource) -> Decision {
-        check_with_mode(grants, tool, rw, resource, None, EffectiveMode::Enforce)
+    fn grant_with_deny(id: &str, allow_hosts: &[&str], deny_hosts: &[&str]) -> Grant {
+        Grant {
+            id: id.to_string(),
+            hosts: HostRules {
+                allow: allow_hosts.iter().map(|d| d.to_string()).collect(),
+                deny: deny_hosts.iter().map(|d| d.to_string()).collect(),
+            },
+            allowed: vec![Capability::Read],
+            description: None,
+            mode: None,
+        }
+    }
+
+    /// The pre-g15-style convenience wrapper: always `manifest_mode: None, config_mode:
+    /// Enforce`, so every test asserting Deny does so unshadowed. Tests that specifically
+    /// exercise the g15 mode switch use [`check_with_mode`] instead.
+    fn check(
+        grants: &[Grant],
+        tool: &str,
+        requires: &[Capability],
+        resource: &GoverningResource,
+    ) -> Decision {
+        check_with_mode(
+            grants,
+            tool,
+            requires,
+            resource,
+            None,
+            EffectiveMode::Enforce,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn check_with_mode(
         grants: &[Grant],
         tool: &str,
-        rw: RwClass,
+        requires: &[Capability],
         resource: &GoverningResource,
         manifest_mode: Option<EffectiveMode>,
         config_mode: EffectiveMode,
@@ -404,10 +431,10 @@ mod tests {
             grants,
             tool,
             None,
-            rw,
+            requires,
             resource,
             "hash",
-            stub_domain_matches,
+            stub_evaluate_host,
             manifest_mode,
             config_mode,
         )
@@ -418,25 +445,157 @@ mod tests {
     }
 
     #[test]
-    fn first_matching_grant_wins() {
+    fn requires_empty_short_circuits_before_any_grant_walk() {
+        // A grant slice whose evaluation would deny (no domain covers example.com) -- if the
+        // short-circuit did not run BEFORE the grant walk, this would deny.
+        let grants = vec![grant("g", &["other.com"], &[])];
+        assert_eq!(
+            check(&grants, "tabs_create_mcp", &[], &host("example.com")),
+            Decision::Allow { grant_id: None }
+        );
+        assert_eq!(
+            check(&grants, "update_plan", &[], &GoverningResource::None),
+            Decision::Allow { grant_id: None }
+        );
+        // Even with zero grants at all.
+        assert_eq!(
+            check(&[], "tabs_create_mcp", &[], &host("evil.com")),
+            Decision::Allow { grant_id: None }
+        );
+    }
+
+    #[test]
+    fn subset_containment_allow_and_deny_per_capability() {
+        let read_grant = vec![grant("r", &["example.com"], &[Capability::Read])];
+        let all_grant = vec![grant(
+            "a",
+            &["example.com"],
+            &[Capability::Read, Capability::Action, Capability::Write],
+        )];
+
+        match check(
+            &read_grant,
+            "form_input",
+            &[Capability::Write],
+            &host("example.com"),
+        ) {
+            Decision::Deny(d) => {
+                assert_eq!(d.rule, "capability");
+                assert_eq!(d.grant_id.as_deref(), Some("r"));
+            }
+            other => panic!("expected capability deny, got {other:?}"),
+        }
+        assert!(matches!(
+            check(
+                &read_grant,
+                "read_page",
+                &[Capability::Read],
+                &host("example.com")
+            ),
+            Decision::Allow { .. }
+        ));
+        assert!(matches!(
+            check(
+                &all_grant,
+                "form_input",
+                &[Capability::Write],
+                &host("example.com")
+            ),
+            Decision::Allow { .. }
+        ));
+        assert!(matches!(
+            check(
+                &all_grant,
+                "computer",
+                &[Capability::Action],
+                &host("example.com")
+            ),
+            Decision::Allow { .. }
+        ));
+    }
+
+    #[test]
+    fn denied_domain_attribution_is_the_first_denying_grant() {
         let grants = vec![
-            grant("first", &["example.com"], Access::Read),
-            grant("second", &["example.com"], Access::All),
+            grant_with_deny("first", &["*"], &["evil.com"]),
+            grant_with_deny("second", &["*"], &["evil.com"]),
         ];
-        // rw Mutate: "first" (read-only) would deny access; "second" (all) would allow. Since
-        // "first" resolves (it is earlier), the outcome must be a deny attributed to "first".
-        match check(&grants, "form_input", RwClass::Mutate, &host("example.com")) {
-            Decision::Deny(d) => assert_eq!(d.grant_id.as_deref(), Some("first")),
-            other => panic!("expected a deny attributed to the first grant, got {other:?}"),
+        match check(&grants, "read_page", &[Capability::Read], &host("evil.com")) {
+            Decision::Deny(d) => {
+                assert_eq!(d.rule, "denied_domain");
+                assert_eq!(d.grant_id.as_deref(), Some("first"));
+                assert!(d.message.contains("evil.com"));
+                assert!(d.message.contains("first"));
+            }
+            other => panic!("expected denied_domain, got {other:?}"),
         }
     }
 
     #[test]
-    fn unmatched_domain_denies() {
-        let grants = vec![grant("g1", &["example.com"], Access::All)];
-        match check(&grants, "form_input", RwClass::Mutate, &host("evil.com")) {
+    fn unmatched_vs_denied_precedence() {
+        // No grant mentions the host at all: unmatched_domain, no grant id.
+        let grants = vec![grant("g1", &["example.com"], &[Capability::Read])];
+        match check(&grants, "read_page", &[Capability::Read], &host("evil.com")) {
             Decision::Deny(d) => {
                 assert_eq!(d.rule, "unmatched_domain");
+                assert_eq!(d.grant_id, None);
+            }
+            other => panic!("expected unmatched_domain, got {other:?}"),
+        }
+
+        // A grant's deny matches but no grant's allow ever does: denied_domain, attributed.
+        let deny_only = vec![grant_with_deny("d1", &["*"], &["evil.com"])];
+        match check(
+            &deny_only,
+            "read_page",
+            &[Capability::Read],
+            &host("evil.com"),
+        ) {
+            Decision::Deny(d) => {
+                assert_eq!(d.rule, "denied_domain");
+                assert_eq!(d.grant_id.as_deref(), Some("d1"));
+            }
+            other => panic!("expected denied_domain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_page_union_rule_including_zero_grants() {
+        let read_grant = vec![grant("r1", &["example.com"], &[Capability::Read])];
+        assert!(matches!(
+            check(
+                &read_grant,
+                "tabs_context_mcp",
+                &[Capability::Read],
+                &GoverningResource::None
+            ),
+            Decision::Allow { grant_id: Some(ref g) } if g == "r1"
+        ));
+
+        let write_only = vec![grant("w1", &["example.com"], &[Capability::Write])];
+        match check(
+            &write_only,
+            "tabs_context_mcp",
+            &[Capability::Read],
+            &GoverningResource::None,
+        ) {
+            Decision::Deny(d) => {
+                assert_eq!(d.rule, "capability");
+                assert_eq!(d.grant_id.as_deref(), Some("w1"));
+            }
+            other => panic!("expected capability deny, got {other:?}"),
+        }
+
+        // Zero grants: unmatched_domain over "(unknown)".
+        match check(
+            &[],
+            "tabs_context_mcp",
+            &[Capability::Read],
+            &GoverningResource::None,
+        ) {
+            Decision::Deny(d) => {
+                assert_eq!(d.rule, "unmatched_domain");
+                assert_eq!(d.domain, "(unknown)");
                 assert_eq!(d.grant_id, None);
             }
             other => panic!("expected unmatched_domain, got {other:?}"),
@@ -444,189 +603,17 @@ mod tests {
     }
 
     #[test]
-    fn access_rules() {
-        let read_grant = vec![grant("r", &["example.com"], Access::Read)];
-        let write_grant = vec![grant("w", &["example.com"], Access::Write)];
-        let all_grant = vec![grant("a", &["example.com"], Access::All)];
-
-        match check(
-            &read_grant,
-            "form_input",
-            RwClass::Mutate,
-            &host("example.com"),
-        ) {
-            Decision::Deny(d) => {
-                assert_eq!(d.rule, "access");
-                assert_eq!(d.grant_id.as_deref(), Some("r"));
-            }
-            other => panic!("expected access deny, got {other:?}"),
-        }
-        match check(
-            &write_grant,
-            "read_page",
-            RwClass::Observe,
-            &host("example.com"),
-        ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "access"),
-            other => panic!("expected access deny (write does not imply read), got {other:?}"),
-        }
-        assert!(matches!(
-            check(
-                &read_grant,
-                "read_page",
-                RwClass::Observe,
-                &host("example.com")
-            ),
-            Decision::Allow { .. }
-        ));
-        assert!(matches!(
-            check(
-                &write_grant,
-                "form_input",
-                RwClass::Mutate,
-                &host("example.com")
-            ),
-            Decision::Allow { .. }
-        ));
-        assert!(matches!(
-            check(
-                &all_grant,
-                "form_input",
-                RwClass::Mutate,
-                &host("example.com")
-            ),
-            Decision::Allow { .. }
-        ));
-        assert!(matches!(
-            check(
-                &all_grant,
-                "read_page",
-                RwClass::Observe,
-                &host("example.com")
-            ),
-            Decision::Allow { .. }
-        ));
-    }
-
-    #[test]
-    fn tool_list_rules() {
-        let mut allow_list_grant = grant("g", &["example.com"], Access::All);
-        allow_list_grant.tools = Some(vec!["read_page".to_string()]);
-        match check(
-            &[allow_list_grant],
-            "form_input",
-            RwClass::Mutate,
-            &host("example.com"),
-        ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/form_input"),
-            other => panic!("expected tool/form_input deny, got {other:?}"),
-        }
-
-        let mut exclude_grant = grant("g", &["example.com"], Access::All);
-        exclude_grant.exclude_tools = Some(vec!["javascript_tool".to_string()]);
-        match check(
-            &[exclude_grant],
-            "javascript_tool",
-            RwClass::Mutate,
-            &host("example.com"),
-        ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/javascript_tool"),
-            other => panic!("expected tool/javascript_tool deny, got {other:?}"),
-        }
-
-        // A computer call is checked as the string "computer" regardless of action.
-        let mut computer_excluded = grant("g", &["example.com"], Access::All);
-        computer_excluded.exclude_tools = Some(vec!["computer".to_string()]);
-        let decision = check_call(
-            &[computer_excluded],
-            "computer",
-            Some("left_click"),
-            RwClass::Mutate,
-            &host("example.com"),
-            "hash",
-            stub_domain_matches,
-            None,
-            EffectiveMode::Enforce,
-        );
-        match decision {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/computer"),
-            other => panic!("expected tool/computer deny, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn tool_check_precedes_access_check() {
-        // A grant that both excludes the tool AND lacks the class must deny with rule
-        // "tool/...", not "access".
-        let mut g = grant("g", &["example.com"], Access::Read);
-        g.exclude_tools = Some(vec!["form_input".to_string()]);
-        match check(&[g], "form_input", RwClass::Mutate, &host("example.com")) {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/form_input"),
-            other => panic!("expected tool/form_input (not access), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn computer_subactions_split() {
-        let read_grant = vec![grant("r", &["example.com"], Access::Read)];
-        let all_grant = vec![grant("a", &["example.com"], Access::All)];
-
-        let allow = check_call(
-            &read_grant,
-            "computer",
-            Some("screenshot"),
-            RwClass::Observe,
-            &host("example.com"),
-            "hash",
-            stub_domain_matches,
-            None,
-            EffectiveMode::Enforce,
-        );
-        assert!(matches!(allow, Decision::Allow { .. }));
-
-        let deny = check_call(
-            &read_grant,
-            "computer",
-            Some("left_click"),
-            RwClass::Mutate,
-            &host("example.com"),
-            "hash",
-            stub_domain_matches,
-            None,
-            EffectiveMode::Enforce,
-        );
-        match deny {
-            Decision::Deny(d) => assert_eq!(d.rule, "access"),
-            other => panic!("expected access deny, got {other:?}"),
-        }
-
-        for (action, rw) in [
-            ("screenshot", RwClass::Observe),
-            ("left_click", RwClass::Mutate),
-        ] {
-            let allow = check_call(
-                &all_grant,
-                "computer",
-                Some(action),
-                rw,
-                &host("example.com"),
-                "hash",
-                stub_domain_matches,
-                None,
-                EffectiveMode::Enforce,
-            );
-            assert!(matches!(allow, Decision::Allow { .. }), "action {action}");
-        }
-    }
-
-    #[test]
     fn scheme_and_about_blank() {
-        let grants = vec![grant("g", &["example.com"], Access::All)];
+        let grants = vec![grant(
+            "g",
+            &["example.com"],
+            &[Capability::Read, Capability::Action, Capability::Write],
+        )];
         for scheme in ["chrome", "file", "javascript"] {
             match check(
                 &grants,
                 "navigate",
-                RwClass::Observe,
+                &[Capability::Read],
                 &GoverningResource::OutOfScope(scheme.to_string()),
             ) {
                 Decision::Deny(d) => assert_eq!(d.rule, format!("scheme/{scheme}")),
@@ -637,7 +624,7 @@ mod tests {
             check(
                 &grants,
                 "navigate",
-                RwClass::Observe,
+                &[Capability::Read],
                 &GoverningResource::AlwaysAllow
             ),
             Decision::Allow { grant_id: None }
@@ -646,11 +633,15 @@ mod tests {
 
     #[test]
     fn unknown_fails_closed() {
-        let grants = vec![grant("g", &["example.com"], Access::All)];
+        let grants = vec![grant(
+            "g",
+            &["example.com"],
+            &[Capability::Read, Capability::Action, Capability::Write],
+        )];
         match check(
             &grants,
             "read_page",
-            RwClass::Observe,
+            &[Capability::Read],
             &GoverningResource::Indeterminate,
         ) {
             Decision::Deny(d) => {
@@ -662,57 +653,65 @@ mod tests {
     }
 
     #[test]
-    fn no_page_union_rule() {
-        let read_grant = vec![grant("r1", &["example.com"], Access::Read)];
-        assert!(matches!(
-            check(&read_grant, "tabs_context_mcp", RwClass::Observe, &GoverningResource::None),
-            Decision::Allow { grant_id: Some(ref g) } if g == "r1"
-        ));
-        match check(
-            &read_grant,
-            "tabs_create_mcp",
-            RwClass::Mutate,
-            &GoverningResource::None,
-        ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "access"),
-            other => panic!("expected access deny, got {other:?}"),
-        }
-
-        let all_grant = vec![grant("a1", &["example.com"], Access::All)];
-        assert!(matches!(
-            check(
-                &all_grant,
-                "tabs_create_mcp",
-                RwClass::Mutate,
-                &GoverningResource::None
-            ),
-            Decision::Allow { .. }
-        ));
-
-        let mut excluding = grant("e1", &["example.com"], Access::All);
-        excluding.exclude_tools = Some(vec!["tabs_create_mcp".to_string()]);
-        match check(
-            &[excluding],
-            "tabs_create_mcp",
-            RwClass::Mutate,
-            &GoverningResource::None,
-        ) {
-            Decision::Deny(d) => {
-                assert_eq!(d.rule, "tool/tabs_create_mcp");
-                assert_eq!(d.grant_id, None);
-            }
-            other => panic!("expected tool/tabs_create_mcp deny with no grant id, got {other:?}"),
-        }
+    fn unknown_action_denies_via_unknown_action_rule() {
+        let denial = unknown_action_denial("no_such_tool", None, "hash");
+        assert_eq!(denial.rule, "unknown_action");
+        assert_eq!(denial.grant_id, None);
+        assert!(denial.message.starts_with("Denied (D-"));
     }
 
     #[test]
-    fn unclassifiable_denies_via_the_tool_rule() {
-        // g13 leaves the "classify returned None" branch to the caller (Governance::decide);
-        // this pins that the tool/<name> denial shape it must produce is available and
-        // correctly formed, using the same tool_denial building block check_call itself uses.
-        let denial = tool_denial("no_such_tool", None, None, "(unknown)", "hash");
-        assert_eq!(denial.rule, "tool/no_such_tool");
-        assert_eq!(denial.grant_id, None);
+    fn capability_denial_message_is_exact() {
+        let g = grant("r", &["example.com"], &[Capability::Read]);
+        let denial = capability_denial(
+            &g,
+            "form_input",
+            None,
+            &[Capability::Write],
+            "example.com",
+            "hash",
+        );
+        let expected_tail = "'form_input' needs the 'write' capability on example.com, and \
+             grant 'r' allows read. Give this denial id to your administrator to request \
+             'write' access.";
+        assert!(
+            denial.message.ends_with(expected_tail),
+            "{}",
+            denial.message
+        );
+        assert!(denial.message.starts_with("Denied (D-"));
+    }
+
+    #[test]
+    fn capability_denial_no_capabilities_wording() {
+        let g = grant("r", &["example.com"], &[]);
+        let denial = capability_denial(
+            &g,
+            "read_page",
+            None,
+            &[Capability::Read],
+            "example.com",
+            "hash",
+        );
+        assert!(
+            denial.message.contains("allows no capabilities."),
+            "{}",
+            denial.message
+        );
+    }
+
+    #[test]
+    fn denied_domain_message_is_exact() {
+        let g = grant_with_deny("d1", &["*"], &["evil.com"]);
+        let denial = denied_domain_denial(&g, "evil.com", "hash");
+        let expected_tail = "evil.com is excluded by grant 'd1': your policy denies this site \
+             explicitly. Do not retry or work around this; ask the user or an administrator if \
+             access is needed.";
+        assert!(
+            denial.message.ends_with(expected_tail),
+            "{}",
+            denial.message
+        );
         assert!(denial.message.starts_with("Denied (D-"));
     }
 
@@ -720,7 +719,6 @@ mod tests {
 
     #[test]
     fn effective_mode_precedence_covers_every_combination() {
-        // Grant wins when set, regardless of manifest/config.
         assert_eq!(
             effective_mode(
                 Some(EffectiveMode::Observe),
@@ -737,7 +735,6 @@ mod tests {
             ),
             EffectiveMode::Enforce
         );
-        // Manifest wins when grant is None.
         assert_eq!(
             effective_mode(None, Some(EffectiveMode::Observe), EffectiveMode::Enforce),
             EffectiveMode::Observe
@@ -746,7 +743,6 @@ mod tests {
             effective_mode(None, Some(EffectiveMode::Enforce), EffectiveMode::Observe),
             EffectiveMode::Enforce
         );
-        // Config wins when both grant and manifest are None.
         assert_eq!(
             effective_mode(None, None, EffectiveMode::Observe),
             EffectiveMode::Observe
@@ -759,14 +755,12 @@ mod tests {
 
     #[test]
     fn mode_switch_yields_shadow_deny_under_observe_with_the_identical_grant_and_denial_id() {
-        // access, tool, and unmatched_domain denials all go through the same apply_mode wrap;
-        // exercise all three (scheme is covered by scheme_and_about_blank's own case already).
-        let read_grant = vec![grant("r", &["example.com"], Access::Read)];
+        let read_grant = vec![grant("r", &["example.com"], &[Capability::Read])];
 
         let enforce = check_with_mode(
             &read_grant,
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("example.com"),
             None,
             EffectiveMode::Enforce,
@@ -774,50 +768,24 @@ mod tests {
         let observe = check_with_mode(
             &read_grant,
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("example.com"),
             None,
             EffectiveMode::Observe,
         );
         match (enforce, observe) {
             (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
-                assert_eq!(d_enforce.rule, "access");
+                assert_eq!(d_enforce.rule, "capability");
                 assert_eq!(d_enforce.grant_id, d_observe.grant_id);
                 assert_eq!(d_enforce.denial_id, d_observe.denial_id);
             }
-            other => panic!("expected (Deny, ShadowDeny) for the access rule, got {other:?}"),
-        }
-
-        let mut excluding = grant("g", &["example.com"], Access::All);
-        excluding.exclude_tools = Some(vec!["form_input".to_string()]);
-        let enforce = check_with_mode(
-            &[excluding.clone()],
-            "form_input",
-            RwClass::Mutate,
-            &host("example.com"),
-            None,
-            EffectiveMode::Enforce,
-        );
-        let observe = check_with_mode(
-            &[excluding],
-            "form_input",
-            RwClass::Mutate,
-            &host("example.com"),
-            None,
-            EffectiveMode::Observe,
-        );
-        match (enforce, observe) {
-            (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
-                assert_eq!(d_enforce.rule, "tool/form_input");
-                assert_eq!(d_enforce.denial_id, d_observe.denial_id);
-            }
-            other => panic!("expected (Deny, ShadowDeny) for the tool rule, got {other:?}"),
+            other => panic!("expected (Deny, ShadowDeny) for the capability rule, got {other:?}"),
         }
 
         let enforce = check_with_mode(
             &read_grant,
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("evil.com"),
             None,
             EffectiveMode::Enforce,
@@ -825,7 +793,7 @@ mod tests {
         let observe = check_with_mode(
             &read_grant,
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("evil.com"),
             None,
             EffectiveMode::Observe,
@@ -843,11 +811,15 @@ mod tests {
 
     #[test]
     fn mode_switch_never_touches_an_allow() {
-        let all_grant = vec![grant("a", &["example.com"], Access::All)];
+        let all_grant = vec![grant(
+            "a",
+            &["example.com"],
+            &[Capability::Read, Capability::Action, Capability::Write],
+        )];
         let observe = check_with_mode(
             &all_grant,
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("example.com"),
             None,
             EffectiveMode::Observe,
@@ -857,12 +829,12 @@ mod tests {
 
     #[test]
     fn grant_level_mode_overrides_manifest_and_config() {
-        let mut observe_grant = grant("g", &["example.com"], Access::Read);
+        let mut observe_grant = grant("g", &["example.com"], &[Capability::Read]);
         observe_grant.mode = Some(EffectiveMode::Observe);
         let decision = check_with_mode(
             &[observe_grant],
             "form_input",
-            RwClass::Mutate,
+            &[Capability::Write],
             &host("example.com"),
             Some(EffectiveMode::Enforce),
             EffectiveMode::Enforce,
@@ -875,10 +847,7 @@ mod tests {
 
     #[test]
     fn unclassifiable_call_goes_through_the_same_mode_switch() {
-        // Governance::decide applies apply_mode to the classification-miss denial too (it is an
-        // ordinary tool/<name> rule, not a sacred one); pin the building block's own denial
-        // shape stays eligible (the wrapping itself is exercised at the Governance::decide level).
-        let denial = unclassifiable_denial("no_such_tool", None, "hash");
+        let denial = unknown_action_denial("no_such_tool", None, "hash");
         let grants: Vec<Grant> = Vec::new();
         let shadowed = apply_mode(
             Decision::Deny(denial.clone()),

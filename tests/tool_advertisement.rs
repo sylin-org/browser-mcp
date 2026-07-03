@@ -65,19 +65,20 @@ fn drive(manifest_path: &Path, requests: &[Value]) -> Vec<Value> {
     responses
 }
 
-/// A read-only manifest (no `tools`/`exclude_tools` restriction). The expected set is the g14
-/// doc's own "Required behavior" section 4 set PLUS `navigate`, reclassified observe by
-/// ADR-0022/s01 (navigate is provably a GET).
+/// A read-only manifest (`allowed: ["read"]`). Per ADR-0022 Decision 8, a read-only grant
+/// advertises every tool with a directory variant that is `requires: []` or a subset of `read`
+/// -- everything except `form_input` (requires `write`) and `javascript_tool` (requires
+/// `execute`).
 #[test]
-fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
+fn read_only_manifest_advertises_everything_except_write_and_execute_tools() {
     let manifest = write_manifest(
         "read-only",
         &json!({
-            "schema": 2,
+            "schema": 3,
             "name": "g14-read-only",
             "version": "1",
             "grants": [
-                { "id": "r", "domains": ["example.com"], "access": "read" },
+                { "id": "r", "hosts": {"allow": ["example.com"]}, "allowed": ["read"] },
             ],
         }),
     );
@@ -103,6 +104,7 @@ fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
         names,
         vec![
             "tabs_context_mcp",
+            "tabs_create_mcp",
             "navigate",
             "computer",
             "find",
@@ -110,6 +112,7 @@ fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
             "read_console_messages",
             "read_network_requests",
             "read_page",
+            "resize_window",
             "update_plan",
         ]
     );
@@ -117,14 +120,14 @@ fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
     std::fs::remove_file(&manifest).ok();
 }
 
-/// An empty `grants` array permits nothing anywhere; `tools/list` reflects that with an empty
-/// list, not the full surface (g14 required behavior section 5).
+/// An empty `grants` array advertises exactly the requires-empty set (ADR-0022 Decision 5 step
+/// 2: those actions need no grant at all), not the full surface and not nothing.
 #[test]
-fn empty_grants_manifest_advertises_nothing() {
+fn empty_grants_manifest_advertises_exactly_the_requires_empty_set() {
     let manifest = write_manifest(
         "empty-grants",
         &json!({
-            "schema": 2,
+            "schema": 3,
             "name": "g14-empty-grants",
             "version": "1",
             "grants": [],
@@ -142,12 +145,20 @@ fn empty_grants_manifest_advertises_nothing() {
         .iter()
         .find(|r| r["id"] == 2)
         .expect("a tools/list response");
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| t["name"].as_str().expect("name"))
+        .collect();
     assert_eq!(
-        list["result"]["tools"]
-            .as_array()
-            .expect("tools array")
-            .len(),
-        0
+        names,
+        vec![
+            "tabs_create_mcp",
+            "computer",
+            "resize_window",
+            "update_plan"
+        ]
     );
 
     std::fs::remove_file(&manifest).ok();

@@ -82,10 +82,10 @@ impl EffectiveMode {
 /// weaker `Write`: it encompasses the ability to CAUSE writes (a click can submit a
 /// form). `Execute` is never implied by any other capability. Capabilities are
 /// independent primitives, not ordered tiers. Wire/file names are lowercase: `"read"`,
-/// `"action"`, `"write"`, `"execute"`. Nothing consumes this type yet: s05 wires it
-/// into grants and enforcement; until then `RwClass` remains the classification in
-/// force.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `"action"`, `"write"`, `"execute"`. Consumed by grants ([`crate::governance::manifest::
+/// document::Grant::allowed`]) and enforcement ([`DecisionRequest::requires`]) since s05;
+/// `RwClass` remains only for the audit `rw` field until s06.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Capability {
     Read,
@@ -303,12 +303,15 @@ pub struct DecisionRequest {
     /// The tool being called.
     pub tool: String,
     /// The `computer` sub-action, when `tool == "computer"`; `None` otherwise. Carried only
-    /// for denial-message rendering (`computer (<action>)`, shared format doc section 7.2);
-    /// grant `tools`/`exclude_tools` checks and rule strings use the bare `tool` name, never
-    /// this field.
+    /// for denial-message rendering (`computer (<action>)`, shared format doc section 7.2).
     pub action: Option<String>,
-    /// The tool call's read/write classification.
-    pub rw: RwClass,
+    /// The bound capability requirement set for this action (ADR-0022 Decision 2), looked up
+    /// from the browser plugin's action directory lookup by the caller.
+    /// Enforcement never sees an empty-requires request: [`crate::governance::enforcement::
+    /// check_call`] short-circuits to `Allow` before a `DecisionRequest` with an empty
+    /// `requires` would ever need to be built, but the field itself carries no such
+    /// invariant -- it is a plain `Vec<Capability>`.
+    pub requires: Vec<Capability>,
     /// The resolved governing resource.
     pub resource: GoverningResource,
     /// The active manifest's own `mode` field (shared format 4.1), if it set one. `None` when
@@ -429,17 +432,18 @@ mod tests {
     fn sample_grant(id: &str) -> Grant {
         Grant {
             id: id.to_string(),
-            domains: vec!["example.com".to_string()],
-            access: crate::governance::manifest::document::Access::All,
-            tools: None,
-            exclude_tools: None,
+            hosts: crate::governance::manifest::document::HostRules {
+                allow: vec!["example.com".to_string()],
+                deny: Vec::new(),
+            },
+            allowed: vec![Capability::Read, Capability::Action, Capability::Write],
             description: None,
             mode: None,
         }
     }
 
     fn sample_request(
-        rw: RwClass,
+        requires: Vec<Capability>,
         resource: GoverningResource,
         config_mode: EffectiveMode,
     ) -> DecisionRequest {
@@ -447,7 +451,7 @@ mod tests {
             grants: Vec::new(),
             tool: "navigate".to_string(),
             action: None,
-            rw,
+            requires,
             resource,
             manifest_mode: None,
             config_mode,
@@ -460,12 +464,12 @@ mod tests {
         let pdp = NoopPdp;
         let requests = [
             sample_request(
-                RwClass::Observe,
+                vec![Capability::Read],
                 GoverningResource::None,
                 EffectiveMode::Observe,
             ),
             sample_request(
-                RwClass::Mutate,
+                vec![Capability::Action],
                 GoverningResource::Resource("example.com".to_string()),
                 EffectiveMode::Enforce,
             ),
@@ -473,7 +477,7 @@ mod tests {
                 grants: vec![sample_grant("g1")],
                 tool: "computer".to_string(),
                 action: Some("left_click".to_string()),
-                rw: RwClass::Mutate,
+                requires: vec![Capability::Action],
                 resource: GoverningResource::AlwaysAllow,
                 manifest_mode: None,
                 config_mode: EffectiveMode::Enforce,
@@ -628,7 +632,7 @@ mod tests {
     fn pdp_is_object_safe() {
         let pdp: Box<dyn PolicyDecisionPoint> = Box::new(NoopPdp);
         let req = sample_request(
-            RwClass::Observe,
+            vec![Capability::Read],
             GoverningResource::None,
             EffectiveMode::Observe,
         );
@@ -648,7 +652,7 @@ mod tests {
             grants: vec![sample_grant("servicenow-full")],
             tool: "navigate".to_string(),
             action: None,
-            rw: RwClass::Mutate,
+            requires: vec![Capability::Read],
             resource: GoverningResource::Resource("example.com".to_string()),
             manifest_mode: Some(EffectiveMode::Observe),
             config_mode: EffectiveMode::Enforce,

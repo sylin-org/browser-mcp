@@ -43,16 +43,10 @@ pub enum ConfigCommand {
 
 /// Run one config CLI command. Success output goes to stdout; failures return
 /// `Error::Config`, which the binary surfaces on stderr (prefixed `Error: ` by the top-level
-/// `anyhow` termination path) with exit code 1. `is_known_tool` is used only by `List` (g15,
-/// the shadow-mode line), to resolve the active manifest via `manifest::source::load_policy`;
-/// every other command ignores it.
-pub fn run(
-    cmd: ConfigCommand,
-    domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
-) -> crate::Result<()> {
+/// `anyhow` termination path) with exit code 1.
+pub fn run(cmd: ConfigCommand, domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
     match cmd {
-        ConfigCommand::List => run_list(domain_pattern_valid, is_known_tool),
+        ConfigCommand::List => run_list(domain_pattern_valid),
         ConfigCommand::Get { key } => run_get(&key, domain_pattern_valid),
         ConfigCommand::Set { key, value } => run_set(&key, &value, domain_pattern_valid),
         ConfigCommand::Schema => {
@@ -113,16 +107,13 @@ fn render_list(resolution: &layers::Resolution) -> String {
     out
 }
 
-fn run_list(
-    domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
-) -> crate::Result<()> {
+fn run_list(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
     let (resolution, warnings) = resolve_with_warnings(domain_pattern_valid)?;
     for w in &warnings {
         eprintln!("warning: {w}");
     }
     print!("{}", render_list(&resolution));
-    if let Some(line) = shadow_line(&resolution, domain_pattern_valid, is_known_tool) {
+    if let Some(line) = shadow_line(&resolution, domain_pattern_valid) {
         println!("{line}");
     }
     Ok(())
@@ -140,13 +131,11 @@ fn run_list(
 fn shadow_line(
     resolution: &layers::Resolution,
     domain_pattern_valid: fn(&str) -> bool,
-    is_known_tool: fn(&str) -> bool,
 ) -> Option<String> {
     let user_manifest_source = std::env::var("BROWSER_MCP_MANIFEST").ok();
     let loaded_policy = crate::governance::manifest::source::load_policy(
         user_manifest_source.as_deref(),
         domain_pattern_valid,
-        is_known_tool,
     )
     .ok()?;
     let manifest = loaded_policy.manifest.as_ref()?;

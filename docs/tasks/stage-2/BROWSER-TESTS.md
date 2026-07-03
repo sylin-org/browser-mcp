@@ -408,3 +408,32 @@ screenshot, (3) computer left_click on the page.
 Expect: (1) and (2) succeed with no Denied text; the audit lines carry decision=allow,
 grant_id=research-read, and rw=observe for the navigate. (3) returns Denied (D-...)
 naming research-read and the read-only wording; its audit line is decision=deny.
+
+## s05-1: schema-3 capability grants end to end (advertisement, enforcement, explain)
+Changed: s05 replaced the whole schema-2 domains/access/tools grant model with schema-3
+hosts/allowed capability sets (ADR-0022 Decisions 3-6, 8), rewiring enforcement, tool
+advertisement, and `policy explain` together. Only a real browser proves a live session
+sees the new tool list, the new denial wording, and the new explain sentences agree with
+what actually happens on a page.
+Steps: start the mcp-server with a schema-3 manifest:
+{"schema":3,"name":"s05-manual-check","version":"1","grants":[{"id":"example-read",
+"hosts":{"allow":["example.com","*.example.com"]},"allowed":["read"]}]}, audit enabled.
+(1) Run `browser-mcp policy explain` on this manifest file and confirm the printed
+sentence reads "Allowed on example.com, *.example.com: read pages." (2) Call
+`tools/list` (or ask the agent to list tools) and confirm `form_input` and
+`javascript_tool` are ABSENT while `navigate`/`computer`/`read_page`/`find`/
+`get_page_text`/`tabs_context_mcp`/`tabs_create_mcp`/`resize_window`/`update_plan`/
+`read_console_messages`/`read_network_requests` are all PRESENT (this is a deliberate
+change from schema-2's read-only set: it no longer excludes `navigate`/`tabs_create_mcp`/
+`resize_window`/`update_plan`). (3) Navigate to https://example.com/, take a screenshot,
+and scroll. (4) Attempt a `computer` `left_click` on the page. (5) Attempt `form_input`
+on the page (it should be advertised-absent, but call it directly by name anyway to
+prove per-call enforcement, not just advertisement, blocks it).
+Expect: (1) matches verbatim. (2) matches exactly (11 of 13 tools). (3) all three calls
+succeed with no Denied text; each audit line carries decision=allow, grant_id=
+example-read. (4) returns "Denied (D-...): 'computer (left_click)' needs the 'action'
+capability on example.com, and grant 'example-read' allows read. Give this denial id to
+your administrator to request 'action' access." and its audit line is decision=deny,
+denial_id set, rule capability (verify via the audit file, since the record's rw field
+alone does not show the rule). (5) returns the equivalent message naming 'write' and
+'form_input'; the extension never receives a form_input tool_request for this call.

@@ -36,16 +36,20 @@ fn temp_path(tag: &str) -> PathBuf {
     ))
 }
 
-/// A manifest with one read-only grant covering `example.com`, at manifest-level `mode`, with
-/// audit enabled to `audit_path`.
+/// A manifest with one grant covering `example.com` permitting `action`/`write` but not `read`,
+/// at manifest-level `mode`, with audit enabled to `audit_path`.
 fn manifest_value(mode: &str, audit_path: &Path) -> Value {
     json!({
-        "schema": 2,
+        "schema": 3,
         "name": "shadow-check",
         "version": "1",
         "mode": mode,
         "grants": [
-            { "id": "read-only", "domains": ["example.com"], "access": "read" },
+            {
+                "id": "action-write-only",
+                "hosts": {"allow": ["example.com"]},
+                "allowed": ["action", "write"]
+            },
         ],
         "config": [
             { "key": "audit.enabled", "value": true, "level": "mandatory" },
@@ -109,14 +113,16 @@ fn text_of(resp: &Value) -> &str {
         .unwrap_or_else(|| panic!("no text content block in {resp:?}"))
 }
 
-/// A mutate-class call (`tabs_create_mcp`, domain-less, denied via the union rule since s01
-/// reclassified `navigate` observe) under the read-only grant: `access` denies it under enforce,
-/// attributed to `read-only`; `manifest_value` above is otherwise byte-identical across both
-/// runs.
+/// A call requiring `read` (`tabs_context_mcp`, domain-less, denied via the union rule; the
+/// only domain-less tool with a non-empty capability requirement under ADR-0022 --
+/// `tabs_create_mcp`/`update_plan`/`resize_window` all require `[]` and short-circuit to Allow
+/// unconditionally) under the `action`/`write`-only grant: `capability` denies it under
+/// enforce, attributed to `action-write-only`; `manifest_value` above is otherwise
+/// byte-identical across both runs.
 fn denied_call_requests() -> Vec<Value> {
     vec![
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tabs_create_mcp","arguments":{}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tabs_context_mcp","arguments":{}}}),
     ]
 }
 
@@ -138,7 +144,7 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     assert_eq!(enforce_lines.len(), 1, "{enforce_lines:?}");
     assert_eq!(enforce_lines[0]["decision"], "deny");
     assert_eq!(enforce_lines[0]["duration_ms"], 0);
-    assert_eq!(enforce_lines[0]["grant_id"], "read-only");
+    assert_eq!(enforce_lines[0]["grant_id"], "action-write-only");
     let enforce_denial_id = enforce_lines[0]["denial_id"]
         .as_str()
         .expect("denial_id present")
@@ -172,7 +178,7 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
         "a shadow-denied call actually ran and waited out the handshake window: {:?}",
         observe_lines[0]["duration_ms"]
     );
-    assert_eq!(observe_lines[0]["grant_id"], "read-only");
+    assert_eq!(observe_lines[0]["grant_id"], "action-write-only");
 
     // NOT asserted here: that the two denial ids match. They deliberately do NOT: the manifest's
     // own top-level `mode` field is itself part of the canonical bytes `manifest_hash` is

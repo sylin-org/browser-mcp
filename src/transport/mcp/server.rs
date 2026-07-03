@@ -11,7 +11,7 @@
 //! interleaved mid-write.
 
 use crate::browser::pattern::HostOutcome;
-use crate::browser::{advertise, classify, pattern, redact, resource, sacred};
+use crate::browser::{advertise, classify, directory, pattern, polarity, redact, resource, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
@@ -84,14 +84,19 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
     // domain-agnostic core never names `browser::` directly (the a7 arch-test).
     let governance = Arc::new(match &loaded_policy.manifest {
         Some(manifest) => Governance::governed(
-            Box::new(LocalPdp::new(pattern::pattern_matches_normalized_host)),
+            Box::new(LocalPdp::new(polarity::evaluate_host)),
             recorder.clone() as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
             manifest.grants.clone(),
             manifest.hash.clone(),
             manifest.mode,
         ),
-        None => Governance::all_open(recorder as Arc<dyn AuditSink>, classify::classify),
+        None => Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            classify::classify,
+            directory::requires,
+        ),
     });
 
     // Panic kill switch (g11, ADR-0018 step 2): the extension signals `session_killed` once it
@@ -853,6 +858,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["*.mybank.com"]),
@@ -918,6 +924,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["mybank.com"]),
@@ -988,6 +995,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1044,6 +1052,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
             config_with_sacred_domains(&["*.mybank.com"]),
@@ -1094,6 +1103,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1143,6 +1153,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1170,6 +1181,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1192,6 +1204,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1234,6 +1247,7 @@ mod tests {
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
             classify::classify,
+            directory::requires,
         ));
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
@@ -1282,15 +1296,17 @@ mod tests {
     // established.
 
     use crate::governance::enforcement::LocalPdp;
-    use crate::governance::manifest::document::{Access, Grant};
+    use crate::governance::manifest::document::{Grant, HostRules};
+    use crate::governance::ports::Capability;
 
-    fn full_grant(id: &str, domains: &[&str]) -> Grant {
+    fn full_grant(id: &str, hosts: &[&str]) -> Grant {
         Grant {
             id: id.to_string(),
-            domains: domains.iter().map(|d| d.to_string()).collect(),
-            access: Access::All,
-            tools: None,
-            exclude_tools: None,
+            hosts: HostRules {
+                allow: hosts.iter().map(|d| d.to_string()).collect(),
+                deny: Vec::new(),
+            },
+            allowed: vec![Capability::Read, Capability::Action, Capability::Write],
             description: None,
             mode: None,
         }
@@ -1306,9 +1322,10 @@ mod tests {
         manifest_mode: Option<crate::governance::ports::EffectiveMode>,
     ) -> Governance {
         Governance::governed(
-            Box::new(LocalPdp::new(pattern::pattern_matches_normalized_host)),
+            Box::new(LocalPdp::new(polarity::evaluate_host)),
             sink,
             classify::classify,
+            directory::requires,
             grants,
             "test-hash".to_string(),
             manifest_mode,
@@ -1462,9 +1479,11 @@ mod tests {
     /// (`tests/shadow_mode.rs`) additionally proves `duration_ms` truthfully differs (`0` vs
     /// real elapsed) using the real dispatch path with no extension connected; this inline
     /// version uses a fake extension so the observe-mode call can actually "execute". The
-    /// would-deny call is `tabs_create_mcp` (domain-less, denied via the union rule) since s01
-    /// reclassified `navigate` observe (ADR-0022): `navigate` is no longer deniable by a
-    /// read-only grant on its own covered domain.
+    /// would-deny call is `tabs_context_mcp` (domain-less, requires `read`, denied via the
+    /// union rule) under a grant that permits `action`/`write` but not `read` (ADR-0022):
+    /// `tabs_create_mcp`/`update_plan`/`resize_window` all require `[]` and short-circuit to
+    /// Allow unconditionally, so they can no longer demonstrate a would-deny; `tabs_context_mcp`
+    /// is the only domain-less tool with a non-empty capability requirement.
     #[tokio::test]
     async fn grant_shadow_deny_runs_the_tool_and_matches_the_enforce_denial_id() {
         let enforce_path = temp_audit_path("shadow-enforce");
@@ -1472,23 +1491,23 @@ mod tests {
         let _ = std::fs::remove_file(&enforce_path);
         let _ = std::fs::remove_file(&observe_path);
 
-        fn read_only_grant() -> Grant {
+        fn action_write_grant() -> Grant {
             let mut g = full_grant("r", &["example.com"]);
-            g.access = crate::governance::manifest::document::Access::Read;
+            g.allowed = vec![Capability::Action, Capability::Write];
             g
         }
         let store =
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
 
-        // Enforce: the mutate-class call on a read-only grant is blocked outright.
+        // Enforce: the read-requiring call on a grant lacking 'read' is blocked outright.
         let enforce_recorder = Arc::new(Recorder::to_file(enforce_path.clone()));
         let enforce_governance = Arc::new(governed_with_grants_and_mode(
-            vec![read_only_grant()],
+            vec![action_write_grant()],
             enforce_recorder as Arc<dyn AuditSink>,
             Some(crate::governance::ports::EffectiveMode::Enforce),
         ));
         let browser = Browser::new();
-        let params = json!({ "name": "tabs_create_mcp", "arguments": {} });
+        let params = json!({ "name": "tabs_context_mcp", "arguments": {} });
         let enforce_resp = handle_tools_call(
             &browser,
             &store,
@@ -1510,7 +1529,7 @@ mod tests {
         // response carries no denial text at all.
         let observe_recorder = Arc::new(Recorder::to_file(observe_path.clone()));
         let observe_governance = Arc::new(governed_with_grants_and_mode(
-            vec![read_only_grant()],
+            vec![action_write_grant()],
             observe_recorder as Arc<dyn AuditSink>,
             Some(crate::governance::ports::EffectiveMode::Observe),
         ));
@@ -1518,7 +1537,7 @@ mod tests {
         let (_ext, _seen) = attach_fake_extension(
             &observe_browser,
             vec![(
-                "tabs_create_mcp",
+                "tabs_context_mcp",
                 json!({ "content": [{ "type": "text", "text": "created" }] }),
             )],
         );
