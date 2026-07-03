@@ -10,8 +10,8 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02` landed.
-- NEXT TASK: `s03` (`docs/tasks/stage-3/s03-action-directory.md`).
+- Progress: `s01`, `s02`, `s03` landed.
+- NEXT TASK: `s04` (`docs/tasks/stage-3/s04-host-polarity.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -110,3 +110,44 @@ remembering earlier work; re-read files.
   scan (`rg -n "[^\x00-\x7F]" src/governance/ports.rs`) printed nothing.
 - Browser checks queued: none (a pure type addition; no BROWSER-TESTS.md entry, per the
   task prompt's Verification section).
+
+### s03 the action directory in the browser plugin -- 2026-07-03
+- Commit: (see this task's commit, `feat(governance): s03 action directory in the browser
+  plugin`)
+- Files touched: `src/browser/directory.rs` (new), `src/browser/mod.rs`,
+  `docs/tasks/stage-3/LEDGER.md`.
+- Summary: added `src/browser/directory.rs`, a new pure module holding the ADR-0022
+  Decision 2 action directory as static data: the `ActionDescriptor` struct (`tool`,
+  `action`, `requires`, `description`), the `DIRECTORY` const of 25 `ActionDescriptor`
+  rows (12 tools + 13 `computer` actions, tools.json advertised order with `computer`
+  expanded in place in tools.json `action` enum order), and the `requires(tool, action) ->
+  Option<&'static [Capability]>` lookup function with the same lookup shape as
+  `classify::classify` (action consulted only for `"computer"`; ignored otherwise). Every
+  `requires` value and description string transcribed verbatim from the task prompt's
+  table (itself a verbatim transcription of ADR-0022 Decision 2). Registered
+  `pub mod directory;` in `src/browser/mod.rs` between `classify` and `pattern`
+  (alphabetical) and inserted the exact pinned doc sentence about the s05/s06 switch
+  immediately before the "It may depend on" sentence. Purely additive: `classify.rs` was
+  not opened for editing and its byte content is unchanged (confirmed by `git status
+  --short` showing no modification to it). Nothing in the tree consumes `directory` yet;
+  enforcement, dispatch, advertisement, audit, simulate, and explain all still run on
+  `classify.rs` per the task's Out-of-scope section.
+- Deviations from the prompt/ADR: none. The struct shape, the 25 rows (tool, action,
+  requires, description), the lookup function's absent-vs-empty semantics, the module
+  registration point, and all four named tests were transcribed verbatim from the prompt;
+  no ADR/prompt conflict encountered.
+- Verification: `cargo fmt` (reformatted the new file's multi-line string literals only;
+  re-ran `cargo test` afterward, unchanged pass count) then `cargo fmt --check` clean;
+  `cargo clippy --all-targets -- -D warnings` clean; `cargo test` 434 -> 438 (four net new
+  tests, all in `src/browser/directory.rs`'s `mod tests`: `directory_covers_the_sacred_
+  surface_exactly`, `directory_requires_match_the_adr_table`,
+  `absent_is_none_and_empty_is_some`, `every_description_is_nonempty_ascii_and_short`; lib
+  unit-test binary 373 -> 377), all passing, 0 failed. Confirmed unchanged and green:
+  `tests/architecture.rs` (4 tests), `tests/all_open_golden.rs` (3 tests),
+  `tests/mcp_protocol.rs` (4 tests), `tests/tool_schema_fidelity.rs` (6 tests) -- `git diff
+  --stat` shows only `src/browser/mod.rs` modified (7 insertions/2 deletions) plus the new
+  untracked `src/browser/directory.rs`; none of the four guard files appear in the diff.
+  ASCII scan (`rg -n "[^\x00-\x7F]" src/browser/directory.rs src/browser/mod.rs`) printed
+  nothing.
+- Browser checks queued: none (pure static data; nothing observable in a live browser
+  yet, per the task prompt's Verification section).

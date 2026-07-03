@@ -11,11 +11,16 @@
 //! visibility optimization over `tools/list`, never a security boundary), and the read/write
 //! classification table ([`classify`], the plugin half of
 //! [`crate::governance::ports::DomainPolicy::classify`]; the observe/mutate axis type itself
-//! is core). It may depend on the governance core and on std/serde; the governance core must
-//! never depend back on this module.
+//! is core).
+//!
+//! Stage 3 adds the action directory ([`directory`], ADR-0022 Decision 2: per-action
+//! capability requirement sets and agent-facing descriptions; additive alongside
+//! [`classify`] until the s05/s06 switch). It may depend on the governance core and on
+//! std/serde; the governance core must never depend back on this module.
 
 pub mod advertise;
 pub mod classify;
+pub mod directory;
 pub mod pattern;
 pub mod redact;
 pub mod resource;
