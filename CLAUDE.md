@@ -1,4 +1,20 @@
-# Browser MCP: Governed Browser Automation
+# Ghostlight Browser: Governed Browser Automation
+
+## Current status (updated at the Ghostlight rename, 2026-07)
+
+The project is named **Ghostlight** (family brand); this product is **Ghostlight Browser**, and the
+crate, binary, and MCP server id are `ghostlight` (ADR-0021). Both the **automation engine** and the
+**full governance layer** are implemented and verified against a real browser on Windows: capability
+manifests (read/action/write/execute), identity-bound grants with host polarity, sacred never-touch
+domains, a take-the-wheel pause and panic kill switch, observe/shadow/enforce modes, structured
+audit, layered configuration with org policy locks, manifest hot-reload, the `explain` tool, and the
+`config` / `policy` CLIs. All-open stays first-class.
+
+The **Implementation Phases** and **Repository Structure** sections below are the ORIGINAL design
+plan, kept as historical intent. Some module paths have since moved (notably the stage-2
+reorganization into `src/transport/`, `src/governance/`, and `src/browser/`); trust the live tree
+over the tree drawn below. The 13-trained-tools-plus-`explain` sacred surface constraint remains
+fully in force.
 
 ## Project Identity
 
@@ -27,7 +43,7 @@ Three processes, two protocol boundaries.
 ## Repository Structure
 
 ```
-browser-mcp/
+ghostlight/
 ├── CLAUDE.md                    # This file
 ├── Cargo.toml                   # Workspace root
 ├── docs/
