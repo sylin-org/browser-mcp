@@ -97,6 +97,73 @@ Covered live (g13-1 steps 1-3 equivalents, g13-2 audit shapes):
   needs write access on example.net, and grant 'net-readonly' allows read only...`; audit line
   decision=deny, grant=net-readonly, denial=D-b81ab772.
 
+### 2026-07-03: t-live-1 stage-4 regression pass -- PASS (live Chrome + Claude Code, stage-4 tree)
+Posture: fresh binary built from the stage-4 tree (t01-t08 landed, commit range b8225ef..a14ccf8
+on branch stage-4). No VS Code reload was needed: `doctor` confirmed no mcp-server process was
+running at session start, so the first tool call spawned a brand-new process from the rebuilt
+binary automatically. All governed scenarios below were driven by writing/editing/deleting the
+real org policy file (`C:\ProgramData\browser-mcp\policy.json`) directly -- the ADR-0023 selection
+rule and the ADR-0025 watcher pick up every change with no client restart, so a single
+continuously-running mcp-server process (pid 15680, same pid for the entire 5m22s span) carried
+every state transition below with zero restarts. Adapted the manifest DELIVERY mechanism for
+s-live-1/s-live-2 from the entries' literal `--manifest file://` CLI flag to the org policy path
+instead (operationally equivalent for what is being tested -- ADR-0023 makes both origins go
+through the same one loader -- and avoids needing to touch the MCP client's own config/reload it).
+
+Covers s-live-1, s-live-2, s-live-4, t01-1, t05-1, t06-1, t06-2 (re-run against the stage-4 tree)
+plus s-live-3 (first stage-4 run). All PASS, no regressions found in the pipeline rewrite.
+
+- **t01-1** (org-path policy file loads live): killed the running all-open mcp-server, wrote a
+  schema-3 manifest (grant `read-only` on example.com/*.example.com, plus a mandatory
+  `audit.enabled`/`audit.destination`/`audit.file.path` config block) to the org path, then made
+  the next tool call. The server booted successfully (pre-t01 this was a fatal startup error) with
+  `governance mode: enforce` and the correct manifest name/hash per `doctor`.
+- **s-live-1** (read grant end to end): `tabs_create_mcp` -> `navigate` example.com -> `read_page`
+  + `computer screenshot` all succeeded. `computer left_click` ->
+  `Denied (D-39e7ba2d): 'computer (left_click)' needs the 'action' capability on example.com, and
+  grant 'read-only' allows read` (verbatim pinned match). `form_input` ->
+  `Denied (D-39e7ba2d): 'form_input' needs the 'write' capability on example.com, and grant
+  'read-only' allows read` (verbatim pinned match, same denial id as the click).
+- **s-live-4** (audit capability field): the scratch audit JSONL showed no `rw` key anywhere;
+  `tabs_create_mcp` had `"capability":"none","grant_id":null`; `navigate`/`read_page`/screenshot
+  had `"capability":"read","grant_id":"read-only"`; the denied `left_click` had
+  `"capability":"action","decision":"deny","duration_ms":0`; the denied `form_input` had
+  `"capability":"write"`. Every field matched the entry's pinned expectations exactly.
+- **t05-1** (single tab-url probe): read the mcp-server's own debug frame log (a file-based
+  substitute for watching the extension service-worker console) and confirmed exactly one
+  `tab_url_request` frame per governed call (navigate, read_page, screenshot, the denied
+  left_click, the denied form_input each had exactly one), with the two denied calls showing NO
+  subsequent dispatch frame at all -- the probe resolves the tab once, sacred and grant checks
+  both consume it, and denial short-circuits before any extension dispatch.
+- **t06-1** (policy edit applies live, no restart): edited policy.json in place, with NO restart,
+  from the read-only manifest to a schema-3 "allow * / deny example.com" manifest (grant
+  `everything-but`). Within the hot-reload window, `navigate` to example.com flipped to
+  `Denied (D-ca582045): example.com is excluded by grant 'everything-but': your policy denies this
+  site explicitly` (this is also s-live-2's exact pinned denial text), while example.org's
+  `navigate`/`read_page`/`left_click` all succeeded. The audit file recorded exactly one
+  `manifest_reload` event carrying the new manifest's name/hash at the transition. Later, deleting
+  policy.json (with the same process still running, no restart) made a previously-denied domain
+  navigable again immediately -- confirmed all-open reversion live.
+- **t06-2** (broken mid-edit policy never weakens the session): saved policy.json as truncated,
+  invalid JSON. A subsequent `navigate` to example.com returned the IDENTICAL denial id
+  (`D-ca582045`) as before the edit -- enforcement stayed on the last-good manifest, not reverted
+  to all-open and not crashed -- and no new `manifest_reload` event was written. (Could not
+  independently confirm the ADR's "ERROR in the server log" line this session, since the
+  mcp-server's stderr/tracing output isn't captured anywhere this session could read; this is a
+  gap in what this session could observe, not a claim the behavior didn't happen -- the
+  keep-last-good behavior itself is solidly confirmed.) Fixing the file (a new manifest denying
+  both example.com AND example.org, to make the resumed swap unambiguous) produced a new
+  `manifest_reload` event with a new hash, and `navigate` to example.org promptly flipped from
+  allow to a fresh, distinct denial id (`D-cd329e99`) -- the swap resumed correctly.
+- **s-live-3** (explain tool live): at the all-open baseline (before any policy file existed this
+  session), `explain` returned the pinned `Capabilities: read =` block with one line per tool and
+  per `computer` action (27 lines: 14 tools + 13 computer actions), and a normal navigate +
+  screenshot browsing sequence never invoked `explain` on its own.
+
+Cleanup: removed the scratch audit file and confirmed `C:\ProgramData\browser-mcp\` is empty;
+`doctor` reports `Policy manifest: none (all-open)` and a healthy verdict. Nothing machine-wide
+remains from this session.
+
 NOT covered live: g13-1 steps 4-5 (hand-navigation drift re-check; redirect parking) -- the
 session pivoted to the design finding below before running them. g13-3's governed half (debug
 frame-count) and g15-1/2 (mode switch) also remain pending.
