@@ -1,33 +1,44 @@
-# Browser MCP
+# Ghostlight Browser
 
 **Governed access to your own browser, for AI agents.**
 
-Browser MCP is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives an AI
-coding agent controlled access to your real, authenticated browser session. It drives the browser
-you are already logged in to, so the agent can observe and act on the web apps you already use,
-through any MCP client (Claude Code, Cursor, and others).
+Ghostlight Browser is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
+an AI coding agent controlled access to your real, authenticated browser session. It drives the
+browser you are already logged in to, so the agent can observe and act on the web apps you already
+use, through any MCP client (Claude Code, Cursor, and others). A separable governance layer decides,
+per call, what the agent is allowed to do.
+
+> Ghostlight is the single lamp a theater leaves burning on an empty stage. The phantom cursor is
+> the ghost, the agent-active glow is the light, and the light is there so nothing falls off the
+> dark edge when no one is watching: audit, sacred never-touch lists, and a take-the-wheel pause,
+> all in one image. It is the first of a planned family of governed MCP tools under the Ghostlight
+> brand.
 
 ## Status
 
-The automation engine is complete, hardened, and verified against a real browser. What runs today:
+Both halves are built: the automation engine and the governance layer. All of this runs today and
+has been verified against a real browser:
 
-- The full 13-tool surface, at byte-parity with the official Claude-in-Chrome tool schemas.
-- Screenshots with coordinate mapping, an on-page agent cursor, accessibility-tree and text reads,
-  form input (including shadow DOM), in-page JavaScript, console and network inspection, and tab
-  management.
-- Single portable binary with a built-in installer and a `doctor` diagnostic.
-- One active protection: secret-field values (passwords, OTP, payment fields) are redacted from
-  `read_page` output by default.
-
-What is NOT built yet: the governance layer (capability manifests, identity-bound domain grants,
-sacred never-touch lists, a take-the-wheel pause and panic kill switch, observe/shadow/enforce
-modes, and structured audit). It is designed in detail but not implemented, so **today the engine
-runs all-open**: an agent you connect has the full capability surface with no access restrictions
-beyond secret redaction. Do not rely on this tool for access control yet.
+- **The full tool surface.** The 13 trained tools at byte-parity with the official Claude-in-Chrome
+  schemas, plus one additive governance tool, `explain`. Screenshots with coordinate mapping, an
+  on-page agent cursor, accessibility-tree and text reads, form input (including shadow DOM),
+  in-page JavaScript, console and network inspection, and tab management.
+- **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
+  / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
+  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` / `shadow` /
+  `enforce` modes, and structured JSON-Lines audit. Layered configuration with organization policy
+  locks, and live manifest hot-reload (edit the policy file and the running session re-resolves with
+  no restart, failing closed on a bad edit).
+- **All-open is first-class.** With no manifest, the engine runs unrestricted: the agent has the
+  full capability surface with no access decisions beyond secret-field redaction. Governance is an
+  overlay you opt into, not a stripped-down build.
+- **Operability.** Single portable binary with a built-in installer, a `doctor` diagnostic, a
+  layered `config` CLI, and a `policy` CLI (explain / simulate / init).
 
 Maturity: this is a developer setup. The extension is loaded unpacked, and Windows is the platform
-it has been tested on. The macOS and Linux code paths exist but are not yet verified. There is no
-published package or cross-platform release build yet.
+it has been verified on end to end. The macOS and Linux code paths exist but are not yet verified
+against a live browser. There is no published package or cross-platform release build yet, and the
+license is still to be decided.
 
 ## What makes it different
 
@@ -36,11 +47,12 @@ published package or cross-platform release build yet.
 - **It is your session, not a clean-room browser.** The value is your own authenticated context:
   real cookies, real SSO, real tabs. Your work is never relocated to a cloud or a freshly launched
   browser to gain a technical property.
+- **Governance fused with the engine, not bolted on.** Access control, capability classification,
+  and audit live at a single dispatch chokepoint in the binary. A governed client only sees the
+  tools its grants permit, and every call is checked and recorded. All-open remains a first-class
+  supported mode.
 - **Single portable binary, zero runtime dependencies.** No Node.js, no `npx`, no separate servers
   to babysit. The class of install failures that affects Node-based browser MCPs does not exist.
-- **Governance is a separable layer (coming).** The engine is unconstrained by design; the planned
-  governance overlay can gate it or be absent entirely. All-open is a first-class supported mode,
-  not a stripped-down build.
 
 ## Requirements
 
@@ -54,11 +66,11 @@ published package or cross-platform release build yet.
 
 ```sh
 git clone <this-repo>
-cd browser-mcp
+cd ghostlight
 cargo build --release
 ```
 
-The binary is at `target/release/browser-mcp` (`browser-mcp.exe` on Windows). All commands below run
+The binary is at `target/release/ghostlight` (`ghostlight.exe` on Windows). All commands below run
 that binary.
 
 ### 2. Load the extension in Chrome
@@ -76,7 +88,7 @@ Run the installer from the binary you just built. It registers the native-messag
 detected browsers and adds the MCP server entry to your detected MCP clients:
 
 ```sh
-./target/release/browser-mcp install --extension-id cjcmhepmagomefjggkcohdbfemacojoa
+./target/release/ghostlight install --extension-id cjcmhepmagomefjggkcohdbfemacojoa
 ```
 
 Useful flags:
@@ -100,7 +112,7 @@ The installer is idempotent: re-running it will not create duplicate entries.
 ### 5. Verify
 
 ```sh
-./target/release/browser-mcp doctor
+./target/release/ghostlight doctor
 ```
 
 A healthy result reports that the browser and client are registered, the IPC endpoint accepts
@@ -110,35 +122,76 @@ actionable finding for each problem.
 ## Using it
 
 Once connected, the browser tools appear in your MCP client and the agent can drive your browser.
-Browser MCP works inside its own tab group (the "Browser MCP" group), so agent activity is visually
+Ghostlight works inside its own tab group (the "Ghostlight" group), so agent activity is visually
 separated from your own tabs. A typical first request to the agent:
 
 > Open a new browser tab, go to example.com, and tell me what the page says.
 
 The agent will create a tab in the MCP group, navigate, read the page, and report back. It can then
 click, type, fill forms, run JavaScript, take screenshots, and inspect console and network activity,
-all in your real logged-in session.
+all in your real logged-in session, subject to whatever governance policy is active.
 
 ### The tools
 
-| Tool | What it does | Class |
-|---|---|---|
-| `navigate` | Go to a URL, or forward/back in history | observe |
-| `computer` | Mouse, keyboard, and screenshots (13 actions) | observe or mutate per action |
-| `read_page` | Accessibility-tree view of the page | observe |
-| `get_page_text` | Visible text extraction | observe |
-| `find` | Locate elements on the page | observe |
-| `form_input` | Fill form fields, including shadow DOM | mutate |
-| `javascript_tool` | Run JavaScript in the page context | mutate |
-| `tabs_context_mcp` | List tabs in the MCP tab group | observe |
-| `tabs_create_mcp` | Create a tab in the MCP tab group | mutate |
-| `read_console_messages` | Recent console output | observe |
-| `read_network_requests` | Recent network activity | observe |
-| `resize_window` | Resize the browser window | manage |
-| `update_plan` | Record the agent's working plan | manage |
+Each action carries a capability requirement. Under a governance manifest, the layer both filters
+the advertised tool set to what your grants permit and checks the requirement on every call; with no
+manifest (all-open) every action is allowed.
 
-The read/write class is an intrinsic property of each tool. It is informational today; the planned
-governance layer uses it to allow observation while restricting mutation.
+| Tool | What it does | Capability |
+|---|---|---|
+| `navigate` | Go to a URL, or forward/back in history | read |
+| `computer` | Mouse, keyboard, and screenshots (13 actions) | read or action, per action |
+| `read_page` | Accessibility-tree view of the page | read |
+| `get_page_text` | Visible text extraction | read |
+| `find` | Locate elements on the page | read |
+| `form_input` | Fill form fields, including shadow DOM | write |
+| `javascript_tool` | Run JavaScript in the page context | execute |
+| `tabs_context_mcp` | List tabs in the MCP tab group | read |
+| `tabs_create_mcp` | Create a tab in the MCP tab group | none |
+| `read_console_messages` | Recent console output | read |
+| `read_network_requests` | Recent network activity | read |
+| `resize_window` | Resize the browser window | none |
+| `update_plan` | Record the agent's working plan | none |
+| `explain` | List every action and the capability it requires | none |
+
+For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require
+`read`, the input actions (`left_click`, `right_click`, `type`, `key`, `left_click_drag`,
+`double_click`, `triple_click`) require `action`, and `wait` requires none. Ask the agent to call
+`explain` at any time for the authoritative, in-session capability directory.
+
+## Governance
+
+Governance is off by default (all-open) and turns on when a policy manifest is present. A manifest is
+a JSON document (schema 3) describing identity-bound **grants**: each grant names the hosts it covers
+(`allow` patterns with optional `deny` carve-outs) and the capabilities it permits (`read`,
+`action`, `write`, `execute`). The layer resolves each call against the active grants and either
+dispatches it or returns a clear denial naming the capability, the host, and a stable denial id.
+
+The model in brief:
+
+- **Capabilities, not tool lists.** Every action is classified `read` / `action` / `write` /
+  `execute` (some require none). Grants allow capabilities on hosts; the classification is intrinsic
+  to each action.
+- **Host polarity.** A grant's `allow` patterns can carry `deny` carve-outs, so "everywhere except
+  this site" is expressible directly.
+- **Sacred domains.** A never-touch list denies every tool on a matching tab, regardless of grants.
+- **Modes.** `observe` records only, `shadow` records what it would deny without blocking, and
+  `enforce` blocks. Sacred and user-authored protections always enforce.
+- **Advertisement filtering.** A governed client sees only the tools its grants can use, plus
+  `explain`.
+- **Audit.** Every call produces one JSON-Lines record (permitted, denied, and shadow-denied alike):
+  identity, host, capability, grant id, decision, denial id, duration, and manifest hash.
+- **Layered configuration.** Settings resolve through built-in defaults, org policy, and a user
+  layer, with organization policy able to lock keys. Inspect and edit with `ghostlight config`.
+- **Hot-reload.** The org policy path and a `file://` user manifest are watched; edits re-resolve the
+  running session with no restart, an advertised-set change re-advertises the tools, and an invalid
+  edit keeps the last-good manifest (fail closed).
+
+Manifest sources, in precedence order: a `--manifest file://...` flag (or `GHOSTLIGHT_MANIFEST`), then
+the machine org policy path (`%ProgramData%\ghostlight\policy.json` on Windows;
+`/Library/Application Support/ghostlight/policy.json` on macOS; `/etc/ghostlight/policy.json` on
+Linux). No manifest means all-open. See `examples/` for ready-to-adapt manifests and preview any file
+with `ghostlight policy explain <file>`.
 
 ## CLI reference
 
@@ -151,7 +204,13 @@ The binary has no-subcommand and subcommand modes:
 - `doctor [--verbose]`: one-shot, read-only diagnosis of the whole chain (registration, IPC
   endpoint, extension link) with a truthful exit code. It never changes anything.
 - `status [--json]`: print a running server's live inner state. Requires a server started with
-  `--debug` (or `BROWSER_MCP_DEBUG=1`).
+  `--debug` (or `GHOSTLIGHT_DEBUG=1`).
+- `config <list | get | set | schema | docs | preset>`: inspect and edit the layered configuration.
+  `list` shows every key with its effective value, source layer, and lock state; `preset` selects a
+  named bundle of defaults after previewing the change.
+- `policy <explain | simulate | init>`: work with policy files without a browser. `explain` renders
+  a manifest or config file as plain sentences; `simulate` replays a recorded audit log through a
+  candidate manifest; `init` writes an embedded example manifest as a starting point.
 
 ## Troubleshooting
 
@@ -159,33 +218,34 @@ The binary has no-subcommand and subcommand modes:
   no server running, a stale process holding the endpoint, or an extension that never connected.
 - **Extension shows disconnected.** Reload it at `chrome://extensions`, make sure the browser is
   running, and confirm the extension ID matches what you passed to `install`.
-- **Turn on observability.** Install with `--debug` (or set `BROWSER_MCP_DEBUG=1` in the server's
-  environment), then run `browser-mcp status` to see live counters and per-session state.
-- **Rebuilding the binary on Windows.** A running server locks `browser-mcp.exe`. Stop the MCP
+- **Turn on observability.** Install with `--debug` (or set `GHOSTLIGHT_DEBUG=1` in the server's
+  environment), then run `ghostlight status` to see live counters and per-session state.
+- **Rebuilding the binary on Windows.** A running server locks `ghostlight.exe`. Stop the MCP
   client (and reload/close the extension) before `cargo build`, then restart both.
 
 ## Architecture
 
 ```
 MCP Client  --stdio-->  Rust Binary  --native messaging-->  Extension  --CDP-->  Browser
- (agent)                (the engine)   (4-byte framed)      (thin CDP           (your real
-                                                             executor)           session)
+ (agent)                (engine +      (4-byte framed)      (thin CDP           (your real
+                         governance)                         executor)           session)
 ```
 
 Three processes, two protocol boundaries. The binary is both the MCP server (over stdio) and the
 browser's native-messaging host; the extension is a deliberately thin CDP executor. All capability
-lives in the binary, and the extension holds no policy. The planned governance layer attaches at a
+and all policy live in the binary, and the extension holds none. The governance layer attaches at a
 single dispatch chokepoint inside the binary without touching any tool code.
 
 ## Roadmap
 
 - **Engine (done).** The 13-tool automation surface, hardened and live-verified.
-- **Governance (designed, not built).** Landing in three observable steps: (1) an audit flight
-  recorder, (2) sacred never-touch domains plus a take-the-wheel pause and panic kill switch, (3)
-  the full manifest engine (identity-bound grants, read/write enforcement, tool-advertisement
-  filtering, observe/shadow/enforce modes) with layered configuration and org policy locks.
-- **Packaging (partial).** Cross-platform release builds, CI, and macOS/Linux verification are still
-  to do.
+- **Governance (done).** The audit flight recorder; sacred never-touch domains with a take-the-wheel
+  pause and panic kill switch; the full manifest engine (identity-bound grants, capability
+  enforcement, tool-advertisement filtering, `observe` / `shadow` / `enforce` modes) with layered
+  configuration and org policy locks; the `explain` tool; and live manifest hot-reload. Built and
+  live-verified against a real browser on Windows.
+- **Packaging (partial).** Cross-platform release builds, CI, and macOS/Linux live verification are
+  still to do, along with `syslog`/`http` audit destinations and a license decision.
 
 ## Documentation
 
@@ -203,6 +263,13 @@ This is a clean-room Rust rewrite informed by
 reimplementation of the Claude-in-Chrome extension. Prior art is studied as a concern surface (the
 hazards and questions others hit), not as a feature catalog to copy. The tool schemas are preserved
 verbatim so a trained agent behaves as expected; everything behind them is rebuilt.
+
+## The name
+
+Ghostlight is the brand for a planned family of governance-friendly MCP tools; this browser adapter
+is the first. The theatrical ghost light metaphor sits alongside the publisher's register of
+guardian-in-a-bounded-space names. See [docs/adr/0021-ghostlight-brand-and-family.md](docs/adr/0021-ghostlight-brand-and-family.md)
+for the naming decision.
 
 ## License
 
