@@ -10,8 +10,8 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01` landed.
-- NEXT TASK: `s02` (`docs/tasks/stage-3/s02-capability-core.md`).
+- Progress: `s01`, `s02` landed.
+- NEXT TASK: `s03` (`docs/tasks/stage-3/s03-action-directory.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -80,3 +80,33 @@ remembering earlier work; re-read files.
   "[^\x00-\x7F]" <files>`) printed nothing.
 - Browser checks queued: 1 (`s01-1` appended to `docs/tasks/stage-2/BROWSER-TESTS.md`, the
   exact text pinned by the task prompt).
+
+### s02 capability vocabulary in the governance core -- 2026-07-03
+- Commit: (see this task's commit, `feat(governance): s02 capability vocabulary in the
+  governance core`)
+- Files touched: `src/governance/ports.rs`, `docs/tasks/stage-3/LEDGER.md`.
+- Summary: added the ADR-0022 Decision 1 capability taxonomy as a pure, additive type in
+  the governance core: the `Capability` enum (`Read`, `Action`, `Write`, `Execute`,
+  `#[serde(rename_all = "lowercase")]`), its `as_str`/`from_name` helpers, and the
+  free-standing `capability_subset(requires, allowed)` containment helper, inserted
+  verbatim from the task prompt immediately after the `impl EffectiveMode` block and
+  before `ToolId`, doc comments included. Nothing consumes the new type in this task
+  (s05 wires it in); `RwClass` is untouched and stays the classification in force until
+  s06. The diff is additive-only: every pre-existing line in `ports.rs` is byte-unchanged
+  (`git diff --stat` and manual read confirm only inserted lines).
+- Deviations from the prompt/ADR: none. The enum, helpers, and all three named tests were
+  transcribed verbatim from the prompt; no ADR/prompt conflict encountered.
+- Verification: `cargo fmt` (no changes beyond what was written) then `cargo fmt --check`
+  clean; `cargo clippy --all-targets -- -D warnings` clean; `cargo test` 431 -> 434 (three
+  net new tests: `capability_wire_names_round_trip`,
+  `capability_from_name_rejects_unknown_and_case_variants`,
+  `capability_subset_truth_table`, all in `src/governance/ports.rs`'s `mod tests`, which is
+  part of the lib unit-test binary, 370 -> 373), all passing, 0 failed. Baseline of 431 was
+  independently reconfirmed by stashing this task's diff and re-running the full suite
+  before restoring it. Confirmed unchanged and green: `tests/architecture.rs` (3 tests),
+  `tests/all_open_golden.rs` (4 tests), `tests/mcp_protocol.rs` (4 tests),
+  `tests/tool_schema_fidelity.rs` (6 tests) -- none of these four files appear in this
+  task's `git diff --stat` (only `src/governance/ports.rs` and this ledger changed). ASCII
+  scan (`rg -n "[^\x00-\x7F]" src/governance/ports.rs`) printed nothing.
+- Browser checks queued: none (a pure type addition; no BROWSER-TESTS.md entry, per the
+  task prompt's Verification section).

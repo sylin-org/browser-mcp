@@ -74,6 +74,62 @@ impl EffectiveMode {
     }
 }
 
+/// One capability primitive of the ADR-0022 Decision 1 taxonomy. Capabilities classify
+/// an operation by EPISTEMIC STATUS -- what the governor can PROVE about it -- never by
+/// its (unknowable) downstream effect. `Read` is provably retrieval/observation only;
+/// `Action` dispatches UI input whose effect is page-determined and unknowable; `Write`
+/// is a declared mutation; `Execute` is unbounded arbitrary code. `Action` is NOT a
+/// weaker `Write`: it encompasses the ability to CAUSE writes (a click can submit a
+/// form). `Execute` is never implied by any other capability. Capabilities are
+/// independent primitives, not ordered tiers. Wire/file names are lowercase: `"read"`,
+/// `"action"`, `"write"`, `"execute"`. Nothing consumes this type yet: s05 wires it
+/// into grants and enforcement; until then `RwClass` remains the classification in
+/// force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Capability {
+    Read,
+    Action,
+    Write,
+    Execute,
+}
+
+impl Capability {
+    /// The wire/file vocabulary (ADR-0022 Decision 1): exactly `"read"`, `"action"`,
+    /// `"write"`, or `"execute"`. Matches the `#[serde(rename_all = "lowercase")]`
+    /// form, provided directly so callers do not round-trip through `serde_json` for
+    /// the bare string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Capability::Read => "read",
+            Capability::Action => "action",
+            Capability::Write => "write",
+            Capability::Execute => "execute",
+        }
+    }
+
+    /// Parse one capability name. Exact lowercase only: any other casing, whitespace,
+    /// or unknown word returns `None` (fail closed; the wire vocabulary is lowercase).
+    pub fn from_name(name: &str) -> Option<Capability> {
+        match name {
+            "read" => Some(Capability::Read),
+            "action" => Some(Capability::Action),
+            "write" => Some(Capability::Write),
+            "execute" => Some(Capability::Execute),
+            _ => None,
+        }
+    }
+}
+
+/// True iff every element of `requires` appears in `allowed` -- the subset containment
+/// that enforcement evaluates (ADR-0022 Decision 3). An empty `requires` is a subset of
+/// everything, including an empty `allowed`. Duplicates in either slice do not change
+/// the result. No capability implies another: `Execute` in `requires` is satisfied only
+/// by `Execute` in `allowed`.
+pub fn capability_subset(requires: &[Capability], allowed: &[Capability]) -> bool {
+    requires.iter().all(|r| allowed.contains(r))
+}
+
 /// A tool identifier as advertised on the MCP surface. Placeholder newtype; g07/g14 flesh
 /// out the tool-surface handling. The sacred tool schemas (ADR-0007) are the source of
 /// truth for the actual names; this type never mutates them.
@@ -631,5 +687,72 @@ mod tests {
             serde_json::to_string(&EffectiveMode::Enforce).unwrap(),
             "\"enforce\""
         );
+    }
+
+    #[test]
+    fn capability_wire_names_round_trip() {
+        let pairs = [
+            (Capability::Read, "read"),
+            (Capability::Action, "action"),
+            (Capability::Write, "write"),
+            (Capability::Execute, "execute"),
+        ];
+        for (cap, name) in pairs {
+            let expected_json = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&cap).unwrap(), expected_json);
+            assert_eq!(
+                serde_json::from_str::<Capability>(&expected_json).unwrap(),
+                cap
+            );
+            assert_eq!(cap.as_str(), name);
+            assert_eq!(Capability::from_name(name), Some(cap));
+        }
+    }
+
+    #[test]
+    fn capability_from_name_rejects_unknown_and_case_variants() {
+        for name in ["Read", "READ", "", "all", "observe"] {
+            assert_eq!(Capability::from_name(name), None);
+        }
+    }
+
+    #[test]
+    fn capability_subset_truth_table() {
+        assert!(capability_subset(&[], &[]));
+        assert!(capability_subset(
+            &[],
+            &[
+                Capability::Read,
+                Capability::Action,
+                Capability::Write,
+                Capability::Execute
+            ]
+        ));
+        assert!(capability_subset(&[Capability::Read], &[Capability::Read]));
+        assert!(!capability_subset(
+            &[Capability::Read],
+            &[Capability::Action, Capability::Write]
+        ));
+        assert!(!capability_subset(
+            &[Capability::Execute],
+            &[Capability::Read, Capability::Action, Capability::Write]
+        ));
+        assert!(!capability_subset(&[Capability::Execute], &[]));
+        assert!(capability_subset(
+            &[Capability::Action, Capability::Write],
+            &[Capability::Read, Capability::Action, Capability::Write]
+        ));
+        assert!(!capability_subset(
+            &[Capability::Action, Capability::Write],
+            &[Capability::Action]
+        ));
+        assert!(capability_subset(
+            &[Capability::Read, Capability::Read],
+            &[Capability::Read]
+        ));
+        assert!(capability_subset(
+            &[Capability::Read],
+            &[Capability::Read, Capability::Read]
+        ));
     }
 }
