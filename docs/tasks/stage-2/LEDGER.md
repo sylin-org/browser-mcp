@@ -17,8 +17,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the FIRST real enforcement path), `g10` (take-the-wheel pause, the FIRST task touching
   `extension/`), `g11` (panic kill switch) landed. Phase C is COMPLETE. `g12` (manifest
   engine: parse/validate/load, no enforcement yet) landed. `g13` (grant enforcement at
-  the five points -- the no-op policy seam is now real) landed.
-- NEXT TASK: Phase D, task `g14` (`docs/tasks/stage-2/g14-advertisement-filtering.md`).
+  the five points -- the no-op policy seam is now real) landed. `g14` (tool advertisement
+  filtering; dynamic re-advertisement deferred, see its ledger entry) landed.
+- NEXT TASK: Phase D, task `g15` (`docs/tasks/stage-2/g15-shadow-mode.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -1683,6 +1684,110 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   per call with consistent grant/denial ids across a repeated denial; removing the
   manifest and confirming all-open behaves exactly as before with zero `tab_url_request`
   frames (observable via `--debug`).
+
+### g14 tool advertisement filtering -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/browser/advertise.rs` (`advertised_tools(fixture, grants)`, the
+  pure filter: `grant_permits`/`tool_list_permits`/`access_class_permits`; 6 inline tests);
+  `src/browser/mod.rs` (registers `pub mod advertise;`, module doc updated);
+  `src/governance/dispatch.rs` (new `Governance::grants()` read-only accessor, mirroring
+  `is_governed()`'s shape, exposing `GovernedState.grants` for advertisement -- no
+  per-call enforcement or audit code touched); `src/transport/mcp/server.rs`
+  (`tools_list_result` takes `&Governance`, parses the fixture, and delegates to
+  `advertise::advertised_tools(&fixture, governance.grants())`; the `"tools/list"` match
+  arm in `handle_line` passes `governance` through); new `tests/tool_advertisement.rs` (2
+  subprocess integration tests: the read-only manifest's exact 8-tool set, and an empty
+  `grants` array advertising nothing, both proving the WIRING end to end, not just the
+  pure filter g14's own doc asks unit tests to cover).
+- Summary: `tools/list` membership now reflects the active manifest, computed once at
+  connection time as the union over every grant (never a per-domain decision -- no tab
+  exists yet). With no manifest the parsed fixture is returned verbatim, byte for byte,
+  preserving the existing `tests/mcp_protocol.rs` invariant unedited. With a manifest, a
+  tool is kept when at least one grant's access class (via G05's `classify`, with
+  `computer` special-cased to always pass the access-class test per the doc's own
+  reasoning: it has both observe and mutate sub-actions, so every access class permits at
+  least one) AND tool-list check (`tools`/`exclude_tools`) would let it through; an empty
+  `grants` array permits nothing, yielding an empty list rather than falling back to the
+  full surface. Schema TEXT is never touched: every retained tool object is a `Value`
+  clone of the fixture entry, never rebuilt or re-keyed. Per-call enforcement
+  (`governance::enforcement`, g13) remains the sole authoritative check; this task adds no
+  denial, no log line, and no audit record of its own.
+- Deviations from the g-doc per RECONCILIATION.md and this session's established
+  reconcile-and-document pattern:
+  1. **The filter module lives at `src/browser/advertise.rs`, not `src/policy/advertise.rs`
+     as the pre-A1 doc names it.** RECONCILIATION.md section 1's module-placement map does
+     not list a g14-specific row, but its own general principle applies directly: the
+     module needs the browser-domain classification TABLE (`browser::classify`, the row
+     for g05) and, per RECONCILIATION section 2, "g14 advertisement uses
+     `DomainPolicy::tool_surface`" -- squarely browser-plugin territory, the same side of
+     the boundary `browser::resource` (g13) and `browser::sacred` (g08) already occupy.
+  2. **`DomainPolicy::tool_surface` (a2's sketch, RECONCILIATION section 2) is NOT
+     implemented as a trait method.** Precisely mirroring g13's own already-landed
+     resolution of the identical tension for `PolicyDecisionPoint`/`check_call`: g13 built
+     `check_call` as a plain function taking injected data rather than wiring a
+     `DomainPolicy` trait object (which nothing in the crate constructs or consumes to
+     date), and `advertised_tools` follows the same precedent -- a plain, directly
+     testable function (`fixture: &Value, grants: Option<&[Grant]>`) rather than a trait
+     method requiring a `DomainPolicy` implementor that does not otherwise exist.
+  3. **`advertised_tools` takes the ALREADY-PARSED fixture as a parameter**, rather than
+     parsing `TOOLS_JSON` internally as the doc's primary suggestion describes (the doc's
+     own text offers this as an explicit alternative: "Parse `crate::mcp::tools::TOOLS_JSON`
+     inside the function (OR accept the parsed fixture)"). Taking the doc's own
+     alternative keeps the module free of any production dependency on the transport
+     layer (`TOOLS_JSON` lives in `transport::mcp::tools`; `browser::classify`'s own test
+     module already reaches across that same boundary, but only in test code, never in
+     production code, and this task preserves that asymmetry) and makes the function
+     trivially unit-testable against a synthetic fixture, not only the real 13-tool one.
+  4. **RECONCILIATION.md section 3's g14 override -- dynamic re-advertisement
+     (`notifications/tools/list_changed` on a manifest reload) -- is NOT implemented.**
+     This reverses (is more conservative than) an explicit RECONCILIATION instruction, so
+     it is called out plainly rather than silently matching the g14 doc's own (superseded)
+     "out of scope" note instead. The override assumes a manifest-hot-reload mechanism
+     (re-parse-validate-swap the active manifest, fail-closed on an invalid reload, per
+     RECONCILIATION section 3's own adjacent "g12 manifest: reloadable" bullet) that does
+     not exist at ANY layer yet: `ConfigStore`'s own watcher already has an "INTEGRATION
+     POINT (G12)" comment and a `sources.manifest: Option<PathBuf>` slot for exactly this,
+     but it is set to `None` unconditionally today (g12 explicitly deferred wiring it,
+     documented in g12's own ledger entry: "Mid-session manifest reload/watching stays
+     entirely out of scope, per the task's own text; only STARTUP feeding was wired"), and
+     `Governance`'s held grants/manifest_hash (g13) are a fixed snapshot built once at
+     `run()` startup with no swap mechanism at all. Building real manifest hot-reload --
+     which would ALSO need to touch g13's `Governance` construction, not just g14's
+     advertisement filter -- is a substantial, cross-cutting, multi-file undertaking that
+     does not fit inside "one task = one commit" as a side effect of advertisement
+     filtering specifically, and advertising `capabilities.tools.listChanged: true`
+     without a real emitter behind it would itself violate the engine's truthfulness rule
+     (g14's own constraint list, still binding: "do NOT add `listChanged: true`... would
+     violate the truthfulness rule" -- true precisely because the emitter does not exist).
+     `advertised_tools`'s own module doc states this plainly and points to this entry.
+     Flagging manifest hot-reload (config/grants/advertisement all becoming genuinely live)
+     as an explicit follow-up task is the conservative, documented choice BOOTSTRAP asks
+     for when no human is available to adjudicate a scope gap between a specific g-doc and
+     a terser cross-cutting reconciliation note.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green: 302 lib unit tests, up from 296 -- +6 in
+  `browser::advertise::tests` (every required case: no-manifest byte-identity, the exact
+  8-tool read-only set in fixture order, a tool excluded by every grant is omitted, a
+  positive `tools` list yields exactly that set, an empty `grants` array yields an empty
+  list, `computer` present under both read-only and write-only manifests and absent only
+  when every grant excludes it); all other lib suites unchanged in count. `tests/
+  all_open_golden.rs` 3, `tests/architecture.rs` 4 (zero new forbidden edges: `advertise.rs`
+  depends only on `browser::classify` and `governance::manifest::document`/`ports`, never
+  `transport::` in production code), `tests/audit_recorder.rs` 2, `tests/
+  config_schema_golden.rs` 5, `tests/manifest_validation.rs` 4, `tests/peer_death.rs` 1,
+  `tests/tool_enforcement.rs` 7 all unchanged and green; `tests/mcp_protocol.rs` 4 and
+  `tests/tool_schema_fidelity.rs` 6 pass UNCHANGED (no edits to either file, confirmed via
+  `git status`); new `tests/tool_advertisement.rs` 2, proving the real wiring (not just the
+  pure filter) through an actually-spawned process. `git status --short` confirmed the
+  touched-file set matches this entry's list exactly, with NO diff to `Cargo.toml`/
+  `Cargo.lock` (no new dependency), `src/transport/mcp/schemas/tools.json`, or anything
+  under `extension/`; the one touch to `governance/dispatch.rs` is a single new read-only
+  accessor method, no change to `decide`/`record_call`/`record_deny`/audit code. ASCII
+  scan (`rg -n "[^\x00-\x7F]"`) clean on every touched/new file.
+- Browser checks queued: none (this task is fully unit- and subprocess-testable with no
+  extension connected at all: `tools/list` never touches the extension, with or without a
+  manifest, and this task adds no new extension traffic, no new audit record, and no
+  denial path).
 
 ## Reminders before running BROWSER-TESTS.md
 

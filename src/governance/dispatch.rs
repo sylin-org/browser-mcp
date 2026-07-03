@@ -159,6 +159,17 @@ impl Governance {
         matches!(self.mode, Mode::Governed(_))
     }
 
+    /// The active manifest's resolved grants (g14, tool advertisement filtering): `None` under
+    /// all-open, `Some(&state.grants)` once a manifest is active. Read-only; a static snapshot
+    /// captured once at construction, same as everything else `GovernedState` holds -- there is
+    /// no live re-resolution yet (see `browser::advertise`'s module doc).
+    pub fn grants(&self) -> Option<&[Grant]> {
+        match &self.mode {
+            Mode::AllOpen => None,
+            Mode::Governed(state) => Some(&state.grants),
+        }
+    }
+
     /// The single inbound governance decision for one tool call, taken at the dispatch chokepoint
     /// before the tool executes.
     ///

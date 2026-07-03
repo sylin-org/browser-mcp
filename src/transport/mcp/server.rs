@@ -11,7 +11,7 @@
 //! interleaved mid-write.
 
 use crate::browser::pattern::HostOutcome;
-use crate::browser::{classify, pattern, redact, resource, sacred};
+use crate::browser::{advertise, classify, pattern, redact, resource, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
@@ -230,7 +230,7 @@ async fn handle_line(
             });
             Some(JsonRpcResponse::success(id, initialize_result()))
         }
-        "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result())),
+        "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result(governance))),
         "tools/call" => {
             let browser = browser.clone();
             let store = Arc::clone(store);
@@ -277,10 +277,13 @@ fn initialize_result() -> Value {
     })
 }
 
-/// The advertised surface: the embedded sacred fixture (`{ "tools": [...] }`) verbatim. In all-open
-/// v1.0 the full surface is advertised unconditionally -- there is no overlay to filter it.
-fn tools_list_result() -> Value {
-    serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid")
+/// The advertised surface (g14): the embedded sacred fixture verbatim under all-open, or
+/// filtered to the union over the active manifest's grants (`browser::advertise::advertised_tools`)
+/// once one is active. Schema text is never altered; only which tools appear in the array
+/// changes.
+fn tools_list_result(governance: &Governance) -> Value {
+    let fixture: Value = serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid");
+    advertise::advertised_tools(&fixture, governance.grants())
 }
 
 async fn handle_tools_call(
