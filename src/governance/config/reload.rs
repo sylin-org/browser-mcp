@@ -69,6 +69,10 @@ struct LastGoodInputs {
     org: OrgConfig,
     /// Last-good user-layer values.
     user: serde_json::Map<String, serde_json::Value>,
+    /// Last-good declared preset name (G18), or `None` when no preset is declared. Retained
+    /// the same way as `user`: a structurally-failed user file on reload keeps this too, so a
+    /// transient bad edit never silently drops the preset selection.
+    preset: Option<String>,
 }
 
 /// The fixed source paths the watcher polls. The manifest slot is an integration point for
@@ -144,18 +148,12 @@ impl ConfigStore {
 
         let org = read_and_parse_org(&sources.org_policy, domain_pattern_valid);
         let user = read_and_parse_user(sources.user_config.as_deref(), domain_pattern_valid);
-        let (mut last_good, warnings, preset) = compose_initial(org, user)?;
+        let (mut last_good, warnings) = compose_initial(org, user)?;
 
         last_good.user = merge_manifest_user_config(manifest_user_config, last_good.user);
 
         for w in &warnings {
             tracing::warn!("config: {w}");
-        }
-        if let Some(name) = &preset {
-            tracing::warn!(
-                "config: preset '{name}' is declared in the user config file but preset \
-                 defaults are not implemented yet, so it has no effect"
-            );
         }
 
         let inputs = compose_inputs(&last_good);
@@ -338,29 +336,25 @@ fn plan_reload(
         }
     };
 
-    let (user_values, user_failed) = match user {
+    let (user_values, preset_name, user_failed) = match user {
         Ok((parsed, entry_warnings)) => {
             warnings.extend(entry_warnings);
-            (parsed.values, false)
+            (parsed.values, parsed.preset, false)
         }
         Err(e) => {
             warnings.push(format!(
                 "user config failed to load, keeping last-good: {e}"
             ));
-            (last_good.user.clone(), true)
+            (last_good.user.clone(), last_good.preset.clone(), true)
         }
     };
 
     let new_last_good = LastGoodInputs {
         org: org_result.clone(),
         user: user_values.clone(),
+        preset: preset_name.clone(),
     };
-    let inputs = layers::LayerInputs {
-        org_mandatory: org_result.mandatory,
-        user: user_values,
-        org_recommended: org_result.recommended,
-        preset: serde_json::Map::new(),
-    };
+    let inputs = load::layer_inputs(org_result, user_values, preset_name.as_deref());
 
     ReloadPlan {
         inputs,
@@ -419,14 +413,14 @@ fn merge_manifest_user_config(
 }
 
 /// Build the layer inputs from the last-good state (used by startup and when every source
-/// fails on reload). The preset layer stays empty; presets are G18's job.
+/// fails on reload). Delegates to [`load::layer_inputs`], the same composition
+/// [`plan_reload`] and `load::load_and_resolve` (the mcp-server startup path) use.
 fn compose_inputs(last_good: &LastGoodInputs) -> layers::LayerInputs {
-    layers::LayerInputs {
-        org_mandatory: last_good.org.mandatory.clone(),
-        user: last_good.user.clone(),
-        org_recommended: last_good.org.recommended.clone(),
-        preset: serde_json::Map::new(),
-    }
+    load::layer_inputs(
+        last_good.org.clone(),
+        last_good.user.clone(),
+        last_good.preset.as_deref(),
+    )
 }
 
 /// The startup composition: given the raw org/user load results, compose the initial last-good
@@ -437,14 +431,15 @@ fn compose_inputs(last_good: &LastGoodInputs) -> layers::LayerInputs {
 fn compose_initial(
     org: crate::Result<OrgConfig>,
     user: crate::Result<(UserConfig, Vec<String>)>,
-) -> crate::Result<(LastGoodInputs, Vec<String>, Option<String>)> {
+) -> crate::Result<(LastGoodInputs, Vec<String>)> {
     let org = org?;
     let (user, warnings) = user?;
     let last_good = LastGoodInputs {
         org,
         user: user.values,
+        preset: user.preset,
     };
-    Ok((last_good, warnings, user.preset))
+    Ok((last_good, warnings))
 }
 
 /// Read and parse the org policy file. `ErrorKind::NotFound` is normal (absence yields the
@@ -545,6 +540,7 @@ impl ConfigStore {
             LastGoodInputs {
                 org: OrgConfig::default(),
                 user: serde_json::Map::new(),
+                preset: None,
             },
         )
     }
@@ -622,13 +618,14 @@ mod tests {
                 recommended: serde_json::Map::new(),
             },
             user: serde_json::Map::from_iter([("y".to_string(), json!("old"))]),
+            preset: None,
         };
         let org_a = OrgConfig {
             mandatory: serde_json::Map::from_iter([("a".to_string(), json!(1))]),
             recommended: serde_json::Map::from_iter([("b".to_string(), json!(2))]),
         };
         let user_a = UserConfig {
-            preset: None,
+            preset: Some("fully_open".to_string()),
             values: serde_json::Map::from_iter([("c".to_string(), json!(3))]),
         };
         let warns = vec!["some warning".to_string()];
@@ -643,17 +640,23 @@ mod tests {
         assert_eq!(plan.inputs.org_mandatory, org_a.mandatory);
         assert_eq!(plan.inputs.org_recommended, org_a.recommended);
         assert_eq!(plan.inputs.user, user_a.values);
+        assert_eq!(
+            plan.inputs.preset,
+            super::super::preset_layer(super::super::Preset::FullyOpen)
+        );
         assert_eq!(plan.new_last_good.org, org_a);
         assert_eq!(plan.new_last_good.user, user_a.values);
+        assert_eq!(plan.new_last_good.preset, Some("fully_open".to_string()));
         assert_eq!(plan.warnings, warns);
         assert!(plan.errors.is_empty());
     }
 
     #[test]
-    fn invalid_user_keeps_last_good_user_and_warns() {
+    fn invalid_user_keeps_last_good_user_and_preset_and_warns() {
         let last_good = LastGoodInputs {
             org: OrgConfig::default(),
             user: serde_json::Map::from_iter([("keep".to_string(), json!(true))]),
+            preset: Some("restricted".to_string()),
         };
         let org_a = OrgConfig {
             mandatory: serde_json::Map::from_iter([("m".to_string(), json!(1))]),
@@ -664,6 +667,11 @@ mod tests {
         assert!(!plan.org_failed);
         assert_eq!(plan.inputs.user, last_good.user);
         assert_eq!(plan.inputs.org_mandatory, org_a.mandatory);
+        assert_eq!(
+            plan.inputs.preset,
+            super::super::preset_layer(super::super::Preset::Restricted)
+        );
+        assert_eq!(plan.new_last_good.preset, Some("restricted".to_string()));
         assert!(plan.warnings.iter().any(|w| w.contains("bad user")));
         assert!(plan.errors.is_empty());
     }
@@ -679,6 +687,7 @@ mod tests {
                 recommended: serde_json::Map::new(),
             },
             user: serde_json::Map::new(),
+            preset: None,
         };
         let plan = plan_reload(
             Err("bad org".to_string()),
@@ -709,6 +718,7 @@ mod tests {
                 recommended: serde_json::Map::new(),
             },
             user: serde_json::Map::from_iter([("u".to_string(), json!(2))]),
+            preset: Some("safe".to_string()),
         };
         let plan = plan_reload(
             Err("bad org".to_string()),
@@ -720,6 +730,8 @@ mod tests {
         assert_eq!(plan.inputs.org_mandatory, expected.org_mandatory);
         assert_eq!(plan.inputs.user, expected.user);
         assert_eq!(plan.inputs.org_recommended, expected.org_recommended);
+        assert_eq!(plan.inputs.preset, expected.preset);
+        assert_eq!(plan.new_last_good.preset, Some("safe".to_string()));
         assert!(plan.errors.iter().any(|e| e.contains("bad org")));
         assert!(plan.warnings.iter().any(|w| w.contains("bad user")));
     }
@@ -866,6 +878,7 @@ mod tests {
         let last_good = LastGoodInputs {
             org: org_with_audit_enabled(true),
             user: serde_json::Map::new(),
+            preset: None,
         };
         let plan = plan_reload(
             Err("bad org".to_string()),
@@ -877,6 +890,27 @@ mod tests {
         assert_eq!(
             plan.inputs.org_mandatory.get(super::super::AUDIT_ENABLED),
             Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn compose_initial_folds_the_declared_preset_into_last_good() {
+        let org_ok: crate::Result<OrgConfig> = Ok(OrgConfig::default());
+        let user_ok: crate::Result<(UserConfig, Vec<String>)> = Ok((
+            UserConfig {
+                preset: Some("restricted".to_string()),
+                values: serde_json::Map::new(),
+            },
+            Vec::new(),
+        ));
+        let (last_good, warnings) = compose_initial(org_ok, user_ok).unwrap();
+        assert_eq!(last_good.preset, Some("restricted".to_string()));
+        assert!(warnings.is_empty());
+
+        let inputs = compose_inputs(&last_good);
+        assert_eq!(
+            inputs.preset,
+            super::super::preset_layer(super::super::Preset::Restricted)
         );
     }
 }

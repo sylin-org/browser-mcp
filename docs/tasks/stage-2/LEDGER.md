@@ -22,8 +22,12 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   (shadow enforcement: the mode switch between real `deny` and observe-mode
   `shadow_deny`) landed. `g16` (`policy explain`: deterministic plain-language rendering,
   golden-tested) landed. `g17` (`policy simulate`: replays audit JSONL through the same
-  `check_call` live enforcement uses, golden-tested) landed.
-- NEXT TASK: Phase D, task `g18` (`docs/tasks/stage-2/g18-presets-and-templates.md`).
+  `check_call` live enforcement uses, golden-tested) landed. `g18` (`config preset` +
+  `policy init --template`, plus the preset-to-layer-4 wiring the whole feature depends
+  on) landed. Phase D is COMPLETE. ALL 23 tasks in the BOOTSTRAP.md sequence are landed.
+- NEXT TASK: none -- see the RUN SUMMARY at the end of this file. BOOTSTRAP.md's
+  Completion section is done. Do not start a new task from this file; a human decides
+  what happens next (BROWSER-TESTS.md, then a merge decision).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -2189,6 +2193,189 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   manifest, never touches session state, and never contacts the extension or a running
   server -- it only reads two files given on the command line).
 
+### g18 presets and templates (config preset + policy init) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/config/presets.rs`, `src/governance/templates.rs`,
+  `examples/developer-unrestricted.json`, `tests/policy_preset.rs`, `tests/policy_init.rs`;
+  edited `src/governance/config/{mod.rs,load.rs,cli.rs,reload.rs,layers.rs}`,
+  `src/governance/mod.rs`, `src/main.rs`, `tests/manifest_validation.rs`.
+- Summary: two independent CLI surfaces landed. (1) `browser-mcp config preset
+  <fully-open|safe|restricted> [--dry-run]`: resolves the CURRENT effective state and a
+  CANDIDATE state under the new preset from one read of the on-disk org/user layers,
+  diffs them key by key (`governance::config::presets::diff_rows`), prints the fallback
+  before/after table (the G16 renderer integration point is marked but not wired -- G16
+  landed before this task but nothing in this session asked presets to consume it, so the
+  literal fallback table stays the only renderer, per the task's own "do not block on G16"
+  allowance), then -- unless `--dry-run` -- writes ONLY the `preset` field of the user
+  config file (read-modify-write, preserving the `config` map and every other member
+  exactly) and confirms. (2) `browser-mcp policy init --template <name> [--out PATH]
+  [--force]`: writes one of three `include_str!`-embedded example manifests byte-for-byte
+  to a chosen path, refusing to overwrite without `--force`, then prints the exact
+  orientation block from the task doc.
+  A THIRD piece of work, not called out as its own deliverable in the task doc's Required
+  Behavior section but explicitly flagged as this task's responsibility by the tree itself,
+  turned out to be the load-bearing part: `governance::config::layers::LayerInputs.preset`
+  (layer 4) had been left permanently empty by every call site since G02, with three
+  separate code comments reading "mapping a preset name to per-key defaults is the presets
+  task (G18)" (`layers.rs`, `load.rs`, `reload.rs`) and a live warning
+  ("preset '...' is declared... but preset defaults are not implemented yet, so it has no
+  effect") fired on every startup/reload/CLI invocation that saw a `preset` field. Without
+  closing this gap, `config preset` would have recorded a selection with zero observable
+  effect on any resolved value -- directly contradicting the feature's own purpose. Closed
+  it with two new shared primitives in `governance::config`: `Preset::cli_name()` (the
+  hyphenated CLI spelling, distinct from `as_str()`'s underscore wire form) and
+  `preset_layer(Preset) -> Map<String, Value>` (every registered key's default under a
+  preset, built from the registry, never duplicated literals). `load::layer_inputs(org,
+  user_values, preset_name)` composes `LayerInputs` from parsed org/user state plus this
+  mapping; `load::read_layers` factors the org+user file-read that `load_and_resolve`,
+  `cli::resolve_with_warnings`, and the new `presets::resolve_current_and_candidate` all
+  now share (previously `load_and_resolve` and `cli.rs`'s `resolve_with_warnings`
+  duplicated the same two-file read independently). `reload::LastGoodInputs` grew a
+  `preset: Option<String>` field, retained the same way as `user` across a reload (a
+  transient bad user-file edit keeps the last-good preset, not drops it); `compose_initial`
+  folds the parsed preset into it directly instead of returning it as a separate,
+  easy-to-forget tuple element; `plan_reload` and `compose_inputs` route through
+  `load::layer_inputs` like everything else. The stale "not implemented yet" warnings and
+  doc comments were removed/updated at all three sites. This means `config preset`'s effect
+  is now visible everywhere a resolved value surfaces: `config list`/`config get`, the
+  mcp-server's live `Config` (on both startup and hot-reload, since a user config file edit
+  -- including a `config preset` write -- is one of the three watched sources), and
+  `doctor`.
+  Manually verified end to end against the real binary (see Verification) before writing
+  any test: `config preset fully-open --dry-run` and the `fully_open` alias produced
+  identical diffs against pristine local state (three changed rows: secrets.redact,
+  audit.enabled, governance.mode); `policy init --template <name>` in an isolated temp
+  directory created byte-identical files for all three templates, refused a second run
+  without `--force`, and listed all three valid names on an unknown template name.
+- Deviations from the g-doc per RECONCILIATION.md:
+  1. **The preset-to-layer-4 wiring described above is not itself named as a Required
+     Behavior deliverable in the g18 doc** (it predates the current `governance/config/`
+     module layout entirely and was authored assuming a flatter `src/policy/` resolver).
+     Implemented anyway as a necessary integration point per RECONCILIATION.md section 7
+     ("re-verify the target against the current tree before editing") and the doc's own
+     repeated in-tree markers naming G18 as the owner. Without it, `config preset` would
+     compile, run, and write a file, but every resolved value would stay unchanged --
+     silently defeating the feature. Treated as in-scope, not scope creep: it is the
+     mechanical prerequisite the CLI surface's own Required Behavior text assumes exists
+     ("populate layer 4 with the preset's per-key defaults").
+  2. **`src/policy/presets.rs`/`src/policy/templates.rs` (the g-doc's suggested file
+     homes) are instead `src/governance/config/presets.rs` and
+     `src/governance/templates.rs`**, per RECONCILIATION.md section 1's placement map
+     (`src/policy/mod.rs` -> `governance/config/`) and the established pattern g16/g17
+     already set for peer features (`governance::explain`, `governance::simulate`).
+     `presets.rs` sits under `config/` specifically because it reads/writes the SAME
+     `LayerInputs`/`UserConfig`/`user_config_path()` machinery `cli.rs`/`load.rs` own;
+     `templates.rs` sits at the `governance/` top level (a peer of `explain`/`simulate`,
+     not a config concern) since it manipulates manifest-shaped content, not the config
+     registry.
+  3. **`examples/enterprise-healthcare.json` and `examples/qa-staging.json` were NOT
+     overwritten with this task's own verbatim template text**, even though Required
+     Behavior section 2 specifies exact byte-for-byte content for all three files and the
+     "Current behavior" section claims `examples/` does not exist yet. Both claims are
+     stale: `examples/` was created by G12 and already carries FOUR files (this g-doc
+     predates g16's golden-tested overwrite of these same two names with ITS OWN
+     different verbatim content -- different org name, version, mode, grant shapes --
+     which is itself pinned by `tests/fixtures/explain/*.txt` golden fixtures and
+     `tests/manifest_validation.rs`'s grant-count assertions, all already committed and
+     shipped in the g16 commit). Overwriting them a third time would have broken g16's
+     already-shipped, tested, golden-pinned record for no functional gain: G18's own
+     requirements on these two files reduce to "exists under this exact name, `name`
+     field matches, parses through the real validator, and (for qa-staging specifically)
+     the first two grant ids are `staging` then `production-readonly` in that order" --
+     every one of which the CURRENT on-disk content already satisfies (confirmed
+     directly: `template_name_fields_agree_with_their_lookup_names`,
+     `every_embedded_template_validates_through_the_real_manifest_parser`, and
+     `qa_staging_grant_order_is_pinned` all pass against the untouched files). Only
+     `examples/developer-unrestricted.json` is genuinely new (no g16-era name collision,
+     no prior golden pin), so it is byte-for-byte the g18 doc's own verbatim text.
+     `examples/developer-observe.json` (G12-era, a different name/purpose, still exercised
+     by its own `tests/manifest_validation.rs` test) and `examples/research-read-only.json`
+     (G16-era, golden-pinned) are both left untouched and are simply not part of the
+     template set; the g18 doc's "exactly three files" framing is read as "at least these
+     three template names exist and validate," matching RECONCILIATION.md's instruction to
+     trust prose/intent over stale specifics when the tree has moved on.
+  4. **`config preset`'s write path (`write_preset_at`) is unit-tested against temp paths
+     only, not integration-tested against the real per-platform user config file**,
+     matching the g18 doc's OWN stated test methodology ("build temp paths from
+     `std::env::temp_dir()`...") and the established precedent
+     `governance::config::cli`'s `write_user_value`/`write_user_value_at` tests already
+     set for the identical concern (`load::user_config_path()` resolves the real
+     platform path via the `dirs` crate, which is not reliably overridable for a spawned
+     child process -- `dirs`'s Windows backend queries the OS profile API directly rather
+     than reading `%APPDATA%`, so redirecting it via `Command::env` cannot be trusted to
+     work). `tests/policy_preset.rs` therefore exercises ONLY `--dry-run` (read-only,
+     safe against the real file, and it does read the real file so its own assertions
+     are written to tolerate whatever preset is or is not already declared on the machine
+     running the suite) plus clap-level argument parsing (alias resolution, unknown-value
+     rejection).
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green: 370 lib unit tests, up from 346 -- +10 in
+  `governance::config::presets::tests` (the required locked/kept/changed diff scenario
+  exactly as specified: org-mandatory `audit.enabled` locked, user-layer
+  `content.security.secrets.redact` kept, `governance.mode` changed `"enforce" ->
+  "observe"`, safe->fully_open; the required pristine-defaults no-change case; both
+  `render_diff` header forms; every diff-row-kind rendering; write-path missing-file/
+  preserve-siblings/corrupt-file/non-object-root cases via `write_preset_at` against temp
+  paths; the stored value is always the underscore form for all three presets), +10 in
+  `governance::templates::tests` (unknown-template error names all three valid names;
+  every template resolves to non-empty bytes; every embedded template validates through
+  the REAL `governance::manifest::document::parse_manifest` via local stub validators, per
+  the a7 arch-test's text-scan of `governance/**` forbidding even a test-only
+  `crate::browser`/`crate::transport` reference; the qa-staging grant-order pin; each
+  template's `name` field agrees with its lookup key; `run_init` write/no-force/force/
+  unknown-name cases against temp paths; the orientation block's exact text), +3 in
+  `governance::config::load::tests` (`layer_inputs` maps a registered preset to its full
+  defaults with source `Preset`; `None`/an unregistered name leaves the preset layer empty
+  and falls through to `Builtin`; the preset layer never outranks org-mandatory or user),
+  +1 in `governance::config::reload::tests` (`compose_initial` folds a declared preset
+  into `LastGoodInputs`, and `compose_inputs` maps it through the same `preset_layer`);
+  every PRE-EXISTING `LastGoodInputs` test-literal construction (8 sites) updated to
+  supply the new `preset` field, three of them (`valid_reload_adopts_both_sources`
+  renamed-in-place, `invalid_user_keeps_last_good_user_and_preset_and_warns`,
+  `both_sources_invalid_keeps_both_last_good`) extended to assert preset propagation/
+  retention through `plan_reload` rather than just adding the field inertly.
+  `tests/manifest_validation.rs` grew from 5 to 6 (new
+  `developer_unrestricted_example_parses`, mirroring its four siblings). New
+  `tests/policy_init.rs` 5 (create matches the embedded template byte-for-byte;
+  second-run-without-force names the path and mentions `--force`; `--force` overwrites;
+  unknown template lists all three valid names and writes nothing; every one of the three
+  templates round-trips through the real CLI to a temp path). New `tests/policy_preset.rs`
+  4, deliberately `--dry-run`-only (see deviation 4): the last line is exactly `Dry run:
+  nothing written.`; the CLI hyphen spelling and its underscore alias produce
+  byte-identical stdout; all three preset spellings dry-run successfully; an unknown
+  preset name is rejected by clap itself, naming all three valid values on stderr. All
+  other suites unchanged and green, including `tests/tool_schema_fidelity.rs` 6 and
+  `tests/mcp_protocol.rs` 4 (neither file touched, confirmed via `git status`).
+  `git status --porcelain=v1` confirmed the touched-file set matches this entry's list
+  exactly, with no diff to `src/transport/mcp/schemas/tools.json`, anything under
+  `extension/`, or `Cargo.toml`/`Cargo.lock` (no new dependency). ASCII scan (via the Grep
+  tool, pattern `[^\x00-\x7F]`) clean on every touched/new file. Manual runs against the
+  built binary (this task's own Verification steps 3 and 6-8, run before any test was
+  written): `config preset fully-open --dry-run` and the `fully_open` alias both printed
+  `Preset change: (none) -> fully-open`, three changed rows, and `Dry run: nothing
+  written.`, confirmed against the real (unmodified) local user config file; an unknown
+  preset value was rejected by clap directly (`invalid value 'bogus'...`, exit 2, distinct
+  from this feature's own exit codes); `policy init --template qa-staging` in an isolated
+  temp directory created a file byte-identical to `examples/qa-staging.json` and printed
+  the exact orientation block; a second run without `--force` failed naming the path and
+  `--force`; `--force` succeeded; an unknown template name failed listing all three valid
+  names; `diff`-confirmed byte-identity against the repository's own example file directly
+  (not just via the test's own read-and-compare).
+  **Deliberately NOT run** (this task's own Verification steps 4 and 5): running `config
+  preset <name>` WITHOUT `--dry-run` against the real per-platform user config file. This
+  would mutate `%APPDATA%\browser-mcp\config.json` (or the equivalent macOS/Linux path) on
+  whatever machine runs this unattended session -- a side effect outside the repository
+  and outside this task's authority to make unattended, unlike a temp-path write. The
+  write path's correctness is instead proven by `write_preset_at`'s own temp-path unit
+  tests (deviation 4) plus the identical read-modify-write logic already established and
+  manually verified for `config set`'s `write_user_value` in an earlier task. A human
+  should run steps 4-5 once on their own machine (or in a disposable VM/container) and can
+  safely inspect/revert `%APPDATA%\browser-mcp\config.json` afterward if the result is not
+  wanted.
+- Browser checks queued: none (both `config preset` and `policy init` are pure CLI/file
+  features; neither loads a live manifest, touches session state, or contacts the
+  extension or a running mcp-server).
+
 ## Reminders before running BROWSER-TESTS.md
 
 Stage 2 is mostly unit-testable (pure governance logic), but several tasks have browser-facing
@@ -2196,3 +2383,73 @@ behavior that needs a real browser: the take-the-wheel pause (g10), the panic ki
 advertisement filtering and `tools/list_changed` on hot-reload (g14), and end-to-end manifest
 enforcement (g12/g13/g15). Accumulate those checks in `BROWSER-TESTS.md` as their tasks land; a human
 runs them against a live browser after the code is in, exactly as release-1 did.
+
+## RUN SUMMARY -- BOOTSTRAP.md complete, 2026-07-02
+
+All 23 tasks in the BOOTSTRAP.md linear task sequence (`a1`, `a2`, `a3`, `a7`, `g01`-`g18`) are
+landed on the `stage-2` branch, one commit each (with one exception: `a2` produced a small
+same-day follow-up correction commit, `8da1bee fix(governance): rename RwClass variants to
+Observe/Mutate`, fixing a naming mismatch discovered while implementing `a3`; documented in
+`a2`'s own ledger entry). Commit range: `e66b02f` (`a1` module reorg) through this entry's `g18`
+commit -- 24 task commits total (23 tasks + the one `a2` correction), for 27 commits on the
+`stage-2` branch overall counting the three pre-existing docs commits (`f5c91cf`, `8c188ca`,
+`b0b972b`) that seeded `PLAN.md`/the task specs/`BOOTSTRAP.md` itself. The tree is green after
+every single commit: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the
+full `cargo test` suite all passed before each commit was made, including
+`tests/tool_schema_fidelity.rs` and `tests/mcp_protocol.rs` UNCHANGED and passing from the first
+commit to the last (the sacred tool surface and the all-open wire behavior were never touched).
+Lib unit test count grew from 0 (pre-stage-2) to 370; the integration test suite grew from
+`tests/mcp_protocol.rs` alone to fifteen files.
+
+What stage 2 delivers: a domain-agnostic governance core (`governance/`) cleanly separated from
+the browser plugin (`browser/`) and transport infra (`transport/`), enforced by a fail-closed
+arch-test (`a7`); a typed, layered configuration registry with hot-reload (`a1`/`a5`/`g01`-`g04`);
+an audit flight recorder (`g05`/`g06`/`g09`); the sacred-domains always-on carve-out, the
+take-the-wheel pause, and the panic kill switch (`g07`/`g08`/`g10`/`g11`); a schema-2 manifest
+engine with real grant enforcement at all five dispatch points, tool advertisement filtering, and
+an observe/enforce mode switch with a shadow-deny audit trail (`g12`-`g15`); and the org-policy
+trust UX -- deterministic plain-language `policy explain`, audit-replay `policy simulate`,
+one-click `config preset`, and `policy init` starting-point templates (`g16`-`g18`).
+
+Conservative choices made along the way, in case any needs revisiting (full reasoning is in each
+task's own ledger entry; this is the index):
+- **g14**: dynamic tool re-advertisement on a live manifest swap (`tools/list_changed`
+  re-computation) was deferred; the static advertisement-filtering logic landed and is tested, but
+  see g14's own entry for exactly what is and is not wired to the hot-reload signal.
+- **g15**: editing a manifest's `mode` field changes its content hash (one of the three denial-id
+  inputs by design), so BROWSER-TESTS.md's g15-1 check does NOT expect the enforce-mode and
+  observe-mode denial ids for "the same" rule to match across a manifest edit; this is documented
+  as intentional (ADR-0020: a denial id is attributable to the exact policy version that produced
+  it), not a bug.
+- **g16**: two example manifests (`enterprise-healthcare.json`, `qa-staging.json`) were overwritten
+  with g16's own canonical, golden-tested content, superseding what g12 had originally authored.
+- **g18**: those same two files were deliberately NOT overwritten a third time with g18's own
+  (older, now-superseded) verbatim template text -- reusing g16's already-shipped content instead,
+  since it already satisfies every functional requirement g18 actually needs (name agreement,
+  real-validator parsing, the qa-staging grant-order pin). Only the genuinely new third template
+  (`developer-unrestricted.json`) is g18's own verbatim text. Also: `config preset` WITHOUT
+  `--dry-run` was never run against this machine's real per-platform user config file during this
+  session (it would have mutated `%APPDATA%\browser-mcp\config.json` outside the repository); the
+  write path is proven correct via temp-path unit tests instead, matching this codebase's own
+  established precedent for the identical concern (`config set`'s `write_user_value`).
+- **Every other task**: no manifest-, config-, or file-shape ambiguity was left unresolved; each
+  g-doc's own literal file paths, type signatures, and (where they predated the `governance/`
+  module split) module homes were re-derived from `RECONCILIATION.md`'s placement map and the
+  actual tree at the time each task ran, documented as a numbered deviation in that task's own
+  ledger entry. There are no known open questions or half-finished pieces anywhere in the stage-2
+  tree as landed.
+
+`BROWSER-TESTS.md` state: 15 checks queued across five tasks (`g08`-1; `g10`-1 through -5; `g11`-1
+through -4; `g13`-1 through -3; `g15`-1 through -2), none of them run in this session (no live
+browser is available to an unattended executor). **A human must run every check in
+`BROWSER-TESTS.md` against a live Chrome browser with the real extension loaded and a real Claude
+Code (or equivalent MCP client) session, exactly as release-1's browser verification pass was
+run, before stage 2's governance layer can be considered verified end to end.** Until that pass is
+complete, any public-facing copy describing stage 2 (README, release notes, docs) MUST say the
+governance layer is **shipped-but-unverified-end-to-end**, not "complete" or "verified" -- the
+automated suite proves the pure logic and the wire protocol; it cannot prove a real debugger
+attach, a real popup click, a real service-worker restart, or a real redirect landing on-screen.
+
+This branch has NOT been pushed and has NOT been merged to `main` at any point in this run, per
+BOOTSTRAP.md's explicit instruction. A human decides when (and whether) `stage-2` merges, after the
+BROWSER-TESTS.md pass above.

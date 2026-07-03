@@ -10,7 +10,7 @@
 //! resolved). The crate-root binary (`src/main.rs`) supplies the browser plugin's real
 //! checker at the call site.
 
-use super::{key_def, layers, load, schema, KeyDef, KeyType};
+use super::{key_def, layers, load, presets, schema, KeyDef, KeyType, Preset};
 
 /// A parsed `browser-mcp config` invocation.
 pub enum ConfigCommand {
@@ -32,6 +32,13 @@ pub enum ConfigCommand {
     Schema,
     /// Print the markdown key reference generated from the key registry.
     Docs,
+    /// Select a named bundle of layer-4 defaults (G18), after showing a diff of what changes.
+    Preset {
+        /// The preset to select.
+        preset: Preset,
+        /// Print the diff and write nothing.
+        dry_run: bool,
+    },
 }
 
 /// Run one config CLI command. Success output goes to stdout; failures return
@@ -56,6 +63,9 @@ pub fn run(
             print!("{}", schema::render_key_reference());
             Ok(())
         }
+        ConfigCommand::Preset { preset, dry_run } => {
+            presets::run_preset(preset, dry_run, domain_pattern_valid)
+        }
     }
 }
 
@@ -67,54 +77,17 @@ fn unknown_key_error(key: &str) -> crate::Error {
 
 /// Load and resolve the layered configuration for the CLI, returning warnings for the caller
 /// to print instead of routing them through `tracing` (the CLI's output contract is exact
-/// pinned strings, not a logging format). Mirrors `load::load_and_resolve`'s semantics exactly
-/// (file-absence is normal, any other I/O error is a hard error, org file is strict); it does
-/// not re-implement layer precedence or validation, only the warning-capture wiring.
+/// pinned strings, not a logging format). Delegates the actual file reads and layer
+/// composition to [`load::read_layers`]/[`load::layer_inputs`] -- the same functions
+/// `load::load_and_resolve` (the mcp-server startup path) uses -- so there is exactly one
+/// implementation of "read the two files and compose the layers".
 fn resolve_with_warnings(
     domain_pattern_valid: fn(&str) -> bool,
 ) -> crate::Result<(layers::Resolution, Vec<String>)> {
-    let org_path = load::org_policy_path();
-    let org = match std::fs::read_to_string(&org_path) {
-        Ok(content) => load::parse_org_config(
-            &content,
-            &org_path.display().to_string(),
-            domain_pattern_valid,
-        )?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => load::OrgConfig::default(),
-        Err(e) => return Err(crate::Error::Config(format!("{}: {e}", org_path.display()))),
-    };
-
-    let mut warnings = Vec::new();
-    let user = match load::user_config_path() {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let (parsed, entry_warnings) = load::parse_user_config(
-                    &content,
-                    &path.display().to_string(),
-                    domain_pattern_valid,
-                )?;
-                warnings.extend(entry_warnings);
-                if let Some(name) = &parsed.preset {
-                    warnings.push(format!(
-                        "preset '{name}' is declared in the user config file but preset \
-                         defaults are not implemented yet, so it has no effect"
-                    ));
-                }
-                parsed
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => load::UserConfig::default(),
-            Err(e) => return Err(crate::Error::Config(format!("{}: {e}", path.display()))),
-        },
-        None => load::UserConfig::default(),
-    };
-
-    let inputs = layers::LayerInputs {
-        org_mandatory: org.mandatory,
-        user: user.values,
-        org_recommended: org.recommended,
-        preset: serde_json::Map::new(),
-    };
-    Ok((layers::resolve(&inputs), warnings))
+    let loaded = load::read_layers(domain_pattern_valid)?;
+    let preset_name = loaded.user.preset.clone();
+    let inputs = load::layer_inputs(loaded.org, loaded.user.values, preset_name.as_deref());
+    Ok((layers::resolve(&inputs), loaded.warnings))
 }
 
 /// Render the `config list` table: one header line, then one row per registered key, in

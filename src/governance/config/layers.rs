@@ -50,8 +50,8 @@ pub struct LayerInputs {
     pub org_mandatory: serde_json::Map<String, serde_json::Value>,
     pub user: serde_json::Map<String, serde_json::Value>,
     pub org_recommended: serde_json::Map<String, serde_json::Value>,
-    /// Layer 4. Structurally supported and tested here, but left EMPTY by the loader in this
-    /// module: mapping a preset name to per-key defaults is the presets task (G18).
+    /// Layer 4. Composed by [`super::load::layer_inputs`] (G18) from a declared preset name's
+    /// per-key defaults ([`super::preset_layer`]); empty when no preset is declared.
     pub preset: serde_json::Map<String, serde_json::Value>,
 }
 

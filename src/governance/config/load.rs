@@ -39,7 +39,8 @@ pub fn org_policy_path() -> std::path::PathBuf {
 #[derive(Debug, Clone, Default)]
 pub struct UserConfig {
     /// Validated preset name if one was declared: "fully_open", "safe", or "restricted".
-    /// Retained for the presets task (G18); NOT applied to any layer by this task.
+    /// Mapped to its layer-4 defaults by [`layer_inputs`] (G18); `None` when no preset (or an
+    /// unregistered one) is declared, leaving layer 4 empty.
     pub preset: Option<String>,
     /// Validated user-layer values by dotted key name.
     pub values: serde_json::Map<String, serde_json::Value>,
@@ -230,29 +231,25 @@ fn read_optional(path: &std::path::Path) -> Result<Option<String>> {
     }
 }
 
-/// Load both configuration files from their platform paths, log warnings, and resolve all
-/// layers. Called once at mcp-server startup. Absence of either file is normal.
-///
-/// `domain_pattern_valid` validates `content.security.sacred_domains` entries. Callers outside
-/// the governance core supply the browser plugin's real pattern-syntax checker; this module
-/// cannot name it directly (the a7 arch-test forbids a `governance -> browser` edge).
-pub fn load_and_resolve(domain_pattern_valid: fn(&str) -> bool) -> Result<layers::Resolution> {
-    let user = match user_config_path().map(|p| read_optional(&p).map(|c| (p, c))) {
+/// Both configuration files, read and parsed from their platform paths. Absence of either file
+/// is normal (yields the type's default); `warnings` carries the user file's per-entry
+/// warnings (shared format doc section 1.1, lenient-per-entry).
+pub struct LoadedLayers {
+    pub org: OrgConfig,
+    pub user: UserConfig,
+    pub warnings: Vec<String>,
+}
+
+/// Read and parse both configuration files from their platform paths. The one I/O entry point
+/// every layered-load call site (server startup, the `config` CLI, hot-reload) shares, so the
+/// two-file read is implemented exactly once.
+pub fn read_layers(domain_pattern_valid: fn(&str) -> bool) -> Result<LoadedLayers> {
+    let (user, warnings) = match user_config_path().map(|p| read_optional(&p).map(|c| (p, c))) {
         Some(Ok((path, Some(content)))) => {
             let path_str = path.display().to_string();
-            let (parsed, warnings) = parse_user_config(&content, &path_str, domain_pattern_valid)?;
-            for w in &warnings {
-                tracing::warn!("{w}");
-            }
-            if let Some(preset) = &parsed.preset {
-                tracing::warn!(
-                    "preset '{preset}' is declared in the user config file, but preset defaults \
-                     are not implemented yet, so it has no effect"
-                );
-            }
-            parsed
+            parse_user_config(&content, &path_str, domain_pattern_valid)?
         }
-        Some(Ok((_, None))) | None => UserConfig::default(),
+        Some(Ok((_, None))) | None => (UserConfig::default(), Vec::new()),
         Some(Err(e)) => return Err(e),
     };
 
@@ -265,12 +262,47 @@ pub fn load_and_resolve(domain_pattern_valid: fn(&str) -> bool) -> Result<layers
         None => OrgConfig::default(),
     };
 
-    let inputs = LayerInputs {
+    Ok(LoadedLayers {
+        org,
+        user,
+        warnings,
+    })
+}
+
+/// Compose [`LayerInputs`] from parsed org/user state, mapping `preset_name` to its layer-4
+/// defaults via [`super::preset_layer`] when it names a registered preset (G18). `preset_name`
+/// is `None`, or names an unregistered preset, when no preset layer applies at all: layer 4
+/// stays empty and resolution falls through to layer 5 (the built-in Minimal default).
+pub fn layer_inputs(
+    org: OrgConfig,
+    user_values: serde_json::Map<String, serde_json::Value>,
+    preset_name: Option<&str>,
+) -> LayerInputs {
+    let preset = preset_name
+        .and_then(super::Preset::from_name)
+        .map(super::preset_layer)
+        .unwrap_or_default();
+    LayerInputs {
         org_mandatory: org.mandatory,
-        user: user.values,
+        user: user_values,
         org_recommended: org.recommended,
-        preset: serde_json::Map::new(),
-    };
+        preset,
+    }
+}
+
+/// Load both configuration files from their platform paths, log warnings, and resolve all
+/// layers. Called once at mcp-server startup. Absence of either file is normal.
+///
+/// `domain_pattern_valid` validates `content.security.sacred_domains` entries. Callers outside
+/// the governance core supply the browser plugin's real pattern-syntax checker; this module
+/// cannot name it directly (the a7 arch-test forbids a `governance -> browser` edge).
+pub fn load_and_resolve(domain_pattern_valid: fn(&str) -> bool) -> Result<layers::Resolution> {
+    let loaded = read_layers(domain_pattern_valid)?;
+    for w in &loaded.warnings {
+        tracing::warn!("{w}");
+    }
+    let preset_name = loaded.user.preset.clone();
+    let inputs = layer_inputs(loaded.org, loaded.user.values, preset_name.as_deref());
     Ok(layers::resolve(&inputs))
 }
 
@@ -288,6 +320,75 @@ mod tests {
         let resolution = layers::resolve(&LayerInputs::default());
         let config = super::super::Config::from_resolution(&resolution);
         assert_eq!(config, super::super::Config::minimal());
+    }
+
+    #[test]
+    fn layer_inputs_maps_a_registered_preset_name_to_its_full_defaults() {
+        let inputs = layer_inputs(
+            OrgConfig::default(),
+            serde_json::Map::new(),
+            Some("fully_open"),
+        );
+        assert_eq!(
+            inputs.preset,
+            super::super::preset_layer(super::super::Preset::FullyOpen)
+        );
+        let resolution = layers::resolve(&inputs);
+        assert_eq!(
+            resolution.get(super::super::GOVERNANCE_MODE).unwrap().value,
+            json!("observe")
+        );
+        assert_eq!(
+            resolution
+                .get(super::super::GOVERNANCE_MODE)
+                .unwrap()
+                .source,
+            layers::Source::Preset
+        );
+    }
+
+    #[test]
+    fn layer_inputs_leaves_the_preset_layer_empty_for_none_or_an_unknown_name() {
+        for name in [None, Some("extreme")] {
+            let inputs = layer_inputs(OrgConfig::default(), serde_json::Map::new(), name);
+            assert!(inputs.preset.is_empty(), "{name:?}");
+            let resolution = layers::resolve(&inputs);
+            assert_eq!(
+                resolution
+                    .get(super::super::GOVERNANCE_MODE)
+                    .unwrap()
+                    .source,
+                layers::Source::Builtin
+            );
+        }
+    }
+
+    #[test]
+    fn layer_inputs_never_lets_the_preset_layer_override_user_or_org() {
+        let org = OrgConfig {
+            mandatory: serde_json::Map::from_iter([(
+                super::super::AUDIT_ENABLED.to_string(),
+                json!(true),
+            )]),
+            recommended: serde_json::Map::new(),
+        };
+        let user = serde_json::Map::from_iter([(
+            super::super::CONTENT_SECURITY_SECRETS_REDACT.to_string(),
+            json!(false),
+        )]);
+        let inputs = layer_inputs(org, user, Some("restricted"));
+        let resolution = layers::resolve(&inputs);
+        assert_eq!(
+            resolution.get(super::super::AUDIT_ENABLED).unwrap().source,
+            layers::Source::OrgMandatory
+        );
+        assert_eq!(
+            resolution
+                .get(super::super::CONTENT_SECURITY_SECRETS_REDACT)
+                .unwrap()
+                .source,
+            layers::Source::User
+        );
     }
 
     #[test]

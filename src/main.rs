@@ -73,6 +73,8 @@ enum PolicyCommand {
     Explain(ExplainArgs),
     /// Replay recorded audit events through a candidate manifest.
     Simulate(SimulateArgs),
+    /// Write an embedded example manifest as a starting point.
+    Init(InitArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +92,19 @@ struct SimulateArgs {
     /// Path to the audit JSON Lines file to replay.
     #[arg(long, value_name = "FILE")]
     replay: std::path::PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct InitArgs {
+    /// Embedded template name: enterprise-healthcare, developer-unrestricted, or qa-staging.
+    #[arg(long, value_name = "NAME")]
+    template: String,
+    /// Output path. Defaults to policy.json in the current working directory.
+    #[arg(long, value_name = "PATH")]
+    out: Option<std::path::PathBuf>,
+    /// Overwrite an existing output file.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -119,6 +134,39 @@ enum ConfigAction {
     Schema,
     /// Print the markdown key reference generated from the key registry.
     Docs,
+    /// Select a named bundle of layer-4 defaults, after previewing what changes.
+    Preset(PresetArgs),
+}
+
+#[derive(Debug, Args)]
+struct PresetArgs {
+    /// The preset to select.
+    #[arg(value_enum)]
+    preset: CliPreset,
+    /// Print the diff and write nothing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// The CLI-facing spelling of a preset (hyphenated). The underscore alias on `FullyOpen` lets
+/// `fully_open` (the wire form written to the user config file) also be typed directly.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliPreset {
+    #[value(name = "fully-open", alias = "fully_open")]
+    FullyOpen,
+    Safe,
+    Restricted,
+}
+
+impl From<CliPreset> for browser_mcp::governance::config::Preset {
+    fn from(p: CliPreset) -> Self {
+        use browser_mcp::governance::config::Preset;
+        match p {
+            CliPreset::FullyOpen => Preset::FullyOpen,
+            CliPreset::Safe => Preset::Safe,
+            CliPreset::Restricted => Preset::Restricted,
+        }
+    }
 }
 
 impl From<ConfigArgs> for browser_mcp::governance::config::cli::ConfigCommand {
@@ -130,6 +178,10 @@ impl From<ConfigArgs> for browser_mcp::governance::config::cli::ConfigCommand {
             ConfigAction::Set { key, value } => ConfigCommand::Set { key, value },
             ConfigAction::Schema => ConfigCommand::Schema,
             ConfigAction::Docs => ConfigCommand::Docs,
+            ConfigAction::Preset(PresetArgs { preset, dry_run }) => ConfigCommand::Preset {
+                preset: preset.into(),
+                dry_run,
+            },
         }
     }
 }
@@ -314,6 +366,26 @@ fn main() -> Result<()> {
             print!("{}", outcome.report);
             std::io::stdout().flush().ok();
             std::process::exit(if outcome.would_deny == 0 { 0 } else { 2 });
+        }
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command:
+                        PolicyCommand::Init(InitArgs {
+                            template,
+                            out,
+                            force,
+                        }),
+                })),
+            ..
+        } => {
+            let out_path = out.unwrap_or_else(|| std::path::PathBuf::from("policy.json"));
+            let outcome =
+                browser_mcp::governance::templates::run_init(&template, &out_path, force)?;
+            print!(
+                "{}",
+                browser_mcp::governance::templates::render_orientation(&outcome)
+            );
         }
         Cli {
             command: None,

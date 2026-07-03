@@ -78,6 +78,26 @@ fn qa_staging_example_parses() {
     assert_valid_hash(&m.hash);
 }
 
+/// `developer-unrestricted.json` was added by G18 (Required behavior section 2) as the
+/// `developer-unrestricted` embedded template. Distinct from the pre-existing
+/// `developer-observe.json` above: same shape (empty grants, recommended-level audit config,
+/// no domain restriction), different name/content per G18's own verbatim template text.
+#[test]
+fn developer_unrestricted_example_parses() {
+    let text = read_example("developer-unrestricted.json");
+    let m = parse_manifest(
+        &text,
+        "developer-unrestricted.json",
+        pattern::is_valid_pattern,
+        tools::is_known_tool,
+    )
+    .expect("developer-unrestricted.json should parse and validate");
+    assert_eq!(m.schema, 2);
+    assert_eq!(m.name, "developer-unrestricted");
+    assert_eq!(m.grants.len(), 0);
+    assert_valid_hash(&m.hash);
+}
+
 #[test]
 fn research_read_only_example_parses() {
     let text = read_example("research-read-only.json");

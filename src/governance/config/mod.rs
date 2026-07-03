@@ -34,10 +34,13 @@
 //! debounced file-watch, so config and org-policy changes take effect with no restart.
 //! [`cli`] is the `browser-mcp config list/get/set` presentation surface over this registry.
 //! [`schema`] generates the JSON Schema and markdown key reference (`config schema`/`docs`).
+//! [`presets`] is `config preset` (G18, ADR-0019 decision 3): selecting a named bundle of
+//! layer-4 defaults, shown as a plain-language diff before it writes anything.
 
 pub mod cli;
 pub mod layers;
 pub mod load;
+pub mod presets;
 pub mod reload;
 pub mod schema;
 
@@ -51,10 +54,21 @@ pub enum Preset {
 }
 
 impl Preset {
-    /// The wire/file name of this preset: "fully_open", "safe", or "restricted".
+    /// The wire/file name of this preset: "fully_open", "safe", or "restricted". This is the
+    /// exact string written to and read from the user config file's `preset` field.
     pub fn as_str(&self) -> &'static str {
         match self {
             Preset::FullyOpen => "fully_open",
+            Preset::Safe => "safe",
+            Preset::Restricted => "restricted",
+        }
+    }
+
+    /// The CLI-facing spelling: "fully-open", "safe", "restricted" (G18). Distinct from
+    /// [`Preset::as_str`], the underscore form written to the user config file.
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            Preset::FullyOpen => "fully-open",
             Preset::Safe => "safe",
             Preset::Restricted => "restricted",
         }
@@ -69,6 +83,19 @@ impl Preset {
             _ => None,
         }
     }
+}
+
+/// Every registered key's default value under `preset`, as a JSON map: layer 4's contribution
+/// to [`layers::LayerInputs`] (shared format doc section 2, G18). Selecting a preset means
+/// exactly this -- populate layer 4 with the preset's per-key defaults -- and nothing else: it
+/// never writes a per-key value into any other layer.
+pub fn preset_layer(preset: Preset) -> serde_json::Map<String, serde_json::Value> {
+    KEYS.iter()
+        .map(|def| {
+            let value: ConfigValue = def.default_for(preset).into();
+            (def.key.to_string(), value.to_json())
+        })
+        .collect()
 }
 
 /// A statically-declared default value for a registry key (one per preset).
