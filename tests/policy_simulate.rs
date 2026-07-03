@@ -67,15 +67,14 @@ fn restrictive_manifest_golden() {
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
 
     assert!(stdout.contains("total actions: 13"), "{stdout}");
-    assert!(stdout.contains("would allow: 3"), "{stdout}");
-    assert!(stdout.contains("would deny: 6"), "{stdout}");
+    assert!(stdout.contains("would allow: 4"), "{stdout}");
+    assert!(stdout.contains("would deny: 5"), "{stdout}");
     assert!(stdout.contains("not evaluable: 4"), "{stdout}");
-    assert_eq!(3 + 6 + 4, 13, "totals arithmetic must hold");
+    assert_eq!(4 + 5 + 4, 13, "totals arithmetic must hold");
 
     let expected_groups = [
         "count=1 grant=- domain=unknown.example tool=read_page rule=unmatched_domain",
         "count=3 grant=docs-read domain=docs.example.com tool=computer rule=access",
-        "count=1 grant=docs-read domain=docs.example.com tool=navigate rule=access",
         "count=1 grant=forms-noscript domain=forms.example.net tool=javascript_tool rule=tool/javascript_tool",
     ];
     for group in expected_groups {
@@ -121,7 +120,7 @@ fn restrictive_manifest_golden() {
     }
 
     assert!(
-        stdout.contains("result: 6 would-denies (exit 2)"),
+        stdout.contains("result: 5 would-denies (exit 2)"),
         "{stdout}"
     );
 }

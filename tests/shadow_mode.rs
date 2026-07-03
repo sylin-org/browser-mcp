@@ -109,12 +109,14 @@ fn text_of(resp: &Value) -> &str {
         .unwrap_or_else(|| panic!("no text content block in {resp:?}"))
 }
 
-/// A mutate-class call (`navigate`) on the read-only grant's domain: `access` denies it under
-/// enforce; `manifest_value` above is otherwise byte-identical across both runs.
+/// A mutate-class call (`tabs_create_mcp`, domain-less, denied via the union rule since s01
+/// reclassified `navigate` observe) under the read-only grant: `access` denies it under enforce,
+/// attributed to `read-only`; `manifest_value` above is otherwise byte-identical across both
+/// runs.
 fn denied_call_requests() -> Vec<Value> {
     vec![
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com/","tabId":1}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tabs_create_mcp","arguments":{}}}),
     ]
 }
 

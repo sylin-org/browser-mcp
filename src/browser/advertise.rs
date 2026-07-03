@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_manifest_yields_the_exact_eight_tool_set_in_fixture_order() {
+    fn read_only_manifest_yields_the_exact_nine_tool_set_in_fixture_order() {
         let fx = fixture();
         let grants = vec![grant(Access::Read, None, None)];
         let result = advertised_tools(&fx, Some(&grants));
@@ -143,6 +143,7 @@ mod tests {
             names_of(&result),
             vec![
                 "tabs_context_mcp",
+                "navigate",
                 "computer",
                 "find",
                 "get_page_text",

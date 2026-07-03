@@ -325,7 +325,7 @@ mod tests {
             ("computer", Some("screenshot")) => Some(RwClass::Observe),
             ("computer", Some("left_click")) => Some(RwClass::Mutate),
             ("read_page", None) => Some(RwClass::Observe),
-            ("navigate", None) => Some(RwClass::Mutate),
+            ("navigate", None) => Some(RwClass::Observe),
             ("javascript_tool", None) => Some(RwClass::Mutate),
             ("update_plan", None) => Some(RwClass::Observe),
             _ => None,
@@ -486,7 +486,10 @@ mod tests {
         let m = sample_manifest(vec![grant("g", &["example.com"], Access::Read)]);
         let allow = run(&m, &[r#"{"tool":"read_page","domain":"example.com"}"#]);
         assert_eq!(allow.would_allow, 1);
-        let deny = run(&m, &[r#"{"tool":"navigate","domain":"example.com"}"#]);
+        let deny = run(
+            &m,
+            &[r#"{"tool":"javascript_tool","domain":"example.com"}"#],
+        );
         assert_eq!(deny.would_deny, 1);
     }
 
@@ -510,7 +513,7 @@ mod tests {
         let r = run(
             &m,
             &[
-                r#"{"tool":"navigate","domain":"example.com"}"#,
+                r#"{"tool":"javascript_tool","domain":"example.com"}"#,
                 r#"{"tool":"javascript_tool","domain":null}"#,
             ],
         );
@@ -531,18 +534,18 @@ mod tests {
             &["docs.example.com"],
             Access::Read,
         )]);
-        let line = r#"{"tool":"navigate","domain":"docs.example.com"}"#;
+        let line = r#"{"tool":"javascript_tool","domain":"docs.example.com"}"#;
 
         let report = run(&m, &[line]);
         let ((grant, domain, tool, rule), info) = report.groups.iter().next().expect("one group");
         assert_eq!(grant, "docs-read");
         assert_eq!(domain, "docs.example.com");
-        assert_eq!(tool, "navigate");
+        assert_eq!(tool, "javascript_tool");
         assert_eq!(rule, "access");
 
         let direct = check_call(
             &m.grants,
-            "navigate",
+            "javascript_tool",
             None,
             RwClass::Mutate,
             &GoverningResource::Resource("docs.example.com".to_string()),

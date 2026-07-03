@@ -65,8 +65,9 @@ fn drive(manifest_path: &Path, requests: &[Value]) -> Vec<Value> {
     responses
 }
 
-/// A read-only manifest (no `tools`/`exclude_tools` restriction), matching the g14 doc's own
-/// "Required behavior" section 4 exact expected set.
+/// A read-only manifest (no `tools`/`exclude_tools` restriction). The expected set is the g14
+/// doc's own "Required behavior" section 4 set PLUS `navigate`, reclassified observe by
+/// ADR-0022/s01 (navigate is provably a GET).
 #[test]
 fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
     let manifest = write_manifest(
@@ -102,6 +103,7 @@ fn read_only_manifest_restricts_tools_list_to_the_observe_set() {
         names,
         vec![
             "tabs_context_mcp",
+            "navigate",
             "computer",
             "find",
             "get_page_text",

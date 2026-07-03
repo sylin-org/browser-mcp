@@ -20,7 +20,11 @@ use crate::governance::ports::RwClass;
 pub const TOOL_CLASSES: &[(&str, RwClass)] = &[
     ("tabs_context_mcp", RwClass::Observe),
     ("tabs_create_mcp", RwClass::Mutate),
-    ("navigate", RwClass::Mutate),
+    // navigate is Observe: provably a GET (top-level document load), per ADR-0022
+    // (Context + Decision 2). Reclassified by s01; supersedes the shared format doc
+    // section 8 row (bannered in s08). Navigation remains the domain-enforcement point
+    // (pre-dispatch target check + landing check); those are host checks, not class checks.
+    ("navigate", RwClass::Observe),
     ("find", RwClass::Observe),
     ("form_input", RwClass::Mutate),
     ("get_page_text", RwClass::Observe),
@@ -151,7 +155,7 @@ mod tests {
     fn classification_matches_the_shared_format_table() {
         assert_eq!(classify("tabs_context_mcp", None), Some(RwClass::Observe));
         assert_eq!(classify("tabs_create_mcp", None), Some(RwClass::Mutate));
-        assert_eq!(classify("navigate", None), Some(RwClass::Mutate));
+        assert_eq!(classify("navigate", None), Some(RwClass::Observe));
         assert_eq!(classify("find", None), Some(RwClass::Observe));
         assert_eq!(classify("form_input", None), Some(RwClass::Mutate));
         assert_eq!(classify("get_page_text", None), Some(RwClass::Observe));

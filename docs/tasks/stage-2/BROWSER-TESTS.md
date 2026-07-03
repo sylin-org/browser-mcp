@@ -396,3 +396,15 @@ returns `Denied (D-...): ... is on the user's never-touch list`, NOT a `shadow_d
 outcome and NOT the ordinary tool result, even though the manifest's own mode is
 `observe` -- the sacred-domains check runs ahead of and independently from the grant
 mode switch.
+
+## s01-1: read-only grant can navigate; acting on the page is still denied
+Changed: s01 reclassified navigate from mutate to observe (ADR-0022 Context/Decision 2)
+on the stage-2 schema-2 model; only a real browser proves the granted page loads for a
+read-only session.
+Steps: start the mcp-server with a schema-2 manifest whose only grant is
+{"id":"research-read","domains":["example.com","*.example.com"],"access":"read"} and
+audit enabled; then (1) navigate to https://example.com/ in an MCP tab, (2) computer
+screenshot, (3) computer left_click on the page.
+Expect: (1) and (2) succeed with no Denied text; the audit lines carry decision=allow,
+grant_id=research-read, and rw=observe for the navigate. (3) returns Denied (D-...)
+naming research-read and the read-only wording; its audit line is decision=deny.

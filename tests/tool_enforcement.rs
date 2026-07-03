@@ -207,13 +207,45 @@ fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
     std::fs::remove_file(&manifest).ok();
 }
 
-/// Test 3: a mutate call (`navigate`) on a read-only grant's domain denies `access`, naming the
-/// grant and the read-only wording.
+/// Test 3: a mutate call (`tabs_create_mcp`, domain-less, via the union rule since s01) under a
+/// read-only grant denies `access`, naming the grant and the read-only wording. `navigate` no
+/// longer serves as the mutate-on-read example here: it is reclassified observe by ADR-0022/s01,
+/// so it is the only tab-scoped tool that resolves a host in this no-extension harness and it
+/// is now PERMITTED on a read-only grant (see `navigate_is_permitted_on_a_read_only_grant`).
+/// `EXAMPLE_FULL_AND_RESEARCH_READ` is deliberately not reused here: its all-access
+/// `example-full` grant would satisfy the union rule and mask the denial.
 #[test]
 fn denied_access_names_the_grant_and_read_only_wording() {
     let audit_path = temp_path("case3-audit");
-    let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
+    let grants =
+        json!([{ "id": "research-read", "domains": ["research.example.org"], "access": "read" }]);
     let manifest = write_manifest("case3", &manifest_value("case3", grants, &audit_path));
+
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("tabs_create_mcp", json!({})),
+    );
+    let denied_text = text_of(&responses[1]);
+    assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
+    assert!(denied_text.contains("research-read"), "{denied_text}");
+    assert!(denied_text.contains("read only"), "{denied_text}");
+
+    std::fs::remove_file(&audit_path).ok();
+    std::fs::remove_file(&manifest).ok();
+}
+
+/// The s01 bugfix pin: `navigate` on a read-only grant's own domain is now PERMITTED (it is
+/// provably a GET; ADR-0022 Context + Decision 2), reaching dispatch (the ordinary no-extension
+/// `not connected` execution error) instead of a `Denied (` text result, and the audit line
+/// records `decision: allow`, the covering grant, and `rw: observe`.
+#[test]
+fn navigate_is_permitted_on_a_read_only_grant() {
+    let audit_path = temp_path("case-navigate-read-audit");
+    let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
+    let manifest = write_manifest(
+        "case-navigate-read",
+        &manifest_value("case-navigate-read", grants, &audit_path),
+    );
 
     let responses = drive(
         Some(&manifest),
@@ -222,10 +254,24 @@ fn denied_access_names_the_grant_and_read_only_wording() {
             json!({"url": "https://research.example.org/", "tabId": 1}),
         ),
     );
-    let denied_text = text_of(&responses[1]);
-    assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
-    assert!(denied_text.contains("research-read"), "{denied_text}");
-    assert!(denied_text.contains("read only"), "{denied_text}");
+    let permitted = by_id(&responses, 2);
+    assert_eq!(
+        permitted["result"]["isError"], true,
+        "reaches dispatch and fails at execution (no extension): {permitted:?}"
+    );
+    let permitted_text = text_of(permitted);
+    assert!(
+        permitted_text.starts_with("[hop: extension]") && permitted_text.contains("not connected"),
+        "policy allowed it through to dispatch: {permitted_text}"
+    );
+    assert!(!permitted_text.starts_with("Denied ("), "{permitted_text}");
+
+    let lines = read_audit_lines(&audit_path);
+    assert_eq!(lines.len(), 1, "one record for the call: {lines:?}");
+    assert_eq!(lines[0]["decision"], "allow");
+    assert_eq!(lines[0]["grant_id"], "research-read");
+    assert_eq!(lines[0]["rw"], "observe");
+    assert_eq!(lines[0]["domain"], "research.example.org");
 
     std::fs::remove_file(&audit_path).ok();
     std::fs::remove_file(&manifest).ok();

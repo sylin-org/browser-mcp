@@ -425,7 +425,7 @@ mod tests {
         ];
         // rw Mutate: "first" (read-only) would deny access; "second" (all) would allow. Since
         // "first" resolves (it is earlier), the outcome must be a deny attributed to "first".
-        match check(&grants, "navigate", RwClass::Mutate, &host("example.com")) {
+        match check(&grants, "form_input", RwClass::Mutate, &host("example.com")) {
             Decision::Deny(d) => assert_eq!(d.grant_id.as_deref(), Some("first")),
             other => panic!("expected a deny attributed to the first grant, got {other:?}"),
         }
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn unmatched_domain_denies() {
         let grants = vec![grant("g1", &["example.com"], Access::All)];
-        match check(&grants, "navigate", RwClass::Mutate, &host("evil.com")) {
+        match check(&grants, "form_input", RwClass::Mutate, &host("evil.com")) {
             Decision::Deny(d) => {
                 assert_eq!(d.rule, "unmatched_domain");
                 assert_eq!(d.grant_id, None);
@@ -451,7 +451,7 @@ mod tests {
 
         match check(
             &read_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
         ) {
@@ -482,7 +482,7 @@ mod tests {
         assert!(matches!(
             check(
                 &write_grant,
-                "navigate",
+                "form_input",
                 RwClass::Mutate,
                 &host("example.com")
             ),
@@ -491,7 +491,7 @@ mod tests {
         assert!(matches!(
             check(
                 &all_grant,
-                "navigate",
+                "form_input",
                 RwClass::Mutate,
                 &host("example.com")
             ),
@@ -514,12 +514,12 @@ mod tests {
         allow_list_grant.tools = Some(vec!["read_page".to_string()]);
         match check(
             &[allow_list_grant],
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
         ) {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/navigate"),
-            other => panic!("expected tool/navigate deny, got {other:?}"),
+            Decision::Deny(d) => assert_eq!(d.rule, "tool/form_input"),
+            other => panic!("expected tool/form_input deny, got {other:?}"),
         }
 
         let mut exclude_grant = grant("g", &["example.com"], Access::All);
@@ -559,10 +559,10 @@ mod tests {
         // A grant that both excludes the tool AND lacks the class must deny with rule
         // "tool/...", not "access".
         let mut g = grant("g", &["example.com"], Access::Read);
-        g.exclude_tools = Some(vec!["navigate".to_string()]);
-        match check(&[g], "navigate", RwClass::Mutate, &host("example.com")) {
-            Decision::Deny(d) => assert_eq!(d.rule, "tool/navigate"),
-            other => panic!("expected tool/navigate (not access), got {other:?}"),
+        g.exclude_tools = Some(vec!["form_input".to_string()]);
+        match check(&[g], "form_input", RwClass::Mutate, &host("example.com")) {
+            Decision::Deny(d) => assert_eq!(d.rule, "tool/form_input"),
+            other => panic!("expected tool/form_input (not access), got {other:?}"),
         }
     }
 
@@ -626,7 +626,7 @@ mod tests {
             match check(
                 &grants,
                 "navigate",
-                RwClass::Mutate,
+                RwClass::Observe,
                 &GoverningResource::OutOfScope(scheme.to_string()),
             ) {
                 Decision::Deny(d) => assert_eq!(d.rule, format!("scheme/{scheme}")),
@@ -637,7 +637,7 @@ mod tests {
             check(
                 &grants,
                 "navigate",
-                RwClass::Mutate,
+                RwClass::Observe,
                 &GoverningResource::AlwaysAllow
             ),
             Decision::Allow { grant_id: None }
@@ -765,7 +765,7 @@ mod tests {
 
         let enforce = check_with_mode(
             &read_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             None,
@@ -773,7 +773,7 @@ mod tests {
         );
         let observe = check_with_mode(
             &read_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             None,
@@ -789,10 +789,10 @@ mod tests {
         }
 
         let mut excluding = grant("g", &["example.com"], Access::All);
-        excluding.exclude_tools = Some(vec!["navigate".to_string()]);
+        excluding.exclude_tools = Some(vec!["form_input".to_string()]);
         let enforce = check_with_mode(
             &[excluding.clone()],
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             None,
@@ -800,7 +800,7 @@ mod tests {
         );
         let observe = check_with_mode(
             &[excluding],
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             None,
@@ -808,7 +808,7 @@ mod tests {
         );
         match (enforce, observe) {
             (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
-                assert_eq!(d_enforce.rule, "tool/navigate");
+                assert_eq!(d_enforce.rule, "tool/form_input");
                 assert_eq!(d_enforce.denial_id, d_observe.denial_id);
             }
             other => panic!("expected (Deny, ShadowDeny) for the tool rule, got {other:?}"),
@@ -816,7 +816,7 @@ mod tests {
 
         let enforce = check_with_mode(
             &read_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("evil.com"),
             None,
@@ -824,7 +824,7 @@ mod tests {
         );
         let observe = check_with_mode(
             &read_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("evil.com"),
             None,
@@ -846,7 +846,7 @@ mod tests {
         let all_grant = vec![grant("a", &["example.com"], Access::All)];
         let observe = check_with_mode(
             &all_grant,
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             None,
@@ -861,7 +861,7 @@ mod tests {
         observe_grant.mode = Some(EffectiveMode::Observe);
         let decision = check_with_mode(
             &[observe_grant],
-            "navigate",
+            "form_input",
             RwClass::Mutate,
             &host("example.com"),
             Some(EffectiveMode::Enforce),

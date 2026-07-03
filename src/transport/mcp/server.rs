@@ -1121,7 +1121,7 @@ mod tests {
         let rec = &lines[0];
         assert_eq!(rec["tool"], "navigate");
         assert!(rec["action"].is_null());
-        assert_eq!(rec["rw"], "mutate");
+        assert_eq!(rec["rw"], "observe");
         assert_eq!(rec["decision"], "allow");
         assert_eq!(rec["client"]["name"], "test-client");
         assert_eq!(rec["client"]["version"], "9.9.9");
@@ -1461,7 +1461,10 @@ mod tests {
     /// IDENTICAL `grant_id`/`denial_id`. The subprocess-level equivalent
     /// (`tests/shadow_mode.rs`) additionally proves `duration_ms` truthfully differs (`0` vs
     /// real elapsed) using the real dispatch path with no extension connected; this inline
-    /// version uses a fake extension so the observe-mode call can actually "execute".
+    /// version uses a fake extension so the observe-mode call can actually "execute". The
+    /// would-deny call is `tabs_create_mcp` (domain-less, denied via the union rule) since s01
+    /// reclassified `navigate` observe (ADR-0022): `navigate` is no longer deniable by a
+    /// read-only grant on its own covered domain.
     #[tokio::test]
     async fn grant_shadow_deny_runs_the_tool_and_matches_the_enforce_denial_id() {
         let enforce_path = temp_audit_path("shadow-enforce");
@@ -1485,10 +1488,7 @@ mod tests {
             Some(crate::governance::ports::EffectiveMode::Enforce),
         ));
         let browser = Browser::new();
-        let params = json!({
-            "name": "navigate",
-            "arguments": { "url": "https://example.com/", "tabId": 5 },
-        });
+        let params = json!({ "name": "tabs_create_mcp", "arguments": {} });
         let enforce_resp = handle_tools_call(
             &browser,
             &store,
@@ -1515,13 +1515,12 @@ mod tests {
             Some(crate::governance::ports::EffectiveMode::Observe),
         ));
         let observe_browser = Browser::new();
-        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
+        let (_ext, _seen) = attach_fake_extension(
             &observe_browser,
             vec![(
-                "navigate",
-                json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+                "tabs_create_mcp",
+                json!({ "content": [{ "type": "text", "text": "created" }] }),
             )],
-            vec![(5, Some("https://example.com/"))],
         );
         wait_connected(&observe_browser).await;
         let observe_resp = handle_tools_call(
@@ -1536,7 +1535,7 @@ mod tests {
             .as_str()
             .expect("text");
         assert_eq!(
-            observe_text, "navigated",
+            observe_text, "created",
             "shadow mode returns the ordinary tool result, no denial text: {observe_text}"
         );
         let observe_lines = read_lines(&observe_path);
