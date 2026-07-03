@@ -143,6 +143,7 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     let enforce_lines = read_audit_lines(&enforce_audit);
     assert_eq!(enforce_lines.len(), 1, "{enforce_lines:?}");
     assert_eq!(enforce_lines[0]["decision"], "deny");
+    assert_eq!(enforce_lines[0]["capability"], "read");
     assert_eq!(enforce_lines[0]["duration_ms"], 0);
     assert_eq!(enforce_lines[0]["grant_id"], "action-write-only");
     let enforce_denial_id = enforce_lines[0]["denial_id"]
@@ -173,6 +174,7 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     let observe_lines = read_audit_lines(&observe_audit);
     assert_eq!(observe_lines.len(), 1, "{observe_lines:?}");
     assert_eq!(observe_lines[0]["decision"], "shadow_deny");
+    assert_eq!(observe_lines[0]["capability"], "read");
     assert!(
         observe_lines[0]["duration_ms"].as_u64().unwrap_or(0) > 0,
         "a shadow-denied call actually ran and waited out the handshake window: {:?}",

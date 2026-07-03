@@ -15,32 +15,6 @@ use crate::governance::manifest::document::Grant;
 
 // --- Supporting placeholder and axis types ---
 
-/// Read/write classification of a tool call: the observe-vs-mutate axis (the core owns the
-/// axis; g05 owns the tool+action -> class table in the browser plugin). `Observe` is an
-/// observation; `Mutate` is a mutation. g05 maps each tool/action onto this and MAY extend
-/// the type minimally when it lands. Distinct from a grant's `access` field (`read` | `write`
-/// | `all`), which is a separate concept applied during enforcement (g13); see
-/// RECONCILIATION.md section 2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RwClass {
-    Observe,
-    Mutate,
-}
-
-impl RwClass {
-    /// The audit `rw` field vocabulary (shared format doc section 6.1): exactly `"observe"`
-    /// or `"mutate"`. Matches the `#[serde(rename_all = "snake_case")]` wire form but is
-    /// provided directly so callers (the audit recorder, g06) do not need to round-trip
-    /// through `serde_json` just to get the bare string.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RwClass::Observe => "observe",
-            RwClass::Mutate => "mutate",
-        }
-    }
-}
-
 /// The effective enforcement mode for a call (g15 resolves it: per-grant > manifest >
 /// `governance.mode`). `Observe` records a shadow denial but allows; `Enforce` blocks.
 /// Wire names are `observe` / `enforce`, matching the `governance.mode` config enum.
@@ -74,7 +48,7 @@ impl EffectiveMode {
     }
 }
 
-/// One capability primitive of the ADR-0022 Decision 1 taxonomy. Capabilities classify
+/// One capability primitive of the ADR-0022 Decision 1 taxonomy. Capabilities categorize
 /// an operation by EPISTEMIC STATUS -- what the governor can PROVE about it -- never by
 /// its (unknowable) downstream effect. `Read` is provably retrieval/observation only;
 /// `Action` dispatches UI input whose effect is page-determined and unknowable; `Write`
@@ -83,8 +57,8 @@ impl EffectiveMode {
 /// form). `Execute` is never implied by any other capability. Capabilities are
 /// independent primitives, not ordered tiers. Wire/file names are lowercase: `"read"`,
 /// `"action"`, `"write"`, `"execute"`. Consumed by grants ([`crate::governance::manifest::
-/// document::Grant::allowed`]) and enforcement ([`DecisionRequest::requires`]) since s05;
-/// `RwClass` remains only for the audit `rw` field until s06.
+/// document::Grant::allowed`]), enforcement ([`DecisionRequest::requires`]), and the audit
+/// `capability` field ([`AuditRecord::capability`], ADR-0022 Decision 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Capability {
@@ -218,10 +192,12 @@ pub struct AuditRecord {
     pub tool: String,
     /// The `computer` sub-action (e.g. `left_click`); `None` for every other tool.
     pub action: Option<String>,
-    /// `Observe` or `Mutate` (shared format doc section 8; serializes as `"observe"` /
-    /// `"mutate"` via `RwClass`'s own `snake_case` rename, so the record never hand-rolls a
-    /// second copy of that vocabulary).
-    pub rw: RwClass,
+    /// The action's directory requirement rendered as one string (ADR-0022 Decision 8):
+    /// the required set's single element's wire name for a singleton set, "none" for an
+    /// empty set and for a directory miss. Exactly one of "read", "action", "write",
+    /// "execute", "none". Replaces the rw field of shared format doc section 6.1, which
+    /// ADR-0022 supersedes.
+    pub capability: &'static str,
     /// Parser-normalized host of the current tab at decision time; always `None` until the
     /// enforcement task introduces current-tab tracking.
     pub domain: Option<String>,
@@ -246,8 +222,9 @@ pub struct AuditRecord {
 
 /// A session EVENT record (shared format doc section 6, g11): additive to the tool-call
 /// [`AuditRecord`] stream and deliberately distinguishable from it -- an `event` field, and
-/// NONE of `tool`/`action`/`rw`/`domain`/`decision`/`grant_id`/`denial_id`/`duration_ms`. The
-/// panic kill switch is the first (and, today, only) producer, with `event: "session_killed"`.
+/// NONE of `tool`/`action`/`capability`/`domain`/`decision`/`grant_id`/`denial_id`/
+/// `duration_ms`. The panic kill switch is the first (and, today, only) producer, with
+/// `event: "session_killed"`.
 /// Field ORDER is part of the format; `serde_json` is built with `preserve_order`. Downstream
 /// consumers that expect tool-call records (`policy simulate`, the activity ledger) must skip
 /// any line carrying an `event` field.
@@ -356,15 +333,17 @@ pub trait PolicyDecisionPoint: Send + Sync {
     fn decide(&self, req: &DecisionRequest) -> Decision;
 }
 
-/// The domain plugin's PURE half: classification, resource matching, sacred detection, and
-/// the advertised tool surface. It travels WITH the decision (it can relocate out-of-process
-/// with the PDP). Single-impl (the browser plugin); consumed via a concrete type or a
-/// generic bound, never `dyn`. g05 provides `classify`, g07 provides `matches`, g08 provides
-/// `is_sacred`, g07/g14 provide `tool_surface`; the trait MAY be minimally adjusted when they
-/// land (for example splitting `classify`/`matches` into sub-traits if that reads cleaner).
+/// The domain plugin's PURE half: the action directory, resource matching, sacred detection,
+/// and the advertised tool surface. It travels WITH the decision (it can relocate
+/// out-of-process with the PDP). Single-impl (the browser plugin); consumed via a concrete
+/// type or a generic bound, never `dyn`. g07 provides `matches`, g08 provides `is_sacred`,
+/// g07/g14 provide `tool_surface`; the trait MAY be minimally adjusted when they land (for
+/// example splitting `requires`/`matches` into sub-traits if that reads cleaner).
 pub trait DomainPolicy {
-    /// Classify a tool (and optional sub-action) as read or write. `None` if unknown.
-    fn classify(&self, tool: &str, action: Option<&str>) -> Option<RwClass>;
+    /// The bound capability requirement set for an action (ADR-0022 Decision 2). `action` is
+    /// consulted only when `tool` is `"computer"`. `None` is a directory miss (fail closed);
+    /// `Some(&[])` is unconditionally allowed.
+    fn requires(&self, tool: &str, action: Option<&str>) -> Option<&'static [Capability]>;
     /// True if `pattern` matches `resource` under the plugin's matching semantics.
     fn matches(&self, pattern: &ResourcePattern, resource: &GoverningResource) -> bool;
     /// True if `resource` is a sacred never-touch resource (always enforced).
@@ -499,7 +478,7 @@ mod tests {
             client: None,
             tool: tool.to_string(),
             action: None,
-            rw: RwClass::Mutate,
+            capability: "none",
             domain: None,
             decision: "allow",
             grant_id: None,
@@ -548,7 +527,7 @@ mod tests {
         for field in [
             "tool",
             "action",
-            "rw",
+            "capability",
             "domain",
             "decision",
             "grant_id",
@@ -577,7 +556,7 @@ mod tests {
                 "client",
                 "tool",
                 "action",
-                "rw",
+                "capability",
                 "domain",
                 "decision",
                 "grant_id",
@@ -689,15 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn rw_and_mode_wire_names_are_lowercase() {
-        assert_eq!(
-            serde_json::to_string(&RwClass::Observe).unwrap(),
-            "\"observe\""
-        );
-        assert_eq!(
-            serde_json::to_string(&RwClass::Mutate).unwrap(),
-            "\"mutate\""
-        );
+    fn mode_wire_names_are_lowercase() {
         assert_eq!(
             serde_json::to_string(&EffectiveMode::Observe).unwrap(),
             "\"observe\""

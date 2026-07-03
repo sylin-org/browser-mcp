@@ -11,13 +11,15 @@
 //! interleaved mid-write.
 
 use crate::browser::pattern::HostOutcome;
-use crate::browser::{advertise, classify, directory, pattern, polarity, redact, resource, sacred};
+use crate::browser::{advertise, directory, pattern, polarity, redact, resource, sacred};
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
 use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::source::{self, LoadedPolicy};
-use crate::governance::ports::{AuditSink, Decision, Denial, EffectiveMode, GoverningResource};
+use crate::governance::ports::{
+    AuditSink, Capability, Decision, Denial, EffectiveMode, GoverningResource,
+};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -86,17 +88,12 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
         Some(manifest) => Governance::governed(
             Box::new(LocalPdp::new(polarity::evaluate_host)),
             recorder.clone() as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
             manifest.grants.clone(),
             manifest.hash.clone(),
             manifest.mode,
         ),
-        None => Governance::all_open(
-            recorder as Arc<dyn AuditSink>,
-            classify::classify,
-            directory::requires,
-        ),
+        None => Governance::all_open(recorder as Arc<dyn AuditSink>, directory::requires),
     });
 
     // Panic kill switch (g11, ADR-0018 step 2): the extension signals `session_killed` once it
@@ -331,6 +328,14 @@ async fn handle_tools_call(
         None
     };
 
+    // The single per-call action-directory lookup (ADR-0022 Decision 2): a pure static table
+    // scan, no I/O, performed once and reused for every audit record this call produces
+    // (`requires` feeds the `capability` field, ADR-0022 Decision 8). A directory miss maps to
+    // an empty slice at every record site; `governance.decide` performs its own equivalent
+    // lookup internally for the decision path, so this is not the only lookup in the request,
+    // but it is the only one the server itself performs.
+    let requires: &[Capability] = directory::requires(name, action).unwrap_or(&[]);
+
     // Take-the-wheel hold (g10, ADR-0018 step 2): a user gesture, not a policy decision, so it
     // is checked before ANY dispatch machinery -- before governance.decide, before the sacred
     // check, before any extension traffic. A held call is answered immediately with a
@@ -338,7 +343,7 @@ async fn handle_tools_call(
     // resuming affects only future calls. Held calls still produce one audit record
     // (`decision: "allow"`, `held: true`, `duration_ms: 0`).
     if let Some(held_for) = browser.held_for() {
-        governance.record_held(name, action);
+        governance.record_held(name, action, requires);
         return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
     }
 
@@ -360,7 +365,7 @@ async fn handle_tools_call(
         sacred_check(browser, sacred_domains, name, &args).await
     };
     if let Some(denial) = denial {
-        governance.record_deny(name, action, &denial, tab_domain.as_deref());
+        governance.record_deny(name, action, requires, &denial, tab_domain.as_deref());
         return JsonRpcResponse::success(id, text_content(denial.message));
     }
 
@@ -392,7 +397,7 @@ async fn handle_tools_call(
             }
             match governance.decide(name, action, resource, config_mode) {
                 Decision::Deny(d) => {
-                    governance.record_deny(name, action, &d, audit_domain.as_deref());
+                    governance.record_deny(name, action, requires, &d, audit_domain.as_deref());
                     return JsonRpcResponse::success(id, text_content(d.message));
                 }
                 Decision::Allow { grant_id } => audit_grant_id = grant_id,
@@ -450,6 +455,7 @@ async fn handle_tools_call(
                 Decision::Deny(d) => {
                     governance.record_navigate_landing_deny(
                         action,
+                        requires,
                         &d,
                         landing_domain.as_deref(),
                         duration_ms,
@@ -466,11 +472,19 @@ async fn handle_tools_call(
     }
 
     if let Some(denial) = &shadow_denial {
-        governance.record_shadow_deny(name, action, denial, audit_domain.as_deref(), duration_ms);
+        governance.record_shadow_deny(
+            name,
+            action,
+            requires,
+            denial,
+            audit_domain.as_deref(),
+            duration_ms,
+        );
     } else {
         governance.record_call(
             name,
             action,
+            requires,
             duration_ms,
             audit_domain.as_deref(),
             audit_grant_id.as_deref(),
@@ -857,7 +871,6 @@ mod tests {
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
@@ -923,7 +936,6 @@ mod tests {
         let recorder = Arc::new(Recorder::disabled());
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
@@ -994,7 +1006,6 @@ mod tests {
         let recorder = Arc::new(Recorder::disabled());
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1051,7 +1062,6 @@ mod tests {
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
@@ -1102,7 +1112,6 @@ mod tests {
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1131,7 +1140,7 @@ mod tests {
         let rec = &lines[0];
         assert_eq!(rec["tool"], "navigate");
         assert!(rec["action"].is_null());
-        assert_eq!(rec["rw"], "observe");
+        assert_eq!(rec["capability"], "read");
         assert_eq!(rec["decision"], "allow");
         assert_eq!(rec["client"]["name"], "test-client");
         assert_eq!(rec["client"]["version"], "9.9.9");
@@ -1144,15 +1153,14 @@ mod tests {
     }
 
     /// Test 11: a `computer` call with `action: "screenshot"` records that action and the
-    /// observe class.
+    /// `read` capability (ADR-0022 Decision 2: `computer screenshot` requires `read`).
     #[tokio::test]
-    async fn computer_call_records_action_and_observe_class() {
+    async fn computer_call_records_action_and_read_capability() {
         let path = temp_audit_path("computer");
         let _ = std::fs::remove_file(&path);
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1166,7 +1174,7 @@ mod tests {
         let lines = read_lines(&path);
         assert_eq!(lines.len(), 1, "exactly one audit record");
         assert_eq!(lines[0]["action"], "screenshot");
-        assert_eq!(lines[0]["rw"], "observe");
+        assert_eq!(lines[0]["capability"], "read");
 
         std::fs::remove_file(&path).ok();
     }
@@ -1180,7 +1188,6 @@ mod tests {
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1203,7 +1210,6 @@ mod tests {
         let recorder = Arc::new(Recorder::disabled());
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1246,7 +1252,6 @@ mod tests {
         let recorder = Arc::new(Recorder::to_file(path.clone()));
         let governance = Arc::new(Governance::all_open(
             recorder as Arc<dyn AuditSink>,
-            classify::classify,
             directory::requires,
         ));
         let store =
@@ -1324,7 +1329,6 @@ mod tests {
         Governance::governed(
             Box::new(LocalPdp::new(polarity::evaluate_host)),
             sink,
-            classify::classify,
             directory::requires,
             grants,
             "test-hash".to_string(),

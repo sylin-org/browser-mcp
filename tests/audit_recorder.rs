@@ -5,7 +5,7 @@
 //! `set_client`/`record_call` live on `Governance`, not on `Recorder` directly (Recorder only
 //! implements the bare `AuditSink::record`).
 
-use browser_mcp::browser::{classify, directory};
+use browser_mcp::browser::directory;
 use browser_mcp::governance::dispatch::Governance;
 use browser_mcp::governance::ports::AuditSink;
 use serde_json::Value;
@@ -26,12 +26,18 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
     let recorder = browser_mcp::governance::audit::Recorder::to_file(path.clone());
     let governance = Governance::all_open(
         Arc::new(recorder) as Arc<dyn AuditSink>,
-        classify::classify,
         directory::requires,
     );
 
     governance.set_client("claude-code", "2.1.0");
-    governance.record_call("computer", Some("left_click"), 42, None, None);
+    governance.record_call(
+        "computer",
+        Some("left_click"),
+        directory::requires("computer", Some("left_click")).unwrap_or(&[]),
+        42,
+        None,
+        None,
+    );
 
     let content = std::fs::read_to_string(&path).expect("audit file exists");
     assert!(content.ends_with('\n'), "file ends with a single LF");
@@ -53,7 +59,7 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
             "client",
             "tool",
             "action",
-            "rw",
+            "capability",
             "domain",
             "decision",
             "grant_id",
@@ -67,7 +73,7 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
 
     assert_eq!(rec["tool"], "computer");
     assert_eq!(rec["action"], "left_click");
-    assert_eq!(rec["rw"], "mutate");
+    assert_eq!(rec["capability"], "action");
     assert_eq!(rec["decision"], "allow");
     assert_eq!(rec["duration_ms"], 42);
     assert_eq!(rec["held"], false);
@@ -88,7 +94,14 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
     chrono::DateTime::parse_from_rfc3339(ts).expect("ts parses as rfc3339");
 
     // Append, not truncate: a second call must add a second line.
-    governance.record_call("navigate", None, 5, None, None);
+    governance.record_call(
+        "navigate",
+        None,
+        directory::requires("navigate", None).unwrap_or(&[]),
+        5,
+        None,
+        None,
+    );
     let content = std::fs::read_to_string(&path).expect("audit file exists");
     assert_eq!(content.lines().count(), 2, "second call appends a line");
 
@@ -106,7 +119,6 @@ fn session_killed_writes_one_session_event_record() {
     let recorder = browser_mcp::governance::audit::Recorder::to_file(path.clone());
     let governance = Arc::new(Governance::all_open(
         Arc::new(recorder) as Arc<dyn AuditSink>,
-        classify::classify,
         directory::requires,
     ));
     governance.set_client("claude-code", "2.1.0");
@@ -166,7 +178,7 @@ fn session_killed_writes_one_session_event_record() {
     for field in [
         "tool",
         "action",
-        "rw",
+        "capability",
         "domain",
         "decision",
         "grant_id",

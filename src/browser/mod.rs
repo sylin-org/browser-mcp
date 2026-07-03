@@ -11,17 +11,16 @@
 //! enforced), the URL-to-governing-resource classification ([`resource`], g13: what a URL IS,
 //! for the grant enforcement pre/post-dispatch checks), the tool-advertisement filter
 //! ([`advertise`], g14: a visibility optimization over `tools/list`, never a security
-//! boundary), and the read/write classification table ([`classify`], the plugin half of
-//! [`crate::governance::ports::DomainPolicy::classify`]; the observe/mutate axis type itself
-//! is core).
+//! boundary), and the action directory ([`directory`], ADR-0022 Decision 2: per-action
+//! bound capability requirement sets and agent-facing descriptions, the plugin half of
+//! [`crate::governance::ports::DomainPolicy::requires`]). `directory` is the sole
+//! enforcement, advertisement, and audit authority as of s06; the earlier observe/mutate
+//! classification table is deleted.
 //!
-//! Stage 3 adds the action directory ([`directory`], ADR-0022 Decision 2: per-action
-//! capability requirement sets and agent-facing descriptions; additive alongside
-//! [`classify`] until the s05/s06 switch). It may depend on the governance core and on
-//! std/serde; the governance core must never depend back on this module.
+//! It may depend on the governance core and on std/serde; the governance core must never
+//! depend back on this module.
 
 pub mod advertise;
-pub mod classify;
 pub mod directory;
 pub mod pattern;
 pub mod polarity;

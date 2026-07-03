@@ -152,9 +152,8 @@ impl AuditSink for Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::ports::RwClass;
 
-    fn sample_record(tool: &str, action: Option<&str>, rw: RwClass) -> AuditRecord {
+    fn sample_record(tool: &str, action: Option<&str>, capability: &'static str) -> AuditRecord {
         AuditRecord {
             event_id: "00000000-0000-4000-8000-000000000000".to_string(),
             ts: "2026-07-02T00:00:00.000Z".to_string(),
@@ -162,7 +161,7 @@ mod tests {
             client: None,
             tool: tool.to_string(),
             action: action.map(str::to_string),
-            rw,
+            capability,
             domain: None,
             decision: "allow",
             grant_id: None,
@@ -196,8 +195,8 @@ mod tests {
         let path = temp_path("append");
         let _ = std::fs::remove_file(&path);
         let recorder = Recorder::to_file(path.clone());
-        recorder.record(&sample_record("navigate", None, RwClass::Mutate));
-        recorder.record(&sample_record("read_page", None, RwClass::Observe));
+        recorder.record(&sample_record("navigate", None, "read"));
+        recorder.record(&sample_record("read_page", None, "read"));
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
@@ -213,7 +212,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let recorder = Recorder::disabled();
         assert!(!recorder.is_enabled());
-        recorder.record(&sample_record("navigate", None, RwClass::Mutate));
+        recorder.record(&sample_record("navigate", None, "read"));
         assert!(!path.exists());
     }
 
@@ -222,7 +221,7 @@ mod tests {
         let path = temp_path("session-event");
         let _ = std::fs::remove_file(&path);
         let recorder = Recorder::to_file(path.clone());
-        recorder.record(&sample_record("navigate", None, RwClass::Mutate));
+        recorder.record(&sample_record("navigate", None, "read"));
         recorder.record_session_event(&sample_session_event());
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
@@ -291,7 +290,7 @@ mod tests {
         recorder.reload(&config);
         assert!(recorder.is_enabled());
 
-        recorder.record(&sample_record("navigate", None, RwClass::Mutate));
+        recorder.record(&sample_record("navigate", None, "read"));
         assert!(file_path.exists());
         std::fs::remove_file(&file_path).ok();
     }

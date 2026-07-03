@@ -14,11 +14,13 @@
 //! section 4.5: the flight recorder still records under all-open when `audit.enabled` is true), so
 //! the audit sink is a field of `Governance` itself, not nested inside the governed-only state.
 //!
-//! `classify` and `requires` are injected as function pointers rather than named directly: this
-//! module lives in the domain-agnostic governance core, and the concrete tool+action tables are
-//! browser-domain (`browser::classify` for the audit `rw` field, `browser::directory::requires`
-//! for the ADR-0022 decision path; the a7 arch-test forbids a `governance -> browser` edge). The
-//! crate-root binary supplies the browser plugin's real implementations at construction.
+//! `requires` is injected as a function pointer rather than named directly: this module lives
+//! in the domain-agnostic governance core, and the concrete action directory is browser-domain
+//! (`browser::directory::requires`, ADR-0022 Decision 2; the a7 arch-test forbids a
+//! `governance -> browser` edge). The crate-root binary supplies the browser plugin's real
+//! implementation at construction. The audit `capability` field (ADR-0022 Decision 8) is
+//! derived from the SAME `requires` slice the caller looked up for `decide`, threaded in by
+//! every public record function -- there is no second, browser-supplied fn pointer for audit.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -26,7 +28,7 @@ use std::time::Duration;
 use crate::governance::manifest::document::Grant;
 use crate::governance::ports::{
     AuditRecord, AuditSink, Capability, ClientInfo, Decision, DecisionRequest, Denial,
-    EffectiveMode, GoverningResource, PolicyDecisionPoint, RwClass, SessionEventRecord,
+    EffectiveMode, GoverningResource, PolicyDecisionPoint, SessionEventRecord,
 };
 
 /// How long a take-the-wheel hold may last before [`hold_message`] appends the resume hint
@@ -106,15 +108,14 @@ pub struct Governance {
     /// Always present; `NullSink` when audit is disabled. Recording is orthogonal to
     /// [`Mode`] (shared format doc section 4.5).
     audit: Arc<dyn AuditSink>,
-    /// The browser plugin's tool+action -> observe/mutate table, injected so this core module
-    /// never names the browser plugin directly. Consumed ONLY by [`Self::build_record`] for the
-    /// audit `rw` field; the decision path uses [`Self::requires`] instead (ADR-0022). Retired
-    /// in s06 alongside the audit `rw` field itself.
-    classify: fn(&str, Option<&str>) -> Option<RwClass>,
     /// The browser plugin's action directory lookup (ADR-0022 Decision 2), injected so this
     /// core module never names the browser plugin directly. `None` is a directory miss (fail
     /// closed); `Some(&[])` is an unconditionally-allowed action; `Some(reqs)` is the bound
-    /// capability requirement set a `DecisionRequest` carries.
+    /// capability requirement set a `DecisionRequest` carries. Consumed by [`Self::decide`].
+    /// This is the ONLY browser-supplied fn pointer `Governance` holds: every public record
+    /// function now takes its own `requires: &[Capability]` parameter (the caller's own
+    /// lookup through this same table, ADR-0022 Decision 8), rather than `Governance` looking
+    /// it up a second time for audit purposes.
     requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
     /// The MCP client identity captured from the `initialize` request, first-wins for the
     /// whole session (shared format doc section 6.1 `client` field).
@@ -152,28 +153,23 @@ impl Governance {
     /// to all-open). This is the facade used in production until the manifest task lands.
     pub fn all_open(
         audit: Arc<dyn AuditSink>,
-        classify: fn(&str, Option<&str>) -> Option<RwClass>,
         requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
     ) -> Self {
         Self {
             mode: Mode::AllOpen,
             audit,
-            classify,
             requires,
             client: Mutex::new(None),
         }
     }
 
-    /// A governed facade over the given decision point, audit sink, classifier, action
-    /// directory lookup, the active manifest's resolved grants, its content hash (g13), and its
-    /// own `mode` field, if any (g15). `transport::mcp::server::run` constructs this with a
-    /// `LocalPdp` once a manifest is active; `all_open` stays the facade for a session with no
-    /// manifest.
-    #[allow(clippy::too_many_arguments)]
+    /// A governed facade over the given decision point, audit sink, action directory lookup,
+    /// the active manifest's resolved grants, its content hash (g13), and its own `mode` field,
+    /// if any (g15). `transport::mcp::server::run` constructs this with a `LocalPdp` once a
+    /// manifest is active; `all_open` stays the facade for a session with no manifest.
     pub fn governed(
         pdp: Box<dyn PolicyDecisionPoint>,
         audit: Arc<dyn AuditSink>,
-        classify: fn(&str, Option<&str>) -> Option<RwClass>,
         requires: fn(&str, Option<&str>) -> Option<&'static [Capability]>,
         grants: Vec<Grant>,
         manifest_hash: String,
@@ -187,7 +183,6 @@ impl Governance {
                 manifest_mode,
             }),
             audit,
-            classify,
             requires,
             client: Mutex::new(None),
         }
@@ -321,14 +316,15 @@ impl Governance {
     ///
     /// `identity` and `manifest` are always `None` until the identity/manifest-audit tasks land;
     /// `decision` is always `"allow"` (a denied call goes through [`Self::record_deny`]
-    /// instead). A classification miss (`self.classify` returns `None`: an unknown tool, or a
-    /// `computer` call with a missing or unknown action) records [`RwClass::Mutate`]: the
-    /// record vocabulary is only observe/mutate, and an unclassifiable call must never be
-    /// presented as harmless observation.
+    /// instead). `requires` is the call's bound capability requirement set (ADR-0022 Decision
+    /// 2), looked up by the caller from the same action directory `decide` consulted; a
+    /// directory miss maps to an empty requires slice at the call site and records `"none"`;
+    /// the `decision` and denial-rule fields carry the deny story.
     pub fn record_call(
         &self,
         tool: &str,
         action: Option<&str>,
+        requires: &[Capability],
         duration_ms: u64,
         domain: Option<&str>,
         grant_id: Option<&str>,
@@ -336,6 +332,7 @@ impl Governance {
         let record = self.build_record(
             tool,
             action,
+            requires,
             domain,
             "allow",
             grant_id.map(str::to_string),
@@ -349,23 +346,26 @@ impl Governance {
     /// Build and record one audit record for a call DENIED before dispatch (the sacred-domains
     /// rule, g08; later the grant-enforcement rules, g13). No tool call ever ran, so
     /// `duration_ms` is `0` per shared format doc section 6.1. `action` is the `computer`
-    /// sub-action when `tool == "computer"`, `None` otherwise (the same classification wiring
-    /// [`Self::record_call`] uses -- a denial is still classified, since the record's `rw` field
-    /// is about the call's nature, not its outcome). `domain` is the current tab's host at
-    /// decision time when a current-tab check resolved one, `None` otherwise -- this is
-    /// independent of which host the denial itself names (`denial.domain`): a navigate-target
-    /// denial with an unresolvable current tab still records `domain: null` even though the
-    /// denial message names the target (shared format doc section 6.1).
+    /// sub-action when `tool == "computer"`, `None` otherwise. `requires` is the call's bound
+    /// capability requirement set (ADR-0022 Decision 2); a denial is still recorded with its
+    /// true requirement set, since the record's `capability` field is about the call's nature,
+    /// not its outcome. `domain` is the current tab's host at decision time when a current-tab
+    /// check resolved one, `None` otherwise -- this is independent of which host the denial
+    /// itself names (`denial.domain`): a navigate-target denial with an unresolvable current
+    /// tab still records `domain: null` even though the denial message names the target
+    /// (shared format doc section 6.1).
     pub fn record_deny(
         &self,
         tool: &str,
         action: Option<&str>,
+        requires: &[Capability],
         denial: &Denial,
         domain: Option<&str>,
     ) {
         let record = self.build_record(
             tool,
             action,
+            requires,
             domain,
             "deny",
             denial.grant_id.clone(),
@@ -385,6 +385,7 @@ impl Governance {
     pub fn record_navigate_landing_deny(
         &self,
         action: Option<&str>,
+        requires: &[Capability],
         denial: &Denial,
         domain: Option<&str>,
         duration_ms: u64,
@@ -392,6 +393,7 @@ impl Governance {
         let record = self.build_record(
             "navigate",
             action,
+            requires,
             domain,
             "deny",
             denial.grant_id.clone(),
@@ -414,6 +416,7 @@ impl Governance {
         &self,
         tool: &str,
         action: Option<&str>,
+        requires: &[Capability],
         denial: &Denial,
         domain: Option<&str>,
         duration_ms: u64,
@@ -421,6 +424,7 @@ impl Governance {
         let record = self.build_record(
             tool,
             action,
+            requires,
             domain,
             "shadow_deny",
             denial.grant_id.clone(),
@@ -437,8 +441,8 @@ impl Governance {
     /// `0`, exactly like [`Self::record_deny`]'s zero-duration convention -- but `held` is
     /// `true` and `grant_id`/`denial_id` stay `None`. `domain` is always `None`: a held call
     /// must not touch the extension, so no current-tab host is ever resolved for it.
-    pub fn record_held(&self, tool: &str, action: Option<&str>) {
-        let record = self.build_record(tool, action, None, "allow", None, None, 0, true);
+    pub fn record_held(&self, tool: &str, action: Option<&str>, requires: &[Capability]) {
+        let record = self.build_record(tool, action, requires, None, "allow", None, None, 0, true);
         self.audit.record(&record);
     }
 
@@ -447,6 +451,7 @@ impl Governance {
         &self,
         tool: &str,
         action: Option<&str>,
+        requires: &[Capability],
         domain: Option<&str>,
         decision: &'static str,
         grant_id: Option<String>,
@@ -454,7 +459,7 @@ impl Governance {
         duration_ms: u64,
         held: bool,
     ) -> AuditRecord {
-        let rw = (self.classify)(tool, action).unwrap_or(RwClass::Mutate);
+        let capability = requires.first().map(Capability::as_str).unwrap_or("none");
         AuditRecord {
             event_id: uuid::Uuid::new_v4().to_string(),
             ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -462,7 +467,7 @@ impl Governance {
             client: self.current_client(),
             tool: tool.to_string(),
             action: action.map(str::to_string),
-            rw,
+            capability,
             domain: domain.map(str::to_string),
             decision,
             grant_id,
@@ -481,9 +486,10 @@ impl Governance {
     }
 
     /// Record the panic kill switch's session event (g11): the user severed the session. A
-    /// session event, not a tool call -- carries no `tool`/`action`/`rw`/`domain`/`decision`/
-    /// `grant_id`/`denial_id`/`duration_ms`, only the shared `event_id`/`ts`/`identity`/
-    /// `client`/`manifest` fields plus `event: "session_killed"`. Called from the
+    /// session event, not a tool call -- carries no
+    /// `tool`/`action`/`capability`/`domain`/`decision`/`grant_id`/`denial_id`/`duration_ms`,
+    /// only the shared `event_id`/`ts`/`identity`/`client`/`manifest` fields plus
+    /// `event: "session_killed"`. Called from the
     /// `Browser::on_session_killed` hook, registered once at session startup; the extension
     /// signals the event at most once per kill (the flag transition is idempotent), so this
     /// fires at most once per kill too.
@@ -505,10 +511,6 @@ mod tests {
     use super::*;
     use crate::governance::ports::NoopPdp;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn no_classification(_tool: &str, _action: Option<&str>) -> Option<RwClass> {
-        None
-    }
 
     fn no_requires(_tool: &str, _action: Option<&str>) -> Option<&'static [Capability]> {
         None
@@ -558,8 +560,8 @@ mod tests {
         }
     }
 
-    /// A sink that keeps every record, so tests can assert on the actual built fields (`rw`,
-    /// `action`, `client`) rather than just call count.
+    /// A sink that keeps every record, so tests can assert on the actual built fields
+    /// (`capability`, `action`, `client`) rather than just call count.
     #[derive(Default)]
     struct CapturingAuditSink {
         records: Mutex<Vec<AuditRecord>>,
@@ -599,21 +601,10 @@ mod tests {
         }
     }
 
-    /// A stand-in for the browser plugin's real classifier: `computer`/`screenshot` observes,
-    /// `computer`/`left_click` mutates, `read_page` observes, everything else misses.
-    fn sample_classify(tool: &str, action: Option<&str>) -> Option<RwClass> {
-        match (tool, action) {
-            ("computer", Some("screenshot")) => Some(RwClass::Observe),
-            ("computer", Some("left_click")) => Some(RwClass::Mutate),
-            ("read_page", None) => Some(RwClass::Observe),
-            _ => None,
-        }
-    }
-
     #[test]
     fn all_open_decide_is_allow_and_still_records() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
+        let g = Governance::all_open(sink.clone(), no_requires);
         assert!(matches!(
             g.decide(
                 "navigate",
@@ -623,7 +614,7 @@ mod tests {
             ),
             Decision::Allow { grant_id: None }
         ));
-        g.record_call("navigate", None, 5, None, None);
+        g.record_call("navigate", None, &[], 5, None, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
@@ -633,7 +624,6 @@ mod tests {
         let g = Governance::governed(
             Box::new(NoopPdp),
             sink.clone(),
-            sample_classify,
             sample_requires,
             Vec::new(),
             String::new(),
@@ -648,7 +638,7 @@ mod tests {
             ),
             Decision::Allow { .. }
         ));
-        g.record_call("navigate", None, 0, None, None);
+        g.record_call("navigate", None, &[], 0, None, None);
         assert_eq!(sink.count.load(Ordering::SeqCst), 1);
     }
 
@@ -661,7 +651,6 @@ mod tests {
         let g = Governance::governed(
             Box::new(NoopPdp),
             sink,
-            no_classification,
             no_requires,
             Vec::new(),
             "hash".to_string(),
@@ -696,7 +685,6 @@ mod tests {
         let g = Governance::governed(
             Box::new(AlwaysDenyPdp),
             sink,
-            no_classification,
             sample_requires,
             Vec::new(),
             "hash".to_string(),
@@ -714,42 +702,80 @@ mod tests {
     }
 
     #[test]
-    fn classification_miss_records_mutate() {
+    fn computer_action_requires_flows_into_capability() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
-        g.record_call("no_such_tool", None, 0, None, None);
-        assert_eq!(sink.last().rw, RwClass::Mutate);
-        g.record_call("computer", None, 0, None, None);
-        assert_eq!(
-            sink.last().rw,
-            RwClass::Mutate,
-            "a computer call with no action is also a classification miss"
+        let g = Governance::all_open(sink.clone(), sample_requires);
+
+        g.record_call(
+            "computer",
+            Some("screenshot"),
+            &[Capability::Read],
+            0,
+            None,
+            None,
         );
-    }
-
-    #[test]
-    fn computer_action_classification_flows_into_rw() {
-        let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
-
-        g.record_call("computer", Some("screenshot"), 0, None, None);
         let rec = sink.last();
-        assert_eq!(rec.rw, RwClass::Observe);
+        assert_eq!(rec.capability, "read");
         assert_eq!(rec.action.as_deref(), Some("screenshot"));
 
-        g.record_call("computer", Some("left_click"), 0, None, None);
-        assert_eq!(sink.last().rw, RwClass::Mutate);
+        g.record_call(
+            "computer",
+            Some("left_click"),
+            &[Capability::Action],
+            0,
+            None,
+            None,
+        );
+        assert_eq!(sink.last().capability, "action");
 
-        g.record_call("read_page", None, 0, None, None);
+        g.record_call("read_page", None, &[Capability::Read], 0, None, None);
         let rec = sink.last();
-        assert_eq!(rec.rw, RwClass::Observe);
+        assert_eq!(rec.capability, "read");
         assert_eq!(rec.action, None);
+    }
+
+    /// `requires_empty_records_capability_none`: a directory-less/empty-requires call records
+    /// `capability: "none"` and `decision: "allow"` (ADR-0022 Decision 8).
+    #[test]
+    fn requires_empty_records_capability_none() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), no_requires);
+        g.record_call("tabs_create_mcp", None, &[], 0, None, None);
+        let rec = sink.last();
+        assert_eq!(rec.capability, "none");
+        assert_eq!(rec.decision, "allow");
+    }
+
+    /// `deny_record_carries_the_capability_of_the_denied_call`: a deny record's `capability`
+    /// reflects the call's own requirement set, not the outcome.
+    #[test]
+    fn deny_record_carries_the_capability_of_the_denied_call() {
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone(), no_requires);
+        let denial = Denial {
+            rule: "capability".to_string(),
+            grant_id: None,
+            denial_id: "D-00000001".to_string(),
+            domain: String::new(),
+            message: "Denied (D-00000001): javascript_tool needs the 'execute' capability."
+                .to_string(),
+        };
+        g.record_deny(
+            "javascript_tool",
+            None,
+            &[Capability::Execute],
+            &denial,
+            None,
+        );
+        let rec = sink.last();
+        assert_eq!(rec.capability, "execute");
+        assert_eq!(rec.decision, "deny");
     }
 
     #[test]
     fn set_client_first_capture_wins() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
+        let g = Governance::all_open(sink.clone(), no_requires);
         g.set_client("a", "1");
         g.set_client("b", "2");
         let stored = g.client.lock().unwrap();
@@ -757,7 +783,7 @@ mod tests {
         assert_eq!(stored.as_ref().unwrap().version, "1");
         drop(stored);
 
-        g.record_call("navigate", None, 0, None, None);
+        g.record_call("navigate", None, &[], 0, None, None);
         let client = sink.last().client.expect("client info recorded");
         assert_eq!(client.name, "a");
         assert_eq!(client.version, "1");
@@ -766,15 +792,15 @@ mod tests {
     #[test]
     fn record_call_passes_the_resolved_domain_through() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
-        g.record_call("read_page", None, 0, Some("www.mybank.com"), None);
+        let g = Governance::all_open(sink.clone(), no_requires);
+        g.record_call("read_page", None, &[], 0, Some("www.mybank.com"), None);
         assert_eq!(sink.last().domain.as_deref(), Some("www.mybank.com"));
     }
 
     #[test]
     fn record_deny_writes_a_zero_duration_deny_record() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
+        let g = Governance::all_open(sink.clone(), sample_requires);
         let denial = Denial {
             rule: "sacred/*.mybank.com".to_string(),
             grant_id: None,
@@ -783,21 +809,27 @@ mod tests {
             message: "Denied (D-af6633ec): www.mybank.com is on the user's never-touch list."
                 .to_string(),
         };
-        g.record_deny("read_page", None, &denial, Some("www.mybank.com"));
+        g.record_deny(
+            "read_page",
+            None,
+            &[Capability::Read],
+            &denial,
+            Some("www.mybank.com"),
+        );
         let rec = sink.last();
         assert_eq!(rec.decision, "deny");
         assert_eq!(rec.denial_id.as_deref(), Some("D-af6633ec"));
         assert_eq!(rec.grant_id, None);
         assert_eq!(rec.duration_ms, 0);
         assert_eq!(rec.domain.as_deref(), Some("www.mybank.com"));
-        assert_eq!(rec.rw, RwClass::Observe);
+        assert_eq!(rec.capability, "read");
     }
 
     #[test]
     fn record_held_writes_an_allow_record_with_held_true_and_no_domain() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), sample_classify, sample_requires);
-        g.record_held("computer", Some("screenshot"));
+        let g = Governance::all_open(sink.clone(), sample_requires);
+        g.record_held("computer", Some("screenshot"), &[Capability::Read]);
         let rec = sink.last();
         assert_eq!(rec.decision, "allow");
         assert!(rec.held);
@@ -805,15 +837,15 @@ mod tests {
         assert_eq!(rec.domain, None);
         assert_eq!(rec.grant_id, None);
         assert_eq!(rec.denial_id, None);
-        assert_eq!(rec.rw, RwClass::Observe);
+        assert_eq!(rec.capability, "read");
         assert_eq!(rec.action.as_deref(), Some("screenshot"));
     }
 
     #[test]
     fn record_call_and_record_deny_leave_held_false() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
-        g.record_call("navigate", None, 5, None, None);
+        let g = Governance::all_open(sink.clone(), no_requires);
+        g.record_call("navigate", None, &[], 5, None, None);
         assert!(!sink.last().held);
 
         let denial = Denial {
@@ -824,7 +856,7 @@ mod tests {
             message: "Denied (D-171052e3): mybank.com is on the user's never-touch list."
                 .to_string(),
         };
-        g.record_deny("navigate", None, &denial, None);
+        g.record_deny("navigate", None, &[], &denial, None);
         assert!(!sink.last().held);
     }
 
@@ -864,7 +896,7 @@ mod tests {
     #[test]
     fn record_session_killed_writes_a_session_event_with_no_tool_call_fields() {
         let sink = Arc::new(CapturingAuditSink::default());
-        let g = Governance::all_open(sink.clone(), no_classification, no_requires);
+        let g = Governance::all_open(sink.clone(), no_requires);
         g.set_client("claude-code", "2.1.0");
         g.record_session_killed();
         let rec = sink.last_session_event();
@@ -892,7 +924,7 @@ mod tests {
     #[test]
     fn governance_status_is_none_under_all_open() {
         let sink = Arc::new(CountingAuditSink::default());
-        let g = Governance::all_open(sink, no_classification, no_requires);
+        let g = Governance::all_open(sink, no_requires);
         assert_eq!(g.governance_status(EffectiveMode::Enforce), None);
     }
 
@@ -951,7 +983,6 @@ mod tests {
         let g = Governance::governed(
             Box::new(NoopPdp),
             sink,
-            no_classification,
             no_requires,
             vec![one_grant()],
             String::new(),

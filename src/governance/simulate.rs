@@ -200,10 +200,12 @@ enum LineOutcome {
 }
 
 /// Evaluate one non-empty replay line per the Required behavior section 4 bucket table, in
-/// the exact order specified there. The recorded `rw`/`decision`/`grant_id`/`denial_id` and
-/// every other field besides `tool`/`action`/`domain` are read by nobody: simulate replays the
-/// action under the CANDIDATE manifest, never trusts or compares against the original
-/// decision.
+/// the exact order specified there. The recorded `capability`/`decision`/`grant_id`/
+/// `denial_id` (or, on an old rw-era line, `rw`) and every other field besides
+/// `tool`/`action`/`domain` are read by nobody: simulate replays the action under the
+/// CANDIDATE manifest, never trusts or compares against the original decision. Old rw-era
+/// audit lines replay identically to capability-era ones, since only `tool`/`action`/`domain`
+/// are ever read.
 fn evaluate_line(
     manifest: &Manifest,
     line: &str,

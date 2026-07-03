@@ -199,7 +199,9 @@ fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
         .find(|l| l["decision"] == "deny")
         .unwrap_or_else(|| panic!("no deny record in {lines:?}"));
     assert_eq!(allow_line["grant_id"], "example-full");
+    assert_eq!(allow_line["capability"], "read");
     assert_eq!(deny_line["grant_id"], Value::Null);
+    assert_eq!(deny_line["capability"], "read");
     assert_eq!(deny_line["duration_ms"], 0);
     assert_eq!(deny_line["denial_id"], denial_id);
 
@@ -244,7 +246,7 @@ fn denied_capability_names_the_grant_and_the_missing_capability() {
 /// The s01 bugfix pin: `navigate` on a read-only grant's own domain is now PERMITTED (it is
 /// provably a GET; ADR-0022 Context + Decision 2), reaching dispatch (the ordinary no-extension
 /// `not connected` execution error) instead of a `Denied (` text result, and the audit line
-/// records `decision: allow`, the covering grant, and `rw: observe`.
+/// records `decision: allow`, the covering grant, and `capability: read`.
 #[test]
 fn navigate_is_permitted_on_a_read_only_grant() {
     let audit_path = temp_path("case-navigate-read-audit");
@@ -277,7 +279,7 @@ fn navigate_is_permitted_on_a_read_only_grant() {
     assert_eq!(lines.len(), 1, "one record for the call: {lines:?}");
     assert_eq!(lines[0]["decision"], "allow");
     assert_eq!(lines[0]["grant_id"], "research-read");
-    assert_eq!(lines[0]["rw"], "observe");
+    assert_eq!(lines[0]["capability"], "read");
     assert_eq!(lines[0]["domain"], "research.example.org");
 
     std::fs::remove_file(&audit_path).ok();
@@ -444,6 +446,44 @@ fn denial_id_is_deterministic_within_and_across_sessions() {
         id_a, id_c,
         "same id across a fresh spawn of the same manifest file"
     );
+
+    std::fs::remove_file(&audit_path).ok();
+    std::fs::remove_file(&manifest).ok();
+}
+
+/// ADR-0022 Decision 2/5: a call whose bound requirement set is empty (`tabs_create_mcp`,
+/// `requires: []`) short-circuits to allow BEFORE any grant scan -- proven here under a
+/// manifest with an empty `grants` array (nothing could possibly cover it if grants were
+/// consulted). The call reaches ordinary dispatch (the familiar `not connected` execution
+/// error), never a `Denied (` text result, and the single audit line records `capability:
+/// "none"`, no attributed grant.
+#[test]
+fn requires_empty_call_records_capability_none() {
+    let audit_path = temp_path("case-requires-empty-audit");
+    let manifest = write_manifest(
+        "case-requires-empty",
+        &manifest_value("case-requires-empty", json!([]), &audit_path),
+    );
+
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("tabs_create_mcp", json!({})),
+    );
+    let resp = by_id(&responses, 2);
+    assert_eq!(
+        resp["result"]["isError"], true,
+        "reaches dispatch and fails at execution (no extension): {resp:?}"
+    );
+    let text = text_of(resp);
+    assert!(text.contains("not connected"), "{text}");
+    assert!(!text.starts_with("Denied ("), "{text}");
+
+    let lines = read_audit_lines(&audit_path);
+    assert_eq!(lines.len(), 1, "one record for the call: {lines:?}");
+    assert_eq!(lines[0]["decision"], "allow");
+    assert_eq!(lines[0]["capability"], "none");
+    assert_eq!(lines[0]["grant_id"], Value::Null);
+    assert_eq!(lines[0]["held"], false);
 
     std::fs::remove_file(&audit_path).ok();
     std::fs::remove_file(&manifest).ok();

@@ -68,13 +68,6 @@ impl AuditSink for NullAuditSink {
     fn record_session_event(&self, _record: &browser_mcp::governance::ports::SessionEventRecord) {}
 }
 
-fn no_classification(
-    _tool: &str,
-    _action: Option<&str>,
-) -> Option<browser_mcp::governance::ports::RwClass> {
-    None
-}
-
 fn no_requires(
     _tool: &str,
     _action: Option<&str>,
@@ -84,11 +77,7 @@ fn no_requires(
 
 #[test]
 fn facade_decide_is_all_open_after_the_move() {
-    let governance = Governance::all_open(
-        std::sync::Arc::new(NullAuditSink),
-        no_classification,
-        no_requires,
-    );
+    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink), no_requires);
     for name in GOLDEN_TOOL_NAMES {
         assert!(
             matches!(

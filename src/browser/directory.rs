@@ -1,7 +1,7 @@
 //! The action directory of ADR-0022 Decision 2: a per-action bound capability requirement
 //! set plus a curt, agent-targeted description, compiled in as static browser-domain data.
-//! This is additive alongside [`crate::browser::classify`], which remains the enforcement
-//! and audit authority until the s05/s06 switch moves consumers over to this table.
+//! This is now the sole enforcement, advertisement, and audit authority (ADR-0022 Decision
+//! 8, s06); the earlier observe/mutate classification table is deleted.
 //!
 //! Absent-vs-empty invariant (ADR-0022 Decision 2): [`requires`] returning `None` is a
 //! classification MISS -- the action has no directory entry, and callers must deny it (fail

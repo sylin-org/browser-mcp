@@ -10,8 +10,8 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02`, `s03`, `s04`, `s05` landed.
-- NEXT TASK: `s06` (`docs/tasks/stage-3/s06-audit-capability.md`).
+- Progress: `s01`, `s02`, `s03`, `s04`, `s05`, `s06` landed.
+- NEXT TASK: `s07` (`docs/tasks/stage-3/s07-explain-tool.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -363,3 +363,96 @@ remembering earlier work; re-read files.
   advertised-tool-list consequence, a permitted read-class sequence, and the exact
   `capability` denial wording for both a `computer left_click` and a direct `form_input`
   call).
+
+### s06 audit capability field; delete classify.rs and RwClass -- 2026-07-03
+- Commit: (see this task's commit, `refactor(governance): s06 audit capability field;
+  delete classify.rs and RwClass`)
+- Files touched: `src/browser/classify.rs` (deleted), `src/browser/directory.rs`,
+  `src/browser/mod.rs`, `src/governance/audit/mod.rs`, `src/governance/dispatch.rs`,
+  `src/governance/ports.rs`, `src/governance/simulate.rs`, `src/transport/mcp/server.rs`,
+  `tests/all_open_golden.rs`, `tests/audit_recorder.rs`, `tests/shadow_mode.rs`,
+  `tests/tool_enforcement.rs`, `docs/tasks/stage-3/LEDGER.md`.
+- Summary: finished the ADR-0022 Decision 8 audit switch and deleted the last remnant of
+  the observe/mutate model. `ports.rs`: deleted the `RwClass` enum and impl entirely;
+  replaced `AuditRecord.rw: RwClass` with `pub capability: &'static str` in the same
+  position (between `action` and `domain`), doc comment transcribed verbatim from the
+  prompt; replaced `DomainPolicy::classify` with
+  `fn requires(&self, tool: &str, action: Option<&str>) -> Option<&'static [Capability]>`
+  (the trait has no impl anywhere in the tree, a shape-only change); `Capability::as_str`
+  already existed from s02, so no new method was needed. `dispatch.rs`: removed the
+  `classify: fn(...) -> Option<RwClass>` field s05 had retained on `Governance` (the
+  deviation-1 second fn pointer the ledger flagged at the time) -- `Governance` now holds
+  exactly one browser-supplied fn pointer, `requires`, used only by `decide`; every public
+  record function (`record_call`, `record_deny`, `record_navigate_landing_deny`,
+  `record_shadow_deny`, `record_held`) gained a `requires: &[Capability]` parameter
+  immediately after `action`, threaded into the now-private `build_record`, which derives
+  `capability = requires.first().map(Capability::as_str).unwrap_or("none")` -- the single
+  derivation point the prompt required. `server.rs`: added the one per-call action-directory
+  lookup (`directory::requires(name, action).unwrap_or(&[])`) immediately after `action` is
+  computed and before the held-call early return, so the server performs exactly one lookup
+  per call and passes it (or `&[]` on a directory miss) to every `record_*` call site;
+  removed `classify` from the `use crate::browser::{...}` import and both `Governance`
+  constructor call sites (production and every inline test). Deleted `src/browser/
+  classify.rs` in full (its own 5-test module went with it: `tool_table_matches_the_
+  sacred_surface`, `computer_action_table_matches_the_sacred_enum`, `classification_
+  matches_the_shared_format_table`, `unclassified_inputs_return_none`, `rw_class_
+  strings_match_the_audit_vocabulary`); removed `pub mod classify;` from `browser/mod.rs`
+  and rewrote its module doc to name `directory` as the sole enforcement/advertisement/audit
+  authority; `directory.rs`'s own header dropped its "additive alongside classify" framing.
+  `audit/mod.rs`'s `sample_record` test helper's third parameter became
+  `capability: &'static str`, `"read"` passed at every existing call site.
+  `simulate.rs::evaluate_line`'s doc comment reworded to name `capability` (and note that
+  old rw-era lines replay identically) instead of the recorded `rw` value nobody reads.
+- Deviations from the prompt/ADR: 1. Two pre-existing doc-comment lines outside this task's
+  named files used the bare word "classify" as a verb (`ports.rs`'s `Capability` doc: "
+  Capabilities classify an operation by..."; landed in s02) or would have if worded
+  naively (`directory.rs`/`mod.rs`'s new prose about the deleted module). The task's own
+  Verification section pins `rg -n "classify" src/ tests/` to return only the two
+  `src/install/` hits; reworded all three to avoid the substring entirely ("categorize" in
+  `ports.rs`, dropping the literal filename/module name in `directory.rs`/`mod.rs`) rather
+  than leave the verification command failing on a pre-existing or newly-written prose hit.
+  No semantic change; recorded per BOOTSTRAP.md rule 4. 2. Two doc-comment lines grew past
+  100 columns when `rw` was replaced with the longer `capability` inside an inline
+  backtick-field list (`ports.rs`'s `SessionEventRecord` doc, `dispatch.rs`'s
+  `record_session_killed` doc); rewrapped by hand to match the file's existing line width,
+  since `rustfmt` does not reflow doc comments. No other file in this task's diff needed
+  the same treatment (confirmed by comparing per-file long-line counts against each file's
+  pre-task baseline). 3. The prompt's Tests section for `tests/tool_enforcement.rs` says
+  "if s05 changed the driven tool, use its ADR Decision 2 table value" for the
+  allow/deny-line capability assertion; s05 did not change the driven tool (both lines are
+  still `navigate`, per the pre-existing test body), so both assertions are pinned to
+  `"read"` (navigate's Decision-2 value) with no further translation needed.
+- Verification: `cargo fmt` (reformatted the two doc comments from deviation 2; re-ran
+  `cargo test` afterward, unchanged pass count) then `cargo fmt --check` clean; `cargo
+  clippy --all-targets -- -D warnings` clean; `cargo test` baseline independently
+  reconfirmed at 457 by stashing this task's diff and re-running the full suite (matches
+  the s05 ledger entry's own figure), 457 -> 454 after this task, all passing, 0 failed.
+  The net -3 is fully accounted for: -5 from deleting `classify.rs`'s own test module, -1
+  from deleting `classification_miss_records_mutate` (its premise, the internal `self.
+  classify` derivation, no longer exists), +2 new named tests in `dispatch.rs`
+  (`requires_empty_records_capability_none`, `deny_record_carries_the_capability_of_the_
+  denied_call`), +1 new named test in `tests/tool_enforcement.rs`
+  (`requires_empty_call_records_capability_none`); every rename (`computer_action_
+  classification_flows_into_rw` -> `computer_action_requires_flows_into_capability`,
+  `rw_and_mode_wire_names_are_lowercase` -> `mode_wire_names_are_lowercase`,
+  `computer_call_records_action_and_observe_class` -> `computer_call_records_action_and_
+  read_capability`) is a 1:1 delete+add, net zero. Confirmed unchanged and still green:
+  `tests/architecture.rs` (4 tests, byte-identical file), `tests/all_open_golden.rs` (3
+  tests, only its `no_classification`/`no_requires` test helpers and one constructor call
+  site changed to compile against the new signature -- no assertion or golden text
+  changed), `tests/mcp_protocol.rs` (4 tests, byte-identical file),
+  `tests/tool_schema_fidelity.rs` (6 tests, byte-identical file); `git diff --stat` against
+  `src/transport/mcp/schemas/tools.json`, `tests/tool_schema_fidelity.rs`, `tests/
+  fixtures/simulate/audit.jsonl`, `examples/`, `src/governance/templates.rs`, and `tests/
+  fixtures/explain/` shows no output (none touched). `rg -n "RwClass" src/ tests/` -> no
+  output; `rg -n "classify" src/ tests/` -> only the two `src/install/` prose hits
+  (unchanged from before this task); `rg -n "\"rw\"" src/ tests/ --glob '!tests/
+  fixtures/**'` -> no output (the `tests/fixtures/simulate/audit.jsonl` rw-era fixture is
+  deliberately untouched). ASCII scan (`rg -n "[^\x00-\x7F]" <every touched file>`) printed
+  nothing on every file this task touched. Manual: `cargo run -- policy simulate tests/
+  fixtures/simulate/manifest-restrictive.json --replay tests/fixtures/simulate/audit.jsonl`
+  still prints the exact s05-pinned report (would allow: 4, would deny: 5, not evaluable:
+  4, the three pinned group lines, `result: 5 would-denies (exit 2)`) and exits 2,
+  confirming the old rw-era replay fixture remains replayable after the field rename.
+- Browser checks queued: none (this task writes only code doc comments; BROWSER-TESTS.md
+  entries are s08's job per the prompt's Out of scope section).
