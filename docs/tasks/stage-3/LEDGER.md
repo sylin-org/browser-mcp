@@ -10,10 +10,15 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02`, `s03`, `s04`, `s05`, `s06`, `s07` landed.
-- NEXT TASK: `s08` (`docs/tasks/stage-3/s08-docs-sync.md`).
+- Progress: `s01`, `s02`, `s03`, `s04`, `s05`, `s06`, `s07`, `s08` landed. Stage 3's task
+  sequence is COMPLETE. See the RUN SUMMARY at the bottom of this file.
+- NEXT TASK: none. Stage 3 is code-complete and docs-synced. Remaining work is human-driven:
+  live-browser verification of the `docs/tasks/stage-2/BROWSER-TESTS.md` `s-live-1` through
+  `s-live-4` entries (and the earlier `s01-1`/`s05-1`/`s07-1` entries), then a human decision
+  on merging `stage-3`.
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
-  the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
+  the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8, now marked with
+  `SUPERSEDED by ADR-0022` banners) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
   `tests/architecture.rs` passing, all-open byte-identical (now 14 tools:
   `tests/all_open_golden.rs`/`tests/mcp_protocol.rs` updated in s07 to the sanctioned new
@@ -549,3 +554,94 @@ remembering earlier work; re-read files.
   zero native-messaging frames, plus a live-session watch for spurious `explain`
   invocation on ordinary "explain this page" style requests per ADR-0022 Decision 7's
   accepted risk).
+
+### s08 documentation sync -- 2026-07-03
+- Commit: (see this task's commit, `docs(governance): s08 documentation sync`)
+- Files touched: `docs/tasks/stage-2/00-shared-format.md`, `CLAUDE.md`,
+  `docs/tasks/stage-2/BROWSER-TESTS.md`, `docs/tasks/stage-3/LEDGER.md`.
+  `docs/adr/README.md` was NOT touched: it already listed the ADR-0022 row (verified via
+  `rg -c "0022-intent-calibrated-capabilities" docs/adr/README.md` -> `1`), so Required
+  behavior 5 was the expected no-op.
+- Summary: docs-only task, the last of the stage-3 sequence. Inserted the three pinned
+  `SUPERSEDED by ADR-0022` banner paragraphs verbatim, immediately after the
+  `### 4.3. Grants`, `### 6.1. Fields`, and `## 8. Read/write classification table`
+  headings respectively, as pure insertions (no historical text rewritten or deleted).
+  Appended the four pinned SPEC-updates-needed items (14-17) verbatim after the
+  pre-existing item 13 in `## 10. SPEC updates needed`. Applied the four pinned surgical
+  edits to repo-root `CLAUDE.md` (each fragment/paragraph/bullet/sentence appeared
+  exactly once, confirmed before editing):
+  Edit A (Project Identity) replaced `identity-bound access control, tool-level r/w
+  classification, and structured audit logging` with `identity-bound access control,
+  per-action capability classification (read, action, write, execute), and structured
+  audit logging`. Edit B (Origin) replaced the whole `**Critical constraint:**`
+  paragraph with the pinned 13-trained-plus-one-sanctioned-`explain` wording. Edit C
+  (Phase 4) replaced the bullet `Implement computer sub-action classification (observe
+  vs mutate).` with the per-action capability requirements wording. Edit D (Tool Schema
+  Preservation) appended the pinned sentence about the one sanctioned `explain`
+  exception to the paragraph ending "exact schema matching." CLAUDE.md's preexisting
+  non-ASCII (section signs, box-drawing tree characters) was left untouched, per the
+  prompt's explicit carve-out; only the four edited fragments/sentences were checked for
+  ASCII-cleanliness. Appended the four pinned `s-live-1` through `s-live-4` entries to
+  `docs/tasks/stage-2/BROWSER-TESTS.md` after the existing last entry (`s07-1`), verbatim
+  from the prompt, in the file's own `Changed:`/`Steps:`/`Expect:` format, without
+  touching or reordering any prior entry.
+- Deviations from the prompt/ADR: none. Every banner, list item, CLAUDE.md edit, and
+  BROWSER-TESTS.md entry was transcribed verbatim from the prompt; the ADR-0022-README
+  check (Required behavior 5) was confirmed a no-op exactly as the prompt predicted; no
+  ADR/prompt conflict encountered.
+- Verification: `cargo fmt --check` clean (no Rust source touched); `cargo clippy
+  --all-targets -- -D warnings` clean; `cargo test` 459 -> 459 (docs-only change,
+  identical to the s07 run: summed every per-binary `test result:` line before and after
+  this task's edits, both totals 459, 0 failed). All six pinned `rg` assertions from the
+  prompt's Tests section passed: `rg -c "SUPERSEDED by ADR-0022"
+  docs/tasks/stage-2/00-shared-format.md` -> `3`; `rg -n "observe vs mutate" CLAUDE.md`
+  -> no output; `rg -n "tool-level r/w classification" CLAUDE.md` -> no output; `rg -c
+  "^## s-live-" docs/tasks/stage-2/BROWSER-TESTS.md` -> `4`; `rg -c
+  "0022-intent-calibrated-capabilities" docs/adr/README.md` -> `1`; `rg -n "^17\\."
+  docs/tasks/stage-2/00-shared-format.md` -> exactly one line (item 17). `git status
+  --short` before committing showed exactly the three edited files plus this ledger (no
+  `docs/adr/README.md`, matching Constraint 2's "only if the row is missing" clause).
+  ASCII scan of added lines only (`git diff -U0 -- docs/tasks/stage-2/00-shared-format.md
+  CLAUDE.md docs/tasks/stage-2/BROWSER-TESTS.md docs/adr/README.md
+  docs/tasks/stage-3/LEDGER.md | grep "^+" | rg -n "[^\x00-\x7F]"`) produced no output.
+- Browser checks queued: 4 (`s-live-1` through `s-live-4` appended to
+  `docs/tasks/stage-2/BROWSER-TESTS.md`, exact text pinned by the task prompt: read-grant
+  enforcement end to end, `denied_domain` with an allow-`*`-plus-deny carve-out, the
+  `explain` tool live including a spurious-invocation watch, and the audit `capability`
+  field in a real JSONL file).
+
+## RUN SUMMARY
+
+Stage 3 (ADR-0022, intent-calibrated capabilities) is code-complete and documentation-synced
+as of this commit. Tasks completed, in order: `s01` navigate is read; `s02` capability
+vocabulary in the governance core; `s03` the action directory in the browser plugin; `s04`
+host polarity evaluation in the browser plugin; `s05` the schema-3 switch (manifest grants,
+enforcement, dispatch, advertisement, explain, simulate, examples, templates); `s06` audit
+`capability` field, deletion of `classify.rs` and `RwClass`; `s07` the `explain` directory
+tool (the one sanctioned tools.json addition); `s08` documentation sync. Commit range: one
+commit per task on branch `stage-3` (plus the earlier task-batch setup commit), from `s01`
+through this `s08` commit (`docs(governance): s08 documentation sync`); run
+`git log stage-2..stage-3 --oneline` to see the exact commit range. Final `cargo test` total:
+459 passed, 0 failed (baseline before any stage-3 task: 430).
+
+Every conservative choice made across the run is recorded as a numbered deviation in that
+task's own log entry above; none altered observable behavior of anything except the
+deliberate, ADR-sanctioned changes (navigate reclassified read, the schema-3 grant model
+replacing schema-2, the audit `rw` -> `capability` rename, and the one sanctioned `explain`
+tool addition). No task skipped, reverted, or left the tree dirty.
+
+State of `docs/tasks/stage-2/BROWSER-TESTS.md`: it now carries every stage-2 entry
+(unmodified) plus stage-3's live-check backlog: `s01-1` (navigate-is-read on a read grant),
+`s05-1` (schema-3 capability grants end to end), `s07-1` (the explain tool live), and the
+four consolidated `s-live-1` through `s-live-4` checks appended by this task (read-grant
+enforcement, `denied_domain` carve-out, the explain tool with a spurious-invocation watch,
+and the audit `capability` field). None of these have been run against a real browser by
+this unattended executor; there is no live browser available in this environment.
+
+The new capability enforcement (host polarity, schema-3 grants, the `capability` audit
+field, and the `explain` tool) has been verified exhaustively at the unit/integration level
+(459 tests green, `tests/architecture.rs` and the all-open goldens confirmed unchanged
+throughout) but has NOT been verified end to end against a live browser. Stage 3 must be
+described in any public-facing copy as shipped-but-unverified-end-to-end until a human runs
+the BROWSER-TESTS.md backlog above against real Chrome. This branch (`stage-3`) has not been
+pushed or merged; a human decides when it merges into `stage-2`/`main`.

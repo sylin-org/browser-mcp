@@ -319,6 +319,8 @@ content and key order. The same manifest shipped with CRLF or LF hashes identica
 
 ### 4.3. Grants
 
+SUPERSEDED by ADR-0022 (docs/adr/0022-intent-calibrated-capabilities.md): the grant fields `domains`, `access`, `tools`, and `exclude_tools` are replaced in manifest schema 3 by `hosts` (allow/deny polarity, ADR Decision 4) and `allowed` (capability sets, ADR Decision 3). The text below is retained as history for the stage-2 implementation record.
+
 Each grant object:
 
 | Field | Type | Required | Meaning |
@@ -452,6 +454,8 @@ and reused by `policy simulate`, the local activity ledger, and session recap
 
 ### 6.1. Fields
 
+SUPERSEDED by ADR-0022 (docs/adr/0022-intent-calibrated-capabilities.md): the `rw` row of the table below is replaced by a `capability` field whose value is one of `read`, `action`, `write`, `execute`, or `none` (ADR Decision 8); every other row is unchanged. The text below is retained as history for the stage-2 implementation record.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `event_id` | string | UUID v4, lowercase, hyphenated. Unique per record. |
@@ -555,6 +559,8 @@ observing must never present as protection (ADR-0020).
 ---
 
 ## 8. Read/write classification table
+
+SUPERSEDED by ADR-0022 (docs/adr/0022-intent-calibrated-capabilities.md): the observe/mutate classification in this whole section is replaced by the four-capability action directory (`read`, `action`, `write`, `execute`) with per-action requirement sets (ADR Decisions 1 and 2). The text below is retained as history for the stage-2 implementation record.
 
 Authoritative classification of the full tool surface. Tool names verified against
 `src/mcp/schemas/tools.json` (13 tools; note the `_mcp` suffixes on the tab tools, which
@@ -785,3 +791,19 @@ SPEC text. Amend the SPEC accordingly.
 13. **Settings surface (new SPEC section or 2.4 extension).** The native-messaging
     settings protocol of section 9 (get_status / get_config / set_config_key, locked-key
     rejection), extension as policy-free presentation (ADR-0019 commitment 5).
+14. **Manifest schema 3 grant shape (ADR-0022 Decisions 3, 4, 6; supersedes item 2 above).**
+    Grants drop `domains`, `access`, `tools`, and `exclude_tools` in favor of
+    `hosts: { "allow": [...], "deny": [...] }` (default deny; `*` is the explicit everything
+    token; most-specific match wins, exact tie goes to deny; per-grant scope only) and
+    `allowed: [capability, ...]` with subset-containment enforcement. `schema` bumps to 3;
+    schema 2 never shipped and is rejected.
+15. **Capability classification (ADR-0022 Decisions 1, 2; SPEC 3.1, 3.3, 5.4; supersedes
+    item 1 above).** The observe/mutate/manage tiering is replaced by four capabilities
+    (`read`, `action`, `write`, `execute`) and a per-action requirement table compiled into
+    the binary; no directory entry means deny, `requires: []` means unconditionally allowed.
+16. **Audit `capability` field (ADR-0022 Decision 8; SPEC 7.1, 7.2; amends item 9 above).**
+    The audit record's `rw` field is replaced by `capability`, a string: `read`, `action`,
+    `write`, `execute`, or `none`.
+17. **Advertised surface is 13 plus 1 (ADR-0022 Decision 7; SPEC 3, 5.1).** The 13 trained
+    tool schemas remain byte-identical; exactly one additive, argument-less governance tool
+    named `explain` is sanctioned on top, advertised under every manifest and always allowed.

@@ -465,3 +465,52 @@ confirming zero native-messaging frames. (4) the trained session should NOT call
 if it does spuriously call `explain`, record the exact prompt that triggered it -- per
 ADR-0022 Decision 7 this is the signal to consider renaming the tool (e.g.
 `tool_capabilities`) in a follow-up decision, not a stage-3 code defect.
+
+## s-live-1: read grant end to end (capability enforcement live)
+Changed: stage 3 (s01-s06) replaced observe/mutate with per-action capability requirements
+over schema-3 grants; first live run of a read-only grant against real Chrome.
+Steps: save this manifest and start the MCP client with `--manifest file://<path>`:
+`{ "schema": 3, "name": "s-live-read-check", "version": "1", "grants": [ { "id": "read-only", "hosts": { "allow": ["example.com", "*.example.com"] }, "allowed": ["read"] } ] }`
+Then: (1) `tabs_create_mcp`; (2) `navigate` to `https://example.com/`; (3) `read_page` and
+a `computer` `screenshot` on that tab; (4) a `computer` `left_click` anywhere on the page;
+(5) a `form_input` call on that tab (any element ref; the denial happens before dispatch,
+so no matching element needs to exist).
+Expect: steps 1-3 succeed normally (`navigate` requires `read` under ADR-0022; a read grant
+can navigate, read, and screenshot). Step 4 returns text starting `Denied (D-` containing
+`'computer (left_click)' needs the 'action' capability on example.com, and grant 'read-only' allows read`
+and the click visibly does not happen. Step 5's denial contains
+`'form_input' needs the 'write' capability on example.com, and grant 'read-only' allows read`.
+
+## s-live-2: denied_domain live (allow * with a deny carve-out)
+Changed: s04/s05 added host polarity; `hosts.deny` carves holes out of `allow`, producing
+the new `denied_domain` rule attributed to the denying grant. First live run.
+Steps: start the MCP client with
+`{ "schema": 3, "name": "s-live-deny-check", "version": "1", "grants": [ { "id": "everything-but", "hosts": { "allow": ["*"], "deny": ["example.com"] }, "allowed": ["read", "action", "write"] } ] }`
+active. (1) `navigate` to `https://example.com/`; (2) `navigate` to `https://example.org/`,
+then `read_page` and a `left_click` there.
+Expect: step 1 is denied with text starting `Denied (D-` containing
+`example.com is excluded by grant 'everything-but': your policy denies this site explicitly`
+and the browser does not navigate. Step 2 works end to end (allow `*` covers everywhere
+else), including the click.
+
+## s-live-3: the explain tool live (advertised, correct output, no spurious calls)
+Changed: s07 added `explain`, the one sanctioned tool-surface addition (ADR-0022 Decision
+7); only a live client shows whether a trained model ignores it during normal browsing.
+Steps: with any posture (no manifest is fine): (1) list the advertised tools in the client;
+(2) ask the agent to call `explain`; (3) run a short normal browsing session (navigate
+somewhere, screenshot, then ask the agent to "explain this page").
+Expect: step 1 shows `explain` alongside the 13 trained tools. Step 2 returns a single text
+block starting `Capabilities: read =` with one requires line per tool and per computer
+action. Step 3 answers from page content WITHOUT invoking the `explain` tool; record any
+spurious invocation in the live log as a rename signal per ADR-0022 Decision 7.
+
+## s-live-4: audit capability field live
+Changed: s06 replaced the audit record's `rw` field with `capability` (ADR-0022 Decision
+8); this confirms the real JSONL from a live session.
+Steps: with `audit.enabled` true and `audit.file.path` pointed at a scratch file, re-run
+the s-live-1 session (same manifest, same calls), then open the audit JSONL file.
+Expect: no line contains an `rw` key. The `tabs_create_mcp` line has `"capability":"none"`
+and `"grant_id":null`; the `navigate`, `read_page`, and screenshot lines have
+`"capability":"read"` and `"grant_id":"read-only"`; the denied left_click line has
+`"capability":"action"`, `"decision":"deny"`, `"duration_ms":0`, `"grant_id":"read-only"`;
+the denied form_input line has `"capability":"write"`.
