@@ -42,8 +42,22 @@ then continue. Never rely on remembering earlier work; re-read files.
   `is_known_tool` uses are the one sanctioned guard retype, onto
   `browser::directory::descriptor`. Behavior is byte-identical (every moved test, plus the
   black-box suites, pass unchanged); `resolve_tab_host` stays in the pipeline module (t05 owns
-  its deletion).
-- NEXT TASK: `t05` (`docs/tasks/stage-4/t05-tab-url-unification.md`).
+  its deletion). t05 landed: ADR-0024 Decision 4's tab-URL unification. `pipeline.rs` gained a
+  private `LazyTabUrl` cell (one per call, memoized, keyed on the call's own `tabId` argument)
+  constructed once at the top of `handle_tools_call`; `sacred_check`'s STEP B and
+  `resolve_governing_resource`'s `TabScoped` arm both consume it via `LazyTabUrl::get`, so
+  a call resolves its tab's URL through `Browser::tab_url` (`tab_url_request`) at most once,
+  on whichever stage asks first. `resolve_tab_host` (the sacred check's former internal
+  `tabs_context_mcp` probe plus its result-shape parsing) is deleted, along with the
+  now-orphaned `tabs_context_reply` test fixture helper. The point-5 landing re-check's own
+  post-dispatch probe is untouched (a different moment in time, out of scope). Six inline g08
+  sacred tests that used to register a fake `tabs_context_mcp` reply now use
+  `attach_fake_extension_with_tab_urls`'s `tab_urls` table instead; the one test that asserted
+  the pre-flight's frame count (`sacred_tab_denies_every_tool_and_never_runs_it`) has its `seen`
+  expectation changed from `vec!["tabs_context_mcp"; 4]` to `vec!["tab_url_request:5"; 4]` (the
+  sanctioned ADR-0024 Decision 4 frame-traffic change); every other assertion in every reworked
+  test (denial text, denial id, audit bytes, which calls are denied) is byte-unchanged.
+- NEXT TASK: `t06` (`docs/tasks/stage-4/t06-manifest-hot-reload.md`).
 - Authority: ADR-0023/0024/0025 (each in its own scope) over task prompts over ADR-0022 over
   the stage-2 shared-format doc over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -461,3 +475,76 @@ then continue. Never rely on remembering earlier work; re-read files.
 - Browser checks queued: none (behavior identical to the pre-move tree by construction and by
   the full unchanged test wall; the task's own Verification section states no browser check is
   needed).
+
+### t05 one tab-url resolution per call -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: `src/transport/mcp/pipeline.rs`, `docs/tasks/stage-2/BROWSER-TESTS.md`, this
+  file.
+- Summary: implemented ADR-0024 Decision 4 in full. Added a private `LazyTabUrl<'a>` cell in
+  `pipeline.rs` (fields: `browser`, `tab_id: Option<i64>`, `resolved: Option<Option<String>>`)
+  with one async method, `get(&mut self) -> Option<String>`, that resolves via
+  `Browser::tab_url` (the existing `tab_url_request` frame) at most once and memoizes the
+  result for the rest of the call. `handle_tools_call` constructs exactly one
+  `LazyTabUrl::new(browser, args.get("tabId").and_then(Value::as_i64))` right before the
+  sacred-domains check, so both consumers read the SAME call's `tabId` argument. `sacred_check`
+  (STEP B) now takes `&mut LazyTabUrl<'_>` instead of `&Browser` and derives the match host from
+  `tab_url.get().await` through the existing `pattern::host_for_matching` path, exactly as
+  `resolve_tab_host` did (byte-identical outcome semantics: `None` url means no sacred host
+  check). `resolve_governing_resource`'s `TabScoped` arm likewise takes `&mut LazyTabUrl<'_>`:
+  a missing/non-integer `tabId` still fails closed to `Indeterminate` without ever calling
+  `.get()` (preserving the "no wasted probe" guarantee for that arm); a present `tabId` calls
+  `.get()` once (memoized if the sacred check already resolved it) and maps `None` ->
+  `Indeterminate`, `Some(url)` -> `resource::resolved_url_resource(&url)`, unchanged. Deleted
+  `resolve_tab_host` (the internal `tabs_context_mcp` call plus its result-shape parsing) in
+  full, replacing it in place with the `LazyTabUrl` struct/impl at the same location in the
+  file. The point-5 navigate landing re-check (`post_navigate_landing_check`) is untouched: its
+  own post-dispatch `tab_url` probe is a different moment in time (out of scope, per the task's
+  own Out of scope section) and does not consult `LazyTabUrl`.
+- Deviations from the prompt/ADR: none. The `LazyTabUrl` identifier and its exact field/method
+  shape are not literally pinned by the prompt (which describes "a small private struct or
+  `Option`-cell local to `handle_tools_call`"); this is a schematic description per BOOTSTRAP
+  rule 4, not a pin, so the concrete shape chosen here needs no deviation entry.
+- Deletions performed: `resolve_tab_host` (the sacred check's former internal
+  `tabs_context_mcp` lookup and its result-shape parsing); the now-orphaned test fixture helper
+  `tabs_context_reply` (built exactly the JSON shape `resolve_tab_host` expected; no other
+  caller survived the rewiring below, and clippy `-D warnings` would have flagged it as dead
+  code).
+- Test ripple (frame-sequence-only edits, ADR-0024 Decision 4's sanctioned change, transcribed
+  per-test): six inline g08 sacred-check tests in `pipeline.rs` that used to register a fake
+  `tabs_context_mcp` reply via `attach_fake_extension` + `tabs_context_reply` now register the
+  tab's URL directly in `attach_fake_extension_with_tab_urls`'s `tab_urls` table instead:
+  `sacred_tab_denies_every_tool_and_never_runs_it`, `navigate_target_denied_even_when_tab_is_clean`,
+  `denied_call_writes_one_deny_record`, `sacred_domain_seeding_survives_on_allow_records`,
+  `sacred_domain_denies_even_under_an_observe_mode_manifest` (five that already existed) plus a
+  doc-comment-only wording update on `attach_fake_extension` noting its lack of `tab_url_request`
+  support is now shared by both g08 and g13's own tests. Of these, only
+  `sacred_tab_denies_every_tool_and_never_runs_it` asserted the pre-flight's frame COUNT: its
+  `seen` expectation changes from `vec!["tabs_context_mcp"; 4]` to `vec!["tab_url_request:5"; 4]`
+  (one unified probe per call, replacing the old internal `tabs_context_mcp` pre-flight), with
+  its assertion message reworded to match; the other three (`navigate_target_denied_even_when_
+  tab_is_clean` uses `_seen`, unread) had no count assertion to change. EVERY other assertion in
+  every one of these five tests (denial text, denial id `D-af6633ec`/`D-171052e3`, audit
+  `decision`/`domain`/`duration_ms` bytes, which calls are denied, `navigated` dispatch text)
+  is byte-identical, transcribed unchanged. Two comment-only rewordings (no assertion change):
+  `denied_call_writes_one_deny_record`'s doc comment and its `lines.len()` assertion message
+  ("the tabs_context_mcp lookup writes none" -> "the tab-url probe writes none").
+- New tests added (pipeline.rs, per the task's Tests section): `one_probe_serves_sacred_and_
+  grants` (a non-empty sacred list, a governed grant covering the tab's clean host, a
+  `TabScoped` call: the `seen` log is exactly `["tab_url_request:5", "read_page"]`, one probe
+  serving both the sacred check and the grant path); `unresolvable_tab_still_fails_closed_for_
+  grants_and_skips_sacred` (the `tab_urls` table answers `None` for a present `tabId`: the call
+  is NOT sacred-denied, but IS denied with the transcribed `no grant covers (unknown)`
+  `Indeterminate` wording, and `seen` is exactly `["tab_url_request:5"]` -- one probe, read two
+  ways).
+- Verification: `cargo fmt` (applied) then `cargo fmt --check` clean; `cargo clippy
+  --all-targets -- -D warnings` clean; `cargo test` fully green, 465 -> 467 (net +2: the two new
+  tests above; the five reworked g08 tests and the deleted `tabs_context_reply` helper produce
+  no count change). `tests/architecture.rs` (4 tests), `tests/all_open_golden.rs` (3 tests),
+  `tests/mcp_protocol.rs` (6 tests), and `tests/tool_schema_fidelity.rs` (7 tests) all pass
+  unchanged. `git diff HEAD -- src/transport/mcp/schemas/tools.json
+  tests/tool_schema_fidelity.rs` and `git diff HEAD -- Cargo.toml Cargo.lock` both empty.
+  `rg -n "resolve_tab_host" src/` -> no hits. ASCII scan on the one touched source file
+  (`pipeline.rs`) and the two touched docs files (`docs/tasks/stage-2/BROWSER-TESTS.md`, this
+  file) clean.
+- Browser checks queued: 1 (`t05-1`, appended to `docs/tasks/stage-2/BROWSER-TESTS.md`: a
+  single-tab-URL-probe live check against a granted tab under an active sacred list).

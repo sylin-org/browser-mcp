@@ -108,6 +108,14 @@ pub(crate) async fn handle_tools_call(
         return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
     }
 
+    // ADR-0024 Decision 4: the sacred check and the grant path below share ONE lazily resolved,
+    // memoized tab-URL probe per call, keyed on this call's own `tabId` argument, instead of two
+    // different mechanisms (the sacred check's former internal `tabs_context_mcp` lookup,
+    // deleted, and the grant path's `tab_url_request`). Nothing is probed until the first stage
+    // that actually needs it calls `.get()` -- an all-open call, an ungoverned call, a free
+    // action, or a call with no `tabId` at all issues zero frames.
+    let mut tab_url = LazyTabUrl::new(browser, args.get("tabId").and_then(Value::as_i64));
+
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
     // "always-on carve-out", and ahead of grant evaluation below (g13: "if the sacred-domains
@@ -121,7 +129,7 @@ pub(crate) async fn handle_tools_call(
             denial: None,
         }
     } else {
-        sacred_check(browser, sacred_domains, descriptor.resource, &args).await
+        sacred_check(&mut tab_url, sacred_domains, descriptor.resource, &args).await
     };
     if let Some(denial) = denial {
         audit.sacred_deny(&denial, tab_domain.as_deref());
@@ -167,7 +175,7 @@ pub(crate) async fn handle_tools_call(
     // `ResourceShape`) instead of a per-tool name match.
     let config_mode = config.governance_mode();
     let resolved = if governance.is_governed() && matches!(lookup, Some(r) if !r.is_empty()) {
-        resolve_governing_resource(browser, descriptor, &args).await
+        resolve_governing_resource(&mut tab_url, descriptor, &args).await
     } else {
         None
     };
@@ -294,15 +302,23 @@ struct SacredCheck {
 /// never be gated by a classification that could itself be wrong for a malformed call. STEP C
 /// (the target host) fires iff `resource_shape` is [`directory::ResourceShape::TargetArg`]
 /// (today: `navigate` only, ADR-0024 Decision 1), even when STEP B could not resolve the tab,
-/// since it is local and needs no extension.
+/// since it is local and needs no extension. STEP B reads the tab's URL through the shared
+/// `tab_url` cell (ADR-0024 Decision 4), the SAME probe the grant path below reuses, rather than
+/// its own internal lookup.
 async fn sacred_check(
-    browser: &Browser,
+    tab_url: &mut LazyTabUrl<'_>,
     sacred_domains: &[String],
     resource_shape: directory::ResourceShape,
     args: &Value,
 ) -> SacredCheck {
     let tab_host = match args.get("tabId").and_then(Value::as_i64) {
-        Some(tab_id) => resolve_tab_host(browser, tab_id).await,
+        Some(_) => tab_url
+            .get()
+            .await
+            .and_then(|url| match pattern::host_for_matching(&url) {
+                HostOutcome::Host(h) => Some(h),
+                HostOutcome::NonHttpScheme(_) | HostOutcome::Unparseable => None,
+            }),
         None => None,
     };
     let tab_domain = tab_host.as_ref().map(|h| h.as_str().to_string());
@@ -344,8 +360,10 @@ async fn sacred_check(
 /// post-check"). Otherwise `Some((resource, domain))`, where `domain` is the resolved host for
 /// the audit record's `domain` field when `resource` is [`GoverningResource::Resource`], `None`
 /// otherwise (shared format doc section 6.1: never the denial message's `(unknown)` placeholder).
+/// `TabScoped` resolution reads the tab's URL through the shared `tab_url` cell (ADR-0024
+/// Decision 4), the SAME probe the sacred check above may already have resolved for this call.
 async fn resolve_governing_resource(
-    browser: &Browser,
+    tab_url: &mut LazyTabUrl<'_>,
     descriptor: &directory::ToolDescriptor,
     args: &Value,
 ) -> Option<(GoverningResource, Option<String>)> {
@@ -367,13 +385,13 @@ async fn resolve_governing_resource(
             },
         },
         directory::ResourceShape::TabScoped => {
-            let Some(tab_id) = args.get("tabId").and_then(Value::as_i64) else {
+            if args.get("tabId").and_then(Value::as_i64).is_none() {
                 // Missing/non-integer tabId on a tab-scoped tool: fail closed (constraint 11).
                 return Some((GoverningResource::Indeterminate, None));
-            };
-            let resolved = match browser.tab_url(tab_id).await {
-                Ok(Some(url)) => resource::resolved_url_resource(&url),
-                Ok(None) | Err(_) => GoverningResource::Indeterminate,
+            }
+            let resolved = match tab_url.get().await {
+                Some(url) => resource::resolved_url_resource(&url),
+                None => GoverningResource::Indeterminate,
             };
             let domain = match &resolved {
                 GoverningResource::Resource(h) => Some(h.clone()),
@@ -426,31 +444,47 @@ async fn post_navigate_landing_check(
     (decision, domain)
 }
 
-/// Resolve the current host of tab `tab_id` via the internal `tabs_context_mcp` lookup. This is
-/// machinery, not an MCP tool call: it produces no audit record of its own (shared format doc
-/// section 6). Any failure along the way -- the call errors (extension not connected), the reply
-/// is not the expected JSON shape (for example the `No Browser MCP tab group` plain-text reply),
-/// the tab id is absent from the list, or the url is empty/unparseable -- yields `None`: a deny
-/// requires a positive match on a resolved host, so an unresolved lookup never denies (g08
-/// constraint 12). Tabs outside the group are refused by the extension itself, and a genuinely
-/// failing extension fails the real call identically; this function does not fabricate
-/// protection from that failure.
-async fn resolve_tab_host(browser: &Browser, tab_id: i64) -> Option<pattern::MatchHost> {
-    let result = browser
-        .call("tabs_context_mcp", &json!({ "createIfEmpty": false }))
-        .await
-        .ok()?;
-    let text = result.get("content")?.get(0)?.get("text")?.as_str()?;
-    let parsed: Value = serde_json::from_str(text).ok()?;
-    let tabs = parsed.get("tabs")?.as_array()?;
-    let url = tabs
-        .iter()
-        .find(|t| t.get("tabId").and_then(Value::as_i64) == Some(tab_id))?
-        .get("url")?
-        .as_str()?;
-    match pattern::host_for_matching(url) {
-        HostOutcome::Host(h) => Some(h),
-        HostOutcome::NonHttpScheme(_) | HostOutcome::Unparseable => None,
+/// One lazily resolved, memoized tab-URL probe per call (ADR-0024 Decision 4): the sacred check
+/// (STEP B, [`sacred_check`]) and the grant path's `TabScoped` resolution
+/// ([`resolve_governing_resource`]) both read the SAME call's `tabId` argument, so they share
+/// exactly one `tab_url_request` frame (the extension's own `Browser::tab_url`) instead of two
+/// different mechanisms -- the sacred check's former internal `tabs_context_mcp` lookup (deleted
+/// by this task) and the grant path's `tab_url_request`. Resolution happens at most once, on
+/// whichever stage calls [`LazyTabUrl::get`] first; a call that never needs a tab URL (no
+/// `tabId`, an empty sacred list plus all-open/ungoverned/free, etc.) never probes at all. `None`
+/// means "no URL to resolve": either there was no `tabId` on this call, or the tab is unknown,
+/// closed, or the channel failed -- callers apply their own meaning to that (the sacred check
+/// finds no host to match, so it never denies from a `None`, g08 constraint 12; the grant path
+/// fails closed to [`GoverningResource::Indeterminate`]).
+struct LazyTabUrl<'a> {
+    browser: &'a Browser,
+    tab_id: Option<i64>,
+    resolved: Option<Option<String>>,
+}
+
+impl<'a> LazyTabUrl<'a> {
+    fn new(browser: &'a Browser, tab_id: Option<i64>) -> Self {
+        Self {
+            browser,
+            tab_id,
+            resolved: None,
+        }
+    }
+
+    /// Resolve (once, memoized for the lifetime of this cell -- one call) and return this call's
+    /// tab URL, or `None` if there was no `tabId` to resolve or the resolution failed.
+    async fn get(&mut self) -> Option<String> {
+        if self.resolved.is_none() {
+            let url = match self.tab_id {
+                Some(tab_id) => match self.browser.tab_url(tab_id).await {
+                    Ok(Some(url)) => Some(url),
+                    Ok(None) | Err(_) => None,
+                },
+                None => None,
+            };
+            self.resolved = Some(url);
+        }
+        self.resolved.clone().unwrap()
     }
 }
 
@@ -544,8 +578,9 @@ mod tests {
     /// in `responses` with that canned result and records the tool names seen, in arrival order,
     /// into the returned `Arc<Mutex<Vec<String>>>`. Panics if a `tool_request` arrives for a
     /// tool not in `responses` -- tests use this to prove a denied call never reaches the real
-    /// tool. No `tab_url_request` support: g13's point-5 tests use
-    /// [`attach_fake_extension_with_tab_urls`] instead.
+    /// tool. No `tab_url_request` answers registered: a call that needs one (any tab-scoped
+    /// sacred check or grant resolution, ADR-0024 Decision 4) panics; tests that need a tab-URL
+    /// answer use [`attach_fake_extension_with_tab_urls`] instead.
     fn attach_fake_extension(
         browser: &Browser,
         responses: Vec<(&'static str, Value)>,
@@ -613,21 +648,11 @@ mod tests {
         (handle, seen)
     }
 
-    /// A `tabs_context_mcp` reply reporting one tab at `url`, in the exact shape
-    /// `resolve_tab_host` expects: a text content item whose text is the pretty/compact JSON of
-    /// `{ "mcpGroupId": 1, "tabs": [...] }`.
-    fn tabs_context_reply(tab_id: i64, url: &str) -> Value {
-        let text = json!({
-            "mcpGroupId": 1,
-            "tabs": [{ "tabId": tab_id, "title": "", "url": url }],
-        })
-        .to_string();
-        json!({ "content": [{ "type": "text", "text": text }] })
-    }
-
     /// Test 6 (g08 spec section 6): a tab showing a sacred host denies every tool that carries
     /// its `tabId`, including `navigate` (navigating AWAY is denied too), and the extension
-    /// never receives anything but the `tabs_context_mcp` pre-flight.
+    /// never receives anything but the shared `tab_url_request` pre-flight (ADR-0024 Decision
+    /// 4: the sacred check's former internal `tabs_context_mcp` pre-flight is gone; this test's
+    /// `seen`-vector expectation is the sanctioned Decision 4 frame-traffic change, t05).
     #[tokio::test]
     async fn sacred_tab_denies_every_tool_and_never_runs_it() {
         let path = temp_audit_path("sacred-tab");
@@ -638,12 +663,10 @@ mod tests {
             config_with_sacred_domains(&["*.mybank.com"]),
         );
         let browser = Browser::new();
-        let (_ext, seen) = attach_fake_extension(
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(
             &browser,
-            vec![(
-                "tabs_context_mcp",
-                tabs_context_reply(5, "https://www.mybank.com/account"),
-            )],
+            vec![],
+            vec![(5, Some("https://www.mybank.com/account"))],
         );
         wait_connected(&browser).await;
 
@@ -683,8 +706,8 @@ mod tests {
         }
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["tabs_context_mcp"; 4],
-            "the extension must never see anything but the tabs_context_mcp pre-flight"
+            vec!["tab_url_request:5"; 4],
+            "the extension must never see anything but the tab_url_request pre-flight"
         );
 
         std::fs::remove_file(&path).ok();
@@ -700,18 +723,13 @@ mod tests {
             config_with_sacred_domains(&["mybank.com"]),
         );
         let browser = Browser::new();
-        let (_ext, _seen) = attach_fake_extension(
+        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
             &browser,
-            vec![
-                (
-                    "tabs_context_mcp",
-                    tabs_context_reply(5, "https://example.com/"),
-                ),
-                (
-                    "navigate",
-                    json!({ "content": [{ "type": "text", "text": "navigated" }] }),
-                ),
-            ],
+            vec![(
+                "navigate",
+                json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+            )],
+            vec![(5, Some("https://example.com/"))],
         );
         wait_connected(&browser).await;
 
@@ -809,7 +827,7 @@ mod tests {
     }
 
     /// Test 9 (g08 spec section 6): a denied call writes exactly one audit record, and the
-    /// internal `tabs_context_mcp` lookup writes none.
+    /// internal tab-URL probe writes none.
     #[tokio::test]
     async fn denied_call_writes_one_deny_record() {
         let path = temp_audit_path("deny-record");
@@ -820,12 +838,10 @@ mod tests {
             config_with_sacred_domains(&["*.mybank.com"]),
         );
         let browser = Browser::new();
-        let (_ext, _seen) = attach_fake_extension(
+        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
             &browser,
-            vec![(
-                "tabs_context_mcp",
-                tabs_context_reply(5, "https://www.mybank.com/account"),
-            )],
+            vec![],
+            vec![(5, Some("https://www.mybank.com/account"))],
         );
         wait_connected(&browser).await;
 
@@ -837,7 +853,7 @@ mod tests {
         assert_eq!(
             lines.len(),
             1,
-            "exactly one record: the tabs_context_mcp lookup writes none"
+            "exactly one record: the tab-url probe writes none"
         );
         let rec = &lines[0];
         assert_eq!(rec["decision"], "deny");
@@ -851,6 +867,89 @@ mod tests {
         assert_eq!(rec["domain"], "www.mybank.com");
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // --- t05 (ADR-0024 Decision 4): one tab-URL resolution per call ---
+
+    /// A non-empty sacred list, a governed manifest, and a `TabScoped` call (`read_page`) on a
+    /// clean, granted tab: the sacred check (STEP B) and the grant path's resource resolution
+    /// share exactly ONE `tab_url_request` probe -- the pre-ADR-0024 code would show a
+    /// `tabs_context_mcp` pre-flight (sacred) AND a `tab_url_request` (grant path); the unified
+    /// code shows exactly one probe before the dispatched tool frame.
+    #[tokio::test]
+    async fn one_probe_serves_sacred_and_grants() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(governed_with_grants(
+            vec![full_grant("g1", &["example.com"])],
+            recorder as Arc<dyn AuditSink>,
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(
+            &browser,
+            vec![(
+                "read_page",
+                json!({ "content": [{ "type": "text", "text": "ok" }] }),
+            )],
+            vec![(5, Some("https://example.com/"))],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let result = resp.result.as_ref().expect("tool result present");
+        assert_ne!(
+            result["isError"], true,
+            "example.com is neither sacred nor ungranted: {result:?}"
+        );
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["tab_url_request:5", "read_page"],
+            "exactly one tab-url probe serves both the sacred check and the grant path"
+        );
+    }
+
+    /// A tab the extension cannot resolve (unknown, closed, or a channel failure): the shared
+    /// probe answers `None`, which the sacred check reads as "no host to match" (the call is NOT
+    /// sacred-denied) and the grant path reads as fail-closed `Indeterminate` (the call IS
+    /// denied, with the same wording an unresolved tab id already produces today). Both
+    /// conclusions are read from the SAME single probe.
+    #[tokio::test]
+    async fn unresolvable_tab_still_fails_closed_for_grants_and_skips_sacred() {
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Arc::new(governed_with_grants(
+            vec![full_grant("g1", &["example.com"])],
+            recorder as Arc<dyn AuditSink>,
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, seen) = attach_fake_extension_with_tab_urls(&browser, vec![], vec![(5, None)]);
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert!(text.starts_with("Denied (D-"), "{text}");
+        assert!(
+            text.contains("no grant covers (unknown)"),
+            "an unresolvable tab fails closed to Indeterminate for the grant path: {text}"
+        );
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["tab_url_request:5"],
+            "one probe serves both stages; the sacred check found no host to match, so it \
+             never denied (only the grant path's fail-closed Indeterminate denies)"
+        );
     }
 
     /// Test 10 (g06 spec section 6, adapted to the post-A3/A5 architecture): drives the real
@@ -1255,18 +1354,13 @@ mod tests {
             config_with_sacred_domains(&["*.mybank.com"]),
         );
         let browser = Browser::new();
-        let (_ext, _seen) = attach_fake_extension(
+        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
             &browser,
-            vec![
-                (
-                    "tabs_context_mcp",
-                    tabs_context_reply(5, "https://example.com/"),
-                ),
-                (
-                    "read_page",
-                    json!({ "content": [{ "type": "text", "text": "ok" }] }),
-                ),
-            ],
+            vec![(
+                "read_page",
+                json!({ "content": [{ "type": "text", "text": "ok" }] }),
+            )],
+            vec![(5, Some("https://example.com/"))],
         );
         wait_connected(&browser).await;
 
@@ -1306,12 +1400,10 @@ mod tests {
             config_with_sacred_domains(&["*.mybank.com"]),
         );
         let browser = Browser::new();
-        let (_ext, _seen) = attach_fake_extension(
+        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
             &browser,
-            vec![(
-                "tabs_context_mcp",
-                tabs_context_reply(5, "https://www.mybank.com/account"),
-            )],
+            vec![],
+            vec![(5, Some("https://www.mybank.com/account"))],
         );
         wait_connected(&browser).await;
 

@@ -524,3 +524,11 @@ a navigate to a granted host, and a computer left_click.
 Expect: the server starts; the client's tool list is the governed (filtered) set; the
 navigate succeeds; the left_click is denied naming the capability; the audit file
 records the calls. Removing the file and restarting restores all-open.
+
+## t05-1: single tab-URL probe live
+Changed: t05 unified sacred and grant tab resolution onto tab_url_request (one probe
+per call).
+Steps: with a sacred list configured and a governed manifest active, run read_page on
+a granted tab while watching the extension service-worker console (frame logging on).
+Expect: exactly one tab_url_request per read_page call; sacred and grant outcomes
+unchanged from s-live-1/g08 expectations.
