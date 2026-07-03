@@ -1,11 +1,20 @@
 //! Loads the two configuration files of shared format doc section 1 and produces the
 //! [`LayerInputs`] for [`layers::resolve`]. Applies the per-file strictness matrix: lenient
-//! per entry for the user config file (shared format 1.1), strict for the org policy file
-//! (shared format 1.2, 4.4). Parsing is pure over `&str`; only the path functions and
-//! [`load_and_resolve`] touch the filesystem.
+//! per entry for the user config file (shared format 1.1); the org policy file is a manifest
+//! (schema 3) and its parsing/validation lives entirely in
+//! [`crate::governance::manifest::document::parse_manifest`] (ADR-0023 Decision 1) -- this
+//! module never reads or parses the org policy file's raw bytes itself. [`org_config_from_entries`]
+//! is the pure split of an already-validated manifest's config entries into the org layers
+//! (ADR-0023 Decision 2). Parsing is pure over `&str`/`&[ConfigEntry]`; only the path functions
+//! and [`read_layers`] touch the filesystem, and `read_layers` reads only the user config file
+//! (the org contribution comes from the already-loaded policy).
 
 use super::layers::{self, LayerInputs};
 use super::{key_def, Preset};
+use crate::governance::manifest::document::{ConfigEntry, Level};
+use crate::governance::manifest::source::{
+    manifest_config_as_user_layer, LoadedPolicy, ManifestOrigin,
+};
 use crate::{Error, Result};
 
 /// Path of the user config file; `None` when the platform config dir is unavailable.
@@ -117,107 +126,59 @@ pub struct OrgConfig {
     pub recommended: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Parse the org policy file content. `path` is used only in messages. This consumes ONLY the
-/// `schema` and `config` members; grants, `name`, `version`, `mode`, and `identity` belong to
-/// the manifest tasks (G12+) and are neither read nor validated here.
-///
-/// EVERY violation is a hard error: org policy that cannot be applied exactly must stop the
-/// server rather than silently degrade.
-pub fn parse_org_config(
-    content: &str,
-    path: &str,
-    domain_pattern_valid: fn(&str) -> bool,
-) -> Result<OrgConfig> {
-    let stripped = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let root: serde_json::Value = serde_json::from_str(stripped)
-        .map_err(|e| Error::Config(format!("{path}: invalid JSON: {e}")))?;
-    let obj = root
-        .as_object()
-        .ok_or_else(|| Error::Config(format!("{path}: top level must be a JSON object")))?;
-
-    let schema = obj
-        .get("schema")
-        .ok_or_else(|| Error::Config(format!("{path}: missing 'schema'")))?;
-    let schema_num = schema
-        .as_u64()
-        .ok_or_else(|| Error::Config(format!("{path}: 'schema' must be an integer")))?;
-    if schema_num != 2 {
-        return Err(Error::Config(format!(
-            "{path}: unsupported schema version {schema_num} (expected 2)"
-        )));
-    }
-
+/// Split already-validated manifest config entries into the org layers (ADR-0023 Decision 2).
+/// Pure; duplicates are impossible here because parse_manifest rejects them (ADR-0023 Decision
+/// 3).
+pub fn org_config_from_entries(entries: &[ConfigEntry]) -> OrgConfig {
     let mut mandatory = serde_json::Map::new();
     let mut recommended = serde_json::Map::new();
-    let mut seen_keys = std::collections::HashSet::new();
-
-    if let Some(config) = obj.get("config") {
-        let entries = config
-            .as_array()
-            .ok_or_else(|| Error::Config(format!("{path}: 'config' must be an array")))?;
-        for (idx, entry) in entries.iter().enumerate() {
-            let entry_obj = entry
-                .as_object()
-                .ok_or_else(|| Error::Config(format!("{path}: config[{idx}] must be an object")))?;
-            for member in entry_obj.keys() {
-                if member != "key" && member != "value" && member != "level" {
-                    return Err(Error::Config(format!(
-                        "{path}: config[{idx}] has an unexpected member '{member}'"
-                    )));
-                }
+    for entry in entries {
+        match entry.level {
+            Level::Mandatory => {
+                mandatory.insert(entry.key.clone(), entry.value.clone());
             }
-            let key = entry_obj
-                .get("key")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    Error::Config(format!("{path}: config[{idx}] missing string 'key'"))
-                })?;
-            let level = entry_obj
-                .get("level")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    Error::Config(format!(
-                        "{path}: config[{idx}] ('{key}') missing string 'level'"
-                    ))
-                })?;
-            let value = entry_obj.get("value").ok_or_else(|| {
-                Error::Config(format!("{path}: config[{idx}] ('{key}') missing 'value'"))
-            })?;
-
-            let def = key_def(key).ok_or_else(|| {
-                Error::Config(format!("{path}: config[{idx}]: unknown key '{key}'"))
-            })?;
-            layers::validate_value(def, value, domain_pattern_valid).map_err(|reason| {
-                Error::Config(format!("{path}: config[{idx}] ('{key}'): {reason}"))
-            })?;
-
-            if !seen_keys.insert(key.to_string()) {
-                return Err(Error::Config(format!(
-                    "{path}: duplicate config key '{key}'"
-                )));
-            }
-
-            match level {
-                "mandatory" => {
-                    mandatory.insert(key.to_string(), value.clone());
-                }
-                "recommended" => {
-                    recommended.insert(key.to_string(), value.clone());
-                }
-                other => {
-                    return Err(Error::Config(format!(
-                        "{path}: config[{idx}] ('{key}'): invalid level '{other}' \
-                         (expected 'mandatory' or 'recommended')"
-                    )));
-                }
+            Level::Recommended => {
+                recommended.insert(entry.key.clone(), entry.value.clone());
             }
         }
     }
-
-    Ok(OrgConfig {
+    OrgConfig {
         mandatory,
         recommended,
-    })
+    }
+}
+
+/// Derive the org layers from a resolved policy (ADR-0023 Decision 2): only an org-sourced
+/// manifest's entries reach the org layers; anything else (no manifest, or a user-sourced
+/// manifest, whose entries reach the user layer instead via [`manifest_config_as_user_layer`])
+/// yields the empty default. Shared by [`read_layers`] and
+/// `reload::ConfigStore::load_initial_with_policy` so the CLI's view of the org layers and the
+/// server store's can never disagree.
+pub fn org_config_from_policy(loaded_policy: &LoadedPolicy) -> OrgConfig {
+    if loaded_policy.origin != Some(ManifestOrigin::OrgPolicyFile) {
+        return OrgConfig::default();
+    }
+    loaded_policy
+        .manifest
+        .as_ref()
+        .map(|m| org_config_from_entries(&m.config))
+        .unwrap_or_default()
+}
+
+/// Merge a user-supplied (or org-carried) manifest's config entries under the user config
+/// FILE's own values, with the file winning on a key collision (transcribed from
+/// `reload::merge_manifest_user_config` so CLI resolution and the server store can never
+/// disagree, ADR-0023 Decision 2/4).
+fn merge_manifest_user_config(
+    manifest_user: serde_json::Map<String, serde_json::Value>,
+    file_user: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if manifest_user.is_empty() {
+        return file_user;
+    }
+    let mut merged = manifest_user;
+    merged.extend(file_user);
+    merged
 }
 
 /// Read `path`; `Ok(None)` when the file does not exist. Any other I/O error (for example
@@ -240,10 +201,19 @@ pub struct LoadedLayers {
     pub warnings: Vec<String>,
 }
 
-/// Read and parse both configuration files from their platform paths. The one I/O entry point
-/// every layered-load call site (server startup, the `config` CLI, hot-reload) shares, so the
-/// two-file read is implemented exactly once.
-pub fn read_layers(domain_pattern_valid: fn(&str) -> bool) -> Result<LoadedLayers> {
+/// Read and parse the user config file from its platform path, and derive the org/user-layer
+/// contributions from the already-loaded policy (ADR-0023 Decisions 1/2): this is the ONE I/O
+/// entry point every layered-load call site (the `config` CLI, presets) shares for the user
+/// config file. The org policy file is never re-read or re-parsed here; its bytes were already
+/// consumed once by `governance::manifest::source::load_policy` (which calls `parse_manifest`).
+/// A manifest's config entries reach the user layer (via [`manifest_config_as_user_layer`]) with
+/// the user config FILE's own values winning on a key collision (transcribed from
+/// `reload::merge_manifest_user_config`), so CLI resolution and the server store can never
+/// disagree.
+pub fn read_layers(
+    domain_pattern_valid: fn(&str) -> bool,
+    loaded_policy: &LoadedPolicy,
+) -> Result<LoadedLayers> {
     let (user, warnings) = match user_config_path().map(|p| read_optional(&p).map(|c| (p, c))) {
         Some(Ok((path, Some(content)))) => {
             let path_str = path.display().to_string();
@@ -253,18 +223,16 @@ pub fn read_layers(domain_pattern_valid: fn(&str) -> bool) -> Result<LoadedLayer
         Some(Err(e)) => return Err(e),
     };
 
-    let org_path = org_policy_path();
-    let org = match read_optional(&org_path)? {
-        Some(content) => {
-            let path_str = org_path.display().to_string();
-            parse_org_config(&content, &path_str, domain_pattern_valid)?
-        }
-        None => OrgConfig::default(),
-    };
+    let org = org_config_from_policy(loaded_policy);
+    let manifest_user = manifest_config_as_user_layer(loaded_policy);
+    let user_values = merge_manifest_user_config(manifest_user, user.values);
 
     Ok(LoadedLayers {
         org,
-        user,
+        user: UserConfig {
+            preset: user.preset,
+            values: user_values,
+        },
         warnings,
     })
 }
@@ -288,22 +256,6 @@ pub fn layer_inputs(
         org_recommended: org.recommended,
         preset,
     }
-}
-
-/// Load both configuration files from their platform paths, log warnings, and resolve all
-/// layers. Called once at mcp-server startup. Absence of either file is normal.
-///
-/// `domain_pattern_valid` validates `content.security.sacred_domains` entries. Callers outside
-/// the governance core supply the browser plugin's real pattern-syntax checker; this module
-/// cannot name it directly (the a7 arch-test forbids a `governance -> browser` edge).
-pub fn load_and_resolve(domain_pattern_valid: fn(&str) -> bool) -> Result<layers::Resolution> {
-    let loaded = read_layers(domain_pattern_valid)?;
-    for w in &loaded.warnings {
-        tracing::warn!("{w}");
-    }
-    let preset_name = loaded.user.preset.clone();
-    let inputs = layer_inputs(loaded.org, loaded.user.values, preset_name.as_deref());
-    Ok(layers::resolve(&inputs))
 }
 
 #[cfg(test)]
@@ -447,20 +399,47 @@ mod tests {
     }
 
     #[test]
+    fn org_config_from_entries_splits_by_level() {
+        let mandatory_key = super::super::AUDIT_ENABLED;
+        let recommended_key = super::super::CONTENT_SECURITY_SECRETS_REDACT;
+        let entries = vec![
+            ConfigEntry {
+                key: mandatory_key.to_string(),
+                value: json!(true),
+                level: Level::Mandatory,
+            },
+            ConfigEntry {
+                key: recommended_key.to_string(),
+                value: json!(false),
+                level: Level::Recommended,
+            },
+        ];
+        let org = org_config_from_entries(&entries);
+        assert_eq!(org.mandatory.get(mandatory_key), Some(&json!(true)));
+        assert_eq!(org.recommended.get(recommended_key), Some(&json!(false)));
+        assert_eq!(org.mandatory.len(), 1);
+        assert_eq!(org.recommended.len(), 1);
+
+        assert_eq!(org_config_from_entries(&[]), OrgConfig::default());
+    }
+
+    #[test]
     fn org_entries_populate_layers_by_level() {
         let mandatory_key = super::super::AUDIT_ENABLED;
         let recommended_key = super::super::CONTENT_SECURITY_SECRETS_REDACT;
-        let content = json!({
-            "schema": 2,
-            "name": "acme",
-            "version": "1",
-            "config": [
-                { "key": mandatory_key, "value": true, "level": "mandatory" },
-                { "key": recommended_key, "value": true, "level": "recommended" },
-            ]
-        })
-        .to_string();
-        let org = parse_org_config(&content, "p", always_valid).unwrap();
+        let entries = vec![
+            ConfigEntry {
+                key: mandatory_key.to_string(),
+                value: json!(true),
+                level: Level::Mandatory,
+            },
+            ConfigEntry {
+                key: recommended_key.to_string(),
+                value: json!(true),
+                level: Level::Recommended,
+            },
+        ];
+        let org = org_config_from_entries(&entries);
         assert!(org.mandatory.contains_key(mandatory_key));
         assert!(org.recommended.contains_key(recommended_key));
 
@@ -514,42 +493,6 @@ mod tests {
             layers::Source::OrgMandatory
         );
         assert_eq!(resolution.get(key).unwrap().value, json!(true));
-    }
-
-    #[test]
-    fn org_file_violations_are_errors() {
-        let good_key = super::super::AUDIT_ENABLED;
-        let cases = vec![
-            "not json".to_string(),
-            json!({ "name": "a", "version": "1" }).to_string(),
-            json!({ "schema": 3, "name": "a", "version": "1" }).to_string(),
-            json!({ "schema": "2", "name": "a", "version": "1" }).to_string(),
-            json!({ "schema": 2, "config": "not an array" }).to_string(),
-            json!({ "schema": 2, "config": [{ "key": "no.such.key", "value": true, "level": "mandatory" }] })
-                .to_string(),
-            json!({ "schema": 2, "config": [{ "key": good_key, "value": "bad", "level": "mandatory" }] })
-                .to_string(),
-            json!({ "schema": 2, "config": [{ "key": good_key, "value": true, "level": "optional" }] })
-                .to_string(),
-            json!({ "schema": 2, "config": [{ "key": good_key, "value": true }] }).to_string(),
-            json!({
-                "schema": 2,
-                "config": [
-                    { "key": good_key, "value": true, "level": "mandatory" },
-                    { "key": good_key, "value": false, "level": "recommended" },
-                ]
-            })
-            .to_string(),
-            json!({ "schema": 2, "config": [{ "key": good_key, "value": true, "level": "mandatory", "extra": 1 }] })
-                .to_string(),
-        ];
-        for content in cases {
-            let err = parse_org_config(&content, "ORG_PATH_MARKER", always_valid).unwrap_err();
-            assert!(
-                err.to_string().contains("ORG_PATH_MARKER"),
-                "{content}: {err}"
-            );
-        }
     }
 
     #[cfg(windows)]

@@ -514,3 +514,13 @@ and `"grant_id":null`; the `navigate`, `read_page`, and screenshot lines have
 `"capability":"read"` and `"grant_id":"read-only"`; the denied left_click line has
 `"capability":"action"`, `"decision":"deny"`, `"duration_ms":0`, `"grant_id":"read-only"`;
 the denied form_input line has `"capability":"write"`.
+
+## t01-1: org-path policy file loads live (the stage-3 outage fix)
+Changed: t01 made parse_manifest the sole loader for the policy file; previously any
+org-path policy file was a fatal startup error.
+Steps: place a schema-3 manifest with a read-only grant and a mandatory audit.enabled
+config entry at the platform org policy path; restart the MCP client; run tabs_context,
+a navigate to a granted host, and a computer left_click.
+Expect: the server starts; the client's tool list is the governed (filtered) set; the
+navigate succeeds; the left_click is denied naming the capability; the audit file
+records the calls. Removing the file and restarting restores all-open.

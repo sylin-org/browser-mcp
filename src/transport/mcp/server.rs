@@ -16,7 +16,7 @@ use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
 use crate::governance::enforcement::LocalPdp;
-use crate::governance::manifest::source::{self, LoadedPolicy};
+use crate::governance::manifest::source::LoadedPolicy;
 use crate::governance::ports::{
     AuditSink, Capability, Decision, Denial, EffectiveMode, GoverningResource,
 };
@@ -54,14 +54,12 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
     // Hot-reload substrate (ADR-0019): the resolved Config is held behind an atomic swap; the
     // watcher re-resolves on a config/org/manifest change with no restart. With no files
     // present this resolves to the built-in defaults, so all-open behavior is byte-identical
-    // to stage 1. A user-supplied manifest's `config` entries feed the user layer here too
-    // (G12); an org-sourced manifest's entries already reach the org layers through G02's own
-    // independent parse of the same file, so `manifest_config_as_user_layer` yields an empty
-    // map in that case (see its own doc comment).
-    let store = ConfigStore::load_initial_with_manifest_config(
-        pattern::is_valid_pattern,
-        source::manifest_config_as_user_layer(&loaded_policy),
-    )?;
+    // to stage 1. `loaded_policy` was already parsed once by `source::load_policy` above
+    // (ADR-0023 Decision 1: `parse_manifest` is the sole reader/parser/validator of the policy
+    // file); the store derives both the org layers (an org-sourced manifest's config entries)
+    // and the user layer (a user-supplied manifest's config entries, G12) from it directly,
+    // with no second read of the org file.
+    let store = ConfigStore::load_initial_with_policy(pattern::is_valid_pattern, &loaded_policy)?;
     store.clone().spawn_watcher();
 
     // The audit flight recorder (ADR-0018 step 1) is orthogonal to the governance mode: it

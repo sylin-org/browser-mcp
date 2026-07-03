@@ -226,9 +226,11 @@ fn combine(org: Option<Manifest>, user: Option<(Manifest, ManifestOrigin)>) -> L
 /// format doc section 1.3 rule 2): a user-supplied manifest's entries ALWAYS land in the user
 /// layer regardless of their declared `level`; an entry declaring `level: mandatory` is
 /// downgraded with a `tracing::warn!` naming the key. An org-sourced manifest (or no manifest
-/// at all) yields an empty map: the org policy file's `config` entries already reach the
-/// layer resolver through G02's own independent parse of the same file (`parse_org_config`),
-/// so feeding them again here would be a redundant second path, not a new one.
+/// at all) yields an empty map: an org-sourced manifest's `config` entries take the ORG
+/// channel instead (`governance::config::load::org_config_from_entries`, ADR-0023 Decision 2),
+/// not because a second parser reads the file -- `parse_manifest` is the ONLY reader/parser of
+/// the policy file (ADR-0023 Decision 1), so feeding these entries again here would be a
+/// redundant second path for the SAME already-parsed entries, not a new one.
 pub fn manifest_config_as_user_layer(
     loaded: &LoadedPolicy,
 ) -> serde_json::Map<String, serde_json::Value> {

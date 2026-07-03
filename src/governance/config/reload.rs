@@ -114,6 +114,18 @@ impl ConfigStore {
         self.tx.subscribe()
     }
 
+    /// [`Self::load_initial_with_policy`] with an all-open policy (no manifest from any
+    /// origin). Kept as a zero-argument-beyond-checker convenience for callers with no manifest
+    /// to thread through.
+    pub fn load_initial(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<Arc<ConfigStore>> {
+        let all_open = crate::governance::manifest::source::LoadedPolicy {
+            manifest: None,
+            origin: None,
+            user_manifest_ignored: false,
+        };
+        Self::load_initial_with_policy(domain_pattern_valid, &all_open)
+    }
+
     /// Build the store from the initial layered load, called once at mcp-server startup.
     /// Startup keeps the G02 FAIL-LOUD semantics: an invalid org policy file or a structurally
     /// broken user file at startup is a hard error and the server refuses to start (it must
@@ -122,23 +134,19 @@ impl ConfigStore {
     /// snapshot. `domain_pattern_valid` validates `content.security.sacred_domains` entries
     /// (the browser plugin's real pattern-syntax checker); it is retained for every later
     /// reload.
-    pub fn load_initial(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<Arc<ConfigStore>> {
-        Self::load_initial_with_manifest_config(domain_pattern_valid, serde_json::Map::new())
-    }
-
-    /// [`Self::load_initial`], plus a user-supplied manifest's `config` entries merged into the
-    /// user layer (G12, shared format doc section 1.3 rule 2: a user-supplied manifest's
-    /// entries always land at the user layer, regardless of their declared `level`). The user
-    /// CONFIG FILE's own entries win on a key collision (inserted last): `config.json` is the
-    /// user's own direct, immediate expression of preference, while a `--manifest` source is
-    /// more likely an external or automated input. An org-sourced manifest's `config` entries
-    /// need no merge here at all: `governance::config::load::parse_org_config` already reads
-    /// them independently from the SAME org policy file, so they already reach the org layers
-    /// through the existing `org`/`user` reads below -- pass an empty map in that case (or when
-    /// there is no active manifest at all).
-    pub fn load_initial_with_manifest_config(
+    ///
+    /// `loaded_policy` is the manifest already resolved once at startup by
+    /// `governance::manifest::source::load_policy` (ADR-0023 Decision 1: `parse_manifest` is
+    /// the sole reader/parser/validator of the policy file; this function never re-reads or
+    /// re-parses it). Its org-sourced config entries populate the org layers (via
+    /// `load::org_config_from_policy`); a user-supplied manifest's entries always land at the
+    /// user layer instead (G12, shared format doc section 1.3 rule 2, regardless of their
+    /// declared `level`), merged UNDER the user config FILE's own values so the file wins on a
+    /// key collision (`config.json` is the user's own direct, immediate expression of
+    /// preference, while a `--manifest` source is more likely an external or automated input).
+    pub fn load_initial_with_policy(
         domain_pattern_valid: fn(&str) -> bool,
-        manifest_user_config: serde_json::Map<String, serde_json::Value>,
+        loaded_policy: &crate::governance::manifest::source::LoadedPolicy,
     ) -> crate::Result<Arc<ConfigStore>> {
         let sources = WatchSources {
             user_config: load::user_config_path(),
@@ -146,7 +154,9 @@ impl ConfigStore {
             manifest: None,
         };
 
-        let org = read_and_parse_org(&sources.org_policy, domain_pattern_valid);
+        let org: crate::Result<OrgConfig> = Ok(load::org_config_from_policy(loaded_policy));
+        let manifest_user_config =
+            crate::governance::manifest::source::manifest_config_as_user_layer(loaded_policy);
         let user = read_and_parse_user(sources.user_config.as_deref(), domain_pattern_valid);
         let (mut last_good, warnings) = compose_initial(org, user)?;
 
@@ -413,8 +423,8 @@ fn merge_manifest_user_config(
 }
 
 /// Build the layer inputs from the last-good state (used by startup and when every source
-/// fails on reload). Delegates to [`load::layer_inputs`], the same composition
-/// [`plan_reload`] and `load::load_and_resolve` (the mcp-server startup path) use.
+/// fails on reload). Delegates to [`load::layer_inputs`], the same composition [`plan_reload`]
+/// and [`ConfigStore::load_initial_with_policy`] (the mcp-server startup path) use.
 fn compose_inputs(last_good: &LastGoodInputs) -> layers::LayerInputs {
     load::layer_inputs(
         last_good.org.clone(),
@@ -442,16 +452,28 @@ fn compose_initial(
     Ok((last_good, warnings))
 }
 
-/// Read and parse the org policy file. `ErrorKind::NotFound` is normal (absence yields the
-/// empty default); any other I/O error is a hard error (an org file that exists but is
-/// unreadable must not yield a weaker posture).
+/// Read and parse the org policy file via the single loader
+/// ([`crate::governance::manifest::document::parse_manifest`], ADR-0023 Decision 1).
+/// `ErrorKind::NotFound` is normal (absence yields the empty default); any other I/O error is a
+/// hard error (an org file that exists but is unreadable must not yield a weaker posture). A
+/// `ManifestError` is mapped via `Display` alone -- `parse_manifest`'s `source_label` already
+/// carries the path, so wrapping it again here would double it. Consequence, intended and
+/// sanctioned (ADR-0023, BOOTSTRAP rule 8): an org file whose GRANTS are invalid now also fails
+/// a config reload (keep-last-good + ERROR) -- it already failed startup fatally via
+/// `load_policy`.
 fn read_and_parse_org(
     path: &Path,
     domain_pattern_valid: fn(&str) -> bool,
 ) -> crate::Result<OrgConfig> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            load::parse_org_config(&content, &path.display().to_string(), domain_pattern_valid)
+            let manifest = crate::governance::manifest::document::parse_manifest(
+                &content,
+                &path.display().to_string(),
+                domain_pattern_valid,
+            )
+            .map_err(|e| crate::Error::Config(e.to_string()))?;
+            Ok(load::org_config_from_entries(&manifest.config))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OrgConfig::default()),
         Err(e) => Err(crate::Error::Config(format!("{}: {e}", path.display()))),
@@ -891,6 +913,46 @@ mod tests {
             plan.inputs.org_mandatory.get(super::super::AUDIT_ENABLED),
             Some(&json!(true))
         );
+    }
+
+    fn always_valid(_: &str) -> bool {
+        true
+    }
+
+    /// ADR-0023: `load_initial_with_policy` derives the org layers straight from an
+    /// org-sourced `LoadedPolicy`'s already-parsed config entries, with no second read of the
+    /// org policy file. A mandatory `audit.enabled` entry ends up in force, locked, at the
+    /// org-mandatory source.
+    #[test]
+    fn org_sourced_policy_config_reaches_the_org_layers() {
+        let json = r#"{"schema":3,"name":"org","version":"1","grants":[],
+            "config":[{"key":"audit.enabled","value":true,"level":"mandatory"}]}"#;
+        let manifest =
+            crate::governance::manifest::document::parse_manifest(json, "test", always_valid)
+                .unwrap();
+        let loaded_policy = crate::governance::manifest::source::LoadedPolicy {
+            manifest: Some(manifest),
+            origin: Some(crate::governance::manifest::source::ManifestOrigin::OrgPolicyFile),
+            user_manifest_ignored: false,
+        };
+
+        let store = ConfigStore::load_initial_with_policy(always_valid, &loaded_policy).unwrap();
+        assert!(store.current().audit_enabled());
+
+        let last_good = store
+            .last_good
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            last_good.org.mandatory.get(super::super::AUDIT_ENABLED),
+            Some(&json!(true))
+        );
+
+        let resolution = layers::resolve(&compose_inputs(&last_good));
+        let resolved = resolution.get(super::super::AUDIT_ENABLED).unwrap();
+        assert!(resolved.locked);
+        assert_eq!(resolved.source, layers::Source::OrgMandatory);
     }
 
     #[test]

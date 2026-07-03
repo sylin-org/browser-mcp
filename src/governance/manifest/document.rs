@@ -253,6 +253,11 @@ fn field_error(
     }
 }
 
+/// Semantic validation of an already-shape-checked manifest, including the config array's
+/// duplicate-key rule (ADR-0023 Decision 3): a `config` array carrying the same `key` twice is
+/// a field error naming the duplicate key at `config[{i}].key`, for every manifest origin (org
+/// or user-sourced alike -- this is a deliberate tightening over the pre-ADR-0023 org-only
+/// check).
 fn validate_semantics(
     manifest: &Manifest,
     source_label: &str,
@@ -270,8 +275,16 @@ fn validate_semantics(
         validate_grant(grant, i, source_label, domain_pattern_valid, &mut seen_ids)?;
     }
 
+    let mut seen_config_keys = HashSet::new();
     for (i, entry) in manifest.config.iter().enumerate() {
         validate_config_entry(entry, i, source_label, domain_pattern_valid)?;
+        if !seen_config_keys.insert(entry.key.clone()) {
+            return Err(field_error(
+                source_label,
+                format!("config[{i}].key"),
+                format!("duplicate config key '{}'", entry.key),
+            ));
+        }
     }
 
     Ok(())
@@ -774,5 +787,23 @@ mod tests {
     fn syntax_error_carries_line_and_column() {
         let err = parse_manifest("{not json", "test", always_valid_host).unwrap_err();
         assert!(matches!(err, ManifestError::Syntax { .. }));
+    }
+
+    /// ADR-0023 Decision 3: a `config` array with the same key twice is a field error naming
+    /// the duplicate key at the second occurrence's `config[1].key` path.
+    #[test]
+    fn duplicate_config_key_is_a_field_error() {
+        let json = r#"{"schema":3,"name":"a","version":"1","grants":[],"config":[
+            {"key":"audit.enabled","value":true,"level":"mandatory"},
+            {"key":"audit.enabled","value":false,"level":"recommended"}
+        ]}"#;
+        let err = parse_manifest(json, "test", always_valid_host).unwrap_err();
+        match err {
+            ManifestError::Field { path, reason, .. } => {
+                assert_eq!(path, "config[1].key");
+                assert_eq!(reason, "duplicate config key 'audit.enabled'");
+            }
+            other => panic!("expected a Field error, got {other:?}"),
+        }
     }
 }

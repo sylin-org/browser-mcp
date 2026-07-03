@@ -69,19 +69,34 @@ fn unknown_key_error(key: &str) -> crate::Error {
     ))
 }
 
-/// Load and resolve the layered configuration for the CLI, returning warnings for the caller
-/// to print instead of routing them through `tracing` (the CLI's output contract is exact
-/// pinned strings, not a logging format). Delegates the actual file reads and layer
-/// composition to [`load::read_layers`]/[`load::layer_inputs`] -- the same functions
-/// `load::load_and_resolve` (the mcp-server startup path) uses -- so there is exactly one
-/// implementation of "read the two files and compose the layers".
+/// Load the active policy ONCE (ADR-0023 Decision 1: `parse_manifest`, via
+/// `governance::manifest::source::load_policy`, is the sole reader/parser/validator of the
+/// policy file) and resolve the layered configuration for the CLI, returning warnings for the
+/// caller to print instead of routing them through `tracing` (the CLI's output contract is
+/// exact pinned strings, not a logging format) and the [`LoadedPolicy`] itself so a caller (for
+/// example `run_list`'s [`shadow_line`]) never has to load the policy a second time. Delegates
+/// the file reads and layer composition to [`load::read_layers`]/[`load::layer_inputs`] -- the
+/// same functions the mcp-server startup path (`ConfigStore::load_initial_with_policy`) uses --
+/// so there is exactly one implementation of "read the files and compose the layers". A broken
+/// policy file surfaces here as a hard error (propagated via `?`), the same one server startup
+/// gives; it is never swallowed.
 fn resolve_with_warnings(
     domain_pattern_valid: fn(&str) -> bool,
-) -> crate::Result<(layers::Resolution, Vec<String>)> {
-    let loaded = load::read_layers(domain_pattern_valid)?;
+) -> crate::Result<(
+    layers::Resolution,
+    Vec<String>,
+    crate::governance::manifest::source::LoadedPolicy,
+)> {
+    let user_manifest_source = std::env::var("BROWSER_MCP_MANIFEST").ok();
+    let loaded_policy = crate::governance::manifest::source::load_policy(
+        user_manifest_source.as_deref(),
+        domain_pattern_valid,
+    )
+    .map_err(|e| crate::Error::Config(e.to_string()))?;
+    let loaded = load::read_layers(domain_pattern_valid, &loaded_policy)?;
     let preset_name = loaded.user.preset.clone();
     let inputs = load::layer_inputs(loaded.org, loaded.user.values, preset_name.as_deref());
-    Ok((layers::resolve(&inputs), loaded.warnings))
+    Ok((layers::resolve(&inputs), loaded.warnings, loaded_policy))
 }
 
 /// Render the `config list` table: one header line, then one row per registered key, in
@@ -108,12 +123,12 @@ fn render_list(resolution: &layers::Resolution) -> String {
 }
 
 fn run_list(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
-    let (resolution, warnings) = resolve_with_warnings(domain_pattern_valid)?;
+    let (resolution, warnings, loaded_policy) = resolve_with_warnings(domain_pattern_valid)?;
     for w in &warnings {
         eprintln!("warning: {w}");
     }
     print!("{}", render_list(&resolution));
-    if let Some(line) = shadow_line(&resolution, domain_pattern_valid) {
+    if let Some(line) = shadow_line(&resolution, &loaded_policy) {
         println!("{line}");
     }
     Ok(())
@@ -121,23 +136,17 @@ fn run_list(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
 
 /// The g15 shadow-mode addendum to `config list` (shared format section 9.2, third status
 /// surface): `None` unless the active manifest's manifest-level effective mode is `observe`.
-/// Resolves the manifest the same way `browser-mcp doctor` does -- no `--manifest` flag exists
-/// on `config list` either, so `BROWSER_MCP_MANIFEST` is the only signal -- and renders through
-/// the same shared `governance::dispatch::governance_status` resolver, so this line and the
-/// doctor `Governance:` section can never disagree (g15 constraint 12). Any manifest-resolution
-/// failure here is silently absent (`None`) rather than turning `config list`'s own success
-/// output into an error: this addendum is a courtesy note, not this command's job to validate
-/// the manifest.
+/// Takes the [`LoadedPolicy`] `run_list` already resolved (via [`resolve_with_warnings`])
+/// instead of loading it again, so `config list` performs exactly one policy load per
+/// invocation (ADR-0023 Decision 6). Renders through the same shared
+/// `governance::dispatch::governance_status` resolver `browser-mcp doctor` uses, so this line
+/// and the doctor `Governance:` section can never disagree (g15 constraint 12). Returns `None`
+/// when there is no active manifest: this addendum is a courtesy note, not this command's job
+/// to validate the manifest.
 fn shadow_line(
     resolution: &layers::Resolution,
-    domain_pattern_valid: fn(&str) -> bool,
+    loaded_policy: &crate::governance::manifest::source::LoadedPolicy,
 ) -> Option<String> {
-    let user_manifest_source = std::env::var("BROWSER_MCP_MANIFEST").ok();
-    let loaded_policy = crate::governance::manifest::source::load_policy(
-        user_manifest_source.as_deref(),
-        domain_pattern_valid,
-    )
-    .ok()?;
     let manifest = loaded_policy.manifest.as_ref()?;
 
     let config_mode_value = resolution
@@ -170,7 +179,7 @@ fn render_get(key: &str, resolved: &layers::Resolved, description: &str) -> Stri
 
 fn run_get(key: &str, domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
     let def = key_def(key).ok_or_else(|| unknown_key_error(key))?;
-    let (resolution, warnings) = resolve_with_warnings(domain_pattern_valid)?;
+    let (resolution, warnings, _loaded_policy) = resolve_with_warnings(domain_pattern_valid)?;
     for w in &warnings {
         eprintln!("warning: {w}");
     }
@@ -274,7 +283,7 @@ fn run_set(
 
     // Lock check happens before any parsing or file access: a locked key is refused even if
     // the requested value equals the org value, and nothing is read or written.
-    let (resolution, _warnings) = resolve_with_warnings(domain_pattern_valid)?;
+    let (resolution, _warnings, _loaded_policy) = resolve_with_warnings(domain_pattern_valid)?;
     let resolved = resolution.get(key).expect("registered key resolves");
     if resolved.locked {
         return Err(crate::Error::Config(format!(
@@ -622,6 +631,6 @@ mod tests {
     fn resolve_with_warnings_never_calls_the_domain_validator_when_unused() {
         // Smoke-check the wiring compiles and runs with an always-true validator; the real
         // grammar is exercised by the browser plugin's own pattern module tests.
-        let (_resolution, _warnings) = resolve_with_warnings(always_valid).unwrap();
+        let (_resolution, _warnings, _loaded_policy) = resolve_with_warnings(always_valid).unwrap();
     }
 }

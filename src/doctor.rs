@@ -190,11 +190,10 @@ fn governance_section_lines() -> Vec<String> {
         Err(e) => return vec![format!("  manifest source is broken: {e}")],
     };
 
-    let config_store =
-        crate::governance::config::reload::ConfigStore::load_initial_with_manifest_config(
-            crate::browser::pattern::is_valid_pattern,
-            crate::governance::manifest::source::manifest_config_as_user_layer(&loaded_policy),
-        );
+    let config_store = crate::governance::config::reload::ConfigStore::load_initial_with_policy(
+        crate::browser::pattern::is_valid_pattern,
+        &loaded_policy,
+    );
     let config = match config_store {
         Ok(store) => store.current(),
         Err(e) => return vec![format!("  config resolution is broken: {e}")],

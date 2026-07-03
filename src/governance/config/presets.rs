@@ -127,13 +127,19 @@ pub fn render_diff(
 }
 
 /// Resolve the CURRENT effective state (as declared on disk today) and the CANDIDATE state
-/// under `new_preset`, from one read of the on-disk org/user layers. Returns the current
-/// declared preset name too (for [`render_diff`]'s header).
+/// under `new_preset`, from one policy load (ADR-0023 Decision 1) plus one read of the on-disk
+/// user layer. Returns the current declared preset name too (for [`render_diff`]'s header).
 fn resolve_current_and_candidate(
     domain_pattern_valid: fn(&str) -> bool,
     new_preset: Preset,
 ) -> crate::Result<(layers::Resolution, layers::Resolution, Option<String>)> {
-    let loaded = load::read_layers(domain_pattern_valid)?;
+    let user_manifest_source = std::env::var("BROWSER_MCP_MANIFEST").ok();
+    let loaded_policy = crate::governance::manifest::source::load_policy(
+        user_manifest_source.as_deref(),
+        domain_pattern_valid,
+    )
+    .map_err(|e| crate::Error::Config(e.to_string()))?;
+    let loaded = load::read_layers(domain_pattern_valid, &loaded_policy)?;
     let current_preset_name = loaded.user.preset.clone();
     let current = load::layer_inputs(
         loaded.org.clone(),
