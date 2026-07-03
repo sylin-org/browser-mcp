@@ -516,6 +516,26 @@ mod tests {
         assert!(matches!(err, ManifestError::Shape { .. }));
     }
 
+    /// g15 required test 2: `"observe"`/`"enforce"` parse into the correct `EffectiveMode` at
+    /// both the manifest level and the grant level (absent-yields-`None` is already pinned by
+    /// `minimal_manifest_parses_with_expected_defaults`; the invalid-string cases are pinned by
+    /// `invalid_mode_enum_value_is_a_shape_error` and `grant_mode_shadow_is_a_shape_error`).
+    #[test]
+    fn mode_observe_and_enforce_parse_at_manifest_and_grant_level() {
+        let json = r#"{"schema":2,"name":"a","version":"1","mode":"observe","grants":[
+            {"id":"g1","domains":["example.com"],"access":"read","mode":"enforce"}
+        ]}"#;
+        let m = parse_manifest(json, "test", always_valid_pattern, is_known_tool).unwrap();
+        assert_eq!(
+            m.mode,
+            Some(crate::governance::ports::EffectiveMode::Observe)
+        );
+        assert_eq!(
+            m.grants[0].mode,
+            Some(crate::governance::ports::EffectiveMode::Enforce)
+        );
+    }
+
     #[test]
     fn missing_grants_is_a_shape_error() {
         let json = r#"{"schema":2,"name":"a","version":"1"}"#;

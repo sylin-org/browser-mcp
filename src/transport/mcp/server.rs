@@ -17,7 +17,7 @@ use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Governance};
 use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::source::{self, LoadedPolicy};
-use crate::governance::ports::{AuditSink, Decision, Denial, GoverningResource};
+use crate::governance::ports::{AuditSink, Decision, Denial, EffectiveMode, GoverningResource};
 use crate::transport::executor::Browser;
 use crate::transport::mcp::tools::{is_known_tool, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
@@ -89,6 +89,7 @@ pub async fn run(browser: Browser, loaded_policy: LoadedPolicy) -> Result<()> {
             classify::classify,
             manifest.grants.clone(),
             manifest.hash.clone(),
+            manifest.mode,
         ),
         None => Governance::all_open(recorder as Arc<dyn AuditSink>, classify::classify),
     });
@@ -368,8 +369,15 @@ async fn handle_tools_call(
     // format doc section 6.1 ("domain: the parser-normalized host, or null"); the two mechanisms
     // resolve the tab independently and deliberately (g08's sacred check and g13's grant check
     // are separate, out-of-scope-for-each-other concerns; see RECONCILIATION.md section 1).
+    //
+    // `config_mode` (g15) feeds the mode precedence (per-grant > manifest > `governance.mode`);
+    // `shadow_denial` carries the would-deny `Denial` forward when the effective mode resolves to
+    // observe, so the call still dispatches (exactly like an allow) but the eventual audit record
+    // is `shadow_deny`, not `allow`.
+    let config_mode = EffectiveMode::from_config_str(config.governance_mode());
     let mut audit_domain = tab_domain.clone();
     let mut audit_grant_id: Option<String> = None;
+    let mut shadow_denial: Option<Denial> = None;
     let mut navigate_post_check = false;
     if governance.is_governed() {
         if let Some((resource, domain)) = resolve_governing_resource(browser, name, &args).await {
@@ -377,18 +385,16 @@ async fn handle_tools_call(
             if name == "navigate" {
                 navigate_post_check = true;
             }
-            match governance.decide(name, action, resource) {
+            match governance.decide(name, action, resource, config_mode) {
                 Decision::Deny(d) => {
                     governance.record_deny(name, action, &d, audit_domain.as_deref());
                     return JsonRpcResponse::success(id, text_content(d.message));
                 }
                 Decision::Allow { grant_id } => audit_grant_id = grant_id,
-                // g13 always decides under `EffectiveMode::Enforce` (`Governance::decide`);
-                // `ShadowDeny` is g15's future overlay on top of this task's verdict and is not
-                // reachable through any path this task wires up.
-                Decision::ShadowDeny(_) => unreachable!(
-                    "g13 never resolves EffectiveMode::Observe; ShadowDeny is g15's overlay"
-                ),
+                Decision::ShadowDeny(d) => {
+                    audit_grant_id = d.grant_id.clone();
+                    shadow_denial = Some(d);
+                }
             }
         }
         // `None`: an unparseable `navigate` target. The extension refuses an invalid URL without
@@ -420,33 +426,51 @@ async fn handle_tools_call(
     let outcome = browser.call(name, &args).await;
     let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    // Point 5 (g13): after a dispatched `navigate` succeeds, re-check the FINAL (post-redirect)
-    // landing. Only reachable when governed and the pre-check above actually ran (skipped for an
-    // unparseable target, per the fall-through comment above); a failed dispatch gets no
-    // post-check (nothing landed).
+    // Point 5 (g13/g15): after a dispatched `navigate` succeeds, re-check the FINAL
+    // (post-redirect) landing -- authoritative over the pre-dispatch verdict above for the
+    // audit record, since a redirect can land somewhere the target itself never named. Only
+    // reachable when governed and the pre-check above actually ran (skipped for an unparseable
+    // target, per the fall-through comment above); a failed dispatch gets no post-check
+    // (nothing landed).
     if navigate_post_check && outcome.is_ok() {
         if let Some(tab_id) = args.get("tabId").and_then(Value::as_i64) {
-            if let Some((landing_denial, landing_domain)) =
-                post_navigate_landing_check(browser, governance, tab_id).await
-            {
-                governance.record_navigate_landing_deny(
-                    action,
-                    &landing_denial,
-                    landing_domain.as_deref(),
-                    duration_ms,
-                );
-                return JsonRpcResponse::success(id, text_content(landing_denial.message));
+            let (landing, landing_domain) =
+                post_navigate_landing_check(browser, governance, tab_id, config_mode).await;
+            match landing {
+                Decision::Allow { grant_id } => {
+                    audit_grant_id = grant_id;
+                    audit_domain = landing_domain;
+                    shadow_denial = None;
+                }
+                Decision::Deny(d) => {
+                    governance.record_navigate_landing_deny(
+                        action,
+                        &d,
+                        landing_domain.as_deref(),
+                        duration_ms,
+                    );
+                    return JsonRpcResponse::success(id, text_content(d.message));
+                }
+                Decision::ShadowDeny(d) => {
+                    audit_grant_id = d.grant_id.clone();
+                    audit_domain = landing_domain;
+                    shadow_denial = Some(d);
+                }
             }
         }
     }
 
-    governance.record_call(
-        name,
-        action,
-        duration_ms,
-        audit_domain.as_deref(),
-        audit_grant_id.as_deref(),
-    );
+    if let Some(denial) = &shadow_denial {
+        governance.record_shadow_deny(name, action, denial, audit_domain.as_deref(), duration_ms);
+    } else {
+        governance.record_call(
+            name,
+            action,
+            duration_ms,
+            audit_domain.as_deref(),
+            audit_grant_id.as_deref(),
+        );
+    }
 
     match outcome {
         // The extension returns an MCP result object (`{ content: [...] }`). The engine is truthful:
@@ -585,20 +609,23 @@ async fn resolve_governing_resource(
     }
 }
 
-/// Point 5 (g13, SPEC 5.2 step 5): after a dispatched `navigate` succeeds, re-query tab
-/// `tab_id`'s FINAL (post-redirect) URL and re-run the SAME governed decision `navigate` itself
-/// would get pre-dispatch (reusing [`Governance::decide`] rather than duplicating grant logic).
-/// `None` means the landing passed (the parking page, or a host matching a grant): the navigate
-/// result passes through unchanged. `Some((denial, domain))` means the tab is best-effort parked
-/// on `about:blank` (its own outcome is ignored: the agent's response is the denial regardless)
-/// and the navigate result must be replaced with it; `domain` is the real landing host for the
-/// audit record, `None` for a non-host landing -- never the denial message's `(unknown)`
-/// placeholder.
+/// Point 5 (g13, SPEC 5.2 step 5; g15 shadow enforcement): after a dispatched `navigate`
+/// succeeds, re-query tab `tab_id`'s FINAL (post-redirect) URL and re-run the SAME governed
+/// decision `navigate` itself would get pre-dispatch (reusing [`Governance::decide`] rather
+/// than duplicating grant logic), returning the full [`Decision`] plus the resolved landing
+/// host (`None` for a non-host landing -- never the denial message's `(unknown)` placeholder).
+/// The caller decides what each variant means for the response and the audit record; this
+/// function's own side effect is limited to the best-effort `about:blank` park, and ONLY for
+/// an actual [`Decision::Deny`] -- a [`Decision::ShadowDeny`] landing must leave the browser
+/// untouched (shadow mode is a fully transparent pass-through; parking would be a visible,
+/// detectable side effect that gives away a shadowed call, breaking g15's own truthfulness
+/// requirement that "the agent must not be able to tell a shadowed call from a permitted one").
 async fn post_navigate_landing_check(
     browser: &Browser,
     governance: &Governance,
     tab_id: i64,
-) -> Option<(Denial, Option<String>)> {
+    config_mode: EffectiveMode,
+) -> (Decision, Option<String>) {
     let resolved = match browser.tab_url(tab_id).await {
         Ok(Some(url)) => resource::resolved_url_resource(&url),
         Ok(None) | Err(_) => GoverningResource::Indeterminate,
@@ -607,20 +634,16 @@ async fn post_navigate_landing_check(
         GoverningResource::Resource(h) => Some(h.clone()),
         _ => None,
     };
-    let denial = match governance.decide("navigate", None, resolved) {
-        Decision::Allow { .. } => return None,
-        Decision::Deny(d) => d,
-        Decision::ShadowDeny(_) => {
-            unreachable!("g13 never resolves EffectiveMode::Observe; ShadowDeny is g15's overlay")
-        }
-    };
-    let _ = browser
-        .call(
-            "navigate",
-            &json!({ "url": "about:blank", "tabId": tab_id }),
-        )
-        .await;
-    Some((denial, domain))
+    let decision = governance.decide("navigate", None, resolved, config_mode);
+    if let Decision::Deny(_) = &decision {
+        let _ = browser
+            .call(
+                "navigate",
+                &json!({ "url": "about:blank", "tabId": tab_id }),
+            )
+            .await;
+    }
+    (decision, domain)
 }
 
 /// Resolve the current host of tab `tab_id` via the internal `tabs_context_mcp` lookup. This is
@@ -1274,12 +1297,21 @@ mod tests {
     }
 
     fn governed_with_grants(grants: Vec<Grant>, sink: Arc<dyn AuditSink>) -> Governance {
+        governed_with_grants_and_mode(grants, sink, None)
+    }
+
+    fn governed_with_grants_and_mode(
+        grants: Vec<Grant>,
+        sink: Arc<dyn AuditSink>,
+        manifest_mode: Option<crate::governance::ports::EffectiveMode>,
+    ) -> Governance {
         Governance::governed(
             Box::new(LocalPdp::new(pattern::pattern_matches_normalized_host)),
             sink,
             classify::classify,
             grants,
             "test-hash".to_string(),
+            manifest_mode,
         )
     }
 
@@ -1375,5 +1407,157 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// g15 constraint 9 (the sacred carve-out): a sacred-domain denial is ALWAYS a real
+    /// `Deny`, never `ShadowDeny`, even when the active manifest's own mode is `observe`.
+    /// Sacred denials never pass through `Decision`/`check_call` at all (a separate, always-on
+    /// code path at the dispatch chokepoint, ahead of grant evaluation); this test pins the
+    /// observable end-to-end behavior rather than relying on that structural fact alone.
+    #[tokio::test]
+    async fn sacred_domain_denies_even_under_an_observe_mode_manifest() {
+        let path = temp_audit_path("sacred-under-observe");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(governed_with_grants_and_mode(
+            vec![full_grant("g1", &["www.mybank.com"])],
+            recorder as Arc<dyn AuditSink>,
+            Some(crate::governance::ports::EffectiveMode::Observe),
+        ));
+        let store = crate::governance::config::reload::ConfigStore::for_test_with_config(
+            config_with_sacred_domains(&["*.mybank.com"]),
+        );
+        let browser = Browser::new();
+        let (_ext, _seen) = attach_fake_extension(
+            &browser,
+            vec![(
+                "tabs_context_mcp",
+                tabs_context_reply(5, "https://www.mybank.com/account"),
+            )],
+        );
+        wait_connected(&browser).await;
+
+        let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert!(text.starts_with("Denied (D-"), "{text}");
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0]["decision"], "deny",
+            "a sacred denial is never shadow_deny, even under an observe-mode manifest"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// g15 required test 3/5 (non-sacred mode switch, inline variant): the SAME grant-based
+    /// would-deny call, under an enforcing vs an observing manifest, yields `deny` (tool did
+    /// not run) vs `shadow_deny` (tool ran, ordinary result, no `Denied (` text) with the
+    /// IDENTICAL `grant_id`/`denial_id`. The subprocess-level equivalent
+    /// (`tests/shadow_mode.rs`) additionally proves `duration_ms` truthfully differs (`0` vs
+    /// real elapsed) using the real dispatch path with no extension connected; this inline
+    /// version uses a fake extension so the observe-mode call can actually "execute".
+    #[tokio::test]
+    async fn grant_shadow_deny_runs_the_tool_and_matches_the_enforce_denial_id() {
+        let enforce_path = temp_audit_path("shadow-enforce");
+        let observe_path = temp_audit_path("shadow-observe");
+        let _ = std::fs::remove_file(&enforce_path);
+        let _ = std::fs::remove_file(&observe_path);
+
+        fn read_only_grant() -> Grant {
+            let mut g = full_grant("r", &["example.com"]);
+            g.access = crate::governance::manifest::document::Access::Read;
+            g
+        }
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+
+        // Enforce: the mutate-class call on a read-only grant is blocked outright.
+        let enforce_recorder = Arc::new(Recorder::to_file(enforce_path.clone()));
+        let enforce_governance = Arc::new(governed_with_grants_and_mode(
+            vec![read_only_grant()],
+            enforce_recorder as Arc<dyn AuditSink>,
+            Some(crate::governance::ports::EffectiveMode::Enforce),
+        ));
+        let browser = Browser::new();
+        let params = json!({
+            "name": "navigate",
+            "arguments": { "url": "https://example.com/", "tabId": 5 },
+        });
+        let enforce_resp = handle_tools_call(
+            &browser,
+            &store,
+            &enforce_governance,
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
+        let enforce_text = enforce_resp.result.as_ref().expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(enforce_text.starts_with("Denied (D-"), "{enforce_text}");
+        let enforce_lines = read_lines(&enforce_path);
+        assert_eq!(enforce_lines.len(), 1);
+        assert_eq!(enforce_lines[0]["decision"], "deny");
+        assert_eq!(enforce_lines[0]["duration_ms"], 0);
+
+        // Observe: the identical call now dispatches (a fake extension answers it) and the
+        // response carries no denial text at all.
+        let observe_recorder = Arc::new(Recorder::to_file(observe_path.clone()));
+        let observe_governance = Arc::new(governed_with_grants_and_mode(
+            vec![read_only_grant()],
+            observe_recorder as Arc<dyn AuditSink>,
+            Some(crate::governance::ports::EffectiveMode::Observe),
+        ));
+        let observe_browser = Browser::new();
+        let (_ext, _seen) = attach_fake_extension_with_tab_urls(
+            &observe_browser,
+            vec![(
+                "navigate",
+                json!({ "content": [{ "type": "text", "text": "navigated" }] }),
+            )],
+            vec![(5, Some("https://example.com/"))],
+        );
+        wait_connected(&observe_browser).await;
+        let observe_resp = handle_tools_call(
+            &observe_browser,
+            &store,
+            &observe_governance,
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
+        let observe_text = observe_resp.result.as_ref().expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert_eq!(
+            observe_text, "navigated",
+            "shadow mode returns the ordinary tool result, no denial text: {observe_text}"
+        );
+        let observe_lines = read_lines(&observe_path);
+        assert_eq!(observe_lines.len(), 1);
+        assert_eq!(observe_lines[0]["decision"], "shadow_deny");
+        assert!(
+            observe_lines[0]["duration_ms"].as_u64().is_some(),
+            "duration_ms present (a shadow-denied call ran, unlike an enforce deny's fixed 0): {:?}",
+            observe_lines[0]["duration_ms"]
+        );
+
+        assert_eq!(
+            enforce_lines[0]["grant_id"], observe_lines[0]["grant_id"],
+            "enforce and observe must attribute the same grant"
+        );
+        assert_eq!(
+            enforce_lines[0]["denial_id"], observe_lines[0]["denial_id"],
+            "enforce and observe must derive the identical denial id"
+        );
+
+        std::fs::remove_file(&enforce_path).ok();
+        std::fs::remove_file(&observe_path).ok();
     }
 }

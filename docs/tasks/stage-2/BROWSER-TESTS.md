@@ -248,3 +248,58 @@ log file `--debug` writes).
 Expect: every call behaves exactly as it did before g13 landed (no `Denied (` text ever
 appears). The debug log shows ONLY the familiar `tool_request`/`tool_response` frame
 pairs for each call -- no `tab_url_request` frame appears anywhere in the session.
+
+## g15-1: the observe-vs-enforce mode switch against a real page
+Changed: g15 adds the mode switch (per-grant > manifest > `governance.mode`) turning a
+would-deny into a real block (`enforce`) or a recorded-but-allowed `shadow_deny`
+(`observe`). This needs a real page and a real agent to see the shadowed action visibly
+execute, and a real audit file to see the two decisions side by side.
+Manifest (schema 2, `--manifest file://<path>`), used for BOTH steps below, editing only
+the top-level `mode` field between runs:
+```json
+{
+  "schema": 2, "name": "g15-manual-check", "version": "1", "mode": "enforce",
+  "grants": [
+    { "id": "example-read", "domains": ["example.com", "*.example.com"], "access": "read" }
+  ]
+}
+```
+Steps:
+1. With `mode: "enforce"` active, navigate to `https://example.com/` and ask the agent for
+   a `computer` `left_click` on the page.
+2. Edit ONLY the manifest's `mode` to `"observe"`, restart the MCP client, and repeat the
+   identical `left_click` on the same page.
+Expect: step 1's click returns `Denied (D-...): 'computer (left_click)' needs write
+access on example.com...` and the click visibly does NOT happen. Step 2's click visibly
+DOES happen on the page (the shadowed action executes normally) and the agent's response
+carries no `Denied (` text at all -- it reads exactly like a normal successful click.
+Open the audit file (default `%LOCALAPPDATA%\browser-mcp\audit.jsonl` on Windows) and
+confirm step 1's line has `decision: "deny"` and `duration_ms: 0`, and step 2's line has
+`decision: "shadow_deny"` and a clearly non-zero `duration_ms`; both lines carry
+`grant_id: "example-read"`. Do NOT expect the two lines' `denial_id` to match: editing
+the manifest's `mode` field changes the manifest's own content hash, which is one of the
+denial id's three inputs by design (ADR-0020: a denial id is attributable to the exact
+policy version that produced it) -- see the g15 ledger entry's deviation 6 for the full
+reasoning and the automated test that instead pins the same-hash case directly.
+
+## g15-2: hold, kill, and sacred-domain checks are unaffected by an active observe-mode manifest
+Changed: g15's mode switch must never interfere with mechanisms that are structurally
+separate from it -- the take-the-wheel pause (g10), the panic kill switch (g11), and the
+sacred-domains carve-out (g08), which the g15 doc requires to stay a REAL `deny` in every
+mode. The sacred case is unit/integration-tested already (no browser needed); hold and
+kill are browser-facing mechanisms this task never touches but is worth reconfirming
+under an active manifest specifically.
+Steps: with the g15-1 manifest active and `mode: "observe"`:
+1. Engage the take-the-wheel pause from the extension popup, then ask the agent to call
+   any tool.
+2. Release the pause, then click `End session now` (the panic kill switch) from the popup.
+3. Add `www.example.com` (or another domain the grant above covers) to
+   `content.security.sacred_domains` in the user config file, navigate the agent's tab
+   there, and ask for any tool call on that tab.
+Expect: step 1's call returns the ordinary `Paused:` text, exactly as g10 already
+guarantees, regardless of the active manifest. Step 2's kill severs the session with the
+ordinary kill-switch error text, exactly as g11 already guarantees. Step 3's call
+returns `Denied (D-...): ... is on the user's never-touch list`, NOT a `shadow_deny`
+outcome and NOT the ordinary tool result, even though the manifest's own mode is
+`observe` -- the sacred-domains check runs ahead of and independently from the grant
+mode switch.

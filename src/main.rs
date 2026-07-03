@@ -246,6 +246,7 @@ fn main() -> Result<()> {
         } => browser_mcp::governance::config::cli::run(
             args.into(),
             browser_mcp::browser::pattern::is_valid_pattern,
+            browser_mcp::transport::mcp::tools::is_known_tool,
         )?,
         Cli {
             command: None,

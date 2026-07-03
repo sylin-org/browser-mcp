@@ -18,8 +18,10 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   `extension/`), `g11` (panic kill switch) landed. Phase C is COMPLETE. `g12` (manifest
   engine: parse/validate/load, no enforcement yet) landed. `g13` (grant enforcement at
   the five points -- the no-op policy seam is now real) landed. `g14` (tool advertisement
-  filtering; dynamic re-advertisement deferred, see its ledger entry) landed.
-- NEXT TASK: Phase D, task `g15` (`docs/tasks/stage-2/g15-shadow-mode.md`).
+  filtering; dynamic re-advertisement deferred, see its ledger entry) landed. `g15`
+  (shadow enforcement: the mode switch between real `deny` and observe-mode
+  `shadow_deny`) landed.
+- NEXT TASK: Phase D, task `g16` (`docs/tasks/stage-2/g16-policy-explain.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -1788,6 +1790,167 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   extension connected at all: `tools/list` never touches the extension, with or without a
   manifest, and this task adds no new extension traffic, no new audit record, and no
   denial path).
+
+### g15 shadow enforcement (the mode switch) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: `src/governance/ports.rs` (`EffectiveMode` grows `as_str`/`from_config_str`;
+  `DecisionRequest`'s old, never-consulted `mode: EffectiveMode` field is split into
+  `manifest_mode: Option<EffectiveMode>` and `config_mode: EffectiveMode`, both actually used
+  now; test module updated for the renamed/added fields); `src/governance/enforcement.rs`
+  (new `effective_mode` per the doc's own exact signature; new `apply_mode` wrapping any
+  `check_call` `Deny` into `Deny`/`ShadowDeny`; `check_call`/`LocalPdp::decide` grow the two
+  mode parameters; 6 new inline tests); `src/governance/dispatch.rs` (`GovernedState` grows
+  `manifest_mode`; `Governance::governed` grows a matching parameter; `Governance::decide`
+  grows `config_mode`, resolves it, and routes the classification-miss denial through the
+  SAME `apply_mode` wrap a classified would-deny gets; new `Governance::governance_status`
+  and the free `governance_status`/`GovernanceStatus` pair; new
+  `Governance::record_shadow_deny`; 5 new inline tests); `src/transport/mcp/server.rs`
+  (`run` passes the manifest's own `mode` into `Governance::governed`; `handle_tools_call`
+  resolves `config_mode` from `Config::governance_mode()`, threads it through both
+  `governance.decide` call sites, and carries a `shadow_denial` across dispatch so a
+  `ShadowDeny` executes like an allow but records `shadow_deny`; `post_navigate_landing_check`
+  returns the full `Decision` (not just an `Option<Denial>`) and only parks the tab on an
+  ACTUAL `Deny`, never on a `ShadowDeny` -- shadow mode is a fully transparent pass-through
+  end to end, including point 5; 3 new inline tests: the sacred carve-out under an
+  observe-mode manifest, and an enforce-vs-observe pair sharing one denial id);
+  `src/governance/manifest/document.rs` (1 new inline test pinning `"observe"`/`"enforce"`
+  parsing at both manifest and grant level -- the absent-yields-`None` and
+  invalid-string-is-an-error cases were already pinned by G12's own tests);
+  `src/doctor.rs` (new `Governance:` report section, `governance_section_lines` resolving
+  the manifest via `BROWSER_MCP_MANIFEST` -- doctor has no `--manifest` flag of its own --
+  and the real layered config resolver, then a factored-out pure `render_governance_status`
+  for the exact wording; 3 new inline tests); `src/governance/config/cli.rs` (`config list`
+  grows the g15 SHADOW addendum line, gated on the same shared resolver; `run`/`run_list`
+  grow an `is_known_tool` parameter); `src/main.rs` (threads `tools::is_known_tool` into
+  the `config` subcommand's `cli::run` call); `tests/all_open_golden.rs` (one call site
+  updated for `Governance::decide`'s grown signature); new `tests/shadow_mode.rs` (1
+  subprocess integration test: the same denied call under enforce vs observe manifests).
+- Summary: the mode switch (ADR-0020 commitment 4) sits directly on top of g13's
+  already-landed enforcement path, exactly as the doc frames it: g13's `check_call`
+  produces a raw would-deny verdict; `apply_mode` (new) wraps it into a real `Deny`
+  (blocks) or a `ShadowDeny` (executes normally, records `decision: "shadow_deny"` with the
+  SAME grant id and denial id a `Deny` of the identical call would carry) per the
+  precedence `grant.mode > manifest.mode > governance.mode`. The sacred-domains carve-out
+  needed no new code at all: sacred denials were already, from g08 onward, a fully
+  separate code path that never constructs a `Decision`, so they were already
+  structurally incapable of ever becoming `ShadowDeny`; this task adds a test proving that
+  observable fact rather than a guard, since there was no `sacred` rule for `apply_mode`
+  to special-case. Status surfaces (the `get_status` resolver -- not yet a wire handler,
+  since that prerequisite has not landed -- `browser-mcp doctor`, and `config list`) all
+  render through the one shared `governance_status` pure function, so they can never
+  disagree on whether shadow mode is active.
+- Deviations from the g-doc per RECONCILIATION.md and this session's established
+  reconcile-and-document pattern:
+  1. **The mode data model (`EffectiveMode`) already existed, built by a2/g12, not new to
+     this task.** `Manifest.mode: Option<EffectiveMode>` and `Grant.mode: Option<EffectiveMode>`
+     were already parsed and validated fields (g12); this task only adds the two small
+     convenience methods (`as_str`, `from_config_str`) the wiring and status surfaces need.
+     No second `Mode` enum was created, per the doc's own explicit instruction.
+  2. **`DecisionRequest`'s pre-existing `mode: EffectiveMode` field is split into
+     `manifest_mode: Option<EffectiveMode>` and `config_mode: EffectiveMode`, and renamed.**
+     The a2-authored field was never actually consulted by `check_call` (g13 always passed
+     a hardcoded `EffectiveMode::Enforce` and nothing read it back) and, as a single value,
+     could not represent BOTH tiers of the precedence a resolving grant's own `mode` sits
+     between (`grants` already carries each grant's own `mode`; the request was missing a
+     manifest-level slot entirely). Splitting it is a minimal, mechanical fix restoring
+     `DecisionRequest`'s own "complete, self-contained input" doc-comment promise, not a
+     new design.
+  3. **The mode switch (`apply_mode`) is applied ONCE, at the very end of `check_call`
+     (wrapping whatever `Decision` its existing dispatch produced), rather than threaded
+     into each individual denial-builder call site.** `check_call`'s existing internal
+     helpers (`decide_for_host`, `decide_no_page`, every `*_denial` builder) are completely
+     unchanged; the wrap reads the resolving grant's own `mode` back out by looking up the
+     already-returned `Denial.grant_id` in `grants`, rather than threading a grant reference
+     through every internal call site a second time. This matches the doc's own framing
+     exactly ("G15 wraps that verdict into the final decision") and is the smallest correct
+     change to already-tested, already-landed g13 code.
+  4. **A classification miss (`Governance::decide`'s `classify` returning `None`) is
+     ALSO routed through `apply_mode`**, not left as an unconditional `Deny` as it was
+     under g13. The task doc's own rule 3 lists `unmatched_domain, access, tool, scheme` as
+     eligible for the mode switch; an unclassifiable call denies with an ordinary
+     `tool/<name>` rule (the SAME rule class a grant's `exclude_tools` check produces), so
+     it is exactly as eligible as any other `tool` rule -- there is no principled reason an
+     org running a rollout in observe mode should have unclassifiable calls hard-blocked
+     while every other would-deny is merely logged. `apply_mode` is `pub(crate)` in
+     `enforcement.rs` specifically so `dispatch.rs` can reuse it here without duplicating
+     the grant-mode lookup.
+  5. **`browser-mcp doctor`'s new `Governance:` section resolves the active manifest via
+     `BROWSER_MCP_MANIFEST` (never the org policy file's OWN separate G09-era reader,
+     which the "Policy manifest:" section above it still uses, untouched)**, using the
+     real `governance::manifest::source::load_policy` and a real, standalone
+     `ConfigStore::load_initial_with_manifest_config` resolution -- doctor is a one-shot
+     CLI invocation with no live session and no `--manifest` flag of its own (that flag is
+     server-role only), so the environment variable is the only signal available without
+     new CLI plumbing. `config list` (which also has no `--manifest` flag) resolves its
+     SHADOW addendum line the identical way. Both failure paths (a broken manifest source,
+     a broken config resolution) degrade to a printed line rather than propagating,
+     matching doctor's own "always produces a report" posture; `config list`'s addendum
+     is simply absent on any such failure (a courtesy line, not part of that command's own
+     success/failure contract).
+  6. **A real, load-bearing inconsistency in the task doc's own manual-verification
+     narrative was found and is NOT "fixed" -- it is documented and worked around.** The
+     doc's verification steps 3-4 say "change ONLY the manifest `mode` to `observe`... the
+     SAME grant id and the SAME denial id" -- but a manifest's own `mode` field is itself
+     part of the canonical bytes `manifest_hash` is computed over (G09's `canonical_hash`),
+     so two manifest FILES differing only in `mode` necessarily hash to two DIFFERENT
+     `manifest_hash` values, which necessarily produces two DIFFERENT denial ids (the
+     formula is `SHA256(manifest_hash + grant_id + rule)`, exactly as ADR-0020 intends: a
+     denial id is attributable to "the exact policy version that made it," and a manifest
+     with a different `mode` is a different version). This was discovered by writing
+     `tests/shadow_mode.rs` literally as the doc describes and watching the denial-id
+     assertion fail with two genuinely different ids. The underlying code is correct --
+     confirmed by `transport::mcp::server`'s own inline test,
+     `grant_shadow_deny_runs_the_tool_and_matches_the_enforce_denial_id`, which holds
+     `manifest_hash` and `grants` fixed and varies ONLY the `manifest_mode` parameter
+     `Governance::governed` takes, and passes -- so `tests/shadow_mode.rs` was written to
+     assert everything else the doc's scenario describes (blocks vs runs, `duration_ms` 0
+     vs real, `shadow_deny` vs `deny`, the SAME grant id) while explicitly NOT asserting
+     matching denial ids across the two manifest FILES, with a code comment explaining why.
+     `BROWSER-TESTS.md`'s g15 entries below correct the same expectation for whoever runs
+     the manual verification live: toggling a manifest FILE's `mode` will show a DIFFERENT
+     denial id than the doc's own step 4 implies; that is correct, not a bug to chase.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green: 318 lib unit tests, up from 302 -- +6 in
+  `governance::enforcement::tests` (`effective_mode` covering every grant/manifest/config
+  combination; the mode switch on `access`/`tool`/`unmatched_domain` denials producing
+  identical grant/denial ids across enforce and observe; the switch never touching an
+  `Allow`; a per-grant `mode` override winning over an enforcing manifest and config; the
+  classification-miss denial going through the identical wrap), +5 in
+  `governance::dispatch::tests` (the `governance_status` free function's four cases --
+  `None` under all-open, shadow true with grants under observe via either a per-grant-less
+  manifest mode or a bare config fallback, shadow false under enforce, never-shadow with
+  empty grants even under observe -- plus the live-facade wrapper matching the free
+  function exactly), +3 in `transport::mcp::server::tests` (the sacred carve-out staying
+  `deny` under an observe-mode manifest; the grant-based enforce-vs-observe pair sharing
+  one denial id, using a fake extension so the observe-mode call genuinely dispatches;
+  point 5 unaffected since neither new test drives `navigate`), +1 in
+  `governance::manifest::document::tests` (`"observe"`/`"enforce"` parsing at both levels),
+  +3 in `doctor::tests` (the three exact line-rendering cases via the newly factored-out
+  pure `render_governance_status`); all other lib suites unchanged in count except the one
+  call site each in `governance::ports::tests` and `tests/all_open_golden.rs` whose
+  signature grew. `tests/all_open_golden.rs` 3, `tests/architecture.rs` 4 (zero new
+  forbidden `governance -> browser/transport` edges), `tests/audit_recorder.rs` 2, `tests/
+  config_schema_golden.rs` 5, `tests/manifest_validation.rs` 4, `tests/peer_death.rs` 1,
+  `tests/tool_advertisement.rs` 2, `tests/tool_enforcement.rs` 7 all unchanged and green;
+  `tests/mcp_protocol.rs` 4 and `tests/tool_schema_fidelity.rs` 6 pass UNCHANGED (no edits
+  to either file, confirmed via `git status`); new `tests/shadow_mode.rs` 1 (see deviation
+  6 for exactly what it does and does not assert). `git status --short` confirmed the
+  touched-file set matches this entry's list exactly, with NO diff to `Cargo.toml`/
+  `Cargo.lock` (no new dependency), `src/transport/mcp/schemas/tools.json`, or anything
+  under `extension/`. ASCII scan (`rg -n "[^\x00-\x7F]"`) clean on every touched/new file.
+  Manual checks per the task's own Verification steps 3, 5, and 6 (step 4's denial-id
+  expectation corrected per deviation 6), run live against the real binary (no browser
+  needed): a read-only grant's mutate-class call under an `enforce`-mode manifest returns
+  `Denied (D-...)` and the doctor `Governance:` section shows
+  `mode  enforce (denied calls are blocked)`; the identical manifest content with `mode`
+  flipped to `observe` shows the SHADOW line in both `doctor` and `config list`; a sacred
+  domain denies regardless of the manifest's mode (verified inline, see the new
+  `transport::mcp::server` test above, since sacred enforcement needs no browser either).
+- Browser checks queued: 2 (appended to `BROWSER-TESTS.md` as `g15-1`, `g15-2`): the
+  observe-vs-enforce mode switch against a REAL page and REAL agent (confirming a
+  shadow-denied mutate action visibly executes with no denial text, unlike g13's own
+  enforce-mode verification), and confirming the take-the-wheel/kill-switch/sacred-domain
+  paths are all unaffected by an active observe-mode manifest.
 
 ## Reminders before running BROWSER-TESTS.md
 

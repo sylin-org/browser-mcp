@@ -36,10 +36,16 @@ pub enum ConfigCommand {
 
 /// Run one config CLI command. Success output goes to stdout; failures return
 /// `Error::Config`, which the binary surfaces on stderr (prefixed `Error: ` by the top-level
-/// `anyhow` termination path) with exit code 1.
-pub fn run(cmd: ConfigCommand, domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
+/// `anyhow` termination path) with exit code 1. `is_known_tool` is used only by `List` (g15,
+/// the shadow-mode line), to resolve the active manifest via `manifest::source::load_policy`;
+/// every other command ignores it.
+pub fn run(
+    cmd: ConfigCommand,
+    domain_pattern_valid: fn(&str) -> bool,
+    is_known_tool: fn(&str) -> bool,
+) -> crate::Result<()> {
     match cmd {
-        ConfigCommand::List => run_list(domain_pattern_valid),
+        ConfigCommand::List => run_list(domain_pattern_valid, is_known_tool),
         ConfigCommand::Get { key } => run_get(&key, domain_pattern_valid),
         ConfigCommand::Set { key, value } => run_set(&key, &value, domain_pattern_valid),
         ConfigCommand::Schema => {
@@ -134,13 +140,60 @@ fn render_list(resolution: &layers::Resolution) -> String {
     out
 }
 
-fn run_list(domain_pattern_valid: fn(&str) -> bool) -> crate::Result<()> {
+fn run_list(
+    domain_pattern_valid: fn(&str) -> bool,
+    is_known_tool: fn(&str) -> bool,
+) -> crate::Result<()> {
     let (resolution, warnings) = resolve_with_warnings(domain_pattern_valid)?;
     for w in &warnings {
         eprintln!("warning: {w}");
     }
     print!("{}", render_list(&resolution));
+    if let Some(line) = shadow_line(&resolution, domain_pattern_valid, is_known_tool) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+/// The g15 shadow-mode addendum to `config list` (shared format section 9.2, third status
+/// surface): `None` unless the active manifest's manifest-level effective mode is `observe`.
+/// Resolves the manifest the same way `browser-mcp doctor` does -- no `--manifest` flag exists
+/// on `config list` either, so `BROWSER_MCP_MANIFEST` is the only signal -- and renders through
+/// the same shared `governance::dispatch::governance_status` resolver, so this line and the
+/// doctor `Governance:` section can never disagree (g15 constraint 12). Any manifest-resolution
+/// failure here is silently absent (`None`) rather than turning `config list`'s own success
+/// output into an error: this addendum is a courtesy note, not this command's job to validate
+/// the manifest.
+fn shadow_line(
+    resolution: &layers::Resolution,
+    domain_pattern_valid: fn(&str) -> bool,
+    is_known_tool: fn(&str) -> bool,
+) -> Option<String> {
+    let user_manifest_source = std::env::var("BROWSER_MCP_MANIFEST").ok();
+    let loaded_policy = crate::governance::manifest::source::load_policy(
+        user_manifest_source.as_deref(),
+        domain_pattern_valid,
+        is_known_tool,
+    )
+    .ok()?;
+    let manifest = loaded_policy.manifest.as_ref()?;
+
+    let config_mode_value = resolution
+        .get(super::GOVERNANCE_MODE)
+        .and_then(|r| r.value.as_str())
+        .unwrap_or("enforce");
+    let config_mode = crate::governance::ports::EffectiveMode::from_config_str(config_mode_value);
+    let status = crate::governance::dispatch::governance_status(
+        &manifest.grants,
+        manifest.mode,
+        config_mode,
+    );
+
+    status.shadow.then(|| {
+        "SHADOW: would-deny events are recorded but NOT blocked; this is observation, not \
+         protection."
+            .to_string()
+    })
 }
 
 /// Render the `config get` five-line block. Newline-terminated.

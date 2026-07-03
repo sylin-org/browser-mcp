@@ -14,7 +14,8 @@
 use crate::governance::denial;
 use crate::governance::manifest::document::{Access, Grant};
 use crate::governance::ports::{
-    Decision, DecisionRequest, Denial, GoverningResource, PolicyDecisionPoint, RwClass,
+    Decision, DecisionRequest, Denial, EffectiveMode, GoverningResource, PolicyDecisionPoint,
+    RwClass,
 };
 
 /// The in-process policy decision point wrapping [`check_call`]. `Governance::governed` uses
@@ -41,7 +42,51 @@ impl PolicyDecisionPoint for LocalPdp {
             &req.resource,
             &req.manifest_hash,
             self.domain_matches,
+            req.manifest_mode,
+            req.config_mode,
         )
+    }
+}
+
+/// Resolve the effective enforcement mode of one decision (shared format doc section 3.4,
+/// g15): a resolving grant's own `mode` wins when set, else the manifest-level `mode`, else
+/// the resolved `governance.mode`. `config` is never optional: the layered resolver always
+/// defines `governance.mode` (the built-in Minimal preset is the floor), so resolution never
+/// fails to produce a mode.
+pub fn effective_mode(
+    grant: Option<EffectiveMode>,
+    manifest: Option<EffectiveMode>,
+    config: EffectiveMode,
+) -> EffectiveMode {
+    grant.or(manifest).unwrap_or(config)
+}
+
+/// Wrap a raw `check_call` verdict into its final form (g15, ADR-0020 commitment 4): `Allow`
+/// passes through unchanged (there is nothing to shadow); a `Deny` becomes `ShadowDeny` when
+/// the effective mode resolves to `Observe`, else stays `Deny`. The resolving grant's own
+/// `mode`, if any, is looked up by the denial's own `grant_id` -- `check_call` never needs to
+/// thread a second grant reference through its internal helpers for this. Sacred-domain
+/// denials never reach this function at all (they are a separate, always-on code path at the
+/// dispatch chokepoint that never touches `Decision`/`check_call`), so every `Deny` this
+/// function ever sees is eligible for the mode switch; there is no `sacred` rule to carve out
+/// here.
+pub(crate) fn apply_mode(
+    decision: Decision,
+    grants: &[Grant],
+    manifest_mode: Option<EffectiveMode>,
+    config_mode: EffectiveMode,
+) -> Decision {
+    let Decision::Deny(denial) = decision else {
+        return decision;
+    };
+    let grant_mode = denial
+        .grant_id
+        .as_deref()
+        .and_then(|id| grants.iter().find(|g| g.id == id))
+        .and_then(|g| g.mode);
+    match effective_mode(grant_mode, manifest_mode, config_mode) {
+        EffectiveMode::Enforce => Decision::Deny(denial),
+        EffectiveMode::Observe => Decision::ShadowDeny(denial),
     }
 }
 
@@ -69,8 +114,10 @@ pub fn check_call(
     resource: &GoverningResource,
     manifest_hash: &str,
     domain_matches: fn(&str, &str) -> bool,
+    manifest_mode: Option<EffectiveMode>,
+    config_mode: EffectiveMode,
 ) -> Decision {
-    match resource {
+    let raw = match resource {
         GoverningResource::AlwaysAllow => Decision::Allow { grant_id: None },
         GoverningResource::OutOfScope(scheme) => {
             Decision::Deny(scheme_denial(scheme, manifest_hash))
@@ -88,7 +135,8 @@ pub fn check_call(
             domain_matches,
         ),
         GoverningResource::None => decide_no_page(grants, tool, action, rw, manifest_hash),
-    }
+    };
+    apply_mode(raw, grants, manifest_mode, config_mode)
 }
 
 fn decide_for_host(
@@ -336,7 +384,22 @@ mod tests {
         }
     }
 
+    /// The g13-era convenience wrapper: always `manifest_mode: None, config_mode: Enforce`, so
+    /// every pre-g15 test keeps asserting `Deny` for a would-deny exactly as before. Tests that
+    /// specifically exercise the g15 mode switch use [`check_with_mode`] instead.
     fn check(grants: &[Grant], tool: &str, rw: RwClass, resource: &GoverningResource) -> Decision {
+        check_with_mode(grants, tool, rw, resource, None, EffectiveMode::Enforce)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_with_mode(
+        grants: &[Grant],
+        tool: &str,
+        rw: RwClass,
+        resource: &GoverningResource,
+        manifest_mode: Option<EffectiveMode>,
+        config_mode: EffectiveMode,
+    ) -> Decision {
         check_call(
             grants,
             tool,
@@ -345,6 +408,8 @@ mod tests {
             resource,
             "hash",
             stub_domain_matches,
+            manifest_mode,
+            config_mode,
         )
     }
 
@@ -480,6 +545,8 @@ mod tests {
             &host("example.com"),
             "hash",
             stub_domain_matches,
+            None,
+            EffectiveMode::Enforce,
         );
         match decision {
             Decision::Deny(d) => assert_eq!(d.rule, "tool/computer"),
@@ -512,6 +579,8 @@ mod tests {
             &host("example.com"),
             "hash",
             stub_domain_matches,
+            None,
+            EffectiveMode::Enforce,
         );
         assert!(matches!(allow, Decision::Allow { .. }));
 
@@ -523,6 +592,8 @@ mod tests {
             &host("example.com"),
             "hash",
             stub_domain_matches,
+            None,
+            EffectiveMode::Enforce,
         );
         match deny {
             Decision::Deny(d) => assert_eq!(d.rule, "access"),
@@ -541,6 +612,8 @@ mod tests {
                 &host("example.com"),
                 "hash",
                 stub_domain_matches,
+                None,
+                EffectiveMode::Enforce,
             );
             assert!(matches!(allow, Decision::Allow { .. }), "action {action}");
         }
@@ -641,5 +714,185 @@ mod tests {
         assert_eq!(denial.rule, "tool/no_such_tool");
         assert_eq!(denial.grant_id, None);
         assert!(denial.message.starts_with("Denied (D-"));
+    }
+
+    // --- g15: shadow enforcement (the mode switch) ---
+
+    #[test]
+    fn effective_mode_precedence_covers_every_combination() {
+        // Grant wins when set, regardless of manifest/config.
+        assert_eq!(
+            effective_mode(
+                Some(EffectiveMode::Observe),
+                Some(EffectiveMode::Enforce),
+                EffectiveMode::Enforce
+            ),
+            EffectiveMode::Observe
+        );
+        assert_eq!(
+            effective_mode(
+                Some(EffectiveMode::Enforce),
+                Some(EffectiveMode::Observe),
+                EffectiveMode::Observe
+            ),
+            EffectiveMode::Enforce
+        );
+        // Manifest wins when grant is None.
+        assert_eq!(
+            effective_mode(None, Some(EffectiveMode::Observe), EffectiveMode::Enforce),
+            EffectiveMode::Observe
+        );
+        assert_eq!(
+            effective_mode(None, Some(EffectiveMode::Enforce), EffectiveMode::Observe),
+            EffectiveMode::Enforce
+        );
+        // Config wins when both grant and manifest are None.
+        assert_eq!(
+            effective_mode(None, None, EffectiveMode::Observe),
+            EffectiveMode::Observe
+        );
+        assert_eq!(
+            effective_mode(None, None, EffectiveMode::Enforce),
+            EffectiveMode::Enforce
+        );
+    }
+
+    #[test]
+    fn mode_switch_yields_shadow_deny_under_observe_with_the_identical_grant_and_denial_id() {
+        // access, tool, and unmatched_domain denials all go through the same apply_mode wrap;
+        // exercise all three (scheme is covered by scheme_and_about_blank's own case already).
+        let read_grant = vec![grant("r", &["example.com"], Access::Read)];
+
+        let enforce = check_with_mode(
+            &read_grant,
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            None,
+            EffectiveMode::Enforce,
+        );
+        let observe = check_with_mode(
+            &read_grant,
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            None,
+            EffectiveMode::Observe,
+        );
+        match (enforce, observe) {
+            (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
+                assert_eq!(d_enforce.rule, "access");
+                assert_eq!(d_enforce.grant_id, d_observe.grant_id);
+                assert_eq!(d_enforce.denial_id, d_observe.denial_id);
+            }
+            other => panic!("expected (Deny, ShadowDeny) for the access rule, got {other:?}"),
+        }
+
+        let mut excluding = grant("g", &["example.com"], Access::All);
+        excluding.exclude_tools = Some(vec!["navigate".to_string()]);
+        let enforce = check_with_mode(
+            &[excluding.clone()],
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            None,
+            EffectiveMode::Enforce,
+        );
+        let observe = check_with_mode(
+            &[excluding],
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            None,
+            EffectiveMode::Observe,
+        );
+        match (enforce, observe) {
+            (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
+                assert_eq!(d_enforce.rule, "tool/navigate");
+                assert_eq!(d_enforce.denial_id, d_observe.denial_id);
+            }
+            other => panic!("expected (Deny, ShadowDeny) for the tool rule, got {other:?}"),
+        }
+
+        let enforce = check_with_mode(
+            &read_grant,
+            "navigate",
+            RwClass::Mutate,
+            &host("evil.com"),
+            None,
+            EffectiveMode::Enforce,
+        );
+        let observe = check_with_mode(
+            &read_grant,
+            "navigate",
+            RwClass::Mutate,
+            &host("evil.com"),
+            None,
+            EffectiveMode::Observe,
+        );
+        match (enforce, observe) {
+            (Decision::Deny(d_enforce), Decision::ShadowDeny(d_observe)) => {
+                assert_eq!(d_enforce.rule, "unmatched_domain");
+                assert_eq!(d_enforce.grant_id, None);
+                assert_eq!(d_enforce.grant_id, d_observe.grant_id);
+                assert_eq!(d_enforce.denial_id, d_observe.denial_id);
+            }
+            other => panic!("expected (Deny, ShadowDeny) for unmatched_domain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mode_switch_never_touches_an_allow() {
+        let all_grant = vec![grant("a", &["example.com"], Access::All)];
+        let observe = check_with_mode(
+            &all_grant,
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            None,
+            EffectiveMode::Observe,
+        );
+        assert!(matches!(observe, Decision::Allow { .. }));
+    }
+
+    #[test]
+    fn grant_level_mode_overrides_manifest_and_config() {
+        let mut observe_grant = grant("g", &["example.com"], Access::Read);
+        observe_grant.mode = Some(EffectiveMode::Observe);
+        let decision = check_with_mode(
+            &[observe_grant],
+            "navigate",
+            RwClass::Mutate,
+            &host("example.com"),
+            Some(EffectiveMode::Enforce),
+            EffectiveMode::Enforce,
+        );
+        assert!(
+            matches!(decision, Decision::ShadowDeny(_)),
+            "the grant's own observe mode must win over an enforcing manifest and config: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn unclassifiable_call_goes_through_the_same_mode_switch() {
+        // Governance::decide applies apply_mode to the classification-miss denial too (it is an
+        // ordinary tool/<name> rule, not a sacred one); pin the building block's own denial
+        // shape stays eligible (the wrapping itself is exercised at the Governance::decide level).
+        let denial = unclassifiable_denial("no_such_tool", None, "hash");
+        let grants: Vec<Grant> = Vec::new();
+        let shadowed = apply_mode(
+            Decision::Deny(denial.clone()),
+            &grants,
+            None,
+            EffectiveMode::Observe,
+        );
+        assert!(matches!(shadowed, Decision::ShadowDeny(d) if d.denial_id == denial.denial_id));
+        let enforced = apply_mode(
+            Decision::Deny(denial),
+            &grants,
+            None,
+            EffectiveMode::Enforce,
+        );
+        assert!(matches!(enforced, Decision::Deny(_)));
     }
 }

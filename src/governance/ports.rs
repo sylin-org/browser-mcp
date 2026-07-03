@@ -51,6 +51,29 @@ pub enum EffectiveMode {
     Enforce,
 }
 
+impl EffectiveMode {
+    /// The wire/status-surface vocabulary: exactly `"observe"` or `"enforce"`. Matches the
+    /// `#[serde(rename_all = "snake_case")]` form, provided directly so callers (the doctor
+    /// `Governance:` section, g15) do not need to round-trip through `serde_json`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EffectiveMode::Observe => "observe",
+            EffectiveMode::Enforce => "enforce",
+        }
+    }
+
+    /// Parse the resolved `governance.mode` config value. The registry's own
+    /// `EnumVariants(&["observe", "enforce"])` constraint (g01) guarantees a resolved config
+    /// never carries any other string, so any other input is unreachable in practice; it
+    /// fails closed to `Enforce` rather than panicking.
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "observe" => EffectiveMode::Observe,
+            _ => EffectiveMode::Enforce,
+        }
+    }
+}
+
 /// A tool identifier as advertised on the MCP surface. Placeholder newtype; g07/g14 flesh
 /// out the tool-surface handling. The sacred tool schemas (ADR-0007) are the source of
 /// truth for the actual names; this type never mutates them.
@@ -217,8 +240,16 @@ pub struct DecisionRequest {
     pub rw: RwClass,
     /// The resolved governing resource.
     pub resource: GoverningResource,
-    /// The effective enforcement mode.
-    pub mode: EffectiveMode,
+    /// The active manifest's own `mode` field (shared format 4.1), if it set one. `None` when
+    /// no manifest is active or the manifest did not declare a `mode`. Part of the mode
+    /// precedence (g15, shared format 3.4): a resolving grant's own `mode` (already carried
+    /// on each `Grant` in `grants`) wins over this, which in turn wins over `config_mode`.
+    pub manifest_mode: Option<EffectiveMode>,
+    /// The resolved `governance.mode` config value (g01/g02), the last-resort fallback in
+    /// the mode precedence above. Never optional: the layered resolver always defines
+    /// `governance.mode` (the built-in Minimal preset is the floor), so resolution never
+    /// fails to produce a mode.
+    pub config_mode: EffectiveMode,
     /// The active manifest's content hash (g09), empty string when no manifest is active.
     /// Part of the request (not read from live state) so a denial id is fully reproducible
     /// from the request alone -- g17 (simulate) replays a recorded request through the same
@@ -339,7 +370,7 @@ mod tests {
     fn sample_request(
         rw: RwClass,
         resource: GoverningResource,
-        mode: EffectiveMode,
+        config_mode: EffectiveMode,
     ) -> DecisionRequest {
         DecisionRequest {
             grants: Vec::new(),
@@ -347,7 +378,8 @@ mod tests {
             action: None,
             rw,
             resource,
-            mode,
+            manifest_mode: None,
+            config_mode,
             manifest_hash: String::new(),
         }
     }
@@ -372,7 +404,8 @@ mod tests {
                 action: Some("left_click".to_string()),
                 rw: RwClass::Mutate,
                 resource: GoverningResource::AlwaysAllow,
-                mode: EffectiveMode::Enforce,
+                manifest_mode: None,
+                config_mode: EffectiveMode::Enforce,
                 manifest_hash: String::new(),
             },
         ];
@@ -546,7 +579,8 @@ mod tests {
             action: None,
             rw: RwClass::Mutate,
             resource: GoverningResource::Resource("example.com".to_string()),
-            mode: EffectiveMode::Enforce,
+            manifest_mode: Some(EffectiveMode::Observe),
+            config_mode: EffectiveMode::Enforce,
             manifest_hash: "abc123".to_string(),
         };
         let json = serde_json::to_string(&req).expect("serializes");

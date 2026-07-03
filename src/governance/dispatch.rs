@@ -65,6 +65,36 @@ pub fn hold_message(tool: &str, action: Option<&str>, held_for: Duration) -> Str
     message
 }
 
+/// The status-surface governance summary (g15, shared format doc section 9.2): the
+/// manifest-level effective mode (`manifest_mode.unwrap_or(config_mode)`) and whether shadow
+/// enforcement is active. Rendered by `get_status`'s `governance` object and the doctor
+/// `Governance:` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GovernanceStatus {
+    pub mode: EffectiveMode,
+    pub shadow: bool,
+}
+
+/// The pure computation behind [`GovernanceStatus`] (g15): `mode` is the manifest-level
+/// effective mode; `shadow` is true only when `grants` is non-empty AND that mode is
+/// `Observe` -- per-grant overrides never change this top-level flag, and an empty `grants`
+/// array (a manifest with no policy content yet) is deliberately reported as non-shadow even
+/// though an individual would-deny call under it would still be classified `shadow_deny` by
+/// [`crate::governance::enforcement::apply_mode`] (the badge describes whether a MEANINGFUL
+/// policy is being observed, not the literal per-call decision vocabulary). A free function
+/// (not a `Governance` method) so a standalone caller with no live session -- `browser-mcp
+/// doctor`, which resolves its own manifest independently -- computes the identical summary
+/// [`Governance::governance_status`] does, from the same three inputs.
+pub fn governance_status(
+    grants: &[Grant],
+    manifest_mode: Option<EffectiveMode>,
+    config_mode: EffectiveMode,
+) -> GovernanceStatus {
+    let mode = manifest_mode.unwrap_or(config_mode);
+    let shadow = !grants.is_empty() && mode == EffectiveMode::Observe;
+    GovernanceStatus { mode, shadow }
+}
+
 /// The governance facade held at the dispatch chokepoint: the Policy Enforcement Point.
 ///
 /// One instance lives for the whole MCP session. The decision path is either the ungoverned
@@ -96,14 +126,17 @@ enum Mode {
 
 /// The decision port a governed facade holds, plus the request fields that come from the
 /// active manifest itself rather than from any one call (g13): the resolved grants (in
-/// manifest order; the pure decision core re-resolves the matching grant per call) and the
-/// manifest's content hash (denial ids are computed from it, shared format doc section 7.1).
-/// `dyn` on the PDP is deliberate: the decision point has multiple impls (Noop today, `LocalPdp`
-/// in stage 2, a future Remote).
+/// manifest order; the pure decision core re-resolves the matching grant per call), the
+/// manifest's content hash (denial ids are computed from it, shared format doc section 7.1),
+/// and the manifest-level `mode` (g15, shared format 4.1: the mode precedence's middle tier,
+/// between a resolving grant's own `mode` and the resolved `governance.mode`). `dyn` on the
+/// PDP is deliberate: the decision point has multiple impls (Noop today, `LocalPdp` in stage
+/// 2, a future Remote).
 struct GovernedState {
     pdp: Box<dyn PolicyDecisionPoint>,
     grants: Vec<Grant>,
     manifest_hash: String,
+    manifest_mode: Option<EffectiveMode>,
 }
 
 impl Governance {
@@ -123,21 +156,23 @@ impl Governance {
     }
 
     /// A governed facade over the given decision point, audit sink, classifier, the active
-    /// manifest's resolved grants, and its content hash (g13). `transport::mcp::server::run`
-    /// constructs this with a `LocalPdp` once a manifest is active; `all_open` stays the
-    /// facade for a session with no manifest.
+    /// manifest's resolved grants, its content hash (g13), and its own `mode` field, if any
+    /// (g15). `transport::mcp::server::run` constructs this with a `LocalPdp` once a manifest
+    /// is active; `all_open` stays the facade for a session with no manifest.
     pub fn governed(
         pdp: Box<dyn PolicyDecisionPoint>,
         audit: Arc<dyn AuditSink>,
         classify: fn(&str, Option<&str>) -> Option<RwClass>,
         grants: Vec<Grant>,
         manifest_hash: String,
+        manifest_mode: Option<EffectiveMode>,
     ) -> Self {
         Self {
             mode: Mode::Governed(GovernedState {
                 pdp,
                 grants,
                 manifest_hash,
+                manifest_mode,
             }),
             audit,
             classify,
@@ -170,6 +205,24 @@ impl Governance {
         }
     }
 
+    /// The status-surface governance summary (g15, shared format doc section 9.2): `None`
+    /// under all-open; `Some(governance_status(...))` once a manifest is active, computed from
+    /// this facade's own held grants and manifest-level mode. Delegates to the free function
+    /// [`governance_status`] so a standalone reader with no live `Governance` instance
+    /// (`browser-mcp doctor`, which resolves its own manifest independently) computes the
+    /// IDENTICAL summary from the same inputs -- the two surfaces can never disagree (g15
+    /// constraint 12).
+    pub fn governance_status(&self, config_mode: EffectiveMode) -> Option<GovernanceStatus> {
+        match &self.mode {
+            Mode::AllOpen => None,
+            Mode::Governed(state) => Some(governance_status(
+                &state.grants,
+                state.manifest_mode,
+                config_mode,
+            )),
+        }
+    }
+
     /// The single inbound governance decision for one tool call, taken at the dispatch chokepoint
     /// before the tool executes.
     ///
@@ -178,26 +231,35 @@ impl Governance {
     /// is byte-identical to stage 1. Under [`Mode::Governed`] the call is classified first
     /// (`action` is the `computer` sub-action, `None` for every other tool); a classification
     /// miss denies via the same tool-name rule the pure decision core uses for a known-unlisted
-    /// tool (g13, `enforcement::unclassifiable_denial`), since an unclassifiable call must never
-    /// be presented as harmless. A classification hit builds the full [`DecisionRequest`] from
-    /// the held grants and manifest hash plus the caller-resolved `resource`, and delegates to
-    /// the held decision point. `mode` is always [`EffectiveMode::Enforce`]: shadow mode (g15)
-    /// is a future overlay on top of this result, not a value this call site produces itself.
+    /// tool (g13, `enforcement::unclassifiable_denial`), then passes through the SAME mode
+    /// switch (g15, `enforcement::apply_mode`) a classified would-deny does, since an
+    /// unclassifiable call is an ordinary `tool/<name>` rule, not a sacred one -- it is just as
+    /// eligible for shadow enforcement as any other would-deny. A classification hit builds the
+    /// full [`DecisionRequest`] from the held grants, manifest hash, and manifest-level mode,
+    /// plus the caller-resolved `resource` and `config_mode`, and delegates to the held decision
+    /// point (which applies the same mode switch internally, `LocalPdp`/`check_call`, g15).
     pub fn decide(
         &self,
         tool: &str,
         action: Option<&str>,
         resource: GoverningResource,
+        config_mode: EffectiveMode,
     ) -> Decision {
         match &self.mode {
             Mode::AllOpen => Decision::Allow { grant_id: None },
             Mode::Governed(state) => {
                 let Some(rw) = (self.classify)(tool, action) else {
-                    return Decision::Deny(crate::governance::enforcement::unclassifiable_denial(
+                    let denial = crate::governance::enforcement::unclassifiable_denial(
                         tool,
                         action,
                         &state.manifest_hash,
-                    ));
+                    );
+                    return crate::governance::enforcement::apply_mode(
+                        Decision::Deny(denial),
+                        &state.grants,
+                        state.manifest_mode,
+                        config_mode,
+                    );
                 };
                 let req = DecisionRequest {
                     grants: state.grants.clone(),
@@ -205,7 +267,8 @@ impl Governance {
                     action: action.map(str::to_string),
                     rw,
                     resource,
-                    mode: EffectiveMode::Enforce,
+                    manifest_mode: state.manifest_mode,
+                    config_mode,
                     manifest_hash: state.manifest_hash.clone(),
                 };
                 state.pdp.decide(&req)
@@ -313,6 +376,35 @@ impl Governance {
             action,
             domain,
             "deny",
+            denial.grant_id.clone(),
+            Some(denial.denial_id.clone()),
+            duration_ms,
+            false,
+        );
+        self.audit.record(&record);
+    }
+
+    /// Build and record one audit record for a call that WOULD have been denied under enforce
+    /// but ran because the effective mode resolved to observe (g15, shadow enforcement,
+    /// ADR-0020 commitment 4): the tool executed exactly as an allow would, so `decision` is
+    /// `"shadow_deny"` with the SAME `grant_id`/`denial_id` an enforce-mode deny of the
+    /// identical call would carry (they are derived from the same `Denial`, never recomputed),
+    /// and `duration_ms` is the real elapsed time, never the pre-dispatch `0`. The agent's
+    /// response carries no denial text; only this record tells the truth about what would have
+    /// happened under enforce.
+    pub fn record_shadow_deny(
+        &self,
+        tool: &str,
+        action: Option<&str>,
+        denial: &Denial,
+        domain: Option<&str>,
+        duration_ms: u64,
+    ) {
+        let record = self.build_record(
+            tool,
+            action,
+            domain,
+            "shadow_deny",
             denial.grant_id.clone(),
             Some(denial.denial_id.clone()),
             duration_ms,
@@ -472,7 +564,12 @@ mod tests {
         let sink = Arc::new(CountingAuditSink::default());
         let g = Governance::all_open(sink.clone(), no_classification);
         assert!(matches!(
-            g.decide("navigate", None, GoverningResource::None),
+            g.decide(
+                "navigate",
+                None,
+                GoverningResource::None,
+                EffectiveMode::Enforce
+            ),
             Decision::Allow { grant_id: None }
         ));
         g.record_call("navigate", None, 5, None, None);
@@ -488,9 +585,15 @@ mod tests {
             sample_classify,
             Vec::new(),
             String::new(),
+            None,
         );
         assert!(matches!(
-            g.decide("read_page", None, GoverningResource::None),
+            g.decide(
+                "read_page",
+                None,
+                GoverningResource::None,
+                EffectiveMode::Enforce
+            ),
             Decision::Allow { .. }
         ));
         g.record_call("navigate", None, 0, None, None);
@@ -656,5 +759,95 @@ mod tests {
         assert_eq!(rec.client.as_ref().unwrap().name, "claude-code");
         assert_eq!(rec.identity, None);
         assert_eq!(rec.manifest, None);
+    }
+
+    // --- g15: the governance_status badge resolver ---
+
+    fn one_grant() -> Grant {
+        Grant {
+            id: "g1".to_string(),
+            domains: vec!["example.com".to_string()],
+            access: crate::governance::manifest::document::Access::All,
+            tools: None,
+            exclude_tools: None,
+            description: None,
+            mode: None,
+        }
+    }
+
+    #[test]
+    fn governance_status_is_none_under_all_open() {
+        let sink = Arc::new(CountingAuditSink::default());
+        let g = Governance::all_open(sink, no_classification);
+        assert_eq!(g.governance_status(EffectiveMode::Enforce), None);
+    }
+
+    #[test]
+    fn governance_status_reports_shadow_true_with_grants_under_observe() {
+        assert_eq!(
+            governance_status(
+                &[one_grant()],
+                Some(EffectiveMode::Observe),
+                EffectiveMode::Enforce
+            ),
+            GovernanceStatus {
+                mode: EffectiveMode::Observe,
+                shadow: true,
+            }
+        );
+        // The manifest's own mode wins; config alone would have said enforce here.
+        assert_eq!(
+            governance_status(&[one_grant()], None, EffectiveMode::Observe),
+            GovernanceStatus {
+                mode: EffectiveMode::Observe,
+                shadow: true,
+            }
+        );
+    }
+
+    #[test]
+    fn governance_status_reports_shadow_false_under_enforce() {
+        assert_eq!(
+            governance_status(
+                &[one_grant()],
+                Some(EffectiveMode::Enforce),
+                EffectiveMode::Observe
+            ),
+            GovernanceStatus {
+                mode: EffectiveMode::Enforce,
+                shadow: false,
+            }
+        );
+    }
+
+    #[test]
+    fn governance_status_never_shadows_with_empty_grants_even_under_observe() {
+        assert_eq!(
+            governance_status(&[], Some(EffectiveMode::Observe), EffectiveMode::Enforce),
+            GovernanceStatus {
+                mode: EffectiveMode::Observe,
+                shadow: false,
+            }
+        );
+    }
+
+    #[test]
+    fn governance_status_via_the_live_facade_matches_the_free_function() {
+        let sink = Arc::new(CountingAuditSink::default());
+        let g = Governance::governed(
+            Box::new(NoopPdp),
+            sink,
+            no_classification,
+            vec![one_grant()],
+            String::new(),
+            Some(EffectiveMode::Observe),
+        );
+        assert_eq!(
+            g.governance_status(EffectiveMode::Enforce),
+            Some(GovernanceStatus {
+                mode: EffectiveMode::Observe,
+                shadow: true,
+            })
+        );
     }
 }
