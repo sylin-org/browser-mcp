@@ -108,7 +108,4 @@ this document will be updated to reflect it before that version is published.
 ## Contact
 
 Questions or concerns about this extension can be raised via the project repository:
-https://github.com/sylin-org/browser-mcp
-
-[TODO: confirm a direct contact email before publishing to the Chrome Web Store, if the
-dashboard requires one in addition to this document.]
+https://github.com/sylin-org/browser-mcp, or by email at hello@sylin.org.
