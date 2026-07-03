@@ -1,0 +1,23 @@
+{
+  "schema": 2,
+  "name": "simulate-restrictive",
+  "version": "1",
+  "grants": [
+    {
+      "id": "docs-read",
+      "domains": ["docs.example.com"],
+      "access": "read"
+    },
+    {
+      "id": "wiki-wildcard",
+      "domains": ["*.wiki.example.org"],
+      "access": "all"
+    },
+    {
+      "id": "forms-noscript",
+      "domains": ["forms.example.net"],
+      "access": "all",
+      "exclude_tools": ["javascript_tool"]
+    }
+  ]
+}

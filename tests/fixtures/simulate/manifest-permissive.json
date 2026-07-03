@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "name": "simulate-permissive",
+  "version": "1",
+  "grants": [
+    {
+      "id": "all-access",
+      "domains": ["docs.example.com", "*.wiki.example.org", "forms.example.net", "unknown.example"],
+      "access": "all"
+    }
+  ]
+}

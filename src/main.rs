@@ -71,6 +71,8 @@ struct PolicyArgs {
 enum PolicyCommand {
     /// Render a policy manifest or config file as plain sentences.
     Explain(ExplainArgs),
+    /// Replay recorded audit events through a candidate manifest.
+    Simulate(SimulateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -78,6 +80,16 @@ struct ExplainArgs {
     /// Path to a policy manifest or a user configuration file.
     #[arg(value_name = "FILE")]
     file: std::path::PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct SimulateArgs {
+    /// Path to the candidate policy manifest.
+    #[arg(value_name = "MANIFEST")]
+    manifest: std::path::PathBuf,
+    /// Path to the audit JSON Lines file to replay.
+    #[arg(long, value_name = "FILE")]
+    replay: std::path::PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -282,6 +294,26 @@ fn main() -> Result<()> {
                 browser_mcp::transport::mcp::tools::is_known_tool,
             )?;
             print!("{text}");
+        }
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command: PolicyCommand::Simulate(SimulateArgs { manifest, replay }),
+                })),
+            ..
+        } => {
+            use std::io::Write;
+            let outcome = browser_mcp::governance::simulate::run_simulate(
+                &manifest,
+                &replay,
+                browser_mcp::browser::pattern::is_valid_pattern,
+                browser_mcp::transport::mcp::tools::is_known_tool,
+                browser_mcp::browser::classify::classify,
+                browser_mcp::browser::pattern::pattern_matches_normalized_host,
+            )?;
+            print!("{}", outcome.report);
+            std::io::stdout().flush().ok();
+            std::process::exit(if outcome.would_deny == 0 { 0 } else { 2 });
         }
         Cli {
             command: None,

@@ -21,8 +21,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   filtering; dynamic re-advertisement deferred, see its ledger entry) landed. `g15`
   (shadow enforcement: the mode switch between real `deny` and observe-mode
   `shadow_deny`) landed. `g16` (`policy explain`: deterministic plain-language rendering,
-  golden-tested) landed.
-- NEXT TASK: Phase D, task `g17` (`docs/tasks/stage-2/g17-policy-simulate.md`).
+  golden-tested) landed. `g17` (`policy simulate`: replays audit JSONL through the same
+  `check_call` live enforcement uses, golden-tested) landed.
+- NEXT TASK: Phase D, task `g18` (`docs/tasks/stage-2/g18-presets-and-templates.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -2089,6 +2090,104 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
 - Browser checks queued: none (a pure CLI/file-based feature; no manifest is ever loaded
   live, no session state is touched, and `explain_file` never contacts the extension or
   any running server).
+
+### g17 policy simulate (replay audit JSONL against a candidate manifest) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/simulate.rs`; edited `src/governance/mod.rs` (registers
+  `pub mod simulate;`), `src/main.rs` (adds `PolicyCommand::Simulate(SimulateArgs)` and its
+  dispatch arm); new `tests/policy_simulate.rs`; new `tests/fixtures/simulate/{audit.jsonl,
+  manifest-permissive.json,manifest-restrictive.json}`.
+- Summary: `browser-mcp policy simulate <MANIFEST> --replay <AUDIT_JSONL>` replays a recorded
+  audit JSON-Lines file through the exact same `governance::enforcement::check_call` pure
+  decision function live enforcement calls (g13/g15) -- zero parallel logic, per the task's
+  own hard constraint 9. For each non-blank line it reconstructs the call facts (`tool`,
+  `action`, recorded `domain` host or the no-URL resource for `domain: null`), recomputes the
+  r/w class via `classify` (the recorded `rw` field is never trusted), and calls `check_call`
+  with an EMPTY sacred-domain list and `EffectiveMode::Enforce` for both the manifest-mode and
+  config-mode parameters (mode is ignored entirely per Required behavior section 3; any
+  `Decision::Deny` or `Decision::ShadowDeny` collapses into one would-deny bucket). Every line
+  lands in exactly one of three buckets -- would-allow, would-deny, not-evaluable -- via the
+  exact ordered bucket table in section 4 (malformed JSON, missing tool, missing/wrong-typed
+  domain, wrong-typed action, then unknown tool / unknown computer action / missing computer
+  action, then evaluate). Would-deny records group by `(grant_id or "-", domain or "-", tool,
+  rule)` in a `BTreeMap` for deterministic, byte-wise ascending output; not-evaluable records
+  are collected in file order and never dropped. The renderer produces the exact section-5 ASCII
+  report (header, totals, would-deny groups only when nonzero, not-evaluable list only when
+  nonzero, a fixed result line), LF-only, one trailing newline. `main.rs`'s `Simulate` arm
+  prints the report, flushes stdout explicitly, then calls `std::process::exit(0)` when
+  `would_deny == 0` else `exit(2)`; any operational error (unreadable manifest/replay file,
+  manifest that fails validation) returns from `main` normally, giving exit 1 with nothing on
+  stdout and the message on stderr, matching the existing `?`-propagation pattern the `Explain`
+  arm already established (g16). `PolicyCommand` grew its second variant alongside `Explain`
+  (g16) rather than creating a second top-level subcommand, per the task's own instruction.
+  Manually verified both fixture runs end-to-end against hand-computed expected totals and
+  group lines before committing (see Verification).
+- Deviations from the g-doc per RECONCILIATION.md:
+  1. **The g-doc's own literal function signature for `run_simulate` (section 2) omits the
+     injected function-pointer parameters** the "known integration point" pattern requires for
+     every governance-core function that needs browser/transport-domain logic (`classify`,
+     `domain_matches`, and -- to build the `Manifest`/`GoverningResource` inputs `check_call`
+     needs -- `domain_pattern_valid`, `is_known_tool`, matching `parse_manifest`'s own
+     signature). `run_simulate` grew all five as trailing `fn` pointer parameters, supplied by
+     `main.rs` from `browser::pattern`/`browser::classify`/`transport::mcp::tools`, exactly as
+     `explain_file` (g16) and `check_call` (g13/g15) already do. This keeps `governance/`
+     free of any `crate::browser`/`crate::transport` reference, satisfying the g-doc's own
+     constraint 9 and the arch-test (A7) by construction; it does not change what the module
+     does, only how it receives domain-specific logic.
+  2. **`SimulateError`'s two file-read variants are named `ManifestIo`/`ReplayIo`** (the g-doc
+     does not fix exact variant names, only "manifest file read failure... replay file read
+     failure... wrap the manifest task's error type"). Chose names parallel to
+     `governance::explain::ExplainError`'s existing `Io`/`Manifest` shape for consistency
+     within the same module family; `SimulateError::Manifest` wraps
+     `governance::manifest::document::ManifestError` via `#[from]`, unchanged.
+  3. **No pure-core extraction was needed** (the g-doc's section 3 fallback, "if the decision
+     function turns out not to be callable as a pure function... extract the pure core").
+     `check_call` was already a fully synchronous, side-effect-free function taking exactly
+     the inputs simulate needs (grants, tool, action, rw, resource, manifest hash,
+     domain_matches, manifest_mode, config_mode) as of g15 -- calling it directly from
+     `simulate.rs` required zero changes to `check_call` itself, confirming clean reuse and
+     satisfying constraint 3 (live enforcement is untouched by construction, not merely by
+     test).
+  4. **`examples/*.json` DOES exist in the tree** (the g-doc's "Current behavior" section
+     states it does not, at authoring time), so the conditional integration test (section 6,
+     item 6) was written: `every_committed_example_manifest_never_errors_out` iterates every
+     `examples/*.json` file and asserts `policy simulate <file> --replay
+     tests/fixtures/simulate/audit.jsonl` never exits 1.
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo test` green: 346 lib unit tests, up from 331 -- +15 in `governance::simulate::tests`
+  (empty replay is all zeros; whitespace-only lines uncounted; one test per section-4 bucket-
+  table row -- malformed json, non-object json, missing tool, missing domain key, domain wrong
+  type, action wrong type, unknown tool, computer action missing, computer unknown action; one
+  evaluable allow-and-deny case; totals arithmetic; group sort order with dash entries first;
+  the required "same-logic pin" test calling `check_call` directly with the same manifest and
+  call facts as a would-deny replay record and asserting its `grant_id`/`denial_id` match the
+  simulation report's group exactly). New `tests/policy_simulate.rs` 7 (permissive fixture:
+  exit 0, `would deny: 0`, no would-deny-groups section, all four expected not-evaluable
+  lines; restrictive fixture golden test: exit 2, exact totals arithmetic (3+6+4=13), all four
+  expected group substrings present, every `denial=` value shaped `D-` plus 8 lowercase hex,
+  group lines in the exact specified sort order, the four not-evaluable lines; determinism --
+  running the restrictive command twice yields byte-identical stdout; nonexistent replay path
+  exits 1 with the path named on stderr and empty stdout; invalid-JSON manifest exits 1;
+  structurally-invalid manifest -- an `exclude_tools` entry naming an unknown tool -- exits 1;
+  every committed `examples/*.json` file never exits 1 against the fixture replay). All other
+  suites unchanged and green, including `tests/tool_schema_fidelity.rs` 6 and
+  `tests/mcp_protocol.rs` 4 (neither file touched, confirmed via `git status`). `git status
+  --porcelain=v1` confirmed the touched-file set matches this entry's list exactly, with no
+  diff to `src/mcp/schemas/tools.json`, anything under `extension/`, or `Cargo.toml`/
+  `Cargo.lock` (no new dependency). ASCII scan (`rg -n "[^\x00-\x7F]"`, via the Grep tool)
+  clean on every touched/new file. Manual runs against the built binary matched hand-computed
+  expectations exactly: permissive manifest -> `total actions: 13`, `would allow: 9`,
+  `would deny: 0`, `not evaluable: 4`, `result: no would-denies (exit 0)`, exit code 0;
+  restrictive manifest -> `total actions: 13`, `would allow: 3`, `would deny: 6`,
+  `not evaluable: 4`, four would-deny group lines in the order unmatched_domain / computer-
+  access (count=3, folding all three `computer` mutate records into one line) / navigate-
+  access / javascript_tool-exclude, `result: 6 would-denies (exit 2)`, exit code 2; a
+  nonexistent `--replay` path -> exit 1, stderr names the path, empty stdout; an invalid-JSON
+  manifest and a structurally-invalid manifest (unknown tool in `exclude_tools`) each -> exit
+  1, empty stdout. Both fixture runs repeated twice with identical byte-for-byte stdout.
+- Browser checks queued: none (a pure CLI/file-based feature; simulate never loads a live
+  manifest, never touches session state, and never contacts the extension or a running
+  server -- it only reads two files given on the command line).
 
 ## Reminders before running BROWSER-TESTS.md
 
