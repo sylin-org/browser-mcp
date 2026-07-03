@@ -54,14 +54,15 @@ pub fn advertised_tools(fixture: &Value, grants: Option<&[Grant]>) -> Value {
 /// action rows; for every other tool its single row) whose `requires` is empty OR is a subset
 /// of ANY single grant's `allowed` (ADR-0022 Decision 8).
 fn tool_has_a_reachable_variant(tool_name: &str, grants: &[Grant]) -> bool {
-    directory::DIRECTORY
+    directory::REGISTRY
         .iter()
         .filter(|row| row.tool == tool_name)
-        .any(|row| {
-            row.requires.is_empty()
+        .flat_map(|row| row.variants.iter())
+        .any(|variant| {
+            variant.requires.is_empty()
                 || grants
                     .iter()
-                    .any(|g| capability_subset(row.requires, &g.allowed))
+                    .any(|g| capability_subset(variant.requires, &g.allowed))
         })
 }
 

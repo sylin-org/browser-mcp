@@ -12,8 +12,11 @@ then continue. Never rely on remembering earlier work; re-read files.
   never commit to `main`, `stage-2`, or `stage-3`.
 - Progress: t01 landed. The stage-3 org-policy outage is fixed: `parse_manifest` is the sole
   reader/parser/validator of the policy file; `parse_org_config` and `load_and_resolve` are
-  deleted.
-- NEXT TASK: `t02` (`docs/tasks/stage-4/t02-tool-registry.md`).
+  deleted. t02 landed: `src/browser/directory.rs` generalized in place into the ADR-0024
+  Decision 1 `ToolDescriptor` registry (14 rows, 26 variants); `requires()` and
+  `explain_text()` keep their exact contracts and byte-identical output; nothing outside the
+  module consumes the new fields yet.
+- NEXT TASK: `t03` (`docs/tasks/stage-4/t03-governance-authorize.md`).
 - Authority: ADR-0023/0024/0025 (each in its own scope) over task prompts over ADR-0022 over
   the stage-2 shared-format doc over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
@@ -108,3 +111,73 @@ then continue. Never rely on remembering earlier work; re-read files.
   `cargo run -- doctor` (rendered the manifest correctly, no "config resolution is broken"),
   deleted the file, re-ran doctor (confirmed all-open again).
 - Browser checks queued: 1 (`t01-1`, appended to `docs/tasks/stage-2/BROWSER-TESTS.md`).
+
+### t02 the tool registry -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: `src/browser/directory.rs`, `src/browser/mod.rs`, `src/browser/advertise.rs`,
+  this file.
+- Summary: implemented ADR-0024 Decision 1 in full. `src/browser/directory.rs` generalizes IN
+  PLACE from the flat 26-row `ActionDescriptor`/`DIRECTORY` pair into the single per-tool
+  `ToolDescriptor` registry (`REGISTRY`, 14 rows in tools.json advertised order): each row
+  carries `tool`, `action_key` (`Some("action")` on `computer` only), `variants` (the 26
+  existing `(action, requires, description)` triples unchanged, transcribed byte-for-byte as
+  `ActionVariant`), `resource` (`ResourceShape`: `DomainLess`/`TabScoped`/`TargetArg`,
+  mirroring today's `resolve_governing_resource` name match exactly), `handler` (`Handler`:
+  `ExtensionForward` for 13 tools, `Local(explain_text)` for `explain`), `postprocess`
+  (`Some(crate::browser::redact::apply_to_result)` on `read_page` only; verified the real
+  signature is `fn(&mut serde_json::Value, bool)`, matching the pinned type exactly, no
+  deviation needed there), and `post_dispatch` (`PostDispatch::NavigateLanding` on `navigate`
+  only, `None` elsewhere). Added `descriptor(tool: &str) -> Option<&'static ToolDescriptor>`
+  (linear scan). `requires(tool, action)` keeps its exact signature and semantics, reimplemented
+  over `descriptor()` + `variants` (absent-vs-empty invariant unchanged). `explain_text()`
+  reimplemented over `REGISTRY`, label generalized to `{tool} ({action})` from row data (no
+  hardcoded `computer` literal); output is byte-identical, confirmed by the untouched
+  server-side pin `pinned_explain_text_matches_the_real_directory_formatter`. `ActionDescriptor`
+  and the flat `DIRECTORY` const are deleted; the inline test module is reworked per the task's
+  Tests section (fixture-mirror technique kept). `src/browser/mod.rs`'s module doc sentence
+  naming the directory is rewritten to name the ADR-0024 Decision 1 registry while keeping the
+  `directory` module name and link (module not renamed).
+- Deviations from the prompt/ADR:
+  1. Constraint 1 said only `directory.rs` and `mod.rs` would change, but the live tree has a
+     third direct consumer of the flat `DIRECTORY` const the prompt's Current Behavior survey
+     did not mention: `src/browser/advertise.rs::tool_has_a_reachable_variant` iterates
+     `directory::DIRECTORY` rows directly. Since Required Behavior section 3 unambiguously
+     mandates deleting `DIRECTORY`, this consumer would not compile otherwise. Conservative fix
+     per BOOTSTRAP rule 4 (behavior-preservation over structure-preservation; fewer moving
+     parts): retargeted the same filter/any logic onto `directory::REGISTRY` rows' `variants`
+     (`.filter(|row| row.tool == tool_name).flat_map(|row| row.variants.iter()).any(...)`),
+     using only the pre-existing `tool`/`variants`/`requires` shape, no new type
+     (`ResourceShape`/`Handler`/`PostDispatch`/`descriptor()`) referenced there, so constraint 4's
+     `rg` check (new-field usage confined to `directory.rs`) still passes clean. Every
+     `tool_advertisement.rs` and inline `advertise.rs` test still passes unchanged, confirming
+     behavior is byte-identical.
+  2. `per_tool_fields_match_the_adr_table`'s pinned `EXPECTED_TOOLS` tuple type triggered
+     clippy's `type_complexity` lint (not itself pinned but a direct consequence of the pinned
+     tuple shape in the Tests section). Added `#[allow(clippy::type_complexity)]` on that one
+     `const` rather than restructure the pinned type, per BOOTSTRAP rule 14 (byte-pinned oracles
+     move by transcription; the tuple shape is prescribed literally in the prompt).
+- Deletions performed: `browser::directory::ActionDescriptor` (struct) and
+  `browser::directory::DIRECTORY` (const); their absorbed content lives on as
+  `REGISTRY[*].variants`. Superseded inline tests `directory_covers_the_sacred_surface_exactly`,
+  `directory_requires_match_the_adr_table`, and
+  `explain_text_is_the_vocabulary_block_then_one_line_per_row` are replaced by their reworked
+  registry-shaped equivalents (`registry_covers_the_sacred_surface_exactly`,
+  `registry_requires_match_the_adr_table`, `explain_text_is_unchanged_by_the_registry_reshape`,
+  the last folding in the old structural test's pinned line assertions so no parallel dead test
+  survives).
+- Verification: `cargo fmt` (applied) then `cargo fmt --check` clean; `cargo clippy
+  --all-targets -- -D warnings` clean; `cargo test` fully green, 464 -> 465 (net +1: five old
+  directory tests replaced by six reworked/new registry tests --
+  `registry_covers_the_sacred_surface_exactly`, `registry_requires_match_the_adr_table`,
+  `absent_is_none_and_empty_is_some` (unchanged), `every_description_is_nonempty_ascii_and_short`
+  (unchanged, iterates variants), `per_tool_fields_match_the_adr_table` (new),
+  `explain_text_is_unchanged_by_the_registry_reshape` (new, folds in the old structural test)).
+  `tests/architecture.rs` (4 tests), `tests/all_open_golden.rs` (3 tests), `tests/mcp_protocol.rs`
+  (6 tests), and `tests/tool_schema_fidelity.rs` (7 tests) all pass unchanged. `git diff HEAD --
+  src/transport/mcp/schemas/tools.json tests/tool_schema_fidelity.rs` and `git diff HEAD --
+  Cargo.toml Cargo.lock` both empty. Constraint-4 `rg -n
+  "ResourceShape|Handler::|PostDispatch|descriptor\(" src/ --glob '!src/browser/directory.rs'`
+  returns nothing. ASCII scan on all 3 touched source files (`advertise.rs`, `directory.rs`,
+  `mod.rs`) clean.
+- Browser checks queued: none (pure data/lookup change; nothing observable live yet, per the
+  task's own Verification section).
