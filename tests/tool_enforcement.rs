@@ -377,8 +377,8 @@ fn union_rule_end_to_end() {
 }
 
 /// Test 8: the all-open invariant. With no `--manifest` at all, behavior is byte-identical to
-/// today (13 tools, fixture identity, `not connected` execution error) and no `Denied (` text
-/// ever appears.
+/// today (14 tools -- the 13 trained tools plus the ADR-0022 Decision 7 `explain` addition --
+/// fixture identity, `not connected` execution error) and no `Denied (` text ever appears.
 #[test]
 fn all_open_invariant_no_manifest_means_no_denials() {
     let responses = drive(
@@ -394,7 +394,7 @@ fn all_open_invariant_no_manifest_means_no_denials() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 13, "all 13 tools advertised");
+    assert_eq!(tools.len(), 14, "13 trained tools plus explain");
     let fixture: Value = serde_json::from_str(browser_mcp::mcp::tools::TOOLS_JSON).unwrap();
     assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");
 

@@ -349,6 +349,19 @@ async fn handle_tools_call(
 
     let dispatch_started = Instant::now();
 
+    // The `explain` tool (ADR-0022 Decision 7): a server-side, argument-less governance tool
+    // that is handled entirely here, ahead of the sacred-domains check and grant machinery
+    // below. Neither applies to it: it carries no `tabId` and no URL, and its directory
+    // requirement is always `[]`, so it is unconditionally allowed. It never touches the
+    // extension (no native-messaging frame is ever produced for it) and is still audited like
+    // any other allowed call, with a real (not hardcoded) `duration_ms`.
+    if name == "explain" {
+        let text = directory::explain_text();
+        let duration_ms = u64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        governance.record_call(name, action, requires, duration_ms, None, None);
+        return JsonRpcResponse::success(id, text_content(text));
+    }
+
     // The sacred-domains never-touch check (ADR-0018 step 2, g08): always enforced,
     // independent of governance.mode or manifest presence -- RECONCILIATION.md section 1's
     // "always-on carve-out", and ahead of grant evaluation below (g13: "if the sacred-domains
@@ -1230,6 +1243,30 @@ mod tests {
         assert!(text.starts_with("Paused:"), "{text}");
         assert!(text.contains("'computer (screenshot)' call"), "{text}");
 
+        // ADR-0022 Decision 7: `explain` gets the ordinary pause text like any other tool
+        // while held, even though its own directory requirement is `[]` -- the hold check
+        // runs ahead of the `explain` server-side handler, same as every other pre-dispatch
+        // outcome.
+        let explain_params = json!({ "name": "explain", "arguments": {} });
+        let explain_resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            Some(json!(3)),
+            Some(&explain_params),
+        )
+        .await;
+        let explain_result = explain_resp.result.as_ref().expect("tool result present");
+        assert_ne!(
+            explain_result["isError"], true,
+            "a held reply is never isError"
+        );
+        let explain_text = explain_result["content"][0]["text"]
+            .as_str()
+            .expect("text block");
+        assert!(explain_text.starts_with("Paused:"), "{explain_text}");
+        assert!(explain_text.contains("'explain' call"), "{explain_text}");
+
         browser.set_held(false);
         let resp2 =
             handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
@@ -1581,5 +1618,124 @@ mod tests {
 
         std::fs::remove_file(&enforce_path).ok();
         std::fs::remove_file(&observe_path).ok();
+    }
+
+    // --- ADR-0022 Decision 7: the `explain` directory tool ---
+
+    /// The full pinned `explain` response text, transcribed by hand from
+    /// `browser::directory::DIRECTORY` (26 rows) in fixture order. This is the ONE place the
+    /// exact output is pinned; `directory::explain_text`'s own unit tests check only its
+    /// structural shape.
+    fn pinned_explain_text() -> String {
+        [
+            "Capabilities: read = retrieve and observe only; action = dispatch UI input whose \
+             effect the page decides (this can trigger writes); write = declared \
+             state-changing operations; execute = arbitrary code.",
+            "",
+            "tabs_context_mcp: requires read. List the MCP tab group: the ids, URLs, and \
+             titles of the tabs this server controls.",
+            "tabs_create_mcp: requires nothing. Open a new empty tab in the MCP tab group; \
+             touches no page and no server.",
+            "navigate: requires read. Load a URL in a tab, or go back or forward in its \
+             history; a top-level GET.",
+            "computer (left_click): requires action. Left-click at coordinates; commits an \
+             activation whose effect the page decides.",
+            "computer (right_click): requires action. Right-click at coordinates; commits an \
+             activation.",
+            "computer (type): requires action. Type text into the focused element; commits \
+             data to page handlers.",
+            "computer (screenshot): requires read. Capture a screenshot of the visible \
+             viewport.",
+            "computer (wait): requires nothing. Pause for a duration; touches no page and no \
+             server.",
+            "computer (scroll): requires read. Scroll the viewport; moves the view without \
+             committing input to the page.",
+            "computer (key): requires action. Press a key or key combination; commits input \
+             to page handlers.",
+            "computer (left_click_drag): requires action. Click and drag between two points; \
+             commits pointer input to the page.",
+            "computer (double_click): requires action. Double-click at coordinates; commits \
+             an activation.",
+            "computer (triple_click): requires action. Triple-click at coordinates; commits \
+             an activation.",
+            "computer (zoom): requires read. Capture a zoomed screenshot of a page region.",
+            "computer (scroll_to): requires read. Scroll an element into view; moves the \
+             viewport without committing input.",
+            "computer (hover): requires read. Move the pointer over a point; commits no \
+             activation and no data.",
+            "find: requires read. Search the page for elements matching a natural-language \
+             description.",
+            "form_input: requires write. Fill or set values in form fields; a declared, \
+             state-changing write.",
+            "get_page_text: requires read. Extract the page's readable text content, \
+             article-first, without HTML.",
+            "javascript_tool: requires execute. Run arbitrary JavaScript in the page; \
+             unbounded, and can bypass the UI entirely.",
+            "read_console_messages: requires read. Read buffered browser console messages \
+             from a tab.",
+            "read_network_requests: requires read. Read buffered HTTP network requests \
+             observed in a tab.",
+            "read_page: requires read. Read the page as an accessibility tree of elements \
+             with reference ids.",
+            "resize_window: requires nothing. Resize the browser window; browser state only, \
+             touches no page content.",
+            "update_plan: requires nothing. Present a plan of intended actions to the user; \
+             informational only.",
+            "explain: requires nothing. Show every action available here and the capability \
+             each one requires.",
+        ]
+        .join("\n")
+    }
+
+    /// `directory::explain_text` and the pinned expectation above must never drift apart: this
+    /// is the tie between the hand-transcribed literal and the real implementation.
+    #[test]
+    fn pinned_explain_text_matches_the_real_directory_formatter() {
+        assert_eq!(directory::explain_text(), pinned_explain_text());
+    }
+
+    /// The `explain` tool (ADR-0022 Decision 7) is handled entirely server-side: with NO
+    /// extension attached at all, the call returns the exact pinned directory text and is
+    /// audited as an ordinary allowed call with `capability: "none"`, `domain: null`, and a
+    /// real (not hardcoded) `duration_ms`.
+    #[tokio::test]
+    async fn explain_returns_the_pinned_text_and_is_audited_as_allow_none() {
+        let path = temp_audit_path("explain");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Arc::new(Recorder::to_file(path.clone()));
+        let governance = Arc::new(Governance::all_open(
+            recorder as Arc<dyn AuditSink>,
+            directory::requires,
+        ));
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let browser = Browser::new();
+        // Deliberately never attached to any extension: a wrongly-dispatched `explain` would
+        // hang out to the bounded handshake wait and fail with "not connected" instead of
+        // returning instantly.
+        assert!(!browser.is_connected());
+
+        let params = json!({ "name": "explain", "arguments": {} });
+        let resp =
+            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let result = resp.result.as_ref().expect("tool result present");
+        assert_ne!(result["isError"], true, "explain must never be isError");
+        let text = result["content"][0]["text"]
+            .as_str()
+            .expect("text content block");
+        assert_eq!(text, pinned_explain_text());
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 1, "exactly one audit record");
+        let rec = &lines[0];
+        assert_eq!(rec["tool"], "explain");
+        assert!(rec["action"].is_null());
+        assert_eq!(rec["capability"], "none");
+        assert_eq!(rec["decision"], "allow");
+        assert!(rec["domain"].is_null());
+        assert!(rec["grant_id"].is_null());
+        assert!(rec["duration_ms"].as_u64().is_some(), "duration_ms present");
+
+        std::fs::remove_file(&path).ok();
     }
 }

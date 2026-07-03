@@ -1,7 +1,9 @@
 //! The action directory of ADR-0022 Decision 2: a per-action bound capability requirement
 //! set plus a curt, agent-targeted description, compiled in as static browser-domain data.
 //! This is now the sole enforcement, advertisement, and audit authority (ADR-0022 Decision
-//! 8, s06); the earlier observe/mutate classification table is deleted.
+//! 8, s06); the earlier observe/mutate classification table is deleted. It also backs the
+//! `explain` tool (ADR-0022 Decision 7, s07): [`explain_text`] renders this same table as
+//! the tool's deterministic response text.
 //!
 //! Absent-vs-empty invariant (ADR-0022 Decision 2): [`requires`] returning `None` is a
 //! classification MISS -- the action has no directory entry, and callers must deny it (fail
@@ -25,9 +27,10 @@ pub struct ActionDescriptor {
     pub description: &'static str,
 }
 
-/// The action directory (ADR-0022 Decision 2): 12 tools + 13 `computer` sub-actions = 25
-/// rows, in tools.json advertised order with `computer` expanded in place into its 13
-/// action rows in tools.json `action` enum order. The `explain` tool's row is added by s07.
+/// The action directory (ADR-0022 Decisions 2 and 7): 13 tools + 13 `computer` sub-actions =
+/// 26 rows, in tools.json advertised order with `computer` expanded in place into its 13
+/// action rows in tools.json `action` enum order. `explain` (ADR-0022 Decision 7) is the
+/// last row, matching its position as the last entry in tools.json.
 pub const DIRECTORY: &[ActionDescriptor] = &[
     ActionDescriptor {
         tool: "tabs_context_mcp",
@@ -182,6 +185,12 @@ pub const DIRECTORY: &[ActionDescriptor] = &[
         requires: &[],
         description: "Present a plan of intended actions to the user; informational only.",
     },
+    ActionDescriptor {
+        tool: "explain",
+        action: None,
+        requires: &[],
+        description: "Show every action available here and the capability each one requires.",
+    },
 ];
 
 /// Look up the bound capability requirement set for one action. `action` is consulted only
@@ -204,6 +213,39 @@ pub fn requires(tool: &str, action: Option<&str>) -> Option<&'static [Capability
         .iter()
         .find(|row| row.tool == tool && row.action.is_none())
         .map(|row| row.requires)
+}
+
+/// The `explain` tool's deterministic response text (ADR-0022 Decision 7): the capability
+/// vocabulary paragraph, one blank line, then every [`DIRECTORY`] row in fixture order
+/// (computer's 13 actions in enum order), one line per row -- `{tool}: requires
+/// {capability or nothing}. {description}` for a plain tool, `computer ({action}): requires
+/// {capability or nothing}. {description}` for a computer sub-action. Pure formatting over
+/// static data: no I/O, and deterministic across calls and sessions.
+pub fn explain_text() -> String {
+    let mut lines = Vec::with_capacity(DIRECTORY.len() + 2);
+    lines.push(
+        "Capabilities: read = retrieve and observe only; action = dispatch UI input whose \
+         effect the page decides (this can trigger writes); write = declared state-changing \
+         operations; execute = arbitrary code."
+            .to_string(),
+    );
+    lines.push(String::new());
+    for row in DIRECTORY {
+        let requirement = row
+            .requires
+            .first()
+            .map(Capability::as_str)
+            .unwrap_or("nothing");
+        let label = match row.action {
+            Some(action) => format!("computer ({action})"),
+            None => row.tool.to_string(),
+        };
+        lines.push(format!(
+            "{label}: requires {requirement}. {}",
+            row.description
+        ));
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -276,7 +318,7 @@ mod tests {
         assert_eq!(table_actions, sacred_actions);
         assert_eq!(table_actions.len(), 13);
 
-        assert_eq!(DIRECTORY.len(), 25);
+        assert_eq!(DIRECTORY.len(), 26);
 
         let mut seen = HashSet::new();
         for row in DIRECTORY {
@@ -315,6 +357,7 @@ mod tests {
             ("read_page", None, &[Capability::Read]),
             ("resize_window", None, &[]),
             ("update_plan", None, &[]),
+            ("explain", None, &[]),
         ];
 
         assert_eq!(DIRECTORY.len(), EXPECTED.len());
@@ -334,6 +377,7 @@ mod tests {
         assert_eq!(requires("computer", Some("no_such_action")), None);
         assert_eq!(requires("tabs_create_mcp", None), Some(&[][..]));
         assert_eq!(requires("update_plan", None), Some(&[][..]));
+        assert_eq!(requires("explain", None), Some(&[][..]));
         assert_eq!(requires("computer", Some("wait")), Some(&[][..]));
         assert_eq!(requires("navigate", None), Some(&[Capability::Read][..]));
         assert_eq!(
@@ -368,5 +412,43 @@ mod tests {
                 "description has leading/trailing whitespace: {row:?}"
             );
         }
+    }
+
+    /// `explain_text`'s shape (ADR-0022 Decision 7): a vocabulary line, one blank separator
+    /// line, then exactly one line per `DIRECTORY` row, in order, ending with `explain`
+    /// itself. The full pinned string is asserted at the handler in `transport::mcp::server`;
+    /// this test guards the structural contract the formatter promises.
+    #[test]
+    fn explain_text_is_the_vocabulary_block_then_one_line_per_row() {
+        let text = explain_text();
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(
+            lines.len(),
+            DIRECTORY.len() + 2,
+            "vocab + blank + one per row"
+        );
+        assert!(
+            lines[0].starts_with("Capabilities: read = "),
+            "{}",
+            lines[0]
+        );
+        assert!(text.is_ascii());
+        assert_eq!(lines[1], "", "blank separator line");
+        assert_eq!(
+            lines[2],
+            "tabs_context_mcp: requires read. List the MCP tab group: the ids, URLs, and \
+             titles of the tabs this server controls."
+        );
+        assert_eq!(
+            lines[5],
+            "computer (left_click): requires action. Left-click at coordinates; commits an \
+             activation whose effect the page decides."
+        );
+        let last = *lines.last().unwrap();
+        assert_eq!(
+            last,
+            "explain: requires nothing. Show every action available here and the capability \
+             each one requires."
+        );
     }
 }

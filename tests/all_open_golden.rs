@@ -23,9 +23,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// The 13 tool names in advertised order, copied from the parsed `TOOLS_JSON` fixture (the
-/// sacred fixture is the source of truth for the exact order).
-const GOLDEN_TOOL_NAMES: [&str; 13] = [
+/// The 14 tool names in advertised order (the 13 trained tools plus ADR-0022 Decision 7's
+/// sanctioned `explain` addition, positioned last, landed in stage-3 task s07), copied from the
+/// parsed `TOOLS_JSON` fixture (the sacred fixture is the source of truth for the exact order).
+const GOLDEN_TOOL_NAMES: [&str; 14] = [
     "tabs_context_mcp",
     "tabs_create_mcp",
     "navigate",
@@ -39,6 +40,7 @@ const GOLDEN_TOOL_NAMES: [&str; 13] = [
     "read_page",
     "resize_window",
     "update_plan",
+    "explain",
 ];
 
 #[test]
@@ -48,7 +50,7 @@ fn tools_list_is_byte_stable_through_the_move() {
     assert_eq!(
         tools.len(),
         GOLDEN_TOOL_NAMES.len(),
-        "all 13 tools advertised"
+        "all 14 tools advertised (13 trained plus explain)"
     );
     for (i, name) in GOLDEN_TOOL_NAMES.iter().enumerate() {
         assert_eq!(

@@ -437,3 +437,31 @@ your administrator to request 'action' access." and its audit line is decision=d
 denial_id set, rule capability (verify via the audit file, since the record's rw field
 alone does not show the rule). (5) returns the equivalent message naming 'write' and
 'form_input'; the extension never receives a form_input tool_request for this call.
+
+## s07-1: the explain tool appears live and does not trigger spuriously during normal browsing
+Changed: s07 added the one sanctioned addition to the sacred tool surface, `explain`
+(ADR-0022 Decision 7): a server-side, argument-less tool that returns the action
+directory and never touches the extension. Only a live MCP client proves it actually
+shows up in a real client's tool list, that calling it returns the directory text with
+no extension involvement, and that a trained Claude session does not spuriously call it
+during ordinary browsing.
+Steps: start the mcp-server with no manifest (all-open), extension connected, audit
+enabled. (1) In the live MCP client (Claude Code or another client), list the available
+browser-mcp tools and confirm `explain` appears (last in the list if the client
+preserves server order). (2) Call `explain` directly (or ask the agent to call it) and
+read the returned text. (3) With the browser extension's own debug/devtools console
+open, confirm no native-messaging frame was sent for the `explain` call (no
+`tool_request` for "explain" appears in the extension's logs). (4) Separately, run an
+ordinary multi-step browsing session (navigate, screenshot, read_page, click) with a
+trained Claude Code session and watch whether it ever calls `explain` unprompted for a
+normal "what's on this page" / "explain this" style request.
+Expect: (1) `explain` is present in the advertised tool list. (2) the response is one
+text block opening with "Capabilities: read = retrieve and observe only; ..." followed
+by a blank line and one line per action, ending with "explain: requires nothing. Show
+every action available here and the capability each one requires."; no Denied text, no
+error. (3) the extension's logs show no `tool_request` entry for `explain` at all,
+confirming zero native-messaging frames. (4) the trained session should NOT call
+`explain` for ordinary page-content questions (it knows the 13 trained tools already);
+if it does spuriously call `explain`, record the exact prompt that triggered it -- per
+ADR-0022 Decision 7 this is the signal to consider renaming the tool (e.g.
+`tool_capabilities`) in a follow-up decision, not a stage-3 code defect.

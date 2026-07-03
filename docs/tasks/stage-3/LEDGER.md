@@ -10,14 +10,16 @@ remembering earlier work; re-read files.
 
 - Branch: `stage-3` (created from `stage-2`; create it if absent). Never push, never merge,
   never commit to `main` or `stage-2`.
-- Progress: `s01`, `s02`, `s03`, `s04`, `s05`, `s06` landed.
-- NEXT TASK: `s07` (`docs/tasks/stage-3/s07-explain-tool.md`).
+- Progress: `s01`, `s02`, `s03`, `s04`, `s05`, `s06`, `s07` landed.
+- NEXT TASK: `s08` (`docs/tasks/stage-3/s08-docs-sync.md`).
 - Authority: ADR-0022 (`docs/adr/0022-intent-calibrated-capabilities.md`) over task prompts over
   the stage-2 shared-format doc (superseded in sections 4.3 / 6.1-rw / 8) over SPEC.
 - Invariants after every task: tree green (`cargo test`, `clippy -D warnings`, `fmt --check`),
-  `tests/architecture.rs` passing, all-open byte-identical, the 13 trained tool schemas
-  byte-identical (s07 adds the one sanctioned 14th; no other tools.json change ever),
-  ASCII-only, no new dependencies, superseded code deleted in the task that supersedes it.
+  `tests/architecture.rs` passing, all-open byte-identical (now 14 tools:
+  `tests/all_open_golden.rs`/`tests/mcp_protocol.rs` updated in s07 to the sanctioned new
+  count), the 13 trained tool schemas byte-identical plus the one sanctioned `explain` 14th
+  (landed in s07; no other tools.json change ever), ASCII-only, no new dependencies,
+  superseded code deleted in the task that supersedes it.
 
 ## Task log
 
@@ -456,3 +458,94 @@ remembering earlier work; re-read files.
   confirming the old rw-era replay fixture remains replayable after the field rename.
 - Browser checks queued: none (this task writes only code doc comments; BROWSER-TESTS.md
   entries are s08's job per the prompt's Out of scope section).
+
+### s07 explain directory tool -- 2026-07-03
+- Commit: (see this task's commit, `feat(governance): s07 explain directory tool`)
+- Files touched: `src/transport/mcp/schemas/tools.json`, `src/browser/directory.rs`,
+  `src/browser/advertise.rs`, `src/transport/mcp/server.rs`,
+  `tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`, `tests/mcp_protocol.rs`,
+  `tests/tool_advertisement.rs`, `tests/tool_enforcement.rs`,
+  `docs/tasks/stage-2/BROWSER-TESTS.md`, `docs/tasks/stage-3/LEDGER.md`.
+- Summary: landed the ONE sanctioned addition to the sacred tool surface (ADR-0022
+  Decision 7). `tools.json` gained one object at the tail (name `explain`, the pinned
+  description string verbatim, `inputSchema` byte-identical to `tabs_create_mcp`'s
+  no-argument shape); the first 13 entries are untouched (`git diff` shows only the tail
+  addition, confirmed). `directory.rs` gained row 26 (`tool: "explain", action: None,
+  requires: &[], description: "Show every action available here and the capability each
+  one requires."`) at the end of `DIRECTORY`, plus a new pure formatter,
+  `pub fn explain_text() -> String`, that renders the capability-vocabulary paragraph, a
+  blank line, then one line per `DIRECTORY` row in fixture order (`{tool}: requires
+  {cap|nothing}. {description}` / `computer ({action}): requires {cap|nothing}.
+  {description}`) -- the single source `server.rs`'s handler and the pinned test both
+  consume. `directory.rs`'s fixture-mirror tests were updated in place (25 -> 26 rows,
+  `explain` added to the ADR-table test and the absent/empty test) plus one new
+  structural test for `explain_text`'s shape. `server.rs::handle_tools_call` gained a
+  dedicated `if name == "explain"` branch, positioned right after `dispatch_started` is
+  taken and BEFORE the sacred-domains check and grant machinery (the hold check above it
+  still applies to `explain` like any tool, per the prompt): it builds the text via
+  `directory::explain_text()`, computes a real (not hardcoded) `duration_ms` from
+  `dispatch_started.elapsed()`, calls `governance.record_call("explain", None, requires,
+  duration_ms, None, None)` (an ordinary allow record, `capability` derives to `"none"`
+  since `requires` is empty), and returns the text content directly -- the extension is
+  never touched, so `explain` produces zero native-messaging frames. No change was
+  needed to `resolve_governing_resource`, `governance::decide`, or the sacred check:
+  `explain` never reaches any of them. Two tests pin the handler: a structural
+  round-trip (`pinned_explain_text_matches_the_real_directory_formatter`) tying a
+  hand-transcribed literal to the real formatter so they can never silently drift apart,
+  and an end-to-end unit test
+  (`explain_returns_the_pinned_text_and_is_audited_as_allow_none`) that calls
+  `handle_tools_call` with NO extension attached at all and asserts the exact text plus
+  the audit record's `capability: "none"`, `decision: "allow"`, `domain: null`, and a
+  present `duration_ms`. The existing hold test
+  (`held_call_returns_the_pause_text_before_the_not_connected_error`) was extended with
+  an `explain`-while-held case proving the pause text still wins. `advertise.rs` needed
+  no production-code change (the existing requires-empty rule already keeps any
+  `requires: []` tool advertised under every posture); its own two exhaustive unit tests
+  and their doc comments were extended to include `explain` in the expected lists.
+  `tests/tool_schema_fidelity.rs` was amended ONCE, as sanctioned: `EXPECTED` (13) split
+  into `EXPECTED_TRAINED` (the same 13, unchanged) plus a new
+  `explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape` test asserting
+  `explain`'s exact description, its inputSchema's byte-identity with
+  `tabs_create_mcp`'s, and that no other tool was added; the renamed
+  `advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last` test
+  checks the 13-then-explain-last shape; a module-doc comment states the 13-plus-1
+  invariant and marks the file/tools.json pairing as never touched again outside s07.
+  `tests/all_open_golden.rs`, `tests/mcp_protocol.rs`, and
+  `tests/tool_enforcement.rs::all_open_invariant_no_manifest_means_no_denials` had their
+  literal "13 tools" counts and name arrays updated to 14 with `explain` appended
+  (`all_open_golden.rs`'s byte-identity and `is_known_tool`/decide-loop assertions still
+  pass unchanged in shape, just over the longer list); `tests/tool_advertisement.rs`'s
+  two exact-name-list assertions (read-only and empty-grants manifests) gained `explain`
+  at the tail, matching Required Behavior section 5. `tests/mcp_protocol.rs` also gained
+  a new dedicated integration test,
+  `explain_is_advertised_last_and_answers_with_no_extension_attached`, spawning the real
+  binary with no manifest and no extension, proving `explain` is advertised last and
+  answers instantly with the directory text.
+- Deviations from the prompt/ADR: none. Every literal (the tools.json description
+  string, the directory row, the response layout, the fidelity-test invariant) was
+  transcribed from the prompt/ADR; the handler's placement (after the hold check,
+  before the sacred check and grant machinery) matches the prompt's stated ordering
+  exactly; no ADR/prompt conflict encountered.
+- Verification: `cargo fmt` (reformatted a handful of assertions' line-wrapping across
+  the touched files, whitespace only; re-ran `cargo test` afterward, unchanged pass
+  count) then `cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings`
+  clean; `cargo test` 454 -> 459 (net 5 new tests: `directory.rs`'s
+  `explain_text_is_the_vocabulary_block_then_one_line_per_row` [lib +1],
+  `server.rs`'s `pinned_explain_text_matches_the_real_directory_formatter` and
+  `explain_returns_the_pinned_text_and_is_audited_as_allow_none` [lib +2, so lib unit
+  tests 392 -> 395], `tests/tool_schema_fidelity.rs` net +1 (one test renamed/reworded,
+  one new: 6 -> 7), `tests/mcp_protocol.rs` +1 (4 -> 5)), all passing, 0 failed. Baseline
+  of 454 independently reconfirmed before starting (summed every per-binary `test
+  result:` line). Confirmed unchanged and green throughout:
+  `tests/architecture.rs` (4 tests, byte-identical file; the handler lives in
+  `transport`, the directory row in `browser`, nothing new in `governance` -- confirmed
+  by `git status --short`, which shows no `src/governance/` file in this task's diff).
+  `git diff src/transport/mcp/schemas/tools.json` shows ONLY the tail addition (the
+  first 13 entries byte-identical, confirmed by inspection). ASCII scan (`rg -n
+  "[^\x00-\x7F]" <every touched file>`) printed nothing on every file this task touched,
+  including the new `docs/tasks/stage-2/BROWSER-TESTS.md` entry.
+- Browser checks queued: 1 (`s07-1` appended to `docs/tasks/stage-2/BROWSER-TESTS.md`:
+  `explain` appears in a live client's tool list and returns the directory text with
+  zero native-messaging frames, plus a live-session watch for spurious `explain`
+  invocation on ordinary "explain this page" style requests per ADR-0022 Decision 7's
+  accepted risk).

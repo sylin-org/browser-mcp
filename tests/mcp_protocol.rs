@@ -70,7 +70,11 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     let list = &responses[1];
     assert_eq!(list["id"], 2);
     let tools = list["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 13, "all 13 tools advertised");
+    assert_eq!(
+        tools.len(),
+        14,
+        "13 trained tools plus the ADR-0022 Decision 7 explain addition"
+    );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.
     let fixture: Value = serde_json::from_str(browser_mcp::mcp::tools::TOOLS_JSON).unwrap();
@@ -97,6 +101,46 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
         "[hop: extension] Browser extension not connected. \
          Next step: check chrome://extensions and that Chrome is running.",
         "exact message: {text}"
+    );
+}
+
+/// ADR-0022 Decision 7: `explain` appears in `tools/list` last (the one sanctioned addition to
+/// the sacred surface) and `tools/call explain` returns the directory text without ever needing
+/// an extension attached -- proving the tool is handled entirely server-side, with zero
+/// native-messaging traffic.
+#[test]
+fn explain_is_advertised_last_and_answers_with_no_extension_attached() {
+    let responses = drive(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain","arguments":{}}}),
+    ]);
+    assert_eq!(responses.len(), 3, "got {responses:?}");
+
+    let list = &responses[1];
+    let tools = list["result"]["tools"].as_array().expect("tools array");
+    assert_eq!(
+        tools.last().expect("at least one tool")["name"],
+        "explain",
+        "explain must be the last advertised tool"
+    );
+
+    let call = &responses[2];
+    assert_eq!(call["id"], 3);
+    assert_ne!(call["result"]["isError"], true, "explain must never error");
+    let text = call["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content block");
+    assert!(
+        text.starts_with("Capabilities: read = "),
+        "explain's response opens with the capability vocabulary: {text}"
+    );
+    assert!(
+        text.trim_end().ends_with(
+            "explain: requires nothing. Show every action available here and the capability \
+             each one requires."
+        ),
+        "explain's response lists its own row last: {text}"
     );
 }
 

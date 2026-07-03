@@ -341,6 +341,16 @@
         "required": ["domains", "approach"],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "explain",
+      "description": "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
     }
   ]
 }
