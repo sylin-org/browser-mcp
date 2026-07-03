@@ -1,0 +1,24 @@
+Policy 'enterprise-healthcare', version 2026.07.1.
+Content hash: f63067ff81d43516f07683f22f47369cc0f8c0b94a8cde3ac6566107df073aeb.
+
+Prepared for 'GEISINGER\jdoe', resolved by managed_config. Groups: Dept-EA, App-ServiceNow-Admin, App-Epic-ClinicalRead.
+
+Mode: enforce. Calls the grants below do not permit are blocked.
+
+Where agents may read and write, in match order (the first matching domain wins):
+(a pattern like 'example.com' matches only that exact host; '*.example.com' matches its subdomains and never example.com itself)
+  1. Full access on servicenow.geisinger.org: agents may read and act. All tools in the access class except: javascript_tool. Purpose: ServiceNow incident and change management without arbitrary JS.
+  2. Read-only on epic.geisinger.org: agents may read pages but not act on them. Purpose: EHR read-only for clinical data review.
+  3. Read-only on *.gartner.com, *.ieee.org, scholar.google.com: agents may read pages but not act on them. Purpose: External research resources.
+  4. Read-only on confluence.geisinger.org, sharepoint.geisinger.org: agents may read pages but not act on them. Purpose: Internal documentation.
+Any domain not matched above is denied.
+
+Settings locked by the organization (users cannot change these):
+  - audit.enabled = true (Record one audit line per tool call (the flight recorder).)
+  - audit.destination = "file" (Where audit records are written.)
+Org-recommended defaults (users may change these):
+  - content.security.secrets.redact = true (Redact values of secret fields (password/OTP/payment) in read_page output.)
+All other settings keep their user, preset, or built-in values.
+If a user loads this file themselves instead of the organization installing it as the org policy file, the locked entries above become user-level defaults and nothing is locked.
+
+On a denial the agent receives a plain-text message with a stable denial id, in the form 'Denied (D-xxxxxxxx): ...'. Hand that id to the policy administrator: it identifies the exact rule and policy version that produced the denial.

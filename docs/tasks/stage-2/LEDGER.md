@@ -20,8 +20,9 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   the five points -- the no-op policy seam is now real) landed. `g14` (tool advertisement
   filtering; dynamic re-advertisement deferred, see its ledger entry) landed. `g15`
   (shadow enforcement: the mode switch between real `deny` and observe-mode
-  `shadow_deny`) landed.
-- NEXT TASK: Phase D, task `g16` (`docs/tasks/stage-2/g16-policy-explain.md`).
+  `shadow_deny`) landed. `g16` (`policy explain`: deterministic plain-language rendering,
+  golden-tested) landed.
+- NEXT TASK: Phase D, task `g17` (`docs/tasks/stage-2/g17-policy-simulate.md`).
 - Order authority: `PLAN.md` (Phase A -> B -> C -> D). Full linear sequence is in `BOOTSTRAP.md`.
 - Reconciliation: `RECONCILIATION.md` is AUTHORITATIVE over any conflicting detail in a `g`-doc.
 - Invariants that must hold after every task: all-open byte-identical (the all-open golden test +
@@ -1951,6 +1952,143 @@ current task prompt, then continue. Never rely on remembering earlier work; re-r
   shadow-denied mutate action visibly executes with no denial text, unlike g13's own
   enforce-mode verification), and confirming the take-the-wheel/kill-switch/sacred-domain
   paths are all unaffected by an active observe-mode manifest.
+
+### g16 policy explain (deterministic plain-language rendering) -- 2026-07-02
+- Commit: (see this task's commit)
+- Files touched: new `src/governance/explain.rs` (`explain_manifest`, `explain_user_config`,
+  `explain_file`, `ExplainError`, `UserConfigFile`; every template sentence from the task
+  doc's Required behavior sections 3-4 transcribed verbatim; 13 inline tests); `src/
+  governance/mod.rs` (registers `pub mod explain;`); `src/main.rs` (new `Policy(PolicyArgs)`
+  `Command` variant, `PolicyCommand::Explain(ExplainArgs)`, and the synchronous dispatch arm
+  calling `explain_file` and printing its `Ok` text with no other stdout output); OVERWRITTEN
+  `examples/enterprise-healthcare.json` and `examples/qa-staging.json` with this task's own
+  verbatim example content (see deviation 1); new `examples/research-read-only.json`;
+  `tests/manifest_validation.rs` (the two existing example tests updated for the new content
+  -- `qa-staging`'s Windows-specific config-path error branch is gone along with its old
+  `config` array; a new `research_read_only_example_parses` test); new `tests/fixtures/
+  explain/{enterprise-healthcare,qa-staging,research-read-only}.txt` (the three goldens,
+  reviewed line by line against both the templates and the task doc's own "orientation"
+  text, which the `enterprise-healthcare` golden matches character for character modulo the
+  hash and two registry description strings the doc itself says will vary); new
+  `tests/policy_explain.rs` (3 integration tests: golden equality for all three examples via
+  the real spawned binary, an invalid manifest exiting nonzero with empty stdout, a missing
+  file exiting nonzero with empty stdout).
+- Summary: `browser-mcp policy explain <file>` renders a policy manifest or a user
+  configuration file as fixed-template plain-language sentences, entirely from the file
+  named on the command line -- no live org policy file, no live user config file, no
+  environment variable, no platform path is ever read, so the preview is exactly what an
+  administrator or a future import-preview surface would see reviewing that one file in
+  isolation. The renderer reuses every prerequisite type and function it possibly can
+  (`Manifest`/`Grant`/`Access`/`EffectiveMode`/`ConfigEntry`/`Level`/`IdentityBlock` from
+  G12, `parse_manifest` and its already-computed content hash, the G01 key registry's
+  `description` strings, `Preset::from_name`, and `layers::validate_value` for user-config
+  entries) and duplicates none of them; only the JSON-navigation glue and the fixed
+  sentence templates themselves are new. Manual review of all three generated goldens
+  against the task doc's own templates (Verification step 5's specific checklist:
+  `qa-staging.txt` says `Mode: observe (shadow).`, contains `Observation is not
+  protection.`, renders `production-readonly` with `This grant always enforces:`, renders
+  `form-writer` with `Only these tools: form_input.`, and carries the `form-writer` write
+  warning under `Warnings:`) passed on the first generation; no template needed correction.
+- Deviations from the g-doc per RECONCILIATION.md and this session's established
+  reconcile-and-document pattern:
+  1. **`examples/enterprise-healthcare.json` and `examples/qa-staging.json`, both already
+     created and landed by G12 with DIFFERENT content, are OVERWRITTEN with this task's
+     own verbatim JSON.** G16's own doc requires these exact three files ("Create the
+     `examples/` directory... with exactly these three files (verbatim)") because its
+     golden tests pin `explain_file`'s output to their exact bytes; G12's versions (built
+     before G16 existed, differing in grant ids, grant shapes, the top-level `mode`
+     value, and -- for `qa-staging.json` specifically -- carrying a `config` array with a
+     Unix-shaped `audit.file.path` that G12's own manual verification and a
+     `#[cfg(windows)]`-gated test built around) cannot produce the byte-for-byte output
+     G16's goldens require. Verified before overwriting that no OTHER file references
+     these two examples by content (only `tests/manifest_validation.rs`, itself updated
+     in this same commit) and that its existing assertions (schema, name, valid hash)
+     hold unchanged against the new content; only the grant-count assertions and
+     `qa-staging`'s now-obsolete Windows-specific branch needed updating. `examples/
+     developer-observe.json` (a G12 file G16 never mentions) is untouched.
+  2. **`explain_file`'s public signature grows two injected function pointers**
+     (`domain_pattern_valid: fn(&str) -> bool`, `is_known_tool: fn(&str) -> bool`) beyond
+     the bare `fn explain_file(path: &Path) -> Result<String, ExplainError>` the pre-A1
+     doc shows. `explain_file` must call `parse_manifest` (which itself needs both) and
+     `layers::validate_value` for a user-config file's entries (which needs
+     `domain_pattern_valid`); `governance/explain.rs` is domain-agnostic core and may
+     never import `browser::pattern::is_valid_pattern` or
+     `transport::mcp::tools::is_known_tool` directly (the a7 arch-test). This is the
+     SAME "known integration point" pattern every prior task in this session has used for
+     this exact class of problem (g01/g02/a5/g03/g08/g12/g13's `domain_pattern_valid`;
+     g12/g13's `is_known_tool`); `main.rs`'s CLI wiring supplies the real checkers at the
+     one real call site, exactly as it already does for `config list`.
+  3. **`explain_user_config`'s warnings are computed by a small LOCAL structural pass
+     (`parse_user_config_file`, private to this module) rather than by calling
+     `governance::config::load::parse_user_config` directly**, even though that function
+     already exists and already validates a user config file correctly. Its warning
+     STRINGS are formatted for its own log-oriented callers (e.g. `"{path}: unknown
+     config key '{key}', ignoring"`) and do not match this task's own required exact
+     wording (`"unknown key '<key>' is ignored."`) at all. The task doc's own text
+     explicitly allows this ("If the... prerequisite does not expose a user-config
+     loader with warnings, validate the `config` map entries against the registry
+     locally... but never duplicate MANIFEST parsing or hashing"); the local pass reuses
+     every actual VALIDATION primitive (`Preset::from_name`, `key_def`,
+     `layers::validate_value`) and duplicates none of their logic -- only the trivial
+     JSON member lookups (`obj.get("preset")`, `obj.get("config")`) and the warning
+     SENTENCES are new, and those sentences are exactly what section 4.5 requires
+     verbatim.
+  4. **Two under-specified edge cases were resolved conservatively and documented rather
+     than left to guesswork:** (a) an `identity` block present but with `principal` or
+     `resolved_by` themselves absent (both are `Option<String>` per the schema; the
+     template assumes both are populated whenever the block exists) renders
+     `(not specified)` for the missing scalar -- untested by the doc's own required test
+     list (which only exercises "no identity block" at all, not a partially-populated
+     one) and not exercised by any of the three committed examples either, since all
+     three either omit `identity` entirely or populate it fully. (b) the non-ASCII
+     domain-pattern lint (shared format 5.1) is UNREACHABLE via the real
+     `explain_file` -> `parse_manifest` -> `explain_manifest` pipeline today: `parse_manifest`
+     already calls `domain_pattern_valid` (G07's `is_valid_pattern`), which hard-rejects
+     any non-ASCII pattern as a MANIFEST VALIDATION ERROR before `explain_manifest` would
+     ever see it, so no manifest that successfully parses can carry one. The lint is
+     still implemented exactly per the required template and pinned by its own required
+     unit test (which constructs a `Grant` directly, bypassing `parse_manifest`, since
+     `explain_manifest` makes no assumption about how its caller validated its input --
+     a future import-preview surface or a differently-validated manifest source could in
+     principle reach this path even though today's one real caller cannot).
+- Verification: `cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings`
+  clean. `cargo test` green: 331 lib unit tests, up from 318 -- +13 in
+  `governance::explain::tests` (every required case from section 7: the three access
+  sentences exact; the bare-write lint firing only for `write`; the non-ASCII lint exact;
+  the two per-grant mode sentences plus the no-mode case; all four mode-line/suffix
+  combinations plus the observe base sentence's exact ending; both empty-grants two-line
+  renderings; the no-identity line; all four settings-block cases (mandatory-only,
+  recommended-only, both, empty); both denial-block lines; determinism plus the
+  exactly-one-trailing-newline and no-`\r` invariants; a user-config file's settings and
+  warnings; an unknown preset's warning and `Preset: none` rendering; an empty user
+  config's `User settings: none.` line). `tests/manifest_validation.rs` grew from 4 to 5
+  (the new `research_read_only_example_parses` test; the two updated example tests still
+  pass, now against G16's own content). All other lib suites and `tests/
+  all_open_golden.rs`/`architecture.rs`/`audit_recorder.rs`/`config_schema_golden.rs`/
+  `peer_death.rs`/`shadow_mode.rs`/`tool_advertisement.rs`/`tool_enforcement.rs`
+  unchanged and green (zero new forbidden `governance -> browser/transport` edges);
+  `tests/mcp_protocol.rs` 4 and `tests/tool_schema_fidelity.rs` 6 pass UNCHANGED (no
+  edits to either file, confirmed via `git status`, matching this task's own constraint
+  3: "if you find yourself editing dispatch or the server loop, stop" -- neither was
+  touched); new `tests/policy_explain.rs` 3. `git status --short` confirmed the
+  touched-file set matches this entry's list exactly, with NO diff to `Cargo.toml`/
+  `Cargo.lock` (no new dependency: `serde_json` and `thiserror` already cover
+  everything), `src/transport/mcp/schemas/tools.json`, `src/governance/dispatch.rs`,
+  `src/transport/mcp/server.rs`, or anything under `extension/`. ASCII scan
+  (`rg -n "[^\x00-\x7F]"`) clean on every touched/new file, including all three example
+  JSON files and all three golden `.txt` fixtures. Golden generation and review followed
+  the task's exact procedure: ran `policy explain` on each committed example, read every
+  line of the output against the Required behavior templates and against the source
+  manifest before committing, then separately re-verified byte-for-byte equality between
+  the committed golden files and the binary's live output via a script diff (all three:
+  exact match) and confirmed no `\r` byte and exactly one trailing `\n` in each golden
+  file. Manual checks per the task's own Verification steps 4 and 6, run against the real
+  binary: `cargo run -- policy explain examples/enterprise-healthcare.json` prints the
+  golden text and nothing else to stdout; `policy explain` on a missing file and on a
+  `"schema": 99` file both exit nonzero with nothing on stdout and a message on stderr.
+- Browser checks queued: none (a pure CLI/file-based feature; no manifest is ever loaded
+  live, no session state is touched, and `explain_file` never contacts the extension or
+  any running server).
 
 ## Reminders before running BROWSER-TESTS.md
 

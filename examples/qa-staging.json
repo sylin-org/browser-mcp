@@ -2,7 +2,7 @@
   "schema": 2,
   "name": "qa-staging",
   "version": "2026.07.1",
-  "mode": "enforce",
+  "mode": "observe",
   "identity": {
     "resolved_by": "environment",
     "principal": "ci-runner",
@@ -14,18 +14,21 @@
       "id": "staging",
       "domains": ["*.staging.geisinger.org"],
       "access": "all",
-      "description": "Full automation on staging environment"
+      "description": "Full automation on staging"
     },
     {
       "id": "production-readonly",
-      "domains": ["*.geisinger.org"],
+      "domains": ["geisinger.org", "*.geisinger.org"],
       "access": "read",
+      "mode": "enforce",
       "description": "Read-only verification on production"
+    },
+    {
+      "id": "form-writer",
+      "domains": ["forms.staging.geisinger.org"],
+      "access": "write",
+      "tools": ["form_input"],
+      "description": "Submit test forms only"
     }
-  ],
-  "config": [
-    { "key": "audit.enabled", "value": true, "level": "mandatory" },
-    { "key": "audit.destination", "value": "file", "level": "mandatory" },
-    { "key": "audit.file.path", "value": "/var/log/browser-mcp/qa-audit.jsonl", "level": "mandatory" }
   ]
 }

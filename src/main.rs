@@ -57,6 +57,27 @@ enum Command {
     Status(StatusArgs),
     /// Inspect and edit the layered configuration (list / get / set / schema / docs).
     Config(ConfigArgs),
+    /// Inspect and preview policy files.
+    Policy(PolicyArgs),
+}
+
+#[derive(Debug, Args)]
+struct PolicyArgs {
+    #[command(subcommand)]
+    command: PolicyCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    /// Render a policy manifest or config file as plain sentences.
+    Explain(ExplainArgs),
+}
+
+#[derive(Debug, Args)]
+struct ExplainArgs {
+    /// Path to a policy manifest or a user configuration file.
+    #[arg(value_name = "FILE")]
+    file: std::path::PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -248,6 +269,20 @@ fn main() -> Result<()> {
             browser_mcp::browser::pattern::is_valid_pattern,
             browser_mcp::transport::mcp::tools::is_known_tool,
         )?,
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command: PolicyCommand::Explain(ExplainArgs { file }),
+                })),
+            ..
+        } => {
+            let text = browser_mcp::governance::explain::explain_file(
+                &file,
+                browser_mcp::browser::pattern::is_valid_pattern,
+                browser_mcp::transport::mcp::tools::is_known_tool,
+            )?;
+            print!("{text}");
+        }
         Cli {
             command: None,
             manifest,

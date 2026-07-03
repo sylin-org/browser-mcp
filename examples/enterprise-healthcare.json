@@ -2,7 +2,7 @@
   "schema": 2,
   "name": "enterprise-healthcare",
   "version": "2026.07.1",
-  "mode": "observe",
+  "mode": "enforce",
   "identity": {
     "resolved_by": "managed_config",
     "principal": "GEISINGER\\jdoe",
@@ -14,19 +14,18 @@
       "id": "servicenow",
       "domains": ["servicenow.geisinger.org"],
       "access": "all",
-      "description": "ServiceNow incident and change management"
+      "exclude_tools": ["javascript_tool"],
+      "description": "ServiceNow incident and change management without arbitrary JS"
     },
     {
-      "id": "epic-restricted",
-      "domains": ["epic.geisinger.org", "mychart.geisinger.org"],
-      "access": "all",
-      "exclude_tools": ["javascript_tool"],
-      "description": "EHR automation without arbitrary JS execution",
-      "mode": "enforce"
+      "id": "epic-read",
+      "domains": ["epic.geisinger.org"],
+      "access": "read",
+      "description": "EHR read-only for clinical data review"
     },
     {
       "id": "research",
-      "domains": ["*.gartner.com", "*.forrester.com", "*.ieee.org", "scholar.google.com", "learn.microsoft.com"],
+      "domains": ["*.gartner.com", "*.ieee.org", "scholar.google.com"],
       "access": "read",
       "description": "External research resources"
     },

@@ -58,38 +58,40 @@ fn developer_observe_example_parses() {
     assert_valid_hash(&m.hash);
 }
 
-/// `qa-staging.json`'s own scenario is a Linux CI runner, so its `audit.file.path` is
-/// authored as a Unix-shaped absolute path (`/var/log/browser-mcp/qa-audit.jsonl`), exactly as
-/// the g12 task doc specifies byte-for-byte. `std::path::Path::is_absolute()` requires a drive
-/// letter to consider a path absolute on Windows, so the pre-existing `EmptyOrAbsolutePath`
-/// registry constraint (G01, unrelated to and unchanged by this task) correctly rejects this
-/// one value on a Windows dev machine. Assert the platform-appropriate outcome precisely
-/// rather than silently skipping the file either way.
+/// `qa-staging.json` was rewritten by G16 (Required behavior section 6) to exercise observe
+/// mode, a per-grant enforce override, and a positive `tools` list for the `policy explain`
+/// goldens; it no longer carries a `config` array (the G12-era Unix-shaped `audit.file.path`
+/// that needed a `#[cfg(windows)]` split here is gone). Parses identically on every platform.
 #[test]
 fn qa_staging_example_parses() {
     let text = read_example("qa-staging.json");
-    let result = parse_manifest(
+    let m = parse_manifest(
         &text,
         "qa-staging.json",
         pattern::is_valid_pattern,
         tools::is_known_tool,
-    );
+    )
+    .expect("qa-staging.json should parse and validate");
+    assert_eq!(m.schema, 2);
+    assert_eq!(m.name, "qa-staging");
+    assert_eq!(m.grants.len(), 3);
+    assert_valid_hash(&m.hash);
+}
 
-    #[cfg(windows)]
-    {
-        let err = result.unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("config[2]"), "{message}");
-        assert!(message.contains("absolute path"), "{message}");
-    }
-    #[cfg(not(windows))]
-    {
-        let m = result.expect("qa-staging.json should parse and validate");
-        assert_eq!(m.schema, 2);
-        assert_eq!(m.name, "qa-staging");
-        assert_eq!(m.grants.len(), 2);
-        assert_valid_hash(&m.hash);
-    }
+#[test]
+fn research_read_only_example_parses() {
+    let text = read_example("research-read-only.json");
+    let m = parse_manifest(
+        &text,
+        "research-read-only.json",
+        pattern::is_valid_pattern,
+        tools::is_known_tool,
+    )
+    .expect("research-read-only.json should parse and validate");
+    assert_eq!(m.schema, 2);
+    assert_eq!(m.name, "research-read-only");
+    assert_eq!(m.grants.len(), 1);
+    assert_valid_hash(&m.hash);
 }
 
 /// All-open invariant (g12 constraint 3): loading with no org file and no user source yields
