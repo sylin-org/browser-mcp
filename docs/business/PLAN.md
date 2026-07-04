@@ -2,9 +2,8 @@
 
 Living document. Ratified decisions live in ADR-0027 (open-core) and ADR-0028 (tripwire
 licensing, tiers, Continuity Promise); this file is the execution plan around them.
-Authored 2026-07-03 with agentic assistance, at the founder's direction, in the open:
-this plan being public is itself a deliberate choice (it shows the work, and it shows
-what agentic collaboration on a real product looks like).
+Authored 2026-07-03 with agentic assistance, at the founder's direction, and kept public
+by choice so the reasoning behind the business is as inspectable as the code.
 
 Ground truth at authoring: the product is two days old under its current name, has zero
 adopters, zero revenue expected in year one, a zero-dollar infrastructure budget, one

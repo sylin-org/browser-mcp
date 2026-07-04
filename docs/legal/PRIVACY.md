@@ -108,4 +108,4 @@ this document will be updated to reflect it before that version is published.
 ## Contact
 
 Questions or concerns about this extension can be raised via the project repository:
-https://github.com/sylin-org/browser-mcp, or by email at hello@sylin.org.
+https://github.com/sylin-org/ghostlight, or by email at hello@sylin.org.

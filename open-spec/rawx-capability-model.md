@@ -6,7 +6,7 @@ governor can prove about an operation rather than by the effect it might have.
 - Version: 0.1 (draft)
 - Date: 2026-07
 - Status: published for discussion and adoption
-- Reference implementation: Ghostlight (https://github.com/sylin-org/browser-mcp)
+- Reference implementation: Ghostlight (https://github.com/sylin-org/ghostlight)
 
 ## Abstract
 

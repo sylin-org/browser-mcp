@@ -22,8 +22,8 @@ client, and a stable Rust toolchain (https://rustup.rs) to build the binary.
 
 1. Build:
 
-       git clone https://github.com/sylin-org/browser-mcp
-       cd browser-mcp
+       git clone https://github.com/sylin-org/ghostlight
+       cd ghostlight
        cargo build --release
 
 2. Load the extension: open `chrome://extensions`, enable Developer mode, click

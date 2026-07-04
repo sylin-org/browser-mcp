@@ -23,13 +23,3 @@ way to classify and grant agent capabilities outlives all of them, and is more v
 as a common language than as a private one. If the RAWX vocabulary becomes something
 other tools adopt, that is a win for the whole space, and Ghostlight is its reference
 implementation.
-
-## How these are made
-
-These specifications, and much of the Ghostlight codebase, are built human-decided and
-agent-implemented: the decisions and their rationale are recorded by a human in the
-architecture decision records (`docs/adr/`), and the implementation is carried out with
-frontier-model assistance. The result is fully open to inspection -- the reasoning in the
-ADRs, the source under a source-available or open-source license, and the specs here.
-For a governance product, an auditable trail of its own construction is part of the
-point.

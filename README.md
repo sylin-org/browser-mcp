@@ -1,6 +1,6 @@
 # Ghostlight Browser
 
-[![CI](https://github.com/sylin-org/browser-mcp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/browser-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml)
 
 **Governed access to your own browser, for AI agents.**
 
@@ -9,12 +9,6 @@ an AI coding agent controlled access to your real, authenticated browser session
 browser you are already logged in to, so the agent can observe and act on the web apps you already
 use, through any MCP client (Claude Code, Cursor, and others). A separable governance layer decides,
 per call, what the agent is allowed to do.
-
-> Ghostlight is the single lamp a theater leaves burning on an empty stage. The phantom cursor is
-> the ghost, the agent-active glow is the light, and the light is there so nothing falls off the
-> dark edge when no one is watching: audit, sacred never-touch lists, and a take-the-wheel pause,
-> all in one image. It is the first of a planned family of governed MCP tools under the Ghostlight
-> brand.
 
 ## Status
 
@@ -139,22 +133,22 @@ Each action carries a capability requirement. Under a governance manifest, the l
 the advertised tool set to what your grants permit and checks the requirement on every call; with no
 manifest (all-open) every action is allowed.
 
-| Tool | What it does | Capability |
-|---|---|---|
-| `navigate` | Go to a URL, or forward/back in history | read |
-| `computer` | Mouse, keyboard, and screenshots (13 actions) | read or action, per action |
-| `read_page` | Accessibility-tree view of the page | read |
-| `get_page_text` | Visible text extraction | read |
-| `find` | Locate elements on the page | read |
-| `form_input` | Fill form fields, including shadow DOM | write |
-| `javascript_tool` | Run JavaScript in the page context | execute |
-| `tabs_context_mcp` | List tabs in the MCP tab group | read |
-| `tabs_create_mcp` | Create a tab in the MCP tab group | none |
-| `read_console_messages` | Recent console output | read |
-| `read_network_requests` | Recent network activity | read |
-| `resize_window` | Resize the browser window | none |
-| `update_plan` | Record the agent's working plan | none |
-| `explain` | List every action and the capability it requires | none |
+| Tool                    | What it does                                     | Capability                 |
+| ----------------------- | ------------------------------------------------ | -------------------------- |
+| `navigate`              | Go to a URL, or forward/back in history          | read                       |
+| `computer`              | Mouse, keyboard, and screenshots (13 actions)    | read or action, per action |
+| `read_page`             | Accessibility-tree view of the page              | read                       |
+| `get_page_text`         | Visible text extraction                          | read                       |
+| `find`                  | Locate elements on the page                      | read                       |
+| `form_input`            | Fill form fields, including shadow DOM           | write                      |
+| `javascript_tool`       | Run JavaScript in the page context               | execute                    |
+| `tabs_context_mcp`      | List tabs in the MCP tab group                   | read                       |
+| `tabs_create_mcp`       | Create a tab in the MCP tab group                | none                       |
+| `read_console_messages` | Recent console output                            | read                       |
+| `read_network_requests` | Recent network activity                          | read                       |
+| `resize_window`         | Resize the browser window                        | none                       |
+| `update_plan`           | Record the agent's working plan                  | none                       |
+| `explain`               | List every action and the capability it requires | none                       |
 
 For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require
 `read`, the input actions (`left_click`, `right_click`, `type`, `key`, `left_click_drag`,
@@ -270,20 +264,20 @@ them, and mechanisms change.
 
 ## Documentation
 
-| Doc | What it is |
-|---|---|
-| [docs/guides/solo-developer.md](docs/guides/solo-developer.md) | Ten minutes from clone to a working agent, plus personal safety rails. |
-| [docs/guides/compliance-team.md](docs/guides/compliance-team.md) | Taking a policy from blank page to org-wide enforcement, with evidence. |
-| [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion. |
-| [docs/COMPARISON.md](docs/COMPARISON.md) | How Ghostlight compares to the alternatives, honestly. |
-| [PRICING.md](PRICING.md) | Editions, the founding program, and the Continuity Promise. |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to ask questions, request features, and contribute code. |
-| [SECURITY.md](SECURITY.md) | Vulnerability reporting and what to expect. |
-| [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. |
-| [docs/adr/](docs/adr/) | Architecture Decision Records: the reasons behind the design and how it evolved. |
-| [docs/design/](docs/design/) | Forward-looking design discussions (family and service architecture). |
-| [open-spec/](open-spec/) | Open, vendor-neutral specifications we publish for the ecosystem (starts with the RAWX capability model). |
-| [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md) | Governing design principles. |
+| Doc                                                                | What it is                                                                                                |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| [docs/guides/solo-developer.md](docs/guides/solo-developer.md)     | Ten minutes from clone to a working agent, plus personal safety rails.                                    |
+| [docs/guides/compliance-team.md](docs/guides/compliance-team.md)   | Taking a policy from blank page to org-wide enforcement, with evidence.                                   |
+| [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion.                                            |
+| [docs/COMPARISON.md](docs/COMPARISON.md)                           | How Ghostlight compares to the alternatives, honestly.                                                    |
+| [PRICING.md](PRICING.md)                                           | Editions, the founding program, and the Continuity Promise.                                               |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                 | How to ask questions, request features, and contribute code.                                              |
+| [SECURITY.md](SECURITY.md)                                         | Vulnerability reporting and what to expect.                                                               |
+| [docs/SPEC.md](docs/SPEC.md)                                       | The authoritative design specification.                                                                   |
+| [docs/adr/](docs/adr/)                                             | Architecture Decision Records: the reasons behind the design and how it evolved.                          |
+| [docs/design/](docs/design/)                                       | Forward-looking design discussions (family and service architecture).                                     |
+| [open-spec/](open-spec/)                                           | Open, vendor-neutral specifications we publish for the ecosystem (starts with the RAWX capability model). |
+| [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md)         | Governing design principles.                                                                              |
 
 ## Positioning and prior art
 
