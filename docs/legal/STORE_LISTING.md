@@ -1,4 +1,4 @@
-# Ghostlight Browser: Chrome Web Store Listing
+# Ghostlight in Browser: Chrome Web Store Listing
 
 Last updated: 2026-07-04
 
@@ -17,7 +17,7 @@ extension id itself).
 **Item name**
 
 ```
-Ghostlight Browser
+Ghostlight in Browser
 ```
 
 **Summary** (short description, 132 char max; matches the manifest `description`)
@@ -41,7 +41,7 @@ English (United States)
 **Detailed description** (plain text; the store does not render Markdown)
 
 ```
-Ghostlight Browser gives an AI agent controlled access to your real, authenticated browser
+Ghostlight in Browser gives an AI agent controlled access to your real, authenticated browser
 session. It drives the browser you are already logged in to, so the agent can observe and act on
 the web apps you already use, through any Model Context Protocol (MCP) client such as Claude Code,
 Cursor, or VS Code.
@@ -94,7 +94,7 @@ https://github.com/sylin-org/ghostlight
 **Single purpose** (required)
 
 ```
-Ghostlight Browser is a thin executor for a separately installed local automation host. It carries
+Ghostlight in Browser is a thin executor for a separately installed local automation host. It carries
 out browser actions -- reading page content, taking screenshots, dispatching input, and managing
 tabs -- on the automated tab, on instruction from that host over Chrome native messaging, so a
 connected AI agent can operate the user's own authenticated browser session. Everything the
@@ -148,15 +148,21 @@ signs at submission; confirm each answer against current dashboard wording befor
 4. Submit for review. Expect extra scrutiny on `debugger` + `<all_urls>` + `nativeMessaging`; the
    justifications and privacy policy are written to answer exactly that.
 
-## After the item exists (agent-assistable follow-up)
+## Published extension id
 
-The published extension id will NOT be the unpacked-dev id `cjcmhepmagomefjggkcohdbfemacojoa`; the
-store assigns its own. Once the item exists:
+The item exists (draft). The store assigned the id
+**`lejccfmoeogmhemakeknjjdhkfkgncdl`** -- this is NOT the unpacked-dev id
+`cjcmhepmagomefjggkcohdbfemacojoa` (the dev id comes from the pinned manifest `key`, which is
+stripped from the store package).
 
-1. In the dashboard Package tab, use "View public key" to copy the store's public key and note the
-   assigned extension id.
-2. Document the published id as the canonical id store-install users pass to the installer, so the
-   native host's `allowed_origins` matches (the installer already takes the id as a validated
-   parameter; no code change needed).
-3. Optional: put the store public key into `extension/manifest.json`'s `key` field so unpacked-dev
-   builds share the published id. If done, update the pinned id in the docs and ADR-0016.
+Store-install onboarding therefore points the installer at the published id, so the native host's
+`allowed_origins` matches the extension a store user actually runs:
+
+```
+ghostlight install --extension-id lejccfmoeogmhemakeknjjdhkfkgncdl
+```
+
+The installer already takes `--extension-id` as a validated parameter, so no code change is required
+for this. (Optional future step: put the store's public key into `extension/manifest.json`'s `key`
+field so unpacked-dev builds share the published id; if done, update the pinned id in the docs and
+ADR-0016.)
