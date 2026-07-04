@@ -16,7 +16,7 @@ follow the per-task procedure in `BOOTSTRAP.md`.
 | Task | Title | Status | Commit | Notes |
 | --- | --- | --- | --- | --- |
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
-| H1 | Transport-generic serve_session + ServiceContext | DONE | pending-hash | |
+| H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
 | H2 | Persistent service + thin adapter + multiplex | pending | -- | the one large coupled commit |
 | H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
