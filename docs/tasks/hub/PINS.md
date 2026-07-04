@@ -192,7 +192,9 @@ separation crashes immediately and loudly instead of silently misbehaving. This 
 all-open byte-identity invariant.
 
 - New file `src/hub/role.rs` (H3 creates it; NEVER `src/governance/**` -- a7 forbids `crate::hub`
-  there too, post-H3's own scanner extension).
+  there too, post-H3's own scanner extension). H3 also adds `pub mod role;` to `src/hub/mod.rs`
+  (RE-READ its current module declarations, e.g. `pub mod handshake;`, and add the new line in the
+  same style) -- WITHOUT this, `crate::hub::role::*` does not resolve from `src/transport`.
 - PINNED shape (transcribe verbatim):
   ```
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,8 +227,12 @@ all-open byte-identity invariant.
   - `matching_roles_do_not_panic`: calls `assert_role(Role::Service, Role::Service, "test")` and
     `assert_role(Role::Adapter, Role::Adapter, "test")`; a plain (non-`should_panic`) test asserting
     neither call panics.
-- PINNED wiring-verification tests (text-scan, a7-style, NOT live-process tests -- they guard the
-  CALL SITE existing, separately from `role.rs`'s own unit tests which guard the assertion LOGIC):
+- PINNED wiring-verification tests (text-scan, NOT live-process tests -- they guard the CALL SITE
+  existing, separately from `role.rs`'s own unit tests which guard the assertion LOGIC). Anchor the
+  path the SAME way `tests/architecture.rs`'s `governance_dir()` does: join
+  `env!("CARGO_MANIFEST_DIR")` with the file's repo-relative path and `std::fs::read_to_string` it
+  (RE-READ `governance_dir()` for the exact pattern; do not invent a different path-resolution
+  scheme):
   - H3 adds `tests/hub_role_wiring.rs::governance_chokepoint_asserts_service_role`: asserts the
     source of H2's landed governance-chokepoint function (RE-READ to find it) contains the literal
     substring `assert_service_role`.

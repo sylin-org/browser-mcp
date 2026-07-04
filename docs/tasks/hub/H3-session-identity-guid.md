@@ -154,9 +154,11 @@ this edit is PURELY ADDITIVE. Make no other change to `tests/architecture.rs`.
 
 Added 2026-07-04 after H2 landed the two-endpoint split. Create `src/hub/role.rs` per PINS.md SS8's
 PINNED shape (`Role`, `set_role`, `role`, `assert_role`, `assert_service_role`, `assert_adapter_role`,
-verbatim panic message). This is a fail-loud backstop, not a substitute for H2's structural
-separation: it must be a no-op (no output, no behavior change) whenever the role is already correct,
-so it does not touch the all-open byte-identity invariant.
+verbatim panic message), and add `pub mod role;` to `src/hub/mod.rs`'s module declarations (RE-READ
+its current ones, e.g. `pub mod handshake;`, and add the line in the same style) -- without this,
+`crate::hub::role::*` does not resolve from `src/transport`. This is a fail-loud backstop, not a
+substitute for H2's structural separation: it must be a no-op (no output, no behavior change)
+whenever the role is already correct, so it does not touch the all-open byte-identity invariant.
 
 Wire it at the two seams H2's landed code already makes obvious (RE-READ `src/hub/mod.rs` to confirm
 these are still the actual function names/shapes before relying on them; H2 landed them as of this
