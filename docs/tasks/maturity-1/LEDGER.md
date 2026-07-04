@@ -11,8 +11,8 @@ that task's single commit.
   f66fbf02ae4a3b54c8b9cf92a8f448519be0662a)
 - Baseline: `cargo test` (via `CARGO_TARGET_DIR=target/it`, see deviation in
   m01 entry) = 475 passed, 0 failed
-- Progress: m01, m02 done
-- NEXT TASK: m03 (docs/tasks/maturity-1/m03-ci-workflows.md)
+- Progress: m01, m02, m03 done
+- NEXT TASK: m04 (docs/tasks/maturity-1/m04-audit-syslog-none.md)
 - Authority: BOOTSTRAP.md, then the task prompt, then 00-design.md, then
   ADR-0026/0027
 - Invariants: tree green and clean between tasks; no push; ASCII diff scan per
@@ -79,6 +79,29 @@ that task's single commit.
   header (rg exit 1), every match is on line 1 (rg -v ":1:" empty). ASCII diff
   scan on staged changes: empty (clean).
 - Notes for the reviewer: none.
+
+### m03 CI workflows (three-OS matrix + release artifacts) -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: .github/workflows/ci.yml (new), .github/workflows/release.yml
+  (new), docs/tasks/maturity-1/LEDGER.md.
+- Summary: `.github/` did not exist (STOP precondition verified). Created
+  ci.yml (fmt job on ubuntu; test job matrixed over ubuntu/macos/windows
+  running clippy -D warnings then cargo test) and release.yml (tag-triggered
+  v* release building --release for the four pinned targets, uploading
+  artifacts), both transcribed byte-for-byte from the prompt's pinned YAML, no
+  SPDX header per 00-design.md.
+- Deviations from the prompt/design: none.
+- Verification: pinned rg assertions all pass --
+  `dtolnay/rust-toolchain@stable` count 2, `windows-latest` count 1,
+  `cargo clippy --all-targets -- -D warnings` count 1 in ci.yml;
+  the four-target alternation regex count 4 and `if-no-files-found: error`
+  count 1 in release.yml. No tabs in either file (rg -P "\t" empty); 2-space
+  indent confirmed visually. `cargo test` -- 475 passed, 0 failed (unchanged,
+  no compiled change). ASCII diff scan on staged changes: empty (clean).
+  YAML validity is NOT locally verified (no local GitHub Actions runner);
+  it is confirmed live on the first push per the prompt.
+- Notes for the reviewer: the two workflow files are unvalidated by GitHub's
+  own YAML parser until the first push to a remote that runs Actions.
 
 ## RUN SUMMARY
 
