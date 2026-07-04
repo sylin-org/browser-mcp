@@ -11,8 +11,8 @@ that task's single commit.
   f66fbf02ae4a3b54c8b9cf92a8f448519be0662a)
 - Baseline: `cargo test` (via `CARGO_TARGET_DIR=target/it`, see deviation in
   m01 entry) = 475 passed, 0 failed
-- Progress: m01, m02, m03, m04 done
-- NEXT TASK: m05 (docs/tasks/maturity-1/m05-extension-lib-extraction.md)
+- Progress: m01, m02, m03, m04, m05 done
+- NEXT TASK: m06 (docs/tasks/maturity-1/m06-headless-smoke.md)
 - Authority: BOOTSTRAP.md, then the task prompt, then 00-design.md, then
   ADR-0026/0027
 - Invariants: tree green and clean between tasks; no push; ASCII diff scan per
@@ -147,6 +147,76 @@ that task's single commit.
   `git status --short` showed exactly the six allowed files plus this
   ledger. ASCII diff scan on staged changes: empty (clean).
 - Notes for the reviewer: none.
+
+### m05 extract service-worker pure logic into extension/lib/ with node tests -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: extension/lib/geometry.js (new), extension/lib/keys.js (new),
+  extension/service-worker.js, tests/extension/geometry.test.js (new),
+  tests/extension/keys.test.js (new), .github/workflows/ci.yml (extension-unit
+  job appended), docs/tasks/maturity-1/LEDGER.md.
+- Summary: All three STOP preconditions verified before editing (rescaleCoord
+  present, no importScripts anywhere, extension/lib/ absent). Located every
+  cited site by content (rule 7); all matched the prompt's pre-m02 line
+  numbers +1 exactly, confirming no drift. Created geometry.js (PX_PER_TOKEN/
+  MAX_TOKENS/MAX_SIDE, targetDims, zoomScale moved verbatim, plus new
+  rescaleCtxCoord taking the context record directly) and keys.js (KEY_MAP,
+  BUTTON_BITS, modifierBits, keyCode, VK_NAMED, VK_PUNCT, CODE_PUNCT, vkCode,
+  SHIFT_BASE, charKeyInfo moved verbatim), both with the pinned dual-export
+  footer. service-worker.js: added `importScripts("lib/geometry.js",
+  "lib/keys.js");` as the first executable statement after the top comment
+  block; replaced the combined const line with the GhostlightGeometry
+  destructure plus a standalone `MAX_SCREENSHOT_B64`; deleted the moved
+  targetDims/zoomScale bodies; replaced rescaleCoord's body with the thin
+  `rescaleCtxCoord(screenshotCtx.get(tabId), x, y)` delegate at its original
+  location; replaced the KEY_MAP/BUTTON_BITS/modifierBits block with the
+  GhostlightKeys destructure (kept CLICK_GAP_MS, which is not an export, in
+  place); deleted the moved keyCode/VK_NAMED/VK_PUNCT/CODE_PUNCT/vkCode/
+  SHIFT_BASE/charKeyInfo bodies. Every call site (targetDims, zoomScale,
+  rescaleCoord, modifierBits, keyCode, vkCode, charKeyInfo) is byte-identical
+  to before. Wrote the two pinned node:test files with all 23 named
+  assertions transcribed from the prompt (14 tests total: 9 geometry, 5
+  keys), including the two control/non-ASCII probes as literal 6-character
+  JS escape text (backslash-u-0-0-0-1 and backslash-u-0-0-e-9), never a
+  literal byte, per ground rule 5. Appended the extension-unit CI job to
+  ci.yml (m03 landed, so this ran normally, not blocked-by-m03).
+- Deviations from the prompt/design: 1. The pinned verification command
+  `node --test tests/extension/` (bare directory positional argument) fails
+  on this machine's Node v24.7.0 with `Error: Cannot find module
+  '...\tests\extension'` (MODULE_NOT_FOUND), reproduced identically in both
+  Git Bash and PowerShell, and reproduced in a from-scratch, unrelated
+  scratch directory with a single trivial test file -- confirming this is an
+  environment/Node-version CLI quirk (passing an explicit directory as a
+  positional arg to `--test` on this build), not a defect in the test files
+  or the extracted code. Two equivalent invocations both pass all 14 tests:
+  `node --test tests/extension/geometry.test.js tests/extension/keys.test.js`
+  and bare `node --test` run with cwd set to tests/extension/. The appended
+  CI job pins `node-version: "22"` (not 24), which may not hit this quirk at
+  all; that is unverified locally (only Node 24 is installed here) and is
+  left for the live CI run to confirm, consistent with 00-design.md's
+  general acknowledgment that these workflows are validated live on first
+  push. 2. `cargo test`/goldens commands continue using
+  `CARGO_TARGET_DIR=target/it` per the ground-rule-4 deviation from m01.
+- Verification: `node --test tests/extension/geometry.test.js
+  tests/extension/keys.test.js` -- 14/14 pass (9 geometry + 5 keys, matching
+  the prompt's "14 tests" pin). rg checks: `rg -c "function targetDims"
+  extension/service-worker.js` -- no match (exit 1); `rg -c "function
+  targetDims" extension/lib/geometry.js` -- 1; `rg -c "importScripts"
+  extension/service-worker.js` -- 1; `rg -c "GhostlightKeys"
+  extension/lib/keys.js` -- 3 (>= 2). `rg -n "[^\x00-\x7F]" extension/lib/
+  tests/extension/` -- empty (pure ASCII). `cargo test` (isolated target
+  dir) -- 479 passed, 0 failed, unchanged from m04 (no Rust files touched).
+  `git status --short` showed exactly the six expected paths. ASCII diff
+  scan on staged changes: empty (clean). OPTIONAL live-Chrome sanity
+  (reload unpacked extension + live-demo.ps1) was NOT run; not required for
+  acceptance per the prompt.
+- Notes for the reviewer: the CI `extension-unit` job is unvalidated until
+  the first push (consistent with m03's note); given deviation 1 above, if
+  it fails on `ubuntu-latest`/`macos-latest`/`windows-latest` with a
+  MODULE_NOT_FOUND on the `tests/extension/` arg specifically, that is this
+  same Node CLI quirk (likely version- or platform-specific) and the fix is
+  to invoke node --test with an explicit glob/file list rather than a bare
+  directory arg; it is not evidence of a bug in the extracted code (the
+  content itself is fully verified above).
 
 ## RUN SUMMARY
 
