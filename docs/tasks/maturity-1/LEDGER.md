@@ -380,3 +380,21 @@ note). e2e-smoke FAILED at the `node tests/e2e/run-smoke.mjs` step; job logs req
 repo-admin authentication that the authoring session does not hold, so the m06 live-run
 diagnosis is PENDING gh auth; treat per m06's Notes for the reviewer (evidence first, no
 blind iteration).
+
+### e2e-smoke fix attempt 1 -- 2026-07-04 (af08036)
+
+Diagnosed via gh run logs: the mcp-server binary starts and owns its socket, the
+extension service worker loads, but the native-messaging channel never establishes
+("extension channel never came up"; tabs_create_mcp returns "Browser extension not
+connected"). Fix attempt 1 (commit af08036): write the native-host manifest to the
+standard per-user Chromium/Chrome config dirs on Linux/macOS (not just --user-data-dir,
+which Chromium does not consult for host lookup), plus capture browser console on
+failure. Result: STILL FAILS, and the console capture surfaced nothing -- context.on(
+"console") does not emit service-worker logs in this Playwright version, so the
+extension-side connectNative error is not visible. Open question (needs a design call,
+not more blind iteration): does Playwright bundled chromium support native-messaging
+hosts with an unpacked extension at all, and from which config dir? Next diagnostic
+options: attach a CDP session to the service worker to read its console/lastError, or
+switch the launch to a real Chrome channel. e2e-smoke stays quarantined (continue-on-
+error); CI is green. The Windows manual live verification and the Rust integration
+tests remain the real coverage; this automated headless smoke is a nice-to-have guard.
