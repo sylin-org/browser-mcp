@@ -24,14 +24,14 @@
 //! `notifications/tools/list_changed` through the SAME single-writer stdout task every other
 //! outbound message uses (the writer channel is now [`Outbound`], not a bare `JsonRpcResponse`).
 
-use crate::browser::{advertise, pattern, polarity};
-use crate::governance::audit::Recorder;
+use crate::browser::{advertise, polarity};
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::Governance;
 use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::identity::ManifestIdentity;
 use crate::governance::manifest::source::LoadedPolicy;
 use crate::governance::ports::AuditSink;
+use crate::hub::ServiceContext;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::pipeline;
 use crate::transport::mcp::tools::TOOLS_JSON;
@@ -40,7 +40,7 @@ use crate::Result;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 /// The exact `notifications/tools/list_changed` wire line (ADR-0025 Decision 4), pinned:
@@ -105,21 +105,41 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 /// (below) and holds the rest at this scope for later stage-2 tasks (G13 grant enforcement,
 /// G14 tool-advertisement filtering) to read grants from; loading it does not change which
 /// calls execute.
+///
+/// Thin mcp-server wrapper (ADR-0030 Decision 2): builds the SHARED [`ServiceContext`] once,
+/// joins stdin/stdout into a single duplex stream, and hands both to [`serve_session`] -- the
+/// transport-generic chokepoint every transport (this stdio adapter, and later H2's multiplexed
+/// adapters/web sessions) calls. `serve_session` splits the joined stream back into the same
+/// underlying stdin/stdout handles, so reads still come from stdin and writes still go to
+/// stdout: byte-identical to the pre-H1 single-session path.
 pub async fn run(
     browser: Browser,
     loaded_policy: LoadedPolicy,
     user_source: Option<String>,
 ) -> Result<()> {
-    if let Some(manifest) = &loaded_policy.manifest {
-        tracing::debug!(
-            name = %manifest.name,
-            version = %manifest.version,
-            hash = %manifest.hash,
-            "active manifest held for later governance tasks"
-        );
-    }
+    let ctx = ServiceContext::from_startup(browser, loaded_policy, user_source)?;
+    let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+    serve_session(stream, ctx).await
+}
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+/// The transport-generic session chokepoint (ADR-0030 Decision 2: "HubCore / ServiceContext vs
+/// per-session state"): every transport calls this ONE function over its own
+/// `S: AsyncRead + AsyncWrite` stream. `ctx` carries the SHARED-per-service state (the `Browser`
+/// handle, the `ConfigStore`, the audit `Recorder`, and the startup `LoadedPolicy`); everything
+/// built in this function's body is PER-SESSION (the swappable `Governance`, the writer task,
+/// the policy-subscription task) and is dropped when the session ends.
+pub async fn serve_session<S>(stream: S, ctx: ServiceContext) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let ServiceContext {
+        browser,
+        store,
+        recorder,
+        initial_policy: loaded_policy,
+    } = ctx;
+
+    let (read_half, write_half) = tokio::io::split(stream);
     // Hot-reload substrate (ADR-0019, extended by ADR-0025 to the manifest): the resolved
     // Config is held behind an atomic swap; the watcher re-resolves on a config/org/manifest
     // change with no restart. With no files present this resolves to the built-in defaults, so
@@ -127,31 +147,8 @@ pub async fn run(
     // `source::load_policy` above (ADR-0023 Decision 1: `parse_manifest` is the sole
     // reader/parser/validator of the policy file); the store derives both the org layers (an
     // org-sourced manifest's config entries) and the user layer (a user-supplied manifest's
-    // config entries, G12) from it directly, with no second read of the org file. `user_source`
-    // is retained so the store's own re-selection on reload (`ConfigStore::reresolve`) covers
-    // the watched user `file://` manifest source too, not just the org file.
-    let store = ConfigStore::load_initial_with_policy(
-        pattern::is_valid_pattern,
-        &loaded_policy,
-        user_source,
-    )?;
-    store.clone().spawn_watcher();
-
-    // The audit flight recorder (ADR-0018 step 1) is orthogonal to the governance mode: it
-    // records under all-open too, gated only by audit.enabled (shared format doc section 4.5).
-    // Its destination is live (RECONCILIATION.md section 3): a config-change watcher re-opens
-    // the sink whenever audit.enabled / audit.destination / audit.file.path changes.
-    let recorder = Arc::new(Recorder::from_config(&store.current()));
-    tokio::spawn({
-        let recorder = Arc::clone(&recorder);
-        let mut changes = store.subscribe();
-        async move {
-            while changes.changed().await.is_ok() {
-                let config = changes.borrow().clone();
-                recorder.reload(&config);
-            }
-        }
-    });
+    // config entries, G12) from it directly, with no second read of the org file.
+    let mut lines = BufReader::new(read_half).lines();
 
     // Grant enforcement (g13): governed once a manifest is active (org or user-sourced;
     // `loaded_policy` already resolved which one wins), all-open otherwise. `governance_slot`
@@ -185,13 +182,13 @@ pub async fn run(
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
 
-    // A single writer owns stdout so responses -- including those from spawned `tools/call`
-    // tasks and the ADR-0025 `list_changed` notification -- never interleave mid-write. `debug`
-    // is cloned before the spawn so both the writer and the read loop below can record the MCP
-    // boundary.
+    // A single writer owns the session's write half so responses -- including those from
+    // spawned `tools/call` tasks and the ADR-0025 `list_changed` notification -- never
+    // interleave mid-write. `debug` is cloned before the spawn so both the writer and the read
+    // loop below can record the MCP boundary.
     let debug = browser.debug().clone();
     let writer = tokio::spawn(async move {
-        let mut stdout = tokio::io::stdout();
+        let mut out = write_half;
         while let Some(msg) = rx.recv().await {
             let mut buf = match msg {
                 Outbound::Response(resp) => {
@@ -213,7 +210,7 @@ pub async fn run(
                 Outbound::ToolsListChanged => TOOLS_LIST_CHANGED_LINE.to_string(),
             };
             buf.push('\n');
-            if stdout.write_all(buf.as_bytes()).await.is_err() || stdout.flush().await.is_err() {
+            if out.write_all(buf.as_bytes()).await.is_err() || out.flush().await.is_err() {
                 break;
             }
         }

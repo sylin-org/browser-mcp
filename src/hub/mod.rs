@@ -9,10 +9,14 @@
 
 use crate::browser::pattern;
 use crate::debug::DebugSink;
+use crate::governance::audit::Recorder;
+use crate::governance::config::reload::ConfigStore;
 use crate::governance::manifest::source;
+use crate::governance::manifest::source::LoadedPolicy;
 use crate::native::ipc;
 use crate::transport::executor::Browser;
 use anyhow::{Context, Result};
+use std::sync::Arc;
 
 /// mcp-server role: own the browser IPC endpoint + serve the native-host in the background, run the
 /// stdio MCP JSON-RPC loop in the foreground. Both share the [`Browser`] handle.
@@ -143,5 +147,65 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
             tracing::warn!(error = %e, "could not enable debug sink; continuing without it");
             DebugSink::disabled()
         }
+    }
+}
+
+/// SHARED per-service state (ADR-0030 Decision 2: "HubCore / ServiceContext vs per-session
+/// state"): the one [`Browser`] handle, the [`ConfigStore`], and the audit [`Recorder`] -- built
+/// ONCE at startup and handed to every `transport::mcp::server::serve_session` invocation.
+/// PER-SESSION state (the swappable `Governance`, the writer task, the policy-subscription task)
+/// is built PER session, inside `serve_session` itself, never here.
+pub struct ServiceContext {
+    pub browser: Browser,
+    pub store: Arc<ConfigStore>,
+    pub recorder: Arc<Recorder>,
+    pub initial_policy: LoadedPolicy,
+}
+
+impl ServiceContext {
+    /// The SHARED-lifetime startup sequence, moved verbatim from the pre-H1
+    /// `transport::mcp::server::run` (store load -> `spawn_watcher` -> recorder build ->
+    /// recorder-reload subscription spawn). This is a plain (non-async) fn that calls
+    /// `tokio::spawn` internally; it is only ever invoked from within the tokio runtime (by
+    /// `mcp::server::run`, itself polled inside `run_mcp_server`'s `rt.block_on` above).
+    pub fn from_startup(
+        browser: Browser,
+        loaded_policy: LoadedPolicy,
+        user_source: Option<String>,
+    ) -> crate::Result<Self> {
+        if let Some(manifest) = &loaded_policy.manifest {
+            tracing::debug!(
+                name = %manifest.name,
+                version = %manifest.version,
+                hash = %manifest.hash,
+                "active manifest held for later governance tasks"
+            );
+        }
+
+        let store = ConfigStore::load_initial_with_policy(
+            pattern::is_valid_pattern,
+            &loaded_policy,
+            user_source,
+        )?;
+        store.clone().spawn_watcher();
+
+        let recorder = Arc::new(Recorder::from_config(&store.current()));
+        tokio::spawn({
+            let recorder = Arc::clone(&recorder);
+            let mut changes = store.subscribe();
+            async move {
+                while changes.changed().await.is_ok() {
+                    let config = changes.borrow().clone();
+                    recorder.reload(&config);
+                }
+            }
+        });
+
+        Ok(Self {
+            browser,
+            store,
+            recorder,
+            initial_policy: loaded_policy.clone(),
+        })
     }
 }
