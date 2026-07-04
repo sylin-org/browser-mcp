@@ -179,6 +179,61 @@ field, which is separate from the `client` field. No new key; the 14-key order i
   policy/config writes, never a code gate. The port: PINNED default `webapi.port = 4180`.
 - The authenticated subject is recorded via the `identity` field per SS2 -- NOT a new audit key.
 
+## SS8 -- Role marker + fail-loud invariant assertions (shared by H3, H6; added 2026-07-04)
+
+The process's role (Decision 1: SERVICE won the ADAPTER/CONTROL endpoint claim, or ADAPTER lost it),
+once learned, is recorded ONCE in a single hub-owned marker and asserted at the two seams where a
+mismatch would mean the SoC boundary already failed elsewhere: the governance chokepoint (must only
+ever run as SERVICE) and the service-spawn path (must only ever run as ADAPTER, H6). This is a
+fail-loud backstop, NOT a substitute for the structural separation (the ADAPTER's code never calls
+governance; the SERVICE's code never calls spawn) -- it exists so a future accidental breach of that
+separation crashes immediately and loudly instead of silently misbehaving. This assertion is a no-op
+(no output, no behavior change) whenever the role is already correct, so it does not affect the
+all-open byte-identity invariant.
+
+- New file `src/hub/role.rs` (H3 creates it; NEVER `src/governance/**` -- a7 forbids `crate::hub`
+  there too, post-H3's own scanner extension).
+- PINNED shape (transcribe verbatim):
+  ```
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum Role { Service, Adapter }
+
+  pub fn set_role(role: Role);   // panics "ghostlight process role decided twice" if called twice
+  pub fn role() -> Role;         // panics "ghostlight process role read before it was decided" if unset
+  pub fn assert_role(current: Role, required: Role, what: &str); // pure; see panic message below
+  pub fn assert_service_role(what: &str); // = assert_role(role(), Role::Service, what)
+  pub fn assert_adapter_role(what: &str); // = assert_role(role(), Role::Adapter, what)
+  ```
+- PINNED panic message from `assert_role` (transcribe verbatim; `{what}`/`{required:?}`/`{current:?}`
+  are the only interpolations):
+  `"invariant violated: {what} must only run when this process's role is {required:?}, but it is {current:?}"`
+- H3 calls `set_role` exactly once, immediately after H2's endpoint-claim result is known in
+  `run_mcp_server` (RE-READ H2's landed win/lose branch in `src/hub/mod.rs` for the exact call site;
+  do not guess a line number). H3 also calls `assert_service_role("<the chokepoint function's own
+  name>")` as the FIRST line of the governance chokepoint (RE-READ H2's landed `serve_session` /
+  `handle_tools_call` to find the single function every call path enters first; pass that function's
+  own name as `what`).
+- H6 calls `assert_adapter_role("<the spawn-on-demand function's own name>")` as the FIRST line of
+  the spawn-on-demand function it builds (Required behavior item 1), before any process-spawn call;
+  pass that function's own name as `what`.
+- PINNED unit tests (transcribe verbatim; pure, touch no global `OnceLock`, so they cannot leak state
+  into other tests) in `src/hub/role.rs`'s own `#[cfg(test)]` module:
+  - `adapter_role_hitting_the_governance_chokepoint_panics`: `#[should_panic(expected = "must only run
+    when this process's role is Service")]`; calls `assert_role(Role::Adapter, Role::Service, "test")`.
+  - `service_role_hitting_spawn_on_demand_panics`: `#[should_panic(expected = "must only run when this
+    process's role is Adapter")]`; calls `assert_role(Role::Service, Role::Adapter, "test")`.
+  - `matching_roles_do_not_panic`: calls `assert_role(Role::Service, Role::Service, "test")` and
+    `assert_role(Role::Adapter, Role::Adapter, "test")`; a plain (non-`should_panic`) test asserting
+    neither call panics.
+- PINNED wiring-verification tests (text-scan, a7-style, NOT live-process tests -- they guard the
+  CALL SITE existing, separately from `role.rs`'s own unit tests which guard the assertion LOGIC):
+  - H3 adds `tests/hub_role_wiring.rs::governance_chokepoint_asserts_service_role`: asserts the
+    source of H2's landed governance-chokepoint function (RE-READ to find it) contains the literal
+    substring `assert_service_role`.
+  - H6 adds `spawn_on_demand_asserts_adapter_role` to `tests/hub_lifecycle.rs` (a file H6 already
+    creates for its own Tests section): asserts the source of H6's own spawn-on-demand function
+    contains the literal substring `assert_adapter_role`.
+
 ## Resolved AUTHOR-MUST-PIN index (so none is left open)
 
 | Task | value | pinned in |

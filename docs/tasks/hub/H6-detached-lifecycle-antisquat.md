@@ -89,7 +89,11 @@ schemas, the all-open byte-identity, and the a7 arch-test (see NEVER touch).
 
 1. Detached, unparented, non-admin spawn (ADR-0030 Decision 8). The adapter, on finding the service
    absent, spawns the SAME binary in the service role DETACHED so it is in neither the adapter's nor
-   Chrome's job object, and as the logged-in user, never elevated:
+   Chrome's job object, and as the logged-in user, never elevated. Role-marker addendum (PINS.md SS8,
+   added 2026-07-04 after H2/H3): call `hub::role::assert_adapter_role("<this function's own name>")`
+   as the ABSOLUTE first line of the spawn-on-demand function's body, before any process-spawn call --
+   a SERVICE must never spawn another service; this is the fail-loud backstop for that invariant
+   (`src/hub/role.rs` is created by H3; RE-READ it, do not redefine `Role`/`assert_adapter_role` here):
    - Windows: create with `DETACHED_PROCESS` AND `CREATE_BREAKAWAY_FROM_JOB` (no job inheritance), and
      VERIFY breakaway (the spawned service is not a member of the adapter's / Chrome's job object).
      Do NOT elevate; inherit the caller's medium integrity (Decision 8: "must not exceed the medium
@@ -179,6 +183,12 @@ boundary (all session/lifecycle/anti-squat code lands in `src/hub` or the binary
     - This exercises Decision 8: "the service proves possession of a per-install secret to the adapter
       on connect (anti-squat) ... before any GUID/pairing flow proceeds."
 
+  - `tests/hub_lifecycle.rs::spawn_on_demand_asserts_adapter_role` (PINS.md SS8; role-marker addendum,
+    added 2026-07-04): a text-scan test (a7-style, NOT a live-process test) asserting the source of
+    this task's own spawn-on-demand function (Required behavior item 1) contains the literal
+    substring `assert_adapter_role`. This guards the WIRING; `src/hub/role.rs`'s own unit tests (added
+    by H3; do not re-add them here) guard the assertion LOGIC.
+
 ## Verification (literal commands)
 
 cargo build --all-targets
@@ -204,6 +214,9 @@ cargo fmt --all -- --check
 - If any AUTHOR-MUST-PIN value in this file is still unpinned at execution time (idle-grace window;
   anti-squat failure string/denial-id; per-install secret storage + handshake shape), STOP: the
   executor transcribes oracles, it never derives them.
+- If `src/hub/role.rs` (created by H3; PINS.md SS8) is absent or its `assert_adapter_role` function
+  no longer exists under that name, STOP -- H3 has not landed or was implemented differently; do not
+  redefine the role marker here, and do not skip the spawn-on-demand assertion silently.
 - If landing this task would require moving any NEVER-touch fence below, STOP.
 
 ## NEVER touch (this task)

@@ -94,6 +94,19 @@ gets its own door rather than being forced to speak first behind a shared demux.
 meaningful moving parts than one endpoint plus a role-negotiation layer, and it is why nothing in
 this design touches the extension's wire or its golden tests.
 
+Role is a fact the process can never be wrong about (amended 2026-07-04). The instant
+`run_mcp_server` learns win or lose from the endpoint claim above, it records its role (SERVICE or
+ADAPTER) in a single hub-owned marker, set exactly once for the process's life. The two seams where a
+role mismatch would be a genuine defect -- the governance chokepoint (`serve_session`/
+`handle_tools_call`) and the service-spawn path (Decision 8's spawn-on-demand) -- each assert against
+that marker as their first action and panic immediately, by name, on a mismatch. This is deliberately
+narrow: it is NOT "every feature checks a flag" (a runtime check a future feature could simply forget
+to add); it is a fail-loud guard at exactly the two places a violation would mean the SoC boundary
+already failed by construction elsewhere. The structural separation (the ADAPTER's code never calls
+governance; the SERVICE's code never calls the spawn path) remains the primary guarantee; the
+assertion is the test-time, crash-loud backstop if that separation is ever accidentally breached by a
+future change. Pinned in `docs/tasks/hub/PINS.md` SS8.
+
 ## Decision 2: HubCore / ServiceContext vs per-session state
 
 Extract the composition root into a free-licensed `src/hub` module hosting `HubCore`. Split state:

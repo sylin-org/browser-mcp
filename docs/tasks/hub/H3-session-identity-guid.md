@@ -150,6 +150,33 @@ discipline: the governance core must name no transport/handle/credential type). 
 back-edge rule in the scanner intact (the current browser/transport/mcp/native/url forbidden set);
 this edit is PURELY ADDITIVE. Make no other change to `tests/architecture.rs`.
 
+### 6. Role marker + governance-chokepoint assertion (ADR-0030 Decision 1 addendum; PINS.md SS8)
+
+Added 2026-07-04 after H2 landed the two-endpoint split. Create `src/hub/role.rs` per PINS.md SS8's
+PINNED shape (`Role`, `set_role`, `role`, `assert_role`, `assert_service_role`, `assert_adapter_role`,
+verbatim panic message). This is a fail-loud backstop, not a substitute for H2's structural
+separation: it must be a no-op (no output, no behavior change) whenever the role is already correct,
+so it does not touch the all-open byte-identity invariant.
+
+Wire it at the two seams H2's landed code already makes obvious (RE-READ `src/hub/mod.rs` to confirm
+these are still the actual function names/shapes before relying on them; H2 landed them as of this
+writing):
+- `run_as_service` (`src/hub/mod.rs`, the async fn entered when `ipc::claim_adapter_endpoint` returns
+  `Ok`): call `hub::role::set_role(hub::role::Role::Service)` as the ABSOLUTE first line of its body,
+  before the `Browser::with_debug` call.
+- `run_as_adapter` (`src/hub/mod.rs`, the async fn entered on `Err(crate::Error::SessionBusy)`): call
+  `hub::role::set_role(hub::role::Role::Adapter)` as the ABSOLUTE first line of its body, before the
+  `ipc::relay_adapter` call.
+- `serve_session` (`src/transport/mcp/server.rs`, the governance chokepoint every transport calls per
+  ADR-0030 Decision 2): call `hub::role::assert_service_role("serve_session")` as the ABSOLUTE first
+  line of its body, before any other setup.
+
+Add `tests/hub_role_wiring.rs::governance_chokepoint_asserts_service_role` (PINS.md SS8): a text-scan
+test (a7-style) asserting the source of `serve_session` in `src/transport/mcp/server.rs` contains the
+literal substring `assert_service_role`. This guards the WIRING; `role.rs`'s own unit tests (below)
+guard the assertion LOGIC. H6 later adds the symmetric adapter-side wiring test to
+`tests/hub_lifecycle.rs` when it builds the spawn-on-demand function -- do not attempt that half here.
+
 ## Tests (BY NAME; assertions pinned)
 
 - Keep green: `tests/all_open_golden.rs`, `tests/audit_recorder.rs` (do not modify).
@@ -195,10 +222,24 @@ this edit is PURELY ADDITIVE. Make no other change to `tests/architecture.rs`.
   - Session-event record field order, exactly 6 keys, in order:
     `event_id, ts, identity, client, event, manifest`. H3 stamps no GUID into it.
 
+- Add (PINS.md SS8, transcribe verbatim; `src/hub/role.rs`'s own `#[cfg(test)]` module):
+  - `adapter_role_hitting_the_governance_chokepoint_panics`:
+    `#[should_panic(expected = "must only run when this process's role is Service")]`; calls
+    `assert_role(Role::Adapter, Role::Service, "test")`.
+  - `service_role_hitting_spawn_on_demand_panics`:
+    `#[should_panic(expected = "must only run when this process's role is Adapter")]`; calls
+    `assert_role(Role::Service, Role::Adapter, "test")`.
+  - `matching_roles_do_not_panic`: calls `assert_role(Role::Service, Role::Service, "test")` and
+    `assert_role(Role::Adapter, Role::Adapter, "test")`; a plain test asserting neither panics.
+
+- Add: `tests/hub_role_wiring.rs::governance_chokepoint_asserts_service_role` (see item 6 above).
+
 ## Verification (literal commands)
 ```
 cargo build --all-targets
 cargo test --test hub_identity
+cargo test --test hub_role_wiring
+cargo test --lib role
 cargo test --test all_open_golden
 cargo test --test architecture governance_core_has_no_forbidden_back_edges
 cargo test --test architecture governance_core_rejects_tabid_token_socket_identifiers
@@ -219,6 +260,9 @@ cargo fmt --all -- --check
   in `src/hub`, never in `src/governance`").
 - If H2 already introduced a session-identity type or a per-session GUID field, STOP and reconcile
   with it rather than duplicating (do not create a second identity type).
+- If `run_as_service`, `run_as_adapter`, or `serve_session` no longer exist under those names or no
+  longer cleanly separate the two roles (item 6), STOP and reconcile against H2's ACTUAL landed shape
+  before wiring the role marker -- do not guess a different call site.
 - If satisfying this task would require moving or weakening any NEVER-touch fence below, STOP.
 
 ## NEVER touch (this task)
