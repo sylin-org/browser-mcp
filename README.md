@@ -1,10 +1,10 @@
-# Ghostlight Browser
+# Ghostlight
 
 [![CI](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml)
 
 **Governed access to your own browser, for AI agents.**
 
-Ghostlight Browser is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
+Ghostlight is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
 an AI agent controlled access to your real, authenticated browser session. It drives the
 browser you are already logged in to, so the agent can observe and act on the web apps you already
 use, through any MCP client (Claude Code, Cursor, and others). A separable governance layer decides,

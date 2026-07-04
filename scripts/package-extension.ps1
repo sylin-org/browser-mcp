@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Packages the Ghostlight Browser extension into a Chrome-Web-Store-ready zip.
+  Packages the Ghostlight browser extension into a Chrome-Web-Store-ready zip.
 
 .DESCRIPTION
   Reads the version out of extension/manifest.json, stages the store-relevant

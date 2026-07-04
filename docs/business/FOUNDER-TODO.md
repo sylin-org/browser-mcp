@@ -37,8 +37,8 @@ docs/business/PLAN.md). Check items off in place; add dates.
 - [ ] **Chrome Web Store listing (IN PROGRESS, step by step).** Account created
       (hello@sylin.org, non-trader, $5 paid, individual identity verification pending). Item
       created as a DRAFT named **"Ghostlight in Browser"**; store-assigned id
-      **lejccfmoeogmhemakeknjjdhkfkgncdl**. Working package uploaded (the renamed rebuild in
-      dist/ needs one more re-upload). Remaining founder steps: re-upload the renamed package;
+      **lejccfmoeogmhemakeknjjdhkfkgncdl**. Renamed package uploaded and its name verified in the
+      dashboard. Remaining founder steps:
       >=1 screenshot (the options page at 1280x800 + the self-narrating tour GIF via
       scripts/capture-readme-tour.ps1); fill the Privacy tab (paste-ready in
       docs/legal/STORE_LISTING.md); submit. Screenshots must be the REAL extension, not the
@@ -99,5 +99,7 @@ docs/business/PLAN.md). Check items off in place; add dates.
   (launch-day complexity + key-loss lockout) and to leave it as a hardening objective. Also
   shipped (dev): ADR-0029 process-lifecycle fix, the extension SW-registration fix +
   lib/constants.js, the per-action visual feedback vocabulary, the options page + captions.
-  Open decision: rename the PRODUCT/project name to "Ghostlight" (extension stays "Ghostlight
-  in Browser") -- README/CLAUDE/ADR-0021 sweep pending confirm.
+  Product and project name simplified from "Ghostlight Browser" to **"Ghostlight"** (extension
+  stays "Ghostlight in Browser"); README / CLAUDE.md / extension README / script synopses swept and
+  ADR-0021 amended. The Visual Feedback Dictionary design artifact was preserved verbatim into
+  docs/design/visual-feedback-dictionary.html.

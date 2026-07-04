@@ -46,8 +46,10 @@ The scan-line is ours: no recording tool has it, because none of them is an agen
   `AGENT_NAVIGATE_PILL`, `AGENT_SCREENSHOT_FX`, `AGENT_ZOOM_FRAME`, `AGENT_WAIT_PULSE`) at the point
   the action runs. The worker holds mechanism only; the effects carry no policy.
 - **Interactive reference:** the vocabulary was designed and approved in a standalone preview that
-  plays each treatment on a mock browser (a good source for a marketing GIF, separate from the store
-  screenshots, which should show the real extension).
+  plays each treatment on a mock browser, preserved verbatim at
+  [visual-feedback-dictionary.html](visual-feedback-dictionary.html). Open it in a browser and click
+  any entry to replay a single effect, or "Run the tour" for the full sequence. It is a good source
+  for a marketing GIF, separate from the store screenshots, which should show the real extension.
 
 ## Action caption (off by default)
 
