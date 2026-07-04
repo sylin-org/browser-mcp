@@ -6,10 +6,12 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H2 (`H2-service-adapter-multiplex.md`).**
-H0 landed (pure code move; `src/hub` composition root extracted). H1 landed (transport-generic
-`serve_session<S>` + `ServiceContext`, byte-identical single-session refactor). Start at H2,
-follow the per-task procedure in `BOOTSTRAP.md`.
+**H2 is BLOCKED (`H2-service-adapter-multiplex.md`).** H0 landed (pure code move; `src/hub`
+composition root extracted). H1 landed (transport-generic `serve_session<S>` + `ServiceContext`,
+byte-identical single-session refactor). H2's own tree is reverted to the clean H1 baseline (build
+and the full sacred/named suite verified green at that baseline -- see the H2 Log entry below for
+the exact conflict). Do NOT re-attempt H2 or any later task until the frontier author resolves the
+conflict described there (one of the three options listed) and re-issues or amends the task.
 
 ## Status
 
@@ -17,7 +19,7 @@ follow the per-task procedure in `BOOTSTRAP.md`.
 | --- | --- | --- | --- | --- |
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
-| H2 | Persistent service + thin adapter + multiplex | pending | -- | the one large coupled commit |
+| H2 | Persistent service + thin adapter + multiplex | BLOCKED | -- | the one large coupled commit; see Log |
 | H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
@@ -122,7 +124,70 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   test change.
 
 ### H2
-- (not started)
+- BLOCKED. Implemented the task in full (`src/hub/handshake.rs` new; `src/transport/native/ipc.rs`
+  split `serve` into `claim_endpoint`/`serve_claimed` + added `relay_adapter` + a shared
+  `handle_connection` hello-demux per PINS.md SS1; `src/transport/executor.rs` converted the
+  single-consumer kill hook to the `kill_hooks`/`KillHookHandle` fan-out registry per Decision 7;
+  `src/transport/mcp/server.rs` swapped `on_session_killed` for `register_session_kill_hook` in
+  `serve_session`; `src/hub/mod.rs` rewired `run_mcp_server` to claim-or-adapt; new
+  `tests/hub_multiplex.rs` with both named tests passing). `cargo build --all-targets` was clean
+  and the new `tests/hub_multiplex.rs` (`two_sessions_route_replies_independently`,
+  `one_kill_emits_one_audit_record_per_live_session`) passed. Then the task's own verification
+  block (`cargo test --test mcp_protocol --test peer_death --test all_open_golden --test
+  tool_schema_fidelity --test audit_recorder --test architecture`) surfaced a real, reproducible
+  failure in a file this task's own NEVER-touch fence forbids editing, with no exception:
+  `tests/all_open_golden.rs::read_page_redaction_is_still_wired_at_the_chokepoint` failed with
+  `"[hop: extension] Browser extension not connected"` instead of succeeding. Root cause, traced
+  and confirmed (not a hunch): the task's Required Behavior item 1 (PINS.md SS1) requires `serve`
+  / `serve_claimed` to read the hub hello frame FIRST and demux BEFORE dispatching to
+  `Browser::attach` (`"ext"`) or `serve_session` (`"adapter"`), with "an unknown or absent role
+  fails the connection cleanly." `Browser::is_connected()` only becomes `true` INSIDE `attach()`,
+  which under this design cannot run until a hello has been read from the peer. But
+  `read_page_redaction_is_still_wired_at_the_chokepoint`'s fake extension (and
+  `tests/mcp_protocol.rs::tools_call_waits_for_a_late_extension_and_notes_the_wait`'s, structurally
+  identical -- confirmed failing the same way, though that file is only in the softer "Keep green"
+  list, not the hard NEVER-touch one) connects via `ipc::connect` and calls
+  `host::read_message` BEFORE ever writing anything -- it relies on the PRE-H2 behavior where the
+  mcp-server can start writing a queued `tools/call`'s framed `tool_request` to a freshly accepted
+  connection the instant `Browser::attach` claims it, with zero bytes required from the peer
+  first. Under the hello-first gate, `attach()` never runs (the peer never sends first), so the
+  pending `read_page` call's bounded `wait_connected(first_call_wait_ms, default 5000ms --
+  src/governance/config/mod.rs `ENGINE_CONNECTION_FIRST_CALL_WAIT_MS`) window elapses with the
+  extension never marked connected, and `pipeline::handle_tools_call` (src/transport/mcp/pipeline.rs:206)
+  then calls `browser.call()` anyway, which fails fast with the exact "not connected" message
+  observed -- matching the test's ~5s runtime exactly. This is a genuine, hello-first vs.
+  receive-first-peer deadlock, not a coding mistake: I confirmed it by actually implementing the
+  task, running the exact verification commands the task names, and tracing the failure to its
+  root cause (both fake-extension tests reproduce it identically). I considered and rejected three
+  workarounds because each either touches the NEVER-touch fence or invents an unpinned value: (a)
+  editing the two tests' fake-extension helpers to send `{"hub":1,"role":"ext"}` first --
+  forbidden for `tests/all_open_golden.rs` ("No exception"); (b) a bounded-timeout peek that
+  defaults an as-yet-silent connection to `"ext"` -- contradicts the task's literal "absent role
+  fails the connection cleanly" and requires inventing a timeout constant that is not pinned
+  anywhere in PINS.md (the ORACLE RULE forbids deriving one); (c) a second, adapter-only endpoint
+  so the original endpoint's `"ext"` path needs no hello at all -- deviates from PINS.md SS1's
+  explicitly PINNED single-endpoint, hello-demuxed design, which is normative and cited, not mine
+  to re-derive. Per BOOTSTRAP's Failure protocol ("a never-touch fence would have to move" /
+  "verification cannot go green without violating a rule"), I reverted every H2 working-tree
+  change (`git restore` on the four modified files; deleted the two new files) back to the clean
+  H1 baseline, re-ran the sacred/named suite there to confirm it is green and byte-unmodified
+  (`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`,
+  `tests/architecture.rs::governance_core_has_no_forbidden_back_edges`, plus `mcp_protocol`,
+  `peer_death`, `audit_recorder` -- all pass), and HALTED without attempting H2 again or any later
+  task.
+- What is needed to proceed (any one, decided by the frontier author, not by this executor):
+  (i) amend `tests/all_open_golden.rs` (and likely `tests/mcp_protocol.rs`'s
+  `tools_call_waits_for_a_late_extension_and_notes_the_wait`) to send the `{"hub":1,"role":"ext"}`
+  hello from their fake-extension harness before their first read, and explicitly lift the
+  NEVER-touch fence for that one mechanical accommodation; or (ii) re-pin the hello mechanism with
+  an explicit, named, pinned sequencing rule for this exact race (e.g. a pinned bounded timeout
+  after which an as-yet-silent connection defaults to `"ext"`, with the exact duration and
+  fallback semantics stated in PINS.md so it is transcribed, not invented); or (iii) redesign the
+  demux so it does not require a blocking pre-read gate on the shared endpoint (e.g. a second,
+  adapter-only endpoint), with PINS.md SS1 and this task file re-authored to match. No deviation
+  numbers logged (the implementation matched the task's Required Behavior to the letter; the
+  conflict is between two of the task's own requirements, not a tree-fact mismatch this executor
+  introduced).
 
 ### H3
 - (not started)
