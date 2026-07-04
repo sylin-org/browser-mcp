@@ -6,15 +6,16 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H3 (`H3-session-identity-guid.md`).** H0 landed (pure code move; `src/hub`
+**H3 is BLOCKED (`H3-session-identity-guid.md`).** H0 landed (pure code move; `src/hub`
 composition root extracted). H1 landed (transport-generic `serve_session<S>` + `ServiceContext`,
 byte-identical single-session refactor). H2 landed (persistent SERVICE + thin ADAPTER + genuine
 multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004 repealed at the
-MCP-client layer) -- the prior BLOCKED attempt's deadlock is resolved by the 2026-07-04 two-endpoint
-amendment (ADR-0030 Decision 1; PINS.md SS1); see the H2 Log entry below for what was built and its
-two logged deviations. The tree is green at the H2 baseline. Start H3 against its task file and
-PINS.md SS1 (the adapter-minted GUID is the empty placeholder H2 left in the session-hello), following
-the per-task procedure in `BOOTSTRAP.md`.
+MCP-client layer). H3's own tree has NO working-tree changes to revert -- the blocking tree-fact
+mismatch was found during the per-task procedure's step 2 (RE-READ every source file the task
+names), before any test or implementation code was written. Do NOT re-attempt H3 or any later task
+until the frontier author resolves the conflict described in the H3 Log entry below (H2's actual
+landed accept-loop location vs. this task's authoring assumption) and re-issues or amends the
+task.
 
 ## Status
 
@@ -23,7 +24,7 @@ the per-task procedure in `BOOTSTRAP.md`.
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
 | H2 | Persistent service + thin adapter + multiplex | DONE | 96a54fb | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
-| H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | |
+| H3 | Adapter-minted GUID identity + peer-cred binding | BLOCKED | -- | see Log |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
 | H6 | Detached non-admin lifecycle + anti-squat | pending | -- | job-breakaway is the acceptance gate |
@@ -308,7 +309,64 @@ the extension fence, are the only fences touched, both as pinned.
   only, not a source or test change.
 
 ### H3
-- (not started)
+- BLOCKED at the per-task procedure's step 2 (RE-READ every source file the task names; verify
+  each as-of-authoring fact), before writing any test or implementation code -- no working-tree
+  changes exist to revert.
+- Re-read the task's "Current-tree facts" bullet 1 verbatim: "`src/hub/` is created by H0-H2 (the
+  composition root + `ServiceContext` + per-session state + `serve_session<S>(stream, ctx)` + the
+  multiplex accept loop) ... this task adds a `guid` field to H2's per-session record and hooks the
+  accept path; it does NOT invent the session record." And Required Behavior item 2: "The real OS
+  capture (Windows `GetNamedPipeClientProcessId` + token SID; Unix `SO_PEERCRED` / `getpeereid`)
+  happens in the accept path in `src/hub/mod.rs` on the raw pipe/UDS handle H2 already owns." And
+  item 3 ("Service routing"): "In `src/hub/mod.rs`, after H2's handshake reads the presented GUID
+  and the accept layer captures the `PeerCred`, call `SessionRegistry::admit` ... On `Admitted`,
+  key the H2 per-session record (its `Governance` facade + owned-handle set) by the GUID's
+  canonical string."
+- Verified against the live tree: `src/hub/` currently contains exactly two files, `handshake.rs`
+  and `mod.rs` (confirmed via directory listing). `src/hub/mod.rs` (H2's actual landed shape) holds
+  only `run_mcp_server`, `run_as_service`, `run_as_adapter`, `build_debug_sink`, and
+  `ServiceContext` -- `run_as_service` never itself loops over connections or touches a raw
+  platform handle; it builds the `Browser`/`ServiceContext` once and SPAWNS
+  `ipc::serve_adapters(ctx, adapter_listener)`, a function living in
+  `src/transport/native/ipc.rs`, not `src/hub`. The actual ADAPTER/CONTROL accept loop, the
+  session-hello read, and the concrete platform types (`AdapterListener` = `NamedPipeServer` on
+  Windows / `UnixListener` + the accepted `UnixStream` on Unix) live entirely inside
+  `src/transport/native/ipc.rs`'s `serve_adapters`/`handle_adapter_connection`; by the time
+  `handle_adapter_connection` runs, the stream is already type-erased to a generic
+  `S: AsyncRead + AsyncWrite + Send + Unpin + 'static` (its own signature) -- the concrete OS
+  handle (`GetNamedPipeClientProcessId`/`SO_PEERCRED`-capable) is only reachable at the call sites
+  inside `serve_adapters`, before that erasure, never from anything `src/hub` owns. There is also
+  NO per-session record type anywhere in the tree (grepped `SessionGuid|PeerCred|owned_handle|
+  SessionRecord` across all of `src/`: zero matches) holding "the `Governance` facade + owned-handle
+  set" for item 3 to key by GUID -- `serve_session` (`src/transport/mcp/server.rs`) builds its
+  per-session `Arc<Mutex<Arc<Governance>>>` as a local variable inside the function body, not as a
+  `src/hub`-owned record H3 could add a `guid` field to.
+- STOP precondition triggered (transcribed verbatim from `H3-session-identity-guid.md`): "If the
+  accept layer in `src/hub` has NO access to the connecting peer's raw pipe/UDS handle to read its
+  OS credential, STOP -- the peer-cred capture seam belongs to the transport/accept in `src/hub`;
+  build it there, never by reaching into `src/governance`." Per BOOTSTRAP's authority order item 4
+  ("If the tree contradicts a task's load-bearing assumption, follow that task's STOP precondition;
+  do NOT improvise around it") and the per-task procedure's "keep the change inside the files the
+  task names", satisfying Required Behavior items 2/3 as written would require either editing
+  `src/transport/native/ipc.rs` (a file this task does not name, and the only file where the
+  concrete platform handle and the real accept loop actually exist) or inventing a per-session
+  record type the task explicitly says H3 must not invent ("it does NOT invent the session
+  record"). Neither is a sanctioned move under this task's scope, so no code was written and
+  nothing was reverted.
+- What is needed to proceed (decided by the frontier author, not by this executor): re-author H3
+  (or insert a small intermediate step) to reconcile with H2's ACTUAL landed shape -- either (i)
+  name `src/transport/native/ipc.rs` as an in-scope file for the peer-credential capture (e.g.
+  capture `PeerCred` inside `serve_adapters` immediately after `listener.accept()` /
+  `server.connect()`, where the concrete `UnixStream`/`NamedPipeServer` handle is still live,
+  thread it into `handle_adapter_connection`, and call `SessionRegistry::admit` there before
+  dispatching to `transport::mcp::server::serve_session`); or (ii) explicitly defer the live wiring
+  (item 2's OS-capture code and item 3's routing/keying) to whichever task first introduces a
+  per-session record type (H4, which builds the owned-handle set), re-scoping H3 itself to the
+  pure `SessionGuid`/`PeerCred`/`SessionRegistry` types plus the role marker (item 6) and the a7
+  scanner extension (item 5) -- with PINS.md and the task file updated to say so explicitly, so a
+  future executor does not re-hit this same STOP. No deviation numbers logged: this is a tree-fact
+  mismatch in the task's own authoring assumptions (H2 was re-authored 2026-07-04 for the
+  two-endpoint split after H3 was first drafted), not a choice this executor made.
 
 ### H4
 - (not started)
