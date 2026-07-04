@@ -85,9 +85,12 @@ Mandated by docs/adr/0030-ghostlight-hub-orchestrator.md Decision 6 unless noted
    MUST NOT contain the tab's host, the owning session's identity, or any existence signal. It is a
    successful MCP tool result carrying a single text block (same envelope shape as every other
    pre-dispatch text result in `handle_tools_call`, e.g. the hold/deny path at pipeline.rs:109/193).
-   Exact uniform string: AUTHOR MUST PIN before execution (the ADR does not pin it). Whether the
-   refusal writes an audit record, and if so its shape: AUTHOR MUST PIN (if audited, it MUST use the
-   14-key order transcribed under Oracles; if a denial-id is minted, AUTHOR MUST PIN it).
+   Exact uniform string: the string `unknown tab`, PINNED in docs/tasks/hub/PINS.md SS3 (identical
+   whether or not the tab exists). The refusal IS recorded, as a deny (PINNED in docs/tasks/hub/PINS.md
+   SS3): `decision = "deny"`, `domain = null` (the host is NEVER resolved for an unowned tab, so it
+   cannot leak), `held = false`, `duration_ms = 0`, using the 14-key order transcribed under Oracles;
+   the denial rule label is `cross_session/unowned_tab` and its `denial_id` follows the existing `"D-"`
+   + 8 lowercase hex scheme (assert the shape, not a literal).
 
 4. PASS-THROUGH FOR THE LONE / ALL-OPEN SESSION. With a single live session (the only case a lone
    all-open stdio client produces), first-touch adoption means the session owns every tab it names,
@@ -123,8 +126,8 @@ Add (new file `tests/hub_isolation.rs`):
   - Session A creates/owns tab 5 (via `tabs_create_mcp` returning tabId 5, or the H3-established
     ownership path). Session B then issues a tab-scoped call (e.g. `read_page` with `{ "tabId": 5 }`).
   - Pinned assertions:
-    - The result text for B's call EQUALS the uniform unknown-tab string (AUTHOR MUST PIN the exact
-      string). It is a success result, never `isError: true`.
+    - The result text for B's call EQUALS the uniform unknown-tab string `unknown tab` (PINNED in
+      docs/tasks/hub/PINS.md SS3). It is a success result, never `isError: true`.
     - The fake extension recorded ZERO frames for B's call: the `seen` vector contains no
       `"tab_url_request:5"` and no `read_page` entry attributable to B's call (refused before the
       probe at pipeline.rs:118 and before dispatch). Pin the exact expected `seen` contents for B's
@@ -136,7 +139,8 @@ Add (new file `tests/hub_isolation.rs`):
   - Pinned assertions:
     - `assert_eq!(text_for_existing_other_session_tab, text_for_nonexistent_tab)` -- the uniform
       message is IDENTICAL whether or not the tab exists (this is the leak-free property; the exact
-      uniform string is AUTHOR MUST PIN if the ADR does not pin it -- it does not).
+      uniform string is `unknown tab`, PINNED in docs/tasks/hub/PINS.md SS3). Pin both texts to equal
+      `unknown tab`.
     - Neither text contains the owning tab's host substring (`assert!(!text.contains("secret-host"))`),
       proving no host leak.
 
@@ -163,10 +167,13 @@ test as pinned comments; do not re-derive):
   per behavior item 3): field order, exactly 14 keys, in order: `event_id, ts, identity, client,
   tool, action, capability, domain, decision, grant_id, denial_id, duration_ms, manifest, held`.
 
-AUTHOR-MUST-PIN gaps (resolve before handing this file to the executor):
-- The exact uniform "unknown tab" result string (ADR does not pin it).
-- Whether the ownership refusal writes an audit record, and if so its `decision`/`denial_id`/`domain`
-  values (must leak no host in `domain`) using the 14-key order above.
+Resolved (PINNED in docs/tasks/hub/PINS.md SS3):
+- The exact uniform result string is `unknown tab` (identical whether or not the tab exists).
+- The ownership refusal IS recorded, as a deny: `decision = "deny"`, `domain = null` (the host is
+  NEVER resolved for an unowned tab, so `domain` cannot leak a host), `held = false`,
+  `duration_ms = 0`, using the 14-key order above; the denial rule label is `cross_session/unowned_tab`
+  and its `denial_id` follows the existing `"D-"` + 8 lowercase hex scheme (assert the shape, not a
+  literal).
 
 ## Verification (literal commands)
 

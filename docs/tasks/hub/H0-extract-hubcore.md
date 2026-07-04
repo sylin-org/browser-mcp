@@ -128,8 +128,8 @@ and the two call-site updates below.
    verbatim body. It becomes `pub` because `main.rs`'s native-host role calls it across the crate
    boundary.
 
-4. In `src/lib.rs`, add `pub mod hub;` in the alphabetized module block (between `error` and
-   `governance` is where `hub` sorts -- place it there to match the file's ordering, or wherever the
+4. In `src/lib.rs`, add `pub mod hub;` in the alphabetized module block (between `governance` and
+   `install` is where `hub` sorts -- place it there to match the file's ordering, or wherever the
    existing alphabetization dictates; a doc comment is optional but keep the file's style).
 
 5. In `src/main.rs`:

@@ -66,9 +66,9 @@ and fail pending calls immediately. Instead:
 
 - Mark the port disconnected (`outgoing = None`, as today, so no new frame can be sent) and start a
   bounded grace timer of duration `GRACE_WINDOW`, where `GRACE_WINDOW` is STRICTLY LESS THAN
-  `TOOL_TIMEOUT` (60s, transcribed oracle below). **`GRACE_WINDOW` exact value: AUTHOR MUST PIN**
-  (the ADR pins only "strictly less than the 60s TOOL_TIMEOUT"; pick a value, e.g. in the low tens of
-  seconds, and pin it as a named `const` here before execution).
+  `TOOL_TIMEOUT` (60s, transcribed oracle below). `GRACE_WINDOW` is PINNED in PINS.md SS4:
+  `pub const GRACE_WINDOW: Duration = Duration::from_secs(10);` (10s, strictly < the 60s
+  `TOOL_TIMEOUT`).
 - If a fresh `attach` arrives within `GRACE_WINDOW`, the session continues and pending calls are NOT
   failed by the disconnect (each still bounded by its own outer `TOOL_TIMEOUT`).
 - If `GRACE_WINDOW` elapses with no reconnect (a REAL drop), THEN drain pending with the EXACT,
@@ -91,13 +91,12 @@ peer credential, not the GUID value in logs). The quota is PER PEER, NEVER a sin
 global cap is itself a lockout DoS, per Decision 3). When a peer exceeds its cap, the offending
 mint/enqueue is DENIED; other peers are unaffected and continue to be served.
 
-- **`PER_PEER_MINT_CAP` exact value: AUTHOR MUST PIN** (the ADR pins "per-peer ... quotas (never a
-  single global cap)" but not the number; pick and pin it here as a named `const`).
-- **The quota-exceeded denial-id and denial message: AUTHOR MUST PIN** (the ADR does not pin a
-  denial-id for this path; the full recursive federated grant grammar with re-pinned denial-ids is
-  DEFERRED per the Governance schema section, so H5 must pin its own value here before execution and
-  it must NOT collide with an existing denial-id). This denial is a HUB admission decision, not a
-  change to the 13+`explain` tool surface.
+- `PER_PEER_MINT_CAP` is PINNED in PINS.md SS4: `pub const PER_PEER_MINT_CAP: usize = 32;` (and the
+  paired `pub const PER_PEER_GROUP_CAP: usize = 32;`, equal by design), never a single global cap.
+- The quota-exceeded result is PINNED in PINS.md SS4: a plain tool error with the exact text
+  `session limit reached for this client` (no denial-id is minted for this path -- SS4 resolves it as
+  a plain tool error, not a governance denial; no global lockout, a second, different peer still
+  succeeds). This denial is a HUB admission decision, not a change to the 13+`explain` tool surface.
 
 Cite: ADR-0030 Decision 3 ("per-peer-identity mint/group quotas (never a single global cap)");
 Decision 4 ("the per-peer rate-limit key" transport-side amendment, in `src/hub`, never
@@ -111,9 +110,10 @@ sessions. The single service worker + single native port is an accepted, DOCUMEN
 bottleneck (fair ordering, truthful failure on a real drop); H5 does not hide it. The chunking is a
 HUB relay / scheduling property only.
 
-- **The oversize threshold and chunk size: AUTHOR MUST PIN** (the ADR mandates chunking "so a large
-  payload (up to the existing `MAX_MESSAGE_LEN` cap) cannot head-of-line-block" but pins no chunk
-  size; pick and pin named `const`s here before execution).
+- The oversize threshold is PINNED in PINS.md SS4:
+  `pub const SCREENSHOT_CHUNK_THRESHOLD: usize = 8 * 1024 * 1024;` (payloads at/above 8 MiB are
+  chunked, well under `MAX_MESSAGE_LEN`; chunking is on the service<->adapter/web hop ONLY, never the
+  frozen `host.rs` extension wire).
 - Out of scope, DO NOT DO: any change to `src/transport/native/host.rs` framing or `MAX_MESSAGE_LEN`,
   and any fair-chunking that alters the EXTENSION wire (splitting frames on the native-messaging
   channel is a separate, later concern; this task's chunking is strictly hub-internal relay).
@@ -154,15 +154,16 @@ executor runs; the executor TRANSCRIBES, never derives.
 
 - `tests/hub_queue.rs::per_peer_mint_cap_denies_a_flooding_peer_without_locking_out_others`
   - Arrange two distinct peers A and B against the hub quota keyed on peer credential.
-  - Peer A mints/enqueues up to `PER_PEER_MINT_CAP` (AUTHOR MUST PIN value) successfully, then its
-    next mint is DENIED with the quota denial-id / message (AUTHOR MUST PIN both, verbatim as the
-    pinned literal).
-  - Pinned assertion 1: A's over-cap mint result equals the pinned quota denial (assert on the
-    exact denial-id and message string the author pins).
+  - Peer A mints/enqueues up to `PER_PEER_MINT_CAP` (PINNED in PINS.md SS4 = 32) successfully, then
+    its next mint is DENIED with the quota-exceeded tool error `session limit reached for this
+    client` (PINNED in PINS.md SS4, verbatim as the pinned literal).
+  - Pinned assertion 1: A's over-cap mint result equals the pinned quota tool-error text
+    `session limit reached for this client` (PINS.md SS4; this path mints NO denial-id).
   - Pinned assertion 2: peer B, a distinct peer, mints and is served successfully WHILE A is over its
     cap (proves the cap is per-peer, never global -- B is not locked out). Assert B's mint succeeds.
-  - Oracle note: no ADR-pinned string exists for this denial; it is AUTHOR MUST PIN. Do NOT reuse a
-    governance denial-id; this is a hub admission denial.
+  - Oracle note: no ADR-pinned string exists for this denial; it is PINNED in PINS.md SS4 as the
+    plain tool error `session limit reached for this client`. Do NOT reuse a governance denial-id;
+    this is a hub admission denial.
 
 - `tests/hub_queue.rs::oversized_screenshot_is_chunked_not_head_of_line_blocking`
   - Arrange two concurrent sessions through the hub. Session 1 receives a large reply of size
@@ -170,13 +171,15 @@ executor runs; the executor TRANSCRIBES, never derives.
     `src/transport/native/host.rs`). Session 2 issues a small honest call concurrently.
   - Pinned assertion 1: session 2's small call completes within a bounded time WELL UNDER
     `TOOL_TIMEOUT` while session 1's large payload is still being relayed -- i.e. session 2 is not
-    head-of-line-blocked behind session 1. The exact completion bound is AUTHOR MUST PIN (choose a
-    small bound, e.g. a few seconds, strictly less than the 60s oracle).
+    head-of-line-blocked behind session 1. The exact completion bound is PINNED in PINS.md SS4 at
+    `< 2s` (a tiny call must complete while a chunked large payload streams; strictly less than the
+    60s oracle).
   - Pinned assertion 2: the large payload is delivered to session 1 in more than one chunk (assert
     the chunk count `> 1` given a payload `>= OVERSIZE_THRESHOLD`), and `src/transport/native/host.rs`
     framing is untouched (this is a build-time invariant, not a runtime assert).
-  - Oracle transcribed: `MAX_MESSAGE_LEN = 128 * 1024 * 1024` and `TOOL_TIMEOUT = 60s`. The
-    `OVERSIZE_THRESHOLD`, chunk size, and the session-2 completion bound are AUTHOR MUST PIN.
+  - Oracle transcribed: `MAX_MESSAGE_LEN = 128 * 1024 * 1024` and `TOOL_TIMEOUT = 60s`. The oversize
+    threshold (`SCREENSHOT_CHUNK_THRESHOLD` = 8 MiB), chunk size, and the session-2 completion bound
+    (`< 2s`) are PINNED in PINS.md SS4.
 
 ## Transcribed oracles (verbatim from ADR-0030 "Preserved invariants"; MUST stay byte-identical)
 

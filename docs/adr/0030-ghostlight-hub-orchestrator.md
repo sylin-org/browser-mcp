@@ -188,8 +188,10 @@ schemas. The listener binds per the resolved `channels.webapi.from` policy: the 
 builtin default is loopback (`127.0.0.1`, bound explicitly, never `0.0.0.0`); a remote bind happens
 only because a user/org layer opened it (Decision 5). The WS upgrade validates `Origin` against the
 policy and rejects an unexpected `Host` (DNS-rebind defense). The authenticated subject (or the
-anonymous principal) is stamped on every audit record as a field distinct from the untrusted,
-self-reported `clientInfo`. The adapter <-> service LOCAL boundary keeps the owner-only
+anonymous principal) is recorded in the EXISTING `identity` field of the audit record (position 3 of
+the frozen 14-key order; `Option<Identity>`, today always built as `None`), which is distinct from
+the self-reported `client` field -- so this adds NO new audit key and all-open stays byte-identical
+(anonymous/local resolves to `None`). The batch pins this in `docs/tasks/hub/PINS.md` section 2. The adapter <-> service LOCAL boundary keeps the owner-only
 pipe/UDS (OS same-user ACL) -- transport-as-a-port with two trust models; only the app-facing web
 API is TCP.
 
@@ -236,9 +238,10 @@ Never disturbed, in any phase:
   (`tests/all_open_golden.rs`); every new session/isolation path is a no-op for a lone all-open
   session.
 - The a7 arch-test (`tests/architecture.rs::governance_core_has_no_forbidden_back_edges`):
-  `src/governance/**` names no browser/transport/mcp/native type nor the `url` crate; extended so
-  the core also names no tabId/token/socket type. All session/multiplex/isolation code lands in
-  `src/hub`.
+  `src/governance/**` names no browser/transport/mcp/native type nor the `url` crate. All
+  session/multiplex/isolation code lands in `src/hub`, so the core additionally names no
+  tabId/token/socket type by construction; H3 extends the a7 scanner to enforce that too (the one
+  sanctioned edit to `tests/architecture.rs` in this batch).
 - Single portable binary, zero runtime deps, no dylib; the policy-free extension.
 
 Pinned oracles (transcribed by the executor, never re-derived):

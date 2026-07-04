@@ -67,9 +67,11 @@ STOP -- do not improvise around a broken assumption.
   narrative to the ADAPTER's parent-death lifecycle and the doctor reap; the persistent service's
   liveness/identity ROLE is DELETED (Decision 8: "delete the core's proc-identity role"). Do NOT delete
   `orphaned`, `parent`, `terminate`, `pid_exists`, `is_alive`, or `ProcId`: the adapter watchdog and
-  `doctor::reap` still use them. RE-READ `src/doctor.rs` `reap` (~L600, filters `s.role != "mcp-server"`)
-  and `sweep_orphans` (~L633) before touching role labels: the reaper's role filter is coupled to
-  whatever H2 named the adapter role.
+  `doctor::reap` still use them. RE-READ `src/doctor.rs` `reap` (doctor.rs:600; role filter at
+  doctor.rs:86/465, today `s.role != "mcp-server"`) and `sweep_orphans` (~L633) before touching role
+  labels. Per PINS.md SS5 the SERVICE keeps the existing "mcp-server" debug/session role label and the
+  ADAPTER gets a new "adapter" label at its `build_debug_sink` call site; re-scope `doctor::reap` to reap
+  orphaned "adapter" sessions ONLY, NEVER the service (idle-grace only, never parent-reaped).
 
 - `src/transport/native/ipc.rs`: `DEFAULT_ENDPOINT = "org.sylin.ghostlight.v1"` (L28);
   `default_endpoint()` (L31) reads `GHOSTLIGHT_ENDPOINT` else the default. The endpoint name is the
@@ -103,7 +105,7 @@ schemas, the all-open byte-identity, and the a7 arch-test (see NEVER touch).
    "It shuts down on an idle-grace window (no sessions AND the extension link gone for the window),
    never on parent-death"). The service role must NOT call `watchdog::wait_until_orphaned`. It exits
    only when, for the whole grace window, there are zero live sessions AND the extension link is gone.
-   - Idle-grace window duration: AUTHOR MUST PIN before execution (ADR-0030 Decision 8 mandates an
+   - Idle-grace window duration: PINNED in PINS.md SS5 -- `pub const IDLE_GRACE: Duration = Duration::from_secs(30);` (30s; the service exits only after no sessions AND the extension link gone for this window). (ADR-0030 Decision 8 mandates an
      idle-grace window but pins no numeric value). Pin one constant (name + Duration) and its exact
      definition of "idle" here, then transcribe it into the test assertion below.
 
@@ -119,7 +121,14 @@ schemas, the all-open byte-identity, and the a7 arch-test (see NEVER touch).
    that squatted the endpoint name but lacks the secret cannot complete the handshake.
    - Per-install secret storage (owner-only: 0600 on Unix / DPAPI-per-user on Windows, mirroring the
      GUID at-rest rule in ADR-0030 Decision 4), the handshake proof message shape, and the exact
-     handshake-failure behavior/string/denial-id: AUTHOR MUST PIN before execution (ADR-0030 does not
+     handshake-failure behavior/string/denial-id: PINNED in PINS.md SS5 -- the per-install secret is
+     32 random bytes at `<data-dir>/hub-key` (0600 / DPAPI-per-user), generated on first service start;
+     on connect the service sends
+     `{"hub":1,"role":"service-proof","mac":<hex hmac-sha256(secret, the adapter's hello bytes)>}` and
+     the adapter verifies by reading the same file, aborting on mismatch with the exact text "refusing
+     to connect: the Ghostlight service on this endpoint is not the one this user installed" (a
+     transport-admission abort, not a denial-id); data-dir is the existing %ProgramData%\ghostlight /
+     platform equivalent already used by the debug/session files (RE-READ src/debug.rs) (ADR-0030 does not
      pin these values). Once pinned, transcribe the failure string/denial-id into the test below.
 
 6. Delete the core's proc-identity/liveness ROLE (ADR-0030 Decision 8 + Consequences). The persistent
@@ -155,7 +164,7 @@ boundary (all session/lifecycle/anti-squat code lands in `src/hub` or the binary
     - PINNED assertion: the service process must still read alive (`ghostlight::proc::pid_exists`
       false only after the grace window) after the adapter is killed and reaped. Transcribe the
       idle-grace window constant pinned in Required behavior item 3 into the wait bound here.
-      AUTHOR MUST PIN: the idle-grace window constant (name + value) -- not pinned in ADR-0030.
+      PINNED in PINS.md SS5: the idle-grace window constant is `IDLE_GRACE = Duration::from_secs(30)` (30s) -- not pinned in ADR-0030.
     - This directly exercises Decision 8: "It shuts down on an idle-grace window ... never on
       parent-death."
 
@@ -164,8 +173,9 @@ boundary (all session/lifecycle/anti-squat code lands in `src/hub` or the binary
       the per-install secret; an adapter connects and runs the anti-squat handshake.
     - PINNED assertion: the adapter REFUSES to proceed past the handshake (no GUID/pairing flow runs)
       and surfaces the exact handshake-failure result.
-      AUTHOR MUST PIN: the exact handshake-failure string / denial-id (not pinned in ADR-0030; where
-      the ADR does not pin a value, this file writes "AUTHOR MUST PIN" rather than inventing one).
+      PINNED in PINS.md SS5: the adapter aborts on mismatch with the exact text "refusing to connect:
+      the Ghostlight service on this endpoint is not the one this user installed" (a transport-admission
+      abort, not a denial-id; not pinned in ADR-0030).
     - This exercises Decision 8: "the service proves possession of a per-install secret to the adapter
       on connect (anti-squat) ... before any GUID/pairing flow proceeds."
 

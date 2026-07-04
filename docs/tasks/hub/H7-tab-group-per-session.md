@@ -80,13 +80,10 @@ state: tabs, tab GROUPS, ...)"; CLAUDE.md; ADR-0005):
    value and its own branch; it changes NO existing message shape and touches NOTHING on the
    sacred MCP JSON-RPC wire (`tool_request`/`tool_response`/`tool_error` stay byte-identical). It
    is out of band from tool dispatch, exactly like `tab_url_request` and the hold vocabulary.
-   - EXACT `type` string, field names, and whether it carries a reply: AUTHOR MUST PIN before
-     execution. Recommended (author to ratify for cross-batch agreement): a fire-and-forget
-     notification `{ "type": "group_request", "session": "<opaque GUID>", "tabIds": [<number>...] }`
-     with NO reply (grouping is presentation; the service does not need the groupId for
-     correctness). If the author instead pins a request/reply pair, the reply MUST reuse the same
-     generic (non-`tool_error`) reply path `tab_url_response` uses -- no new routing logic, only a
-     new `type` value, and it MUST carry no policy/denial field.
+   - EXACT `type` string, field names, and reply: PINNED in docs/tasks/hub/PINS.md SS6. The
+     message type is `"group_request"` with fields
+     `{ "type": "group_request", "guid": <session guid>, "tabIds": [<i64>...], "title": <string> }`;
+     the extension replies `{ "type": "group_response", "guid": <guid>, "ok": <bool> }`.
    - The GUID is secret material (ADR-0030 Decision 4): it MUST NOT be written to any log/audit
      sink from this path. Do not add logging of the GUID.
 
@@ -103,14 +100,14 @@ state: tabs, tab GROUPS, ...)"; CLAUDE.md; ADR-0005):
      in one editor -> two GUIDs -> two groups"). Same GUID reuses its existing group
      (idempotent). Durable recovery (`persistSessionState`/`rehydrate` via
      `chrome.storage.session`) MUST be preserved for the per-session map.
-   - The per-session group TITLE format: AUTHOR MUST PIN. Recommended: keep the ghost-glyph +
-     brand (`"\u{1F47B}Ghostlight"`), optionally with a short per-session suffix; the emoji MUST
-     stay written as an ASCII `\u{...}` escape in source (no unicode literals in code).
+   - The per-session group TITLE format: PINNED in docs/tasks/hub/PINS.md SS6 as
+     `"\u{1F47B} Ghostlight <short>"`, where `<short>` is the first 8 chars of the GUID. Keep the
+     ghost as the `\u{1F47B}` escape in source (ASCII source; no unicode literals in code).
    - The grouping DECISION logic (which tabIds get grouped and how, given an injected `chrome`)
      MUST live in a pure module the worker imports, so it is unit-testable. Module path + exported
-     function signature: AUTHOR MUST PIN. Recommended: `extension/lib/grouping.js` exporting
-     `groupOwnedTabs(chrome, session, tabIds)` and registered on a `self.Ghostlight*` global like
-     the other libs, added to the `importScripts(...)` list.
+     function signature: PINNED in docs/tasks/hub/PINS.md SS6, which pins the grouping as a pure
+     module (`extension/lib/grouping.js`) imported by `service-worker.js` that groups ONLY on a
+     `group_request` and makes no policy decision; the service side lives in `src/hub/session.rs`.
 
 3. `src/hub/session.rs`: when a session's owned-tab set (H4) changes (a tab is created via
    `tabs_create_mcp` or legitimately adopted), the service emits the group request naming that
@@ -137,7 +134,8 @@ message shape (`tool_request`/`tool_response`/`tool_error`, `get_hold`/`set_hold
   `tests/tool_schema_fidelity.rs`.
 
 - Add: `tests/extension/grouping.test.js::owned_tabs_are_grouped_on_service_request_only`
-  (Node `node:test`; `require` the pure grouping module -- module path AUTHOR MUST PIN, see
+  (Node `node:test`; `require` the pure grouping module -- module path PINNED in
+  docs/tasks/hub/PINS.md SS6, see
   Required behavior item 2 -- and drive it with a fake `chrome` that RECORDS every
   `chrome.tabs.group` / `chrome.tabGroups.*` call). Pinned assertions:
   1. GROUPS ONLY ON REQUEST: with the fake chrome constructed and NO group request issued, the
@@ -163,7 +161,7 @@ message shape (`tool_request`/`tool_response`/`tool_error`, `get_hold`/`set_hold
   - Migration H7: "H7 Tab-group-per-session presentation (extension owns the durable group; groups
     on request only)."
 
-  AUTHOR MUST PIN, before an executor runs this task: (a) the group-request message `type` string
+  PINNED in docs/tasks/hub/PINS.md SS6, before an executor runs this task: (a) the group-request message `type` string
   and field names (Required behavior item 1); (b) the pure grouping module path and exported
   function signature (item 2); (c) the per-session group title format (item 2). Assertions 1-4 are
   written against those pinned names; the executor TRANSCRIBES them, never invents them.

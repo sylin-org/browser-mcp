@@ -151,14 +151,17 @@ Cite the ADR decision that mandates each item; keep every listed invariant byte-
    principal, or `anonymous`) are DIFFERENT things and must be distinguishable in the audit stream.
    CONSTRAINT: the `AuditRecord` key order is FROZEN at EXACTLY 14 keys (oracle below) and all-open
    output is byte-identical (Preserved invariants). A lone all-open MCP-stdio session's audit bytes
-   MUST NOT change. AUTHOR MUST PIN before execution: how the trusted subject is represented without
-   disturbing the frozen 14-key order and the all-open byte-identity invariant -- specifically
-   whether the web-API subject reuses the existing `identity` object (`{principal, resolved_by}`,
-   with `principal = "anonymous"` for the anonymous case and `resolved_by` naming the web channel) or
-   is carried some other way that leaves the all-open MCP path's serialized bytes untouched. This is
-   a real conflict between a Decision-9 mandate and a Preserved-invariant and MUST be resolved by the
-   batch author (with the resolved representation pinned into the tests below) before this task
-   executes; the executor MUST NOT invent a 15th audit key.
+   MUST NOT change. RESOLVED (PINS.md SS2): the trusted subject does NOT add a 15th audit key; it is
+   recorded in the EXISTING `AuditRecord` `identity` field (position 3 of the frozen 14-key order),
+   `identity: Option<Identity>` where `Identity { principal, resolved_by }` already exists in
+   `src/governance/ports.rs` and is today always built as `None` in `dispatch.rs::build_record`. A
+   local adapter session, an anonymous web caller, or any all-open session resolves to `identity =
+   None` (BYTE-IDENTICAL to today; the frozen 14-key order is preserved and the all-open bytes stay
+   untouched). A web session whose policy named a principal sets `identity = Some(Identity {
+   principal: <the named principal>, resolved_by: "webapi" })`. So "distinct from the self-reported
+   `clientInfo`" means the EXISTING `identity` field, which is separate from the `client` field; the
+   executor MUST NOT invent a 15th audit key and MUST reuse the existing `identity` field per PINS.md
+   SS2.
 
 Must stay byte-identical / untouched: TOOLS_JSON (the 13 + explain), the native-messaging 4-byte-LE
 framing, the MCP JSON-RPC wire + `notifications/tools/list_changed`, the 14-key `AuditRecord` order,
@@ -181,8 +184,9 @@ the 6-key `SessionEventRecord` order, and a lone all-open session's output.
     no listener involved (mirrors resolve-in-adapter/decide-in-PDP, ADR-0030 Governance schema
     section). The Deny variant's `denial_id` matches `"D-"` plus 8 lowercase hex
     (`crate::governance::denial::denial_id` scheme, ports.rs `Denial::denial_id` doc). The exact
-    channels denial RULE string, MESSAGE text, and therefore the deterministic `denial_id` value:
-    AUTHOR MUST PIN before execution (the ADR pins no `channels` denial-id or message; do not invent).
+    channels denial RULE string is PINNED in PINS.md SS7 as the rule label `channel/webapi_from`,
+    with `decision = "deny"` and `denial_id` the existing `"D-"` + 8 lowercase hex scheme (assert the
+    shape, not a literal). Transcribe PINS.md SS7; do not invent a value.
 
   - `tests/webapi_auth.rs::webapi_builtin_default_is_loopback_only_with_no_overlay`
     Pinned assertion: with NO user/org overlay, the resolved `channels.webapi.from` equals the web
@@ -197,10 +201,11 @@ the 6-key `SessionEventRecord` order, and a lone all-open session's output.
     address" function returns a remote bind (NOT `127.0.0.1`-only). Assert there is no separate
     boolean/flag/env input to that function -- its ONLY input is the resolved allowlist -- so remote
     is reachable ONLY because the policy layer changed (ADR-0030 Decision 5: enabling remote is a
-    user-layer policy edit, not a hardcoded gate). The exact remote bind representation (e.g.
-    `0.0.0.0` vs the named host) is AUTHOR MUST PIN before execution if the ADR does not fix it; the
-    ADR pins only that loopback is `127.0.0.1` and that `0.0.0.0` is the forbidden DEFAULT, not the
-    remote target string.
+    user-layer policy edit, not a hardcoded gate). PINNED in PINS.md SS7: the bind is a resolved
+    config value `webapi.bind` (string), default `"127.0.0.1"` (bound EXPLICITLY, never `0.0.0.0`),
+    plus `webapi.port` (default `4180`). The Console "Enable remote connections" writes a user-layer
+    `webapi.bind` (e.g. `"0.0.0.0"`) AND the matching `channels.webapi.from` entry -- both are
+    ordinary policy/config writes, never a code gate. Transcribe PINS.md SS7; do not invent a value.
 
   - `tests/webapi_auth.rs::anonymous_is_a_valid_principal_under_all_open`
     Pinned assertion: under a lone all-open session (no manifest) with the builtin loopback fragment,
@@ -210,9 +215,11 @@ the 6-key `SessionEventRecord` order, and a lone all-open session's output.
     zero-friction, no token."). Assert NO denial is produced for the anonymous-loopback case.
     Additionally assert the all-open MCP-stdio audit bytes are unchanged: the subject representation
     chosen in Required behavior item 6 leaves a lone all-open `AuditRecord`'s 14-key serialized form
-    byte-identical (cross-checked against the 14-key oracle below). The trusted-subject audit-field
-    representation and, if any denial path is exercised, its denial-id/message: AUTHOR MUST PIN before
-    execution (do not invent).
+    byte-identical (cross-checked against the 14-key oracle below). PINNED: the trusted-subject
+    audit-field representation is the EXISTING `identity` field (PINS.md SS2) -- `identity = None` for
+    the anonymous/all-open case, byte-identical to today, never a new key; and if any denial path is
+    exercised, its rule label is `channel/webapi_from` with `decision = "deny"` and a `"D-"` + 8-hex
+    `denial_id` (PINS.md SS7, assert the shape). Transcribe PINS.md SS2 and SS7; do not invent.
 
 ### Oracles transcribed from ADR-0030 "Preserved invariants" (verbatim; do not re-derive)
 

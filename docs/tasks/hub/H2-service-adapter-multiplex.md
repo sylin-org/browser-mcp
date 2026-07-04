@@ -76,16 +76,18 @@ If they conflict, the higher wins.
   `Error::SessionBusy`." That semantic is being REPEALED at the MCP-client layer (see Required
   behavior).
 
-### src/main.rs
+### Composition root: src/hub/mod.rs (post-H0; NOT main.rs)
 
-- Role detection precedes clap (lines 308-312): a `chrome-extension://` arg selects
-  `run_native_host_role` (the RELAY, lines 421-438). Default (no subcommand, over stdio) selects
-  `run_server` (lines 442-547).
-- `run_server` today is the DUAL-ROLE binary: it spawns `ipc::serve(browser, &endpoint)` (lines
-  509-521) AND runs `mcp::server::run(browser, loaded_policy, user_source)` on its own stdio (line
-  527), sharing one `Browser`. The `Err(ghostlight::Error::SessionBusy)` arm (lines 514-517) today
-  just warns "another ghostlight session already owns the browser; tool calls in this session will
-  report the extension as unavailable" -- this is the ADR-0004 degrade-path being repealed.
+- H0 MOVED the whole `run_server` body verbatim into `src/hub/mod.rs::run_mcp_server` and DELETED
+  `run_server` from `main.rs`. So by the time H2 runs, the composition -- the
+  `ipc::serve(browser, &endpoint)` spawn, the `Err(ghostlight::Error::SessionBusy)` degrade arm
+  (which today warns "another ghostlight session already owns the browser; tool calls in this session
+  will report the extension as unavailable"), and the `mcp::server::run(...)` call sharing one
+  `Browser` -- ALL live in `src/hub/mod.rs::run_mcp_server`, NOT `main.rs`. RE-READ `src/hub/mod.rs`;
+  the original-tree `main.rs` line numbers no longer apply.
+- `main.rs` after H0 only ROUTES roles: `chrome-extension://` -> `run_native_host_role` (the RELAY,
+  ~lines 421-438); default (no subcommand, over stdio) -> the hub entrypoint via the `command: None`
+  arm (~lines 393-397). The `Error::SessionBusy` degrade branch is NOT in `main.rs` anymore.
 
 ### docs/adr/0004-reject-second-session.md
 
@@ -116,11 +118,19 @@ fan-out; everything else is transport wiring.
 - The single governance chokepoint stays ONE `serve_session`/`handle_tools_call` that every transport
   calls (Decision 2: "never re-implemented per adapter"). Do NOT fork a second dispatch path.
 
-  AUTHOR MUST PIN before execution: the exact on-wire role discriminator that lets `serve` tell an
-  `ext_hello` (relay) connection from an `adapter` connection on the shared endpoint. ADR-0030
-  Decision 1 names the roles ("role-demuxed"; relay is "role=ext_hello") but does NOT pin the frame
-  bytes. Pin a discriminator that rides ON TOP of the existing 4-byte-LE framing (a first
-  handshake frame), NEVER a change to `host.rs` framing itself (STOP precondition).
+  The role discriminator is PINNED in PINS.md SS1: a first "hello" frame
+  `{"hub":1,"role":"<role>","guid":<uuid>?}` carried ON TOP OF the existing 4-byte-LE framing (NEVER
+  a change to `host.rs` framing -- STOP precondition). `serve` reads it first and demuxes `"ext"` ->
+  `Browser::attach` (the unchanged single physical-link path), `"adapter"` -> `serve_session` on the
+  shared `ServiceContext`. THREE handshake edits are required, all per PINS.md SS1:
+  1. `relay_native_host` (ipc.rs:48) must send `{"hub":1,"role":"ext"}` on connect. `tests/peer_death.rs`
+     (server + relay) MUST stay green through this added frame.
+  2. the new `relay_adapter` (item 2) must send `{"hub":1,"role":"adapter","guid":<the GUID>}` on
+     connect (the GUID seam is H3; before H3 an empty placeholder guid is acceptable and H3 fills it).
+  3. `serve` must read the hello frame before demuxing; an unknown or absent role fails the
+     connection cleanly (never a panic).
+  Define the constants in a new `src/hub/handshake.rs` (`HUB_PROTO`, `ROLE_EXT`, `ROLE_ADAPTER`,
+  `ROLE_CONTROL`) per PINS.md SS1.
 
 ### 2. The ADAPTER role is a stdio<->service byte relay (ADR-0030 Decision 1)
 
@@ -138,15 +148,16 @@ fan-out; everything else is transport wiring.
 
 ### 3. Repeal ADR-0004 at the MCP-client layer (ADR-0030 Decision 1 + Relationship-to-other-decisions)
 
-- In `main.rs`, the default (no-subcommand, stdio) invocation becomes service-OR-adapter by endpoint
-  contention:
+- In `src/hub/mod.rs::run_mcp_server` (post-H0; NOT `main.rs`, where `run_server` no longer exists),
+  the default (no-subcommand, stdio) invocation becomes service-OR-adapter by endpoint contention:
   - If this process wins the endpoint (becomes the SERVICE): run the service (own `Browser` +
-    `ipc::serve` role-demuxed) AND serve THIS process's own stdio as the first session via
-    `serve_session` on the shared `ServiceContext`. A lone client thus stays a single self-contained
-    process (byte-identity preserved -- see Tests).
+    `ipc::serve` role-demuxed per PINS.md SS1) AND serve THIS process's own stdio as the first session
+    via `serve_session` on the shared `ServiceContext`. A lone client thus stays a single
+    self-contained process (byte-identity preserved -- see Tests).
   - If the endpoint is already owned (`ipc::serve` reports `Error::SessionBusy`): DELETE the old
-    degrade-branch (main.rs lines 514-517) and instead run the ADAPTER role (`ipc::relay_adapter`),
-    connecting this process's stdio to the running service.
+    degrade-warning branch (the `Err(Error::SessionBusy)` arm, relocated into `run_mcp_server` by H0)
+    and instead run the ADAPTER role (`ipc::relay_adapter`, item 2), connecting this process's stdio
+    to the running service.
 - Update the ipc.rs module doc (lines 17-18): `Error::SessionBusy` now means "the singleton service
   is already up; connect to it as an adapter", NOT "tools unavailable". Do not change the `Error`
   variant.
@@ -214,10 +225,12 @@ JSON-RPC wire and the `notifications/tools/list_changed` line; the hop-attribute
 - `src/transport/executor.rs::a_second_attach_is_rejected_without_disturbing_the_live_session` (the
   single physical-extension-link rejection).
 
-Note (do not modify, must stay green implicitly): `tests/audit_recorder.rs::
-session_killed_writes_one_session_event_record` and `record_session_killed_writes_a_session_event_
-with_no_tool_call_fields` both call `on_session_killed`; the preserved append signature keeps them
-green.
+Note (do not modify, must stay green): `tests/audit_recorder.rs::
+session_killed_writes_one_session_event_record` (audit_recorder.rs:110) calls `on_session_killed`,
+kept green by the preserved append signature. Separately,
+`src/governance/dispatch.rs:1084::record_session_killed_writes_a_session_event_with_no_tool_call_fields`
+is an inline test that calls `Governance::record_session_killed()` DIRECTLY (independent of the
+kill-hook registry) -- unaffected by this task.
 
 ### Add: tests/hub_multiplex.rs
 
@@ -254,12 +267,17 @@ green.
      event_id, ts, identity, client, event, manifest
      ```
      (assert the serialized object's `.keys()` equal `["event_id","ts","identity","client","event","manifest"]`,
-     mirroring `tests/audit_recorder.rs` line 1139).
+     the same `.keys()` assertion as `src/governance/dispatch.rs:1139` / `src/governance/ports.rs:505`).
    - Each record has `rec["event"] == "session_killed"` and a distinct `rec["client"]["name"]`
      matching its session (`"client-a"` / `"client-b"` / `"client-c"`).
 
    (Transcribed oracle -- do NOT re-derive: the 6-key order above is quoted verbatim from ADR-0030's
    "Pinned oracles" bullet for the session-event record.)
+
+   NOTE: the three separate file-backed Recorders are a TEST CONVENIENCE to isolate the N fan-out
+   fires per subject; in production all sessions SHARE one `ServiceContext` Recorder (ADR-0030
+   Decision 2) and the N records land in one stream, distinguished by `client`. Do not infer
+   per-session Recorders are the design.
 
 ## Verification (literal commands)
 
@@ -277,6 +295,9 @@ cargo fmt --all -- --check
 
 ## STOP preconditions
 
+- If `run_server` still EXISTS in `src/main.rs` (H0 has not landed / did not relocate the composition
+  root into `src/hub/mod.rs::run_mcp_server`), STOP: this task's tree facts assume the H0 move; do not
+  edit `main.rs`'s `run_server`.
 - If `src/hub` / `HubCore` (H0) or `serve_session<S>(stream, ctx)` + `ServiceContext` (H1) are ABSENT,
   STOP: H0/H1 have not landed and this task's whole seam is void. Do not re-implement H0/H1 here.
 - If `Browser`'s `next_id` or `pending` are NOT shared across clones (someone made per-session

@@ -31,8 +31,9 @@ If they conflict, the higher wins.
 - `src/transport/native/messages.rs` -- currently a DOC-ONLY module (no Rust types; "only the
   mcp-server constructs and parses them, so they are documented here"). It documents the
   binary<->extension vocabulary (`tool_request`/`tool_response`/`tool_error`, hold, `session_killed`,
-  `tab_url_*`). H2 introduces the adapter<->service connection handshake (the first framed message)
-  and its `type`. This task ADDS a documentation section for the handshake's `guid` member. No Rust
+  `tab_url_*`). H2 introduces the adapter<->service connection handshake: the SS1 "hello" frame
+  (PINS.md SS1) that H2's adapter role already sends. This task ADDS a documentation section for that
+  hello frame's `guid` member; it does NOT invent a second or separate handshake frame. No Rust
   types are added here.
 - `src/proc.rs` -- ADR-0029 process-liveness primitives (`ProcId {pid, created}`, `parent`,
   `is_alive`, `orphaned`, `terminate`). It STAYS (adapter lifecycle + doctor reap). The SERVICE core
@@ -130,16 +131,30 @@ impl SessionRegistry {
 
 ### 4. Wire handshake documentation (`src/transport/native/messages.rs`, doc-only)
 Add a documentation section describing the adapter->service connection handshake's identity member:
-the first framed message the ADAPTER sends carries a `guid` string member, a canonical lowercase
-hyphenated UUIDv4 (`SessionGuid`). The handshake `type` value itself is DEFINED BY H2 -- RE-READ
-messages.rs and H2's handshake constant; document the `guid` member against that existing `type`.
-The relay's `ext_hello` role carries NO `guid` (it is the extension link, not a client session).
-Keep this section doc-only (no Rust types), matching the file's existing style.
+the SS1 "hello" frame the ADAPTER sends (PINS.md SS1: `{ "hub": 1, "role": "adapter", "guid":
+"<uuid-v4>" }`) carries the session GUID in its `guid` member, a canonical lowercase hyphenated
+UUIDv4 (`SessionGuid`). The GUID rides in H2's existing hello frame; do NOT invent a second or
+separate handshake frame. The hello frame's `hub`/`role` members are DEFINED BY H2 -- RE-READ
+messages.rs and H2's `src/hub/handshake.rs` constants; document the `guid` member against that
+existing SS1 hello frame. The relay's `"ext"` role (PINS.md SS1) carries NO `guid` (it is the
+extension link, not a client session). Keep this section doc-only (no Rust types), matching the
+file's existing style.
+
+### 5. a7 scanner extension (SANCTIONED `tests/architecture.rs` edit)
+H3 is the ONE task in this batch sanctioned to edit `tests/architecture.rs` (ADR-0030 "Preserved
+invariants" as amended names H3 as the extender; it is the single sanctioned edit to that file in
+this batch). EXTEND `governance_core_has_no_forbidden_back_edges` so its scan of `src/governance/**`
+ALSO rejects the identifiers `tabId`, `token`, and `socket` (belt-and-suspenders for the type
+discipline: the governance core must name no transport/handle/credential type). Keep every existing
+back-edge rule in the scanner intact (the current browser/transport/mcp/native/url forbidden set);
+this edit is PURELY ADDITIVE. Make no other change to `tests/architecture.rs`.
 
 ## Tests (BY NAME; assertions pinned)
 
-- Keep green (do not modify): `tests/all_open_golden.rs`,
-  `tests/architecture.rs::governance_core_has_no_forbidden_back_edges`, `tests/audit_recorder.rs`.
+- Keep green: `tests/all_open_golden.rs`, `tests/audit_recorder.rs` (do not modify).
+  `tests/architecture.rs::governance_core_has_no_forbidden_back_edges` stays green but is EXTENDED by
+  this task (the single sanctioned edit to `tests/architecture.rs` in the batch -- see the a7 scanner
+  extension item above); every existing back-edge rule in it must remain intact.
   A lone all-open session mints/binds a GUID but its OUTPUT and audit records stay byte-identical:
   the GUID is a routing key in `src/hub`, never stamped into audit in H3.
 
@@ -164,6 +179,13 @@ Keep this section doc-only (no Rust types), matching the file's existing style.
     pid: 999 };` (same user, different pid -- the sanctioned same-user reuse path) admits:
     `registry.admit(&g, &a2) == Admission::Admitted`.
 
+- Add (the SANCTIONED `tests/architecture.rs` edit):
+  `tests/architecture.rs::governance_core_rejects_tabid_token_socket_identifiers`
+  - Assert the extended scanner FLAGS a synthetic `src/governance/**` source naming `tabId` (and
+    likewise one naming `token`, and one naming `socket`) as a forbidden back-edge, and that a
+    source naming none of the three passes. This proves the `tabId`/`token`/`socket` extension is
+    live, not dead code, without weakening any existing rule.
+
 - Transcribed oracles kept intact (asserted GREEN via the keep-green tests; do NOT re-derive):
   - Audit record field order, exactly 14 keys, in order:
     `event_id, ts, identity, client, tool, action, capability, domain, decision, grant_id,
@@ -178,6 +200,7 @@ cargo build --all-targets
 cargo test --test hub_identity
 cargo test --test all_open_golden
 cargo test --test architecture governance_core_has_no_forbidden_back_edges
+cargo test --test architecture governance_core_rejects_tabid_token_socket_identifiers
 cargo test --test audit_recorder
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
@@ -205,8 +228,11 @@ cargo fmt --all -- --check
   mint/bind path MUST be a no-op for a lone all-open session's output and audit.
 - `tests/architecture.rs::governance_core_has_no_forbidden_back_edges` (a7): `src/governance/**`
   names no browser/transport/mcp/native/url and no tabId/token/socket type, and gains NO PID/GUID
-  concept. `SessionGuid`/`PeerCred`/`SessionRegistry` land in `src/hub` ONLY. No sanctioned
-  exception in H3 (the H8 `channels.webapi.from` allowlist exception does not apply here).
+  concept. `SessionGuid`/`PeerCred`/`SessionRegistry` land in `src/hub` ONLY. H3 SANCTIONED
+  EXCEPTION: H3 is the ONE task in this batch allowed to edit `tests/architecture.rs`, solely to
+  EXTEND this scanner to ALSO reject the `tabId`/`token`/`socket` identifiers in `src/governance/**`
+  (ADR-0030 "Preserved invariants" as amended names H3 as the extender). Every other back-edge rule
+  in the scanner stays intact; no other edit to `tests/architecture.rs` is sanctioned.
 - `src/transport/native/host.rs` framing (4-byte LE prefix, `MAX_MESSAGE_LEN`,
   `encode`/`read_message`). No exception; H3 adds documentation only, not framing.
 - The MCP JSON-RPC wire and the `notifications/tools/list_changed` line (`server.rs`); the adapter
