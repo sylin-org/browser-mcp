@@ -1,0 +1,356 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Headless smoke: real extension + real binary over native messaging, driven as an MCP server
+// over stdio (ADR-0026 Decision 6). See docs/tasks/maturity-1/00-design.md "Headless smoke (m06)"
+// for the pinned architecture this file implements.
+
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import {
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  chmodSync,
+  rmSync,
+  existsSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
+const EXTENSION_DIR = path.join(REPO_ROOT, "extension");
+const FIXTURE_PATH = path.join(SCRIPT_DIR, "fixture.html");
+const EXTENSION_ID = "cjcmhepmagomefjggkcohdbfemacojoa";
+const DRY_RUN = process.argv.includes("--dry-run");
+const HEADED_RETRY = process.env.GHOSTLIGHT_E2E_HEADED_RETRY === "1";
+
+function fail(reason, code) {
+  console.error(reason);
+  process.exit(code === undefined ? 1 : code);
+}
+
+// Step 1: resolve the repo root (done above) and locate the binary, building it if absent.
+function resolveBinaryPath() {
+  const exeName = process.platform === "win32" ? "ghostlight.exe" : "ghostlight";
+  const binPath = path.join(REPO_ROOT, "target", "debug", exeName);
+  if (existsSync(binPath)) return binPath;
+  const build = spawnSync("cargo", ["build"], { cwd: REPO_ROOT, stdio: "inherit" });
+  if (build.status !== 0 || !existsSync(binPath)) {
+    fail(`cargo build did not produce ${binPath}`);
+  }
+  return binPath;
+}
+
+// Step 4: a plain static server for the one fixture page, on an OS-assigned loopback port.
+function startFixtureServer() {
+  const body = readFileSync(FIXTURE_PATH);
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(body);
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({ server, url: `http://127.0.0.1:${port}/` });
+    });
+  });
+}
+
+// Step 5: a temp user-data-dir carrying the native-messaging host manifest and its wrapper
+// script, so Chromium resolves org.sylin.ghostlight to a process that sets GHOSTLIGHT_ENDPOINT
+// before exec'ing the real binary.
+function buildProfile(endpoint, binaryPath) {
+  const userDataDir = mkdtempSync(path.join(tmpdir(), "ghostlight-e2e-"));
+  const nmhDir = path.join(userDataDir, "NativeMessagingHosts");
+  mkdirSync(nmhDir, { recursive: true });
+
+  const wrapperPath = path.join(userDataDir, "ghostlight-wrapper.sh");
+  const wrapperBody = `#!/bin/sh\nexport GHOSTLIGHT_ENDPOINT=${endpoint}\nexec "${binaryPath}" "$@"\n`;
+  writeFileSync(wrapperPath, wrapperBody);
+  try {
+    chmodSync(wrapperPath, 0o755);
+  } catch {
+    // best-effort on platforms without POSIX permission bits (Windows dry-run plan only)
+  }
+
+  const manifestPath = path.join(nmhDir, "org.sylin.ghostlight.json");
+  const manifest = {
+    name: "org.sylin.ghostlight",
+    description: "Ghostlight native messaging host",
+    path: wrapperPath,
+    type: "stdio",
+    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  return { userDataDir, wrapperPath, manifestPath };
+}
+
+function cleanupProfile(userDataDir) {
+  try {
+    rmSync(userDataDir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup; a leftover temp dir is not a test failure
+  }
+}
+
+// A minimal newline-delimited JSON-RPC client over the spawned binary's stdio, matching the
+// framing tests/mcp_protocol.rs's `drive` helper uses (one JSON object per line).
+function createRpcClient(child) {
+  const rl = readline.createInterface({ input: child.stdout, terminal: false });
+  let nextId = 0;
+  const pending = new Map();
+  rl.on("line", (line) => {
+    if (!line.trim()) return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (msg && msg.id !== undefined && pending.has(msg.id)) {
+      const { resolve } = pending.get(msg.id);
+      pending.delete(msg.id);
+      resolve(msg);
+    }
+  });
+  function call(method, params) {
+    const id = ++nextId;
+    const req = { jsonrpc: "2.0", id, method, params: params || {} };
+    return new Promise((resolve) => {
+      pending.set(id, { resolve });
+      child.stdin.write(JSON.stringify(req) + "\n");
+    });
+  }
+  function notify(method, params) {
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} }) + "\n");
+  }
+  return { call, notify };
+}
+
+function toolResultText(response, label) {
+  const content = response && response.result && response.result.content;
+  if (!Array.isArray(content) || !content.length || typeof content[0].text !== "string") {
+    throw new Error(
+      `${label}: unexpected tools/call result shape: ${JSON.stringify(response)}`
+    );
+  }
+  if (response.result.isError) {
+    throw new Error(`${label}: tool call returned an error: ${content[0].text}`);
+  }
+  return content[0].text;
+}
+
+function extractRef(text, accessibleName) {
+  const re = new RegExp(`"${accessibleName}"\\s*\\[(ref_\\d+)\\]`);
+  const m = re.exec(text);
+  if (!m) {
+    throw new Error(
+      `could not find a ref for accessible name "${accessibleName}" in read_page output; ` +
+        `dumping the output verbatim for diagnosis:\n${text}`
+    );
+  }
+  return m[1];
+}
+
+async function waitForServiceWorker(context, timeoutMs) {
+  const existing = context.serviceWorkers();
+  if (existing.length) return existing[0];
+  try {
+    return await context.waitForEvent("serviceworker", { timeout: timeoutMs });
+  } catch {
+    return null;
+  }
+}
+
+async function launchContext(chromium, userDataDir, headless) {
+  return chromium.launchPersistentContext(userDataDir, {
+    channel: "chromium",
+    headless,
+    args: [
+      `--disable-extensions-except=${EXTENSION_DIR}`,
+      `--load-extension=${EXTENSION_DIR}`,
+    ],
+  });
+}
+
+// Re-exec this same script under xvfb-run for the one permitted headed retry, when no DISPLAY is
+// available for a real headed launch. Guarded by GHOSTLIGHT_E2E_HEADED_RETRY so it can only ever
+// happen once.
+function reExecUnderXvfb() {
+  const result = spawnSync(
+    "xvfb-run",
+    ["-a", process.execPath, SCRIPT_PATH, ...process.argv.slice(2)],
+    {
+      stdio: "inherit",
+      env: { ...process.env, GHOSTLIGHT_E2E_HEADED_RETRY: "1" },
+    }
+  );
+  process.exit(result.status === null ? 3 : result.status);
+}
+
+async function runDryRun(binaryPath, endpoint) {
+  const { server, url: fixtureUrl } = await startFixtureServer();
+  const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, binaryPath);
+  const plan = {
+    repoRoot: REPO_ROOT,
+    binaryPath,
+    endpoint,
+    fixtureUrl,
+    extensionDir: EXTENSION_DIR,
+    extensionId: EXTENSION_ID,
+    userDataDir,
+    wrapperPath,
+    manifestPath,
+  };
+  console.log(JSON.stringify(plan, null, 2));
+  server.close();
+  cleanupProfile(userDataDir);
+  process.exit(0);
+}
+
+async function runLive(binaryPath, endpoint) {
+  const { server, url: fixtureUrl } = await startFixtureServer();
+  const { userDataDir } = buildProfile(endpoint, binaryPath);
+
+  let cleanup = async () => {
+    server.close();
+    cleanupProfile(userDataDir);
+  };
+
+  // Dynamic import: playwright is a devDependency of tests/e2e/, not needed for --dry-run.
+  const { chromium } = await import("playwright");
+
+  let context = await launchContext(chromium, userDataDir, true);
+  let sw = await waitForServiceWorker(context, 15000);
+  if (!sw) {
+    await context.close().catch(() => {});
+    if (!process.env.DISPLAY && !HEADED_RETRY) {
+      await cleanup();
+      reExecUnderXvfb(); // never returns
+    }
+    context = await launchContext(chromium, userDataDir, false);
+    sw = await waitForServiceWorker(context, 15000);
+  }
+  if (!sw) {
+    await context.close().catch(() => {});
+    await cleanup();
+    fail("no extension service worker appeared within the retry budget", 3);
+  }
+
+  const child = spawn(binaryPath, [], {
+    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, GHOSTLIGHT_ENDPOINT: endpoint },
+  });
+  const rpc = createRpcClient(child);
+
+  cleanup = async () => {
+    try {
+      child.kill();
+    } catch {
+      // already dead
+    }
+    await context.close().catch(() => {});
+    server.close();
+    cleanupProfile(userDataDir);
+  };
+
+  try {
+    const init = await rpc.call("initialize", {});
+    if (!init.result) throw new Error(`initialize did not return a result: ${JSON.stringify(init)}`);
+    rpc.notify("notifications/initialized", {});
+
+    const list = await rpc.call("tools/list", {});
+    const names = (list.result && list.result.tools ? list.result.tools : []).map((t) => t.name);
+    for (const required of ["navigate", "read_page", "computer", "form_input"]) {
+      if (!names.includes(required)) {
+        throw new Error(`tools/list missing "${required}"; got: ${names.join(", ")}`);
+      }
+    }
+
+    // Bootstrap a tab: a fresh profile has no Ghostlight tab group yet, and navigate() (via
+    // effectiveTabId) requires one to already exist -- it does not create tabs itself.
+    const created = await rpc.call("tools/call", {
+      name: "tabs_create_mcp",
+      arguments: {},
+    });
+    const createdText = toolResultText(created, "tabs_create_mcp");
+    const tabIdMatch = /Created tab (\d+)\./.exec(createdText);
+    if (!tabIdMatch) {
+      throw new Error(`could not parse a tab id from tabs_create_mcp output: ${createdText}`);
+    }
+    const tabId = Number(tabIdMatch[1]);
+
+    await rpc.call("tools/call", {
+      name: "navigate",
+      arguments: { url: fixtureUrl, tabId },
+    });
+
+    const rp1Response = await rpc.call("tools/call", {
+      name: "read_page",
+      arguments: { tabId },
+    });
+    const rp1 = toolResultText(rp1Response, "read_page (before click)");
+    if (!rp1.includes("Ghostlight smoke fixture") || !rp1.includes("marker-before-click")) {
+      throw new Error(`read_page did not contain the expected fixture markers:\n${rp1}`);
+    }
+    const inputRef = extractRef(rp1, "Name input");
+    const buttonRef = extractRef(rp1, "Click me");
+
+    const shotResponse = await rpc.call("tools/call", {
+      name: "computer",
+      arguments: { action: "screenshot", tabId },
+    });
+    const shotContent = shotResponse.result && shotResponse.result.content;
+    const image =
+      Array.isArray(shotContent) && shotContent.find((c) => c.type === "image");
+    if (!image || !image.data) {
+      throw new Error(
+        `computer screenshot did not return an image content item: ${JSON.stringify(shotResponse)}`
+      );
+    }
+
+    await rpc.call("tools/call", {
+      name: "form_input",
+      arguments: { ref: inputRef, value: "ghost", tabId },
+    });
+
+    await rpc.call("tools/call", {
+      name: "computer",
+      arguments: { action: "left_click", ref: buttonRef, tabId },
+    });
+
+    const rp2Response = await rpc.call("tools/call", {
+      name: "read_page",
+      arguments: { tabId },
+    });
+    const rp2 = toolResultText(rp2Response, "read_page (after click)");
+    if (!rp2.includes("marker-after-click")) {
+      throw new Error(`read_page after the click did not show marker-after-click:\n${rp2}`);
+    }
+
+    await cleanup();
+    console.log("smoke: ok");
+    process.exit(0);
+  } catch (err) {
+    await cleanup();
+    fail(err && err.message ? err.message : String(err));
+  }
+}
+
+async function main() {
+  const binaryPath = resolveBinaryPath();
+  const endpoint = `ghostlight-e2e-${process.pid}`;
+  if (DRY_RUN) {
+    await runDryRun(binaryPath, endpoint);
+  } else {
+    await runLive(binaryPath, endpoint);
+  }
+}
+
+main().catch((err) => fail(err && err.message ? err.message : String(err)));

@@ -16,3 +16,4 @@
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+/tests/e2e/node_modules/

@@ -42,3 +42,17 @@ jobs:
         with:
           node-version: "22"
       - run: node --test tests/extension/
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: cargo build
+      - run: npm ci --prefix tests/e2e || npm install --prefix tests/e2e
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/run-smoke.mjs

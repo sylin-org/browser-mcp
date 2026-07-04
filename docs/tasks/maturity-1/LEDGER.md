@@ -11,8 +11,8 @@ that task's single commit.
   f66fbf02ae4a3b54c8b9cf92a8f448519be0662a)
 - Baseline: `cargo test` (via `CARGO_TARGET_DIR=target/it`, see deviation in
   m01 entry) = 475 passed, 0 failed
-- Progress: m01, m02, m03, m04, m05 done
-- NEXT TASK: m06 (docs/tasks/maturity-1/m06-headless-smoke.md)
+- Progress: m01, m02, m03, m04, m05, m06 done (batch complete)
+- NEXT TASK: none -- see RUN SUMMARY
 - Authority: BOOTSTRAP.md, then the task prompt, then 00-design.md, then
   ADR-0026/0027
 - Invariants: tree green and clean between tasks; no push; ASCII diff scan per
@@ -218,7 +218,151 @@ that task's single commit.
   directory arg; it is not evidence of a bug in the extracted code (the
   content itself is fully verified above).
 
+### m06 headless end-to-end smoke (extension + binary + MCP) -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: tests/e2e/package.json (new), tests/e2e/fixture.html (new),
+  tests/e2e/run-smoke.mjs (new), tests/e2e/package-lock.json (new, produced by
+  npm install, committed per the prompt), .github/workflows/ci.yml
+  (e2e-smoke job appended), .gitignore (one line appended),
+  docs/tasks/maturity-1/LEDGER.md.
+- Summary: All three STOP preconditions verified before starting (tests/e2e/
+  absent; GHOSTLIGHT_ENDPOINT pattern present in tests/mcp_protocol.rs;
+  network available, confirmed by the npm install below succeeding). Read
+  tests/mcp_protocol.rs's `drive` helper and src/transport/mcp/schemas/
+  tools.json (read-only) to ground the JSON-RPC framing and tool argument
+  shapes; read extension/service-worker.js's handlers (navigate, read_page,
+  computer, form_input, tabs_create_mcp, effectiveTabId, ensureGroup) and
+  extension/content.js's accessibility-tree emit function to ground the
+  ref-extraction regex (`"<accessible name>" [ref_N]`) and the image-content
+  shape (`{type:"image", data, mimeType}`). Wrote fixture.html and
+  package.json byte-for-byte as pinned. Wrote run-smoke.mjs implementing:
+  binary resolution (build via `cargo build` if target/debug/ghostlight(.exe)
+  is absent), a `--dry-run` mode (profile + fixture server, prints the plan
+  JSON, exits 0 without touching a browser or the binary), the pinned
+  native-messaging profile layout (NativeMessagingHosts/org.sylin.ghostlight.json
+  + POSIX-sh wrapper exporting GHOSTLIGHT_ENDPOINT), a Playwright
+  launchPersistentContext (new headless mode, channel "chromium") with a
+  service-worker wait, a one-shot headed-under-xvfb-run retry (self-re-exec
+  guarded by an env var so it can only fire once) when DISPLAY is absent,
+  and a newline-delimited JSON-RPC client driving initialize / tools/list /
+  navigate / read_page / computer screenshot / form_input / computer
+  left_click / read_page again, with pinned marker assertions. Appended the
+  e2e-smoke CI job to ci.yml (m03 landed, so this ran normally) and the one
+  .gitignore line.
+- Deviations from the prompt/design: 1. The pinned live-flow step list omits
+  any tab-bootstrap call and calls `navigate` with no tabId. Tracing
+  extension/service-worker.js shows `navigate` resolves its tab via
+  `effectiveTabId(a.tabId)`, which (with no tabId given) calls
+  `ensureGroup(false)` then throws if the Ghostlight tab group has no tabs
+  yet -- and `ensureGroup` only CREATES that group/tab when called with
+  `create: true` (via `tabs_create_mcp` or `tabs_context_mcp
+  {createIfEmpty:true}`), which `navigate` itself never does. A fresh
+  profile has no such group, so the pinned flow as literally described
+  cannot succeed. run-smoke.mjs therefore calls `tabs_create_mcp` once,
+  right after `tools/list`, parses the created tab id from its
+  "Created tab N." response text, and threads that tabId through every
+  subsequent call. This is a traced correction, not a guess, and does not
+  change any pinned assertion (tool names, marker text, image-content
+  shape); it is recorded here rather than silently added because the
+  prompt's step list did not anticipate it. 2. The live flow (Playwright
+  launch, service-worker wait, the full JSON-RPC drive, the ref-extraction
+  regex, and the xvfb-run retry path) is UNVERIFIED locally: per
+  00-design.md and the prompt itself, Windows only supports the dry-run/
+  syntax-check local verification (native-messaging host resolution on
+  Windows uses the registry, not the NativeMessagingHosts directory this
+  profile writes), so this machine cannot exercise steps 6-8 at all. The
+  ref-extraction regex and the tabs_create_mcp response parsing are grounded
+  in a direct reading of extension/content.js's `measure`/`emit` functions
+  and service-worker.js's `tabContext`, not empirically run; on a real
+  parse mismatch the script throws with the raw text dumped into the error
+  message (the sanctioned STOP-and-dump probe, baked into the code as a
+  diagnostic rather than performed by hand here, since the live path cannot
+  be run by hand in this environment). The live run is deferred to the
+  first CI push, exactly as 00-design.md anticipates. 3. BOOTSTRAP.md's
+  Never-touch/Owned-exceptions table says ".gitignore: owner m06 (the two
+  pinned entries)", but the m06 prompt's own Required Behavior section
+  pins exactly ONE line (`/tests/e2e/node_modules/`) and no second entry is
+  specified anywhere in this batch's documents. Treated as an immaterial
+  wording slip in BOOTSTRAP's summary table (not a material conflict per
+  ground rule 1, since there is no concrete second action to reconcile
+  against) rather than a STOP; only the one pinned line was appended, since
+  inventing an unspecified second entry would itself violate the
+  verbatim/nothing-more principle. 4. `cargo test`/build commands continue
+  using `CARGO_TARGET_DIR=target/it` per the ground-rule-4 deviation from
+  m01 (this did not affect run-smoke.mjs itself, which always targets the
+  standard `target/debug/` path per the prompt, matching what the CI job's
+  plain `cargo build` step will produce).
+- Verification: `node --check tests/e2e/run-smoke.mjs` -- exit 0.
+  `node tests/e2e/run-smoke.mjs --dry-run` -- exit 0, printed the resolved
+  plan JSON (repoRoot, binaryPath, endpoint, fixtureUrl, extensionDir,
+  extensionId, userDataDir, wrapperPath, manifestPath); this is the required
+  local verification per the prompt. `npm install --prefix tests/e2e` --
+  succeeded (3 packages added, 0 vulnerabilities), confirming network access
+  and producing tests/e2e/package-lock.json (committed, node_modules/
+  gitignored). `cargo test` (isolated target dir) -- 479 passed, 0 failed,
+  unchanged from m05 (no Rust files touched). ASCII diff scan on staged
+  changes: empty (clean). `git status --short` showed exactly the expected
+  paths (ci.yml, .gitignore, tests/e2e/{package.json,fixture.html,
+  run-smoke.mjs,package-lock.json}; node_modules/ absent from the stage).
+  The full live run (steps 6-8) is explicitly NOT locally verifiable on
+  Windows per the prompt; it is deferred to the first CI push on
+  ubuntu-latest.
+- Notes for the reviewer: this is the riskiest task in the batch and the
+  live path is unverified locally by design. On the first CI push, watch
+  the `e2e-smoke` job specifically for: (a) whether the tabs_create_mcp
+  bootstrap deviation above is actually necessary and sufficient (it should
+  be, per the source trace, but has never executed); (b) whether the
+  ref-extraction regex matches the real accessibility-tree line format; (c)
+  whether the new-headless-mode extension load and service-worker wait
+  behave as documented on GitHub's ubuntu-latest runner. A failure in any
+  of these is a BLOCKED-with-evidence outcome for this task alone per
+  BOOTSTRAP's own framing ("a BLOCKED outcome here does not degrade
+  m01-m05"), not a defect in m01-m05.
+
 ## RUN SUMMARY
 
-(Write after the last task: tasks landed vs BLOCKED, test counts baseline ->
-final, deviations rolled up, anything left for a human.)
+All six tasks landed (none BLOCKED): m01 (docs correction), m02 (SPDX
+headers, 69 files), m03 (CI workflows), m04 (audit syslog/none
+destinations), m05 (extension lib extraction), m06 (headless smoke
+harness). Test counts: baseline 475 passed / 0 failed (isolated
+`CARGO_TARGET_DIR=target/it`, ground rule 4) -> final 479 passed / 0 failed
+(m04 added 4 named audit tests; m01/m02/m03/m05/m06 added no Rust tests).
+`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are
+green on the final tree. `node --test` on tests/extension/ passes all 14
+tests (via explicit file args or bare `node --test` from that directory;
+see the m05 entry's deviation for why the bare-directory-arg invocation
+does not work on this machine's Node v24.7.0). `node --check` and
+`--dry-run` both pass for tests/e2e/run-smoke.mjs; its live flow is
+deferred to CI.
+
+Deviations rolled up (all recorded in detail in their task's own entry
+above): (1) every `cargo`/npm-adjacent build/test command in this batch
+used `CARGO_TARGET_DIR=target/it` because three ghostlight.exe processes
+(including this session's own connected MCP server) held target/debug/
+ghostlight.exe locked -- sanctioned by BOOTSTRAP ground rule 4 (m01). (2)
+m02's file re-count matched the prompt's predicted counts exactly; no
+numeric deviation. (3) m04: cargo fmt reformatted one assertion after the
+pinned error-message string grew; purely mechanical. (4) m05: the pinned
+`node --test tests/extension/` verification command does not work on this
+Node v24.7.0/Windows combination (reproduced in an isolated scratch
+directory, unrelated to this batch's code); equivalent invocations
+(explicit file list, or bare `node --test` run from within the directory)
+pass all 14 tests. The appended CI job pins Node 22, which may not exhibit
+this quirk; unconfirmed locally. (5) m06: added an un-pinned
+`tabs_create_mcp` bootstrap call to the live JSON-RPC flow, traced as
+necessary from `effectiveTabId`/`ensureGroup` source (see m06 entry); the
+live flow itself is entirely unverified locally and deferred to CI; one
+BOOTSTRAP wording slip (".gitignore: ... the two pinned entries" vs. the
+one line actually pinned by the m06 prompt) was treated as immaterial and
+only the one specified line was added.
+
+Left for a human: review and merge the `maturity-1` branch (left unpushed,
+per Completion); watch the first CI run for all three new jobs
+(extension-unit, e2e-smoke) plus the pre-existing fmt/test jobs across the
+three-OS matrix, since none of ci.yml/release.yml has ever executed on
+GitHub; treat any e2e-smoke failure per the m06 entry's Notes for the
+reviewer; consider whether the Node-version quirk noted in deviation (4)
+above needs a follow-up (e.g. pinning an explicit glob in the
+extension-unit CI step) if it turns out to also affect Node 22 or the CI
+runner OS. LICENSE-GOVERNANCE still needs the legal skim noted in a prior
+memory/ledger (open-core-licensing); unrelated to this batch's scope.
