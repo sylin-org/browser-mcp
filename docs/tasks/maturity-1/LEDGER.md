@@ -366,3 +366,17 @@ above needs a follow-up (e.g. pinning an explicit glob in the
 extension-unit CI step) if it turns out to also affect Node 22 or the CI
 runner OS. LICENSE-GOVERNANCE still needs the legal skim noted in a prior
 memory/ledger (open-core-licensing); unrelated to this batch's scope.
+
+## POST-RUN NOTE -- first live CI run (2026-07-04 UTC, appended after batch close)
+
+The first-ever push with workflows ran on origin/dev (heads 3e01136 and c067d33). Results:
+fmt and test GREEN on all three OSes (clippy -D warnings + the full 479-test suite passed
+on ubuntu, macos, and windows -- the core wall is verified cross-platform). extension-unit
+FAILED on all three OSes at `node --test tests/extension/`: this is exactly the failure
+mode predicted in m05's Notes for the reviewer (bare-directory argument), now confirmed to
+affect Node 22 on every CI platform, not only the local Node 24. Fixed forward on dev by
+switching the step to explicit test-file arguments (see the ci fix commit following this
+note). e2e-smoke FAILED at the `node tests/e2e/run-smoke.mjs` step; job logs require
+repo-admin authentication that the authoring session does not hold, so the m06 live-run
+diagnosis is PENDING gh auth; treat per m06's Notes for the reviewer (evidence first, no
+blind iteration).
