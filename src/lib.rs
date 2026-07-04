@@ -20,6 +20,7 @@ pub mod error;
 pub mod governance;
 pub mod install;
 pub mod origin;
+pub mod proc;
 pub mod transport;
 
 pub use error::{Error, Result, ToolError};
