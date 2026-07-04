@@ -39,9 +39,10 @@ docs/business/PLAN.md). Check items off in place; add dates.
       created as a DRAFT named **"Ghostlight in Browser"**; store-assigned id
       **lejccfmoeogmhemakeknjjdhkfkgncdl**. Renamed package uploaded and its name verified in the
       dashboard. Remaining founder steps:
-      >=1 screenshot (the options page at 1280x800 + the self-narrating tour GIF via
-      scripts/capture-readme-tour.ps1); fill the Privacy tab (paste-ready in
-      docs/legal/STORE_LISTING.md); submit. Screenshots must be the REAL extension, not the
+      >=1 screenshot at exactly 1280x800 (capture recipe + shot list now in
+      docs/legal/STORE_LISTING.md "Graphic assets checklist": Chrome DevTools device mode, NOT the
+      agent screenshot tool, which hides the effects and mis-sizes); fill the Privacy tab (also
+      paste-ready in that file); submit. Screenshots must be the REAL extension, not the
       FX-dictionary Artifact.
 - [ ] **Verified CRX uploads -- future hardening, NOT at launch.** The CWS "Verified CRX
       uploads" opt-in ties item updates to a private signing key you hold (blocks account-

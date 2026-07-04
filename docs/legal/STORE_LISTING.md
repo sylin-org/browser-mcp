@@ -133,12 +133,60 @@ signs at submission; confirm each answer against current dashboard wording befor
 
 ## Graphic assets checklist
 
-- Store icon: 128x128 PNG -- present at `extension/icons/icon128.png` (also in the package).
-- Screenshots: at least one required, 1280x800 or 640x400 PNG/JPEG. NOT YET PRODUCED. Founder
-  asset task: capture from `scripts/live-demo.ps1` (the agent cursor, ripples, and the labeled
-  automation tab group make strong shots), or a clean shot of a governed denial plus an audit line.
-- Small promo tile: 440x280 PNG. Optional; nice for search placement. Not yet produced.
-- Marquee promo tile: 1400x560 PNG. Optional; only used if featured.
+- Store icon: 128x128 PNG. Present at `extension/icons/icon128.png` (also in the package).
+- Screenshots: at least one required; 1280x800 or 640x400, PNG or JPEG (a 24-bit PNG is safest).
+  The shot list and how to capture each are below.
+- Small promo tile: 440x280 PNG. Optional; helps search placement. Not yet produced.
+- Marquee promo tile: 1400x560 PNG. Optional; only used if the item is featured.
+
+### How to capture an exact 1280x800 still
+
+Do NOT use the agent's own `computer` screenshot tool for store assets. That path is built for the
+model, not for marketing: it hides the phantom cursor, the ripples, and every per-action effect
+during capture (by design; see docs/design/visual-feedback.md), and it downscales to a token budget,
+so its output is neither on-brand nor a predictable pixel size. Capture externally instead. (The
+agent also cannot open a `chrome-extension://` page: `navigate` forces `https://`, so the options
+page must be opened by hand, as in Shot 2.)
+
+The reliable, display-DPR-independent method for any web or extension page:
+
+1. Open the page in Chrome (see each shot below for how).
+2. Open DevTools (F12) and toggle the Device Toolbar (Ctrl+Shift+M).
+3. Set the dimensions to 1280 x 800 and the device pixel ratio to 1 (the DPR field; add it from the
+   device-toolbar overflow menu if it is hidden).
+4. In the device-toolbar three-dot menu, choose "Capture screenshot". Chrome writes an exact
+   1280x800 PNG regardless of your monitor's scaling. (Use "Capture screenshot", not "Capture full
+   size screenshot", so you get the viewport, not the whole scroll height.)
+
+### Shot 1 (recommended hero): the agent driving a real page
+
+The hook: the sky-blue phantom cursor plus a click ripple, on a recognizable site, inside the
+ghost-marked "Ghostlight" tab group. Because the effects are hidden from the agent's own captures,
+this one is recorded from the outside:
+
+1. Close this session's Ghostlight connection first (the capture script must own the IPC endpoint).
+2. Run `pwsh -File scripts/capture-readme-tour.ps1` and record the 1280x800 window with OBS (or any
+   screen recorder). The tour self-narrates: nav pill, click ripple and target glow, type shimmer,
+   scroll chevrons, the read scan-line.
+3. Extract the peak frame of an effect from the recording (VLC "Take Snapshot", or ffmpeg). Crop to
+   1280x800 if the recorder added window chrome. Turning on "Show action captions" in the extension
+   popup before recording adds the subtitle line, which reads well in a still.
+
+### Shot 2: the settings page (governed, and yours to configure)
+
+The on-brand dark options page: the "Agent activity effects" and "Action captions" toggles and the
+governance boundary card that says policy lives in the binary, not the extension. Open it the way a
+user would:
+
+1. Click the Ghostlight extension icon, then "More settings"; or open chrome://extensions, find
+   Ghostlight, click "Details", then "Extension options".
+2. Capture at exactly 1280x800 with the DevTools method above.
+
+### Shot 3 (optional): the governance is real
+
+A split of an MCP client hitting a governed denial next to the matching JSON-Lines audit record, or
+the output of `ghostlight policy explain`. This is the differentiator shot for the enterprise
+audience. Capture the terminal window with the OS and crop to 1280x800.
 
 ## Submission steps (founder actions)
 
