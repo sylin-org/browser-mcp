@@ -33,7 +33,7 @@
   main { max-width: 620px; margin: 0 auto; padding: 56px 24px 48px; }
 
   header { display: flex; align-items: center; gap: 16px; margin-bottom: 30px; }
-  .ghost { font-size: 40px; line-height: 1; filter: drop-shadow(0 0 14px rgba(var(--sky-rgb), .6)); }
+  .ghost { width: 46px; height: 46px; flex: none; filter: drop-shadow(0 0 14px rgba(var(--sky-rgb), .6)); }
   h1 { margin: 0 0 3px; font-size: 22px; font-weight: 640; letter-spacing: -.01em; }
   .sub { margin: 0; color: var(--muted); font-size: 13.5px; }
 
@@ -98,7 +98,7 @@
 <body>
   <main>
     <header>
-      <span class="ghost" aria-hidden="true">&#128123;</span>
+      <img class="ghost" src="icons/icon128.png" alt="Ghostlight mascot" width="46" height="46">
       <div>
         <h1>Ghostlight in Browser</h1>
         <p class="sub">How the agent's activity looks. Governance lives in the binary.</p>

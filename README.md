@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="extension/icons/icon512.png" alt="Ghostlight mascot" width="128" height="128">
+</p>
+
 # Ghostlight
 
 [![CI](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml)

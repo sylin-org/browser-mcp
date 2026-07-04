@@ -37,9 +37,17 @@ $manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
 if (-not $Version) { $Version = $manifest.version }
 if (-not $Version) { throw "No version found in $ManifestPath and no -Version override given." }
 
-# Dev-only files not wanted in the store package: native-messaging-host.json is a
-# local-install template, README.md is developer-facing docs.
-$ExcludeRelativePaths = @('native-messaging-host.json', 'README.md')
+# Files not wanted in the store package: native-messaging-host.json is a
+# local-install template, README.md is developer-facing docs, and the icon
+# master + 512px hi-res asset + stale placeholder SVG are repo/source files the
+# manifest never references (the extension ships only the 16/32/48/128 icons).
+$ExcludeRelativePaths = @(
+  'native-messaging-host.json',
+  'README.md',
+  'icons/mascot.png',
+  'icons/icon512.png',
+  'icons/ghost-mark.svg'
+)
 
 $StageDir = Join-Path $env:TEMP "ghostlight-extension-stage-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Path $StageDir | Out-Null
@@ -48,7 +56,7 @@ try {
   Get-ChildItem -Path $ExtensionDir -Recurse -File | ForEach-Object {
     [pscustomobject]@{
       Full     = $_.FullName
-      Relative = $_.FullName.Substring($ExtensionDir.Length).TrimStart('\', '/')
+      Relative = ($_.FullName.Substring($ExtensionDir.Length).TrimStart('\', '/')) -replace '\\', '/'
     }
   } | Where-Object { $ExcludeRelativePaths -notcontains $_.Relative } | ForEach-Object {
     $target = Join-Path $StageDir $_.Relative
