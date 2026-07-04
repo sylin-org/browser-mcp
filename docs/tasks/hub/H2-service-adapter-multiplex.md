@@ -1,0 +1,313 @@
+# H2: Persistent SERVICE + thin ADAPTER + multiplex (repeal ADR-0004)
+
+> Batch: Ghostlight Hub. Normative: docs/adr/0030-ghostlight-hub-orchestrator.md (Decision 1, Decision 2,
+> Decision 3, Decision 7). One task = one commit. Facts below are as-of-authoring 2026-07-04 --
+> RE-READ the named files before relying on any line number.
+
+## Goal
+
+Introduce the persistent SERVICE role and the thin ADAPTER role and land genuine multiplex: N MCP
+clients drive the ONE shared browser through one governed chokepoint. The SERVICE owns the `Browser`
++ the native pipe/UDS and spawns a `serve_session` per accepted connection over one shared
+`ServiceContext`; the ADAPTER is a stdio<->service byte relay that connects to an already-running
+service. This repeals ADR-0004 (reject-second) at the MCP-client layer (ADR-0030 "Relationship to
+other decisions" + Decision 1) and converts the single-consumer kill hook into a fan-out registry so
+every live subject gets exactly one `session_killed` audit record (ADR-0030 Decision 7). Why: the
+single-owner model produces the reject-2nd / orphan / restart-dance bug class; the Hub designs it out
+(ADR-0030 Context + Consequences).
+
+## Authority
+
+1. docs/adr/0030-ghostlight-hub-orchestrator.md (Decision 1, Decision 2, Decision 3, Decision 7;
+   "Preserved invariants" for the pinned oracles) -- NORMATIVE. Cite it; do not restate its semantics.
+2. docs/tasks/hub/BOOTSTRAP.md -- ground rules, authority order, per-task procedure, failure protocol.
+3. This task file.
+
+If they conflict, the higher wins.
+
+## Current-tree facts (as-of-authoring; RE-READ before relying)
+
+### Dependency on H0 and H1 (STOP if absent -- see STOP preconditions)
+
+- H0 extracts the composition root into `src/hub` (`HubCore`). As-of-authoring `src/hub` does NOT
+  exist yet (`src/lib.rs` module list: browser, debug, doctor, error, governance, install, origin,
+  proc, transport -- no `hub`). It is created by H0. RE-READ `src/lib.rs` and `src/hub/mod.rs` at
+  execution time.
+- H1 makes the MCP loop transport-generic: `serve_session<S>(stream, ctx)` + a `ServiceContext`
+  holding the SHARED state (the one `Browser`, `ConfigStore`, audit `Recorder`) per ADR-0030
+  Decision 2. As-of-authoring this does NOT exist: today the loop is
+  `src/transport/mcp/server.rs::run(browser, loaded_policy, user_source)` (line 108), a single-session
+  function tied to `tokio::io::stdin()`/`stdout()` (server.rs lines 122, 194). RE-READ the actual
+  `serve_session` signature and `ServiceContext` shape that H1 landed before writing any wiring; the
+  signatures in this file's "Required behavior" are the AS-OF-AUTHORING intent, not a substitute for
+  reading H1's result.
+
+### src/transport/executor.rs (the ONE forced executor change)
+
+- `Browser` is `#[derive(Clone)]` (line 86) over `Arc` fields: `next_id: Arc<AtomicU64>` (line 88),
+  `pending: Arc<Mutex<HashMap<String, oneshot::Sender<CallResult>>>>` (the `Pending` alias, lines
+  71, 89). Two `serve_session` tasks cloning ONE `Browser` therefore already correlate replies by id
+  with NO new code (ADR-0030 Decision 2: "its `Arc<AtomicU64> next_id` and `Arc<Mutex<HashMap>>
+  pending` already correlate replies by id across clones, so multiplex needs no new correlation
+  code"). This is the multiplex assumption; verify it holds (STOP precondition).
+- `on_session_killed` (lines 177-183): stores a SINGLE hook -- "Registering a second hook replaces
+  the first (single-consumer by construction: one `Governance` per session)". Backed by
+  `kill_hook: Arc<Mutex<Option<KillHook>>>` (line 105). `handle_session_killed` (lines 495-505)
+  latches the flag once (`killed.swap(true, ...)`), drains pending, then invokes the single hook if
+  present. THIS is the surface converted to a fan-out registry (ADR-0030 Decision 7).
+- `attach` (lines 340-402) enforces the single active EXTENSION link via the atomic `outgoing` slot
+  claim, returning `AttachOutcome::AlreadyAttached` (lines 77-83, 353-355) for a stray/extra
+  connection. This invariant is RETAINED (ADR-0030 "Relationship to other decisions"). Do NOT weaken
+  it.
+- The pinned hop-attributed error strings and `TOOL_TIMEOUT = 60s` live here (const at line 60; error
+  strings at lines 65, 297, 307-308, 312, 384). Byte-frozen (ADR-0030 "Preserved invariants").
+
+### src/transport/native/ipc.rs
+
+- `serve(browser: Browser, endpoint: &str)` (Windows line 136; Unix line 349): owns the endpoint
+  (single active session via `first_pipe_instance(true)` / `UnixListener::bind`), accept-loops, and
+  hands each accepted connection to `browser.attach(...)` in a spawned task (lines 175-183 Windows,
+  388-397 Unix). Endpoint creation failure maps to `Error::SessionBusy` (line 150 Windows; line 364
+  Unix). Today EVERY accepted connection is an extension-link (native-host relay) connection.
+- `relay_native_host(endpoint, debug)` (line 48): the native-host RELAY -- `connect`s, then
+  `select!`s two byte-copy futures between this process's stdin/stdout and the IPC stream (lines
+  55-77). The ADAPTER is a mirror of this on the MCP-client side.
+- Module doc (lines 17-18) states "Single active session: a second mcp-server refuses with
+  `Error::SessionBusy`." That semantic is being REPEALED at the MCP-client layer (see Required
+  behavior).
+
+### src/main.rs
+
+- Role detection precedes clap (lines 308-312): a `chrome-extension://` arg selects
+  `run_native_host_role` (the RELAY, lines 421-438). Default (no subcommand, over stdio) selects
+  `run_server` (lines 442-547).
+- `run_server` today is the DUAL-ROLE binary: it spawns `ipc::serve(browser, &endpoint)` (lines
+  509-521) AND runs `mcp::server::run(browser, loaded_policy, user_source)` on its own stdio (line
+  527), sharing one `Browser`. The `Err(ghostlight::Error::SessionBusy)` arm (lines 514-517) today
+  just warns "another ghostlight session already owns the browser; tool calls in this session will
+  report the extension as unavailable" -- this is the ADR-0004 degrade-path being repealed.
+
+### docs/adr/0004-reject-second-session.md
+
+- Header (lines 1-4): `# 0004. Reject a second concurrent session` / `- Status: Accepted` /
+  `- Date: 2026-07`. This ADR is superseded at the MCP-client layer by ADR-0030.
+
+### Coupling that pins scope
+
+The `serve_session`/`ServiceContext` seam (H1), the `Browser` shared-Arc correlation (executor),
+the endpoint accept loop (ipc.rs), and the role branch (main.rs) are one connected change: you cannot
+land multiplex without all four moving together. This is the ADR's "one large coupled commit"
+(Migration H2; Consequences). The ONLY governance/executor-level behavior change is the kill-hook
+fan-out; everything else is transport wiring.
+
+## Required behavior
+
+### 1. The SERVICE role owns shared state and multiplexes (ADR-0030 Decision 1, Decision 2)
+
+- The SERVICE holds ONE `ServiceContext` (H1's shared state: the one `Browser`, `ConfigStore`, audit
+  `Recorder`) and owns the native pipe/UDS via `ipc::serve` for its whole life (Decision 1: "SOLE
+  owner of the ONE extension link").
+- `ipc::serve` accepts N connections and DEMUXES by role (Decision 1: "CORE ENDPOINT
+  (role-demuxed)"): an extension-link (native-host RELAY, role `ext_hello`) connection is handed to
+  `Browser::attach` EXACTLY as today (the single-physical-link invariant is unchanged); an ADAPTER
+  connection is handed to `serve_session(stream, ctx)` on the SHARED `ServiceContext`. Every
+  `serve_session` clones the one `Browser`, so replies route by id with no new correlation code
+  (Decision 2).
+- The single governance chokepoint stays ONE `serve_session`/`handle_tools_call` that every transport
+  calls (Decision 2: "never re-implemented per adapter"). Do NOT fork a second dispatch path.
+
+  AUTHOR MUST PIN before execution: the exact on-wire role discriminator that lets `serve` tell an
+  `ext_hello` (relay) connection from an `adapter` connection on the shared endpoint. ADR-0030
+  Decision 1 names the roles ("role-demuxed"; relay is "role=ext_hello") but does NOT pin the frame
+  bytes. Pin a discriminator that rides ON TOP of the existing 4-byte-LE framing (a first
+  handshake frame), NEVER a change to `host.rs` framing itself (STOP precondition).
+
+### 2. The ADAPTER role is a stdio<->service byte relay (ADR-0030 Decision 1)
+
+- Add an ADAPTER relay that mirrors `ipc::relay_native_host`: connect to the running service endpoint
+  (sending the `adapter` role handshake from item 1), then `select!` two byte-copy futures between
+  this process's stdin/stdout and the service stream, exiting when either side closes -- identical in
+  shape to `relay_native_host` (ipc.rs lines 48-80), including the "do NOT add a post-`select!`
+  `shutdown().await`" note and the `process::exit` teardown reason.
+  - Pinned name: `ipc::relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()>`.
+- The ADAPTER is a BYTE relay only. It NEVER rewrites the MCP JSON-RPC wire and NEVER re-serializes
+  the 13 trained schemas or the `notifications/tools/list_changed` line (ADR-0030 "Preserved
+  invariants"; global never-touch). It relays bytes verbatim.
+- The ADAPTER connects to an ALREADY-RUNNING service only. Spawn-on-demand (the adapter proactively
+  starting a detached service when none exists) is H6 -- OUT OF SCOPE here.
+
+### 3. Repeal ADR-0004 at the MCP-client layer (ADR-0030 Decision 1 + Relationship-to-other-decisions)
+
+- In `main.rs`, the default (no-subcommand, stdio) invocation becomes service-OR-adapter by endpoint
+  contention:
+  - If this process wins the endpoint (becomes the SERVICE): run the service (own `Browser` +
+    `ipc::serve` role-demuxed) AND serve THIS process's own stdio as the first session via
+    `serve_session` on the shared `ServiceContext`. A lone client thus stays a single self-contained
+    process (byte-identity preserved -- see Tests).
+  - If the endpoint is already owned (`ipc::serve` reports `Error::SessionBusy`): DELETE the old
+    degrade-branch (main.rs lines 514-517) and instead run the ADAPTER role (`ipc::relay_adapter`),
+    connecting this process's stdio to the running service.
+- Update the ipc.rs module doc (lines 17-18): `Error::SessionBusy` now means "the singleton service
+  is already up; connect to it as an adapter", NOT "tools unavailable". Do not change the `Error`
+  variant.
+- The single physical-extension-link rejection (`Browser::attach` ->
+  `AttachOutcome::AlreadyAttached`) is NOT repealed and NOT weakened (ADR-0030 Relationship section).
+
+### 4. Kill-hook fan-out (ADR-0030 Decision 7) -- THE ONE FORCED executor change
+
+ADR-0030 Decision 7 mandates: the single-consumer kill hook "becomes a fan-out registry so every live
+session's subject gets exactly one `session_killed` audit record; one group's extension reconnect
+must not clear a global kill for other groups." Convert it as follows (this is the SANCTIONED
+EXCEPTION to the executor never-touch fence):
+
+- Replace the single `kill_hook: Arc<Mutex<Option<KillHook>>>` (executor.rs line 105) with a registry:
+  `kill_hooks: Arc<Mutex<Vec<(u64, KillHook)>>>` plus `next_hook_id: Arc<AtomicU64>`.
+- Keep `pub fn on_session_killed(&self, hook: impl Fn() + Send + Sync + 'static)` (same signature),
+  now APPENDING a PERMANENT (never-removed) hook. Its doc comment must be updated from "Registering a
+  second hook replaces the first" to describe append semantics. (This keeps the pinned unit test
+  `kill_hook_fires_exactly_once_per_transition` and the integration test
+  `tests/audit_recorder.rs::session_killed_writes_one_session_event_record` green: each registers one
+  hook and expects one fire per transition.)
+- Add a session-scoped, REMOVABLE registration:
+  ```
+  #[must_use = "dropping the handle immediately unregisters the session kill hook"]
+  pub struct KillHookHandle { /* holds the registry Arc + the entry id */ }
+  impl Drop for KillHookHandle { /* remove the (id, hook) entry from kill_hooks */ }
+
+  pub fn register_session_kill_hook(
+      &self,
+      hook: impl Fn() + Send + Sync + 'static,
+  ) -> KillHookHandle
+  ```
+  A live session holds its `KillHookHandle` for its lifetime; dropping it at session end deregisters,
+  so a dead session records nothing.
+- `handle_session_killed` (executor.rs lines 495-505): on the false->true transition (`swap` guard
+  unchanged), drain pending, then invoke EVERY registered hook (permanent + session) EXACTLY ONCE.
+  The per-transition `swap` guard is what makes each individual kill fan out once per hook, never
+  twice.
+- In `serve_session` (H1's function -- RE-READ its module + how it currently registers the kill
+  hook; as-of-authoring the registration is server.rs lines 178-184 via `on_session_killed`), replace
+  the `on_session_killed(...)` registration with `let _kill_handle =
+  ctx.<browser>().register_session_kill_hook(move || current_governance(&governance_slot)
+  .record_session_killed())`, holding `_kill_handle` for the whole session. Keep `hold`/`killed`/
+  `connected` GLOBAL by SHARING the one `Browser` across sessions (Decision 7: these latch on the
+  shared handle) -- do NOT clone per-session `Browser`s.
+
+Must stay byte-identical / unchanged: `host.rs` framing; the 13+`explain` `TOOLS_JSON`; the MCP
+JSON-RPC wire and the `notifications/tools/list_changed` line; the hop-attributed error strings and
+`TOOL_TIMEOUT`; `AttachOutcome::AlreadyAttached` single-link rejection.
+
+## Tests (BY NAME; assertions pinned)
+
+### Keep green (do not modify)
+
+- `tests/mcp_protocol.rs` (a lone MCP client over the default binary invocation must still initialize
+  and list tools byte-identically -- proves the service+own-session path).
+- `tests/peer_death.rs` (server + native-host relay; force-kill the server; the relay exits -- proves
+  the extension-link path and lifecycle are undisturbed).
+- `tests/all_open_golden.rs` (the all-open byte-identity invariant: a lone all-open session's output
+  stays byte-identical -- every new session/multiplex path MUST be a no-op for a lone all-open
+  session).
+- `tests/tool_schema_fidelity.rs` (the 13+`explain` schemas byte-frozen).
+- `src/transport/executor.rs::kill_hook_fires_exactly_once_per_transition` (one registered hook fires
+  exactly once across two kill frames -- must stay green under the append-registry).
+- `src/transport/executor.rs::a_second_attach_is_rejected_without_disturbing_the_live_session` (the
+  single physical-extension-link rejection).
+
+Note (do not modify, must stay green implicitly): `tests/audit_recorder.rs::
+session_killed_writes_one_session_event_record` and `record_session_killed_writes_a_session_event_
+with_no_tool_call_fields` both call `on_session_killed`; the preserved append signature keeps them
+green.
+
+### Add: tests/hub_multiplex.rs
+
+1. `two_sessions_route_replies_independently`
+
+   Two `serve_session` tasks (or two direct `Browser::call` callers standing in for two sessions --
+   RE-READ H1 to pick the lowest-level seam that still exercises `serve_session` if practical) share
+   ONE `Browser` (one `.clone()` each) attached to ONE fake extension. Session A calls tool `"navigate"`;
+   session B calls tool `"find"`. The fake extension replies to each framed request by id, echoing the
+   request's `tool` back in the result (the pattern in `executor.rs::call_round_trips_a_tool_response`,
+   lines 529-556).
+
+   Pinned assertions (structural id-routing invariant per ADR-0030 Decision 2 -- NOT a value oracle):
+   - session A's result is the reply to A's own id and echoes `"navigate"`;
+   - session B's result is the reply to B's own id and echoes `"find"`;
+   - the two replies are NEVER swapped (A never receives B's echo and vice-versa).
+
+2. `one_kill_emits_one_audit_record_per_live_session`
+
+   Build N = 3 sessions, each a distinct `Governance` (all-open) with a DISTINCT client name
+   (`"client-a"`, `"client-b"`, `"client-c"` -- AUTHOR MUST PIN if H1/Governance requires a different
+   constructor shape; RE-READ), each writing to its OWN file-backed `Recorder` (model:
+   `tests/audit_recorder.rs::session_killed_writes_one_session_event_record`, lines 110-171). All three
+   register via the NEW `register_session_kill_hook(move || governance.record_session_killed())` on the
+   ONE SHARED `Browser`, holding their handles. Attach the shared `Browser` to one fake extension, send
+   ONE `{"type":"session_killed"}` frame, wait for `is_killed()`.
+
+   Pinned assertions:
+   - EXACTLY N = 3 session-event records are written in total (one per live subject; N subjects give N
+     records) -- one line in each of the three audit files, and none cross-written.
+   - Each record's key order is EXACTLY the 6-key `SessionEventRecord` order, transcribed verbatim from
+     ADR-0030 "Preserved invariants" (pinned oracle):
+     ```
+     event_id, ts, identity, client, event, manifest
+     ```
+     (assert the serialized object's `.keys()` equal `["event_id","ts","identity","client","event","manifest"]`,
+     mirroring `tests/audit_recorder.rs` line 1139).
+   - Each record has `rec["event"] == "session_killed"` and a distinct `rec["client"]["name"]`
+     matching its session (`"client-a"` / `"client-b"` / `"client-c"`).
+
+   (Transcribed oracle -- do NOT re-derive: the 6-key order above is quoted verbatim from ADR-0030's
+   "Pinned oracles" bullet for the session-event record.)
+
+## Verification (literal commands)
+
+```
+cargo build --all-targets
+cargo test --test hub_multiplex
+cargo test --test mcp_protocol --test peer_death --test all_open_golden --test tool_schema_fidelity --test audit_recorder --test architecture
+cargo test -p ghostlight --lib executor
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+(If the crate name for `-p` differs, RE-READ `Cargo.toml`; the lib-test filter `executor` selects the
+`src/transport/executor.rs` unit tests.)
+
+## STOP preconditions
+
+- If `src/hub` / `HubCore` (H0) or `serve_session<S>(stream, ctx)` + `ServiceContext` (H1) are ABSENT,
+  STOP: H0/H1 have not landed and this task's whole seam is void. Do not re-implement H0/H1 here.
+- If `Browser`'s `next_id` or `pending` are NOT shared across clones (someone made per-session
+  `Browser`s), STOP: the "multiplex needs no new correlation code" assumption (ADR-0030 Decision 2) is
+  void and the design must be re-scoped.
+- If `executor.rs::on_session_killed` no longer documents single-consumer replace (someone already
+  changed it), STOP and re-scope the fan-out against the actual current state.
+- If implementing the role discriminator (item 1/2) would require changing `src/transport/native/
+  host.rs` framing (the 4-byte LE prefix, `MAX_MESSAGE_LEN`, `encode`/`read_message`), STOP: the
+  handshake must ride on top of framing, never alter it.
+- If any change would weaken `Browser::attach`'s single-EXTENSION-link rejection
+  (`AttachOutcome::AlreadyAttached`), STOP.
+- If a never-touch fence below would have to move (other than the two sanctioned exceptions named),
+  STOP.
+
+## NEVER touch (this task)
+
+- `src/transport/mcp/tools.rs` (`TOOLS_JSON`: the 13 trained schemas + `explain`), byte-frozen. No
+  exception.
+- `tests/tool_schema_fidelity.rs`. No exception; keep green untouched.
+- `tests/all_open_golden.rs` + the all-open byte-identity invariant. No exception; every new
+  session/multiplex/adapter path MUST be a no-op for a lone all-open session.
+- `tests/architecture.rs` a7 (`governance_core_has_no_forbidden_back_edges`): all session / multiplex
+  / isolation code lands in `src/hub`, never `src/governance/**`. No exception in this task (the H8
+  `channels.webapi.from` allowlist exception does NOT apply here).
+- `src/transport/native/host.rs` framing (4-byte LE prefix, `MAX_MESSAGE_LEN`, `encode`/
+  `read_message`). No exception this task.
+- The MCP JSON-RPC wire + the pinned `notifications/tools/list_changed` line (server.rs). The ADAPTER
+  is a byte relay, never a rewriter. No exception.
+- `Browser::attach` single-EXTENSION-link rejection (`AttachOutcome::AlreadyAttached`). RETAINED.
+  SANCTIONED EXCEPTION: add the kill-audit FAN-OUT (`register_session_kill_hook` + `KillHookHandle` +
+  the `handle_session_killed` fan-out loop); do NOT weaken the single physical-link invariant.
+- The hop-attributed error strings + `TOOL_TIMEOUT = 60s` in `src/transport/executor.rs`. Byte-frozen;
+  the only sanctioned executor edit is the kill-hook fan-out named above.
