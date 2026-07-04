@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Pure JSON merge for adding/removing the `ghostlight` server entry in an MCP client's config.
 //!
 //! No I/O -- the whole point is a unit-testable core. `serde_json`'s `preserve_order` feature keeps

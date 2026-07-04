@@ -5,6 +5,9 @@
 # Rust build output
 /target/
 
+# Packaged extension zip (scripts/package-extension.ps1 output)
+/dist/
+
 # Extension signing key (private). The manifest "key" (public) pins a stable dev extension id;
 # this private half is only needed to pack a .crx and must never be committed. It must NOT live
 # inside extension/ -- Chrome loads that whole dir and warns about a bundled key file.
@@ -13,3 +16,4 @@
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+/tests/e2e/node_modules/

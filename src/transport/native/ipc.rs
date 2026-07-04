@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Inter-instance IPC between the mcp-server-role and native-host-role instances.
 //!
 //! Transport: a **local socket** -- a Windows named pipe (`tokio::net::windows::named_pipe`) or a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 // Ghostlight -- background service worker.
 //
 // Policy-free CDP executor + native-messaging endpoint + tab-group manager. It holds MECHANISM
@@ -11,6 +12,8 @@
 // Tab-URL query (g13): { id, type: "tab_url_request", tabId } gets
 // { id, type: "tab_url_response", result: { url } }, reporting chrome.tabs.get(tabId).url (or
 // null) with no matching or interpretation -- the binary's grant enforcement decides.
+
+importScripts("lib/geometry.js", "lib/keys.js");
 
 const NATIVE_HOST = "org.sylin.ghostlight";
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
@@ -312,7 +315,8 @@ async function ensureAttached(tabId) {
 // records a per-tab ScreenshotContext. Model coordinates (read off that downscaled image) are then
 // rescaled back to CSS viewport pixels before Input dispatch. ref-derived coordinates are already
 // CSS px and are NOT rescaled.
-const PX_PER_TOKEN = 28, MAX_TOKENS = 1568, MAX_SIDE = 1568, MAX_SCREENSHOT_B64 = 1100000;
+const { PX_PER_TOKEN, MAX_TOKENS, MAX_SIDE, targetDims, zoomScale, rescaleCtxCoord } = self.GhostlightGeometry;
+const MAX_SCREENSHOT_B64 = 1100000;
 
 async function probeViewport(tabId) {
   const r = await cdp(tabId, "Runtime.evaluate", {
@@ -324,22 +328,6 @@ async function probeViewport(tabId) {
   // Chrome reports "hidden" for both background tabs and tabs in minimized windows, so this one
   // probe covers both cases; a missing value counts as visible so pages without the API are unaffected.
   return { vpW: v.w, vpH: v.h, dpr: v.d || 1, visible: (v.vis || "visible") === "visible" };
-}
-// Target screenshot dimensions (derived from the CSS viewport) under the token + longest-side budget.
-function targetDims(vpW, vpH) {
-  let w = vpW, h = vpH;
-  const tokens = Math.ceil(w / PX_PER_TOKEN) * Math.ceil(h / PX_PER_TOKEN);
-  if (tokens > MAX_TOKENS) { const s = Math.sqrt(MAX_TOKENS / tokens); w = Math.round(w * s); h = Math.round(h * s); }
-  const longest = Math.max(w, h);
-  if (longest > MAX_SIDE) { const s = MAX_SIDE / longest; w = Math.round(w * s); h = Math.round(h * s); }
-  return { w: Math.max(1, w), h: Math.max(1, h) };
-}
-// Largest capture scale for a region of CSS size w x h that keeps the output inside the token +
-// longest-side budget; magnifies a small region, shrinks a large one.
-function zoomScale(w, h) {
-  let s = Math.min(MAX_SIDE / Math.max(w, h), Math.sqrt((MAX_TOKENS * PX_PER_TOKEN * PX_PER_TOKEN) / (w * h)));
-  while (s > 0 && Math.ceil(Math.round(w * s) / PX_PER_TOKEN) * Math.ceil(Math.round(h * s) / PX_PER_TOKEN) > MAX_TOKENS) s *= 0.98;
-  return s;
 }
 function bytesFromBase64(b64) {
   const bin = atob(b64), bytes = new Uint8Array(bin.length);
@@ -362,10 +350,7 @@ async function encodeJpeg(bitmap, w, h, quality) {
 // Passthrough when no screenshot has been taken for the tab (nothing to map against). A zoomed
 // capture carries a region offset (offX, offY) that the mapped point is added back onto.
 function rescaleCoord(tabId, x, y) {
-  const c = screenshotCtx.get(tabId);
-  if (!c || !c.shotW || !c.shotH) return [Math.round(x), Math.round(y)];
-  const rw = c.regionW || c.vpW, rh = c.regionH || c.vpH;
-  return [Math.round((c.offX || 0) + (x * rw) / c.shotW), Math.round((c.offY || 0) + (y * rh) / c.shotH)];
+  return rescaleCtxCoord(screenshotCtx.get(tabId), x, y);
 }
 async function cdp(tabId, method, params) {
   await ensureAttached(tabId);
@@ -748,27 +733,9 @@ function clickRipple(tabId, x, y, count, button) { sendToTab(tabId, { type: "AGE
 // A comet-trail dot along a drag path, and a soft shimmer on the focused field when typing.
 function dragTrail(tabId, x, y) { sendToTab(tabId, { type: "AGENT_DRAG_TRAIL", x, y }); }
 function typeShimmer(tabId) { sendToTab(tabId, { type: "AGENT_TYPE_SHIMMER" }); }
-const KEY_MAP = {
-  enter: "Enter", return: "Enter", tab: "Tab", escape: "Escape", esc: "Escape",
-  backspace: "Backspace", delete: "Delete", space: " ",
-  up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight",
-  arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
-  home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown",
-};
-// DOM MouseEvent.buttons bitmask per button name.
-const BUTTON_BITS = { left: 1, right: 2, middle: 4 };
+const { KEY_MAP, BUTTON_BITS, modifierBits, keyCode, VK_NAMED, VK_PUNCT, CODE_PUNCT, vkCode, SHIFT_BASE, charKeyInfo } = self.GhostlightKeys;
 // Delay between press and release, and between click iterations, matching this file's rhythm.
 const CLICK_GAP_MS = 40;
-function modifierBits(str) {
-  let bits = 0;
-  for (const p of (str || "").toLowerCase().split("+").map((x) => x.trim())) {
-    if (p === "ctrl" || p === "control") bits |= 2;
-    else if (p === "alt") bits |= 1;
-    else if (p === "shift") bits |= 8;
-    else if (["meta", "cmd", "command", "win", "windows"].includes(p)) bits |= 4;
-  }
-  return bits;
-}
 async function click(tabId, x, y, opts) {
   const modifiers = opts.modifiers || 0, button = opts.button || "left", clickCount = opts.clickCount || 1;
   const bit = BUTTON_BITS[button] || 0;
@@ -887,60 +854,6 @@ async function pressKey(tabId, combo) {
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...evt });
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...evt });
   await sleep(20);
-}
-// Best-effort DOM `code` for a resolved key, so pages that branch on event.code / keyCode work.
-function keyCode(key) {
-  if (key.length === 1) {
-    if (/[a-zA-Z]/.test(key)) return "Key" + key.toUpperCase();
-    if (/[0-9]/.test(key)) return "Digit" + key;
-    if (CODE_PUNCT[key]) return CODE_PUNCT[key];
-  }
-  return key; // named keys (Enter, Tab, ArrowUp, ...) use the key name as their code
-}
-// Windows virtual key codes, so Chrome interprets shortcuts (ctrl+a select-all, etc.) as commands.
-const VK_NAMED = {
-  Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, " ": 32,
-  ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
-  Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45,
-};
-// Windows virtual key codes for US-QWERTY punctuation keys (VK_OEM_*).
-const VK_PUNCT = {
-  ";": 186, "=": 187, ",": 188, "-": 189, ".": 190, "/": 191,
-  "`": 192, "[": 219, "\\": 220, "]": 221, "'": 222,
-};
-// DOM `code` values for US-QWERTY punctuation keys (and Space).
-const CODE_PUNCT = {
-  ";": "Semicolon", "=": "Equal", ",": "Comma", "-": "Minus",
-  ".": "Period", "/": "Slash", "`": "Backquote", "[": "BracketLeft",
-  "\\": "Backslash", "]": "BracketRight", "'": "Quote", " ": "Space",
-};
-function vkCode(key) {
-  if (key.length === 1) {
-    const up = key.toUpperCase();
-    if (up >= "A" && up <= "Z") return up.charCodeAt(0); // A-Z -> 65-90
-    if (key >= "0" && key <= "9") return key.charCodeAt(0); // 0-9 -> 48-57
-    if (VK_PUNCT[key]) return VK_PUNCT[key];
-  }
-  return VK_NAMED[key] || 0;
-}
-// US-QWERTY: shifted printable -> the unshifted character on the same key.
-const SHIFT_BASE = {
-  "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
-  "&": "7", "*": "8", "(": "9", ")": "0",
-  "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";",
-  '"': "'", "<": ",", ">": ".", "?": "/", "~": "`",
-};
-// Resolve one typed character to Input.dispatchKeyEvent fields, or null when the character has no
-// key mapping (control characters, non-ASCII) and must fall back to Input.insertText instead.
-function charKeyInfo(ch) {
-  if (ch === "\n" || ch === "\r") {
-    return { key: "Enter", code: "Enter", vk: 13, shift: false, text: "\r", unmodifiedText: "\r" };
-  }
-  if (ch < " " || ch > "~") return null;
-  let base = ch, shift = false;
-  if (ch >= "A" && ch <= "Z") { base = ch.toLowerCase(); shift = true; }
-  else if (SHIFT_BASE[ch]) { base = SHIFT_BASE[ch]; shift = true; }
-  return { key: ch, code: keyCode(base), vk: vkCode(base), shift, text: ch, unmodifiedText: base };
 }
 function waitForLoad(tabId) {
   return new Promise((resolve) => {

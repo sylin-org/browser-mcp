@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! ADR-0025 flagship integration test: manifest hot-reload end to end, against the real binary
 //! as a subprocess (reusing t01's temp-`ProgramData` technique, `tests/manifest_validation.rs`).
 //!

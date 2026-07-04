@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Manifest SOURCE resolution (shared format doc sections 1.2-1.3, ADR-0018 step 3): where the
 //! active manifest comes from, and the selection rule when both an org policy file and a
 //! user-supplied source are present. Domain-agnostic core: the org policy path is reused from

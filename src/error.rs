@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Typed error type for the engine.
 //!
 //! Per the project style: **typed errors in library code** (this crate), **`anyhow` in the

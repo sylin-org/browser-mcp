@@ -1,44 +1,39 @@
 # Ghostlight Browser
 
+[![CI](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml)
+
 **Governed access to your own browser, for AI agents.**
 
 Ghostlight Browser is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
-an AI coding agent controlled access to your real, authenticated browser session. It drives the
+an AI agent controlled access to your real, authenticated browser session. It drives the
 browser you are already logged in to, so the agent can observe and act on the web apps you already
 use, through any MCP client (Claude Code, Cursor, and others). A separable governance layer decides,
 per call, what the agent is allowed to do.
 
-> Ghostlight is the single lamp a theater leaves burning on an empty stage. The phantom cursor is
-> the ghost, the agent-active glow is the light, and the light is there so nothing falls off the
-> dark edge when no one is watching: audit, sacred never-touch lists, and a take-the-wheel pause,
-> all in one image. It is the first of a planned family of governed MCP tools under the Ghostlight
-> brand.
+## What it does
 
-## Status
-
-Both halves are built: the automation engine and the governance layer. All of this runs today and
-has been verified against a real browser:
+Two concerns, one binary: a full browser-automation engine, and a governance layer that decides,
+per call, what the agent may do.
 
 - **The full tool surface.** The 13 trained tools at byte-parity with the official Claude-in-Chrome
-  schemas, plus one additive governance tool, `explain`. Screenshots with coordinate mapping, an
+  schemas, plus one additive governance tool, `explain`: screenshots with coordinate mapping, an
   on-page agent cursor, accessibility-tree and text reads, form input (including shadow DOM),
   in-page JavaScript, console and network inspection, and tab management.
 - **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
   / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
-  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` / `shadow` /
-  `enforce` modes, and structured JSON-Lines audit. Layered configuration with organization policy
-  locks, and live manifest hot-reload (edit the policy file and the running session re-resolves with
-  no restart, failing closed on a bad edit).
-- **All-open is first-class.** With no manifest, the engine runs unrestricted: the agent has the
-  full capability surface with no access decisions beyond secret-field redaction. Governance is an
+  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` and `enforce` modes
+  (observe records shadow denials without blocking), and structured JSON-Lines audit to file,
+  stderr, or RFC 5424 syslog. Layered configuration with organization policy locks, and live
+  manifest hot-reload: edit the policy file and the running session re-resolves with no restart,
+  failing closed on a bad edit.
+- **All-open is first-class.** With no manifest, the engine runs unrestricted -- the agent has the
+  full capability surface, with no access decisions beyond secret-field redaction. Governance is an
   overlay you opt into, not a stripped-down build.
-- **Operability.** Single portable binary with a built-in installer, a `doctor` diagnostic, a
+- **Operability.** A single portable binary with a built-in installer, a `doctor` diagnostic, a
   layered `config` CLI, and a `policy` CLI (explain / simulate / init).
 
-Maturity: this is a developer setup. The extension is loaded unpacked, and Windows is the platform
-it has been verified on end to end. The macOS and Linux code paths exist but are not yet verified
-against a live browser. There is no published package or cross-platform release build yet, and the
-license is still to be decided.
+Windows, macOS, and Linux all build and pass the full test suite in CI; end-to-end browser use is
+verified on Windows.
 
 ## What makes it different
 
@@ -49,7 +44,7 @@ license is still to be decided.
   browser to gain a technical property.
 - **Governance fused with the engine, not bolted on.** Access control, capability classification,
   and audit live at a single dispatch chokepoint in the binary. A governed client only sees the
-  tools its grants permit, and every call is checked and recorded. All-open remains a first-class
+  tools its grants permit, and every call is checked and recorded. All-open is a first-class
   supported mode.
 - **Single portable binary, zero runtime dependencies.** No Node.js, no `npx`, no separate servers
   to babysit. The class of install failures that affects Node-based browser MCPs does not exist.
@@ -137,22 +132,22 @@ Each action carries a capability requirement. Under a governance manifest, the l
 the advertised tool set to what your grants permit and checks the requirement on every call; with no
 manifest (all-open) every action is allowed.
 
-| Tool | What it does | Capability |
-|---|---|---|
-| `navigate` | Go to a URL, or forward/back in history | read |
-| `computer` | Mouse, keyboard, and screenshots (13 actions) | read or action, per action |
-| `read_page` | Accessibility-tree view of the page | read |
-| `get_page_text` | Visible text extraction | read |
-| `find` | Locate elements on the page | read |
-| `form_input` | Fill form fields, including shadow DOM | write |
-| `javascript_tool` | Run JavaScript in the page context | execute |
-| `tabs_context_mcp` | List tabs in the MCP tab group | read |
-| `tabs_create_mcp` | Create a tab in the MCP tab group | none |
-| `read_console_messages` | Recent console output | read |
-| `read_network_requests` | Recent network activity | read |
-| `resize_window` | Resize the browser window | none |
-| `update_plan` | Record the agent's working plan | none |
-| `explain` | List every action and the capability it requires | none |
+| Tool                    | What it does                                     | Capability                 |
+| ----------------------- | ------------------------------------------------ | -------------------------- |
+| `navigate`              | Go to a URL, or forward/back in history          | read                       |
+| `computer`              | Mouse, keyboard, and screenshots (13 actions)    | read or action, per action |
+| `read_page`             | Accessibility-tree view of the page              | read                       |
+| `get_page_text`         | Visible text extraction                          | read                       |
+| `find`                  | Locate elements on the page                      | read                       |
+| `form_input`            | Fill form fields, including shadow DOM           | write                      |
+| `javascript_tool`       | Run JavaScript in the page context               | execute                    |
+| `tabs_context_mcp`      | List tabs in the MCP tab group                   | read                       |
+| `tabs_create_mcp`       | Create a tab in the MCP tab group                | none                       |
+| `read_console_messages` | Recent console output                            | read                       |
+| `read_network_requests` | Recent network activity                          | read                       |
+| `resize_window`         | Resize the browser window                        | none                       |
+| `update_plan`           | Record the agent's working plan                  | none                       |
+| `explain`               | List every action and the capability it requires | none                       |
 
 For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require
 `read`, the input actions (`left_click`, `right_click`, `type`, `key`, `left_click_drag`,
@@ -171,16 +166,21 @@ The model in brief:
 
 - **Capabilities, not tool lists.** Every action is classified `read` / `action` / `write` /
   `execute` (some require none). Grants allow capabilities on hosts; the classification is intrinsic
-  to each action.
+  to each action. This vocabulary is published as an open, vendor-neutral spec -- the
+  [RAWX capability model](open-spec/rawx-capability-model.md) (`rwx` for agents) -- so it can be
+  adopted beyond Ghostlight.
 - **Host polarity.** A grant's `allow` patterns can carry `deny` carve-outs, so "everywhere except
   this site" is expressible directly.
 - **Sacred domains.** A never-touch list denies every tool on a matching tab, regardless of grants.
-- **Modes.** `observe` records only, `shadow` records what it would deny without blocking, and
-  `enforce` blocks. Sacred and user-authored protections always enforce.
+- **Modes.** `observe` dispatches every call and records what enforce would have denied (as
+  `shadow_deny` audit records with the same stable denial ids); `enforce` blocks. Sacred and
+  user-authored protections always enforce, in every mode.
 - **Advertisement filtering.** A governed client sees only the tools its grants can use, plus
   `explain`.
 - **Audit.** Every call produces one JSON-Lines record (permitted, denied, and shadow-denied alike):
-  identity, host, capability, grant id, decision, denial id, duration, and manifest hash.
+  identity, host, capability, grant id, decision, denial id, duration, and manifest hash. Destinations:
+  local file, stderr, or RFC 5424 syslog over UDP for SIEM ingestion (see the
+  [SIEM guide](docs/guides/siem-integration.md)).
 - **Layered configuration.** Settings resolve through built-in defaults, org policy, and a user
   layer, with organization policy able to lock keys. Inspect and edit with `ghostlight config`.
 - **Hot-reload.** The org policy path and a `file://` user manifest are watched; edits re-resolve the
@@ -238,23 +238,40 @@ single dispatch chokepoint inside the binary without touching any tool code.
 
 ## Roadmap
 
-- **Engine (done).** The 13-tool automation surface, hardened and live-verified.
-- **Governance (done).** The audit flight recorder; sacred never-touch domains with a take-the-wheel
-  pause and panic kill switch; the full manifest engine (identity-bound grants, capability
-  enforcement, tool-advertisement filtering, `observe` / `shadow` / `enforce` modes) with layered
-  configuration and org policy locks; the `explain` tool; and live manifest hot-reload. Built and
-  live-verified against a real browser on Windows.
-- **Packaging (partial).** Cross-platform release builds, CI, and macOS/Linux live verification are
-  still to do, along with `syslog`/`http` audit destinations and a license decision.
+- Live browser verification on macOS and Linux, and a first tagged release with prebuilt binaries
+  for all four targets.
+- A Chrome Web Store listing, so the extension installs without developer mode.
+- Offline license keys for organizations (see [PRICING.md](PRICING.md)), and an `http` audit
+  destination alongside file, stderr, and syslog.
+- `managed://` policy distribution for MDM and Group Policy fleets.
+- More adapters on the same governance spine -- the browser is the first.
+
+## Direction
+
+The governance engine -- capability grants, host polarity, audit, layered configuration, and
+licensing -- is domain-agnostic by design; the browser is its first adapter. The same
+policy-and-audit spine is what any future adapter would reuse, which is why this is the first of a
+planned family rather than a one-off. The vocabulary that engine speaks is published for the whole
+ecosystem as the [RAWX capability model](open-spec/rawx-capability-model.md): the durable asset in
+agent governance is the way you classify and grant capabilities, not the mechanism that carries
+them, and mechanisms change.
 
 ## Documentation
 
-| Doc | What it is |
-|---|---|
-| [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. |
-| [docs/adr/](docs/adr/) | Architecture Decision Records: the reasons behind the design and how it evolved. |
-| [docs/design/](docs/design/) | Forward-looking design discussions (family and service architecture). |
-| [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md) | Governing design principles. |
+| Doc                                                                | What it is                                                                                                |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| [docs/guides/solo-developer.md](docs/guides/solo-developer.md)     | Ten minutes from clone to a working agent, plus personal safety rails.                                    |
+| [docs/guides/compliance-team.md](docs/guides/compliance-team.md)   | Taking a policy from blank page to org-wide enforcement, with evidence.                                   |
+| [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion.                                            |
+| [docs/COMPARISON.md](docs/COMPARISON.md)                           | How Ghostlight compares to the alternatives, honestly.                                                    |
+| [PRICING.md](PRICING.md)                                           | Editions, the founding program, and the Continuity Promise.                                               |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                 | How to ask questions, request features, and contribute code.                                              |
+| [SECURITY.md](SECURITY.md)                                         | Vulnerability reporting and what to expect.                                                               |
+| [docs/SPEC.md](docs/SPEC.md)                                       | The authoritative design specification.                                                                   |
+| [docs/adr/](docs/adr/)                                             | Architecture Decision Records: the reasons behind the design and how it evolved.                          |
+| [docs/design/](docs/design/)                                       | Forward-looking design discussions (family and service architecture).                                     |
+| [open-spec/](open-spec/)                                           | Open, vendor-neutral specifications we publish for the ecosystem (starts with the RAWX capability model). |
+| [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md)         | Governing design principles.                                                                              |
 
 ## Positioning and prior art
 
@@ -262,7 +279,7 @@ This is a clean-room Rust rewrite informed by
 [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome), a Node.js
 reimplementation of the Claude-in-Chrome extension. Prior art is studied as a concern surface (the
 hazards and questions others hit), not as a feature catalog to copy. The tool schemas are preserved
-verbatim so a trained agent behaves as expected; everything behind them is rebuilt.
+verbatim so a trained agent behaves as expected; everything behind them is our own.
 
 ## The name
 
@@ -271,6 +288,25 @@ is the first. The theatrical ghost light metaphor sits alongside the publisher's
 guardian-in-a-bounded-space names. See [docs/adr/0021-ghostlight-brand-and-family.md](docs/adr/0021-ghostlight-brand-and-family.md)
 for the naming decision.
 
+## Questions, requests, and contributing
+
+Three lanes: [GitHub Issues](../../issues) for bugs, [GitHub Discussions](../../discussions) for
+questions, ideas, and feature requests, and hello@sylin.org for anything that cannot be public
+(security, licensing, or a compliance team that cannot post in the open). Every request gets a
+disposition with reasoning -- accepted, deferred, or declined against the project's recorded
+vision. See [CONTRIBUTING.md](CONTRIBUTING.md) for the details and the contribution terms.
+
 ## License
 
-TBD (intended open-source).
+Ghostlight is open-core. The engine -- everything outside `src/governance/` -- is open source
+under Apache-2.0 OR MIT, at your option. The governance module (`src/governance/`) is
+source-available under the Ghostlight Commercial License: free for individuals and solo
+developers, development, testing, evaluation, all-open operation, and noncommercial
+nonprofit/open-source use; production use with governance configured by an organization
+requires a commercial subscription. See [LICENSING.md](LICENSING.md) for the plain-language
+guide and [docs/adr/0027-open-core-business-model-and-licensing.md](docs/adr/0027-open-core-business-model-and-licensing.md)
+for the decision.
+
+Editions, prices, the founding program (12 months free for the first ten organizations), and
+the Continuity Promise -- license state never affects behavior, and the binary never phones
+home -- are in [PRICING.md](PRICING.md).

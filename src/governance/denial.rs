@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The stable denial id scheme (shared format doc section 7.1, ADR-0020 commitment 6).
 //!
 //! Introduced with the sacred-domains rule (g08) and reused verbatim by the manifest engine's

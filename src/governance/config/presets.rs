@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! `ghostlight config preset <name>` (G18, ADR-0019 decision 3: "presets are UX, not
 //! machinery"). Selecting a preset writes ONLY the `preset` field of the user config file --
 //! never a per-key value -- so it populates layer 4 (shared format doc section 2) and nothing

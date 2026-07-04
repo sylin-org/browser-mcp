@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Ghostlight binary -- a thin shell over the `ghostlight` library crate.
 //!
 //! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0

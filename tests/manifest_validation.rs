@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for the G12 manifest engine's public API: the three example manifests
 //! under `examples/` parse and validate, and the all-open invariant holds. The exhaustive
 //! invalid-field matrix, the hash pins, and the source-grammar/selection tests live as inline

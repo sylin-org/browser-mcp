@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Chrome native-messaging host protocol.
 //!
 //! Framing: a 4-byte little-endian `u32` length prefix followed by exactly that many bytes of

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration test for G14 tool advertisement filtering: proves the wiring end to end (a
 //! restrictive manifest's grants actually reach `tools/list` through the real server loop), not
 //! just the pure filtering logic (`browser::advertise`'s own exhaustive inline unit tests cover

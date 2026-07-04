@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Fail-closed guard on the `governance/` core boundary (ADR-0021, PLAN A7).
 //!
 //! `governance/` is the domain-agnostic core: it is written so it can later be lifted into its

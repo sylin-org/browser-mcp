@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 // Ghostlight -- content script.
 //
 // Policy-free DOM mechanism: accessibility-tree generation, element-ref mapping (WeakRef), text

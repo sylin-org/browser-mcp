@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! `ghostlight doctor` -- the one-shot, read-only diagnosis that fuses installer registration
 //! state, per-pid debug sessions, and a live probe of the IPC endpoint into a single report with
 //! a truthful exit code.

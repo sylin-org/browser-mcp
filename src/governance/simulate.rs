@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Policy simulation: replay recorded audit events through a candidate manifest (ADR-0020
 //! commitment 3, g17; the classification step updated for ADR-0022 Decision 8).
 //!

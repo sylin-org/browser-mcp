@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! URL-to-governing-resource classification (browser plugin; RECONCILIATION.md section 1, g13).
 //!
 //! Turns a URL string into the [`GoverningResource`] g13's decision core consumes: a `navigate`

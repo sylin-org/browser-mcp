@@ -5,7 +5,7 @@
 **Author:** Leonardo Botinelly / Kintsugi Architecture  
 **Date:** 2026-07-01  
 **Status:** Draft  
-**License:** TBD (intended open-source)
+**License:** Open-core -- engine Apache-2.0 OR MIT; `src/governance/` source-available (ADR-0027)
 
 ---
 

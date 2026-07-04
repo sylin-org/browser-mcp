@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The tool registry of ADR-0024 Decision 1: one [`ToolDescriptor`] per advertised tool,
 //! generalizing the ADR-0022 Decision 2 action directory IN PLACE into the single per-tool
 //! authority that drives validity, classification (via [`requires`]), advertisement, explain,

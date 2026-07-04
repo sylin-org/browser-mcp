@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Secret-value redaction for `read_page` output (`content.security.secrets.redact`).
 //!
 //! The engine is truthful: the extension emits a secret field's real value using the marker

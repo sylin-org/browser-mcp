@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Tool advertisement filtering (browser plugin; ADR-0022 Decision 8).
 //!
 //! `tools/list` membership is a domain-independent visibility optimization: with no manifest,

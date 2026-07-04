@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 // Ghostlight -- agent visual indicator (content script).
 //
 // User-facing "watching" affordance (mechanism, not policy):

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The generic ingest pipeline (ADR-0024 Decision 2): the `tools/call` dispatch chokepoint,
 //! moved out of `transport::mcp::server` into its own module so `server.rs` keeps only the
 //! JSON-RPC protocol loop and the composition root. Every per-tool `if name == ...` branch is

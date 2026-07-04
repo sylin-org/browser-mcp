@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! All-open golden guard for the A1 module reorg and the A3 governance facade. Neither the
 //! regroup into governance/ browser/ transport/ (A1) nor the introduction of the `Governance`
 //! facade at the dispatch chokepoint (A3) may change anything observable. Invariants, reached

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! End-to-end MCP protocol checks: spawn the binary as an mcp-server and drive it over stdio.
 //!
 //! Most tests here connect no extension/native-host, so `tools/call` waits out the bounded

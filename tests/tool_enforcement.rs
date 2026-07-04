@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G13 per-call grant enforcement: end to end over stdio, no extension
 //! connected. A permitted call reaches dispatch and returns the familiar `not connected`
 //! execution error; a denied call never reaches dispatch and returns a `Denied (D-...)` text

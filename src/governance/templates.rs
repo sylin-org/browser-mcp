@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! `ghostlight policy init --template <name>` (G18, ADR-0020 consequence: manifest templates
 //! ride the same schema as `policy explain`/`policy simulate`). Writes one of three embedded
 //! example manifests as an org admin's starting point. The embedded bytes and the committed

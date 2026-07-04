@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Browser domain plugin -- the tool registry and page-content redaction.
 //!
 //! This bounded context (see docs/design/ghostlight-service-architecture.md section 3)

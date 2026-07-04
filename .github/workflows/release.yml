@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Build-only dry run: validates the full cross-build + packaging matrix WITHOUT
+  # creating a GitHub Release. The `release` job is gated on a tag push, so a manual
+  # dispatch runs prepare + test + build only.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: ghostlight
+
+# Least privilege by default; the release job widens its own scope.
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  build:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE_DIR="${BIN_NAME}-${TAG}-${TARGET}"
+          mkdir "$ARCHIVE_DIR"
+
+          BIN_SUFFIX=""
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN_SUFFIX=".exe"
+          fi
+          cp "target/${TARGET}/release/${BIN_NAME}${BIN_SUFFIX}" "$ARCHIVE_DIR/"
+          cp README.md "$ARCHIVE_DIR/" 2>/dev/null || true
+          cp LICENSE* "$ARCHIVE_DIR/" 2>/dev/null || true
+
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR" >/dev/null
+            echo "ASSET=${ARCHIVE_DIR}.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "${ARCHIVE_DIR}.tar.gz" "$ARCHIVE_DIR"
+            echo "ASSET=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          else
+            shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          fi
+          cat "${{ env.ASSET }}.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, test, build]
+    # Only create a GitHub Release on a real tag push; workflow_dispatch stops after build.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload assets
+      id-token: write # keyless (Sigstore) signing for build provenance
+      attestations: write # write the attestations
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          EXT_ZIP="artifacts/${BIN_NAME}-extension-${TAG}.zip"
+          ( cd extension && zip -r "../${EXT_ZIP}" . -x "native-messaging-host.json" >/dev/null )
+          shasum -a 256 "$EXT_ZIP" > "${EXT_ZIP}.sha256"
+          cat "${EXT_ZIP}.sha256"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TEMPLATE=$(cat .github/release-template.md)
+          NOTES="${TEMPLATE//\$\{VERSION\}/$VERSION}"
+
+          CHECKSUMS=""
+          for f in artifacts/*.sha256; do
+            HASH=$(cut -d' ' -f1 "$f")
+            FILE=$(basename "${f%.sha256}")
+            CHECKSUMS="${CHECKSUMS}${HASH}  ${FILE}"$'\n'
+          done
+          NOTES="${NOTES//\$\{CHECKSUMS\}/$CHECKSUMS}"
+
+          echo "$NOTES" > release-notes.md
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            artifacts/*

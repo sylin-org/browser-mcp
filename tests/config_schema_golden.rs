@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Golden guard for the generated config JSON Schema and markdown key reference (ADR-0020
 //! commitment 1). Any registry change (a new key, an edited description, a changed
 //! constraint) must fail HERE until `tests/golden/config-schema.json` and

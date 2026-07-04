@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 // Ghostlight -- popup. Renders binary/worker-reported state and submits user gestures.
 // Caches nothing (no chrome.storage, no persisted state) and decides nothing: the service
 // worker holds the state and answers every render() call fresh. Two independent controls,

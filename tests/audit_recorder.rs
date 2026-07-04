@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration test for the audit flight recorder (G06) at its public-API boundary: the
 //! `Governance` facade wired to a file-backed `Recorder`, exactly as `transport::mcp::server`
 //! wires it in production. Adapts the g06 spec's test 13

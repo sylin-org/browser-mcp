@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Domain pattern syntax and matching (browser plugin; RECONCILIATION.md section 1, g07).
 //!
 //! This module owns the domain-pattern grammar of the shared format doc section 5.1: an exact

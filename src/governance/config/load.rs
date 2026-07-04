@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Loads the two configuration files of shared format doc section 1 and produces the
 //! [`LayerInputs`] for [`layers::resolve`]. Applies the per-file strictness matrix: lenient
 //! per entry for the user config file (shared format 1.1); the org policy file is a manifest
