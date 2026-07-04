@@ -48,18 +48,19 @@ existing `chrome-extension://` detection):
   (thin; per-client; dies              (thin; per-client)               |
    with its editor; the                                                 |
    ADR-0029 watchdog lives here)                                        |
-        |  owner-only pipe/UDS  <- CORE ENDPOINT (role-demuxed) ->       |  web-API listener
+        |  owner-only pipe/UDS <- ADAPTER/CONTROL ENDPOINT (session-hello) |  web-API listener
         +----------------------+----------------------+                 |  (a session SOURCE
                                |                                        |   into the same core)
                                v                                        v
    +============================ ghostlight SERVICE (the Hub) ============================+
    |  persistent . per-user . NEVER admin/SYSTEM . detached (no client/Chrome job)        |
-   |  SOLE owner of the ONE extension link + the correlation map (shared AtomicU64/pending)|
+   |  SOLE owner of the ONE extension link (its own endpoint) + the correlation map        |
    |  ServiceContext (shared): Browser handle, ConfigStore, audit Recorder                |
    |  session table {GUID -> Subject, owned-tab set, per-session Governance}               |
    |  GOVERNANCE FIRST: one serve_session/handle_tools_call ALL transports call            |
    +======================================================================================+
-                               ^  owner-only pipe/UDS (role=ext_hello); relay re-dials
+                               ^  EXTENSION ENDPOINT: owner-only pipe/UDS, NO hello (server speaks
+                                  first, exactly as today); relay re-dials, sends nothing first
                     ghostlight RELAY (Chrome-spawned native host; ephemeral; dumb byte pipe;
                                        ONLY connects, NEVER spawns the service)
                                ^  native messaging (4-byte LE frames)
@@ -73,6 +74,25 @@ The SERVICE owns only reconstructible coordination state, so its crash loses not
 (the extension holds durable browser state and survives a service restart). The ADAPTER spins the
 service up on demand and dies with its client. The RELAY only ever connects, so the service is
 never trapped in Chrome's job object. The EXTENSION stays policy-free.
+
+Two local endpoints, not one demux (amended 2026-07-04; see Provenance). The local core exposes TWO
+owner-only pipe/UDS endpoints, distinguished by which door a peer arrives at rather than by a
+discriminator byte on a shared door:
+
+- the EXTENSION endpoint -- the existing well-known relay name -- keeps its exact server-speaks-first
+  contract: the service accepts, `Browser::attach` claims the one physical link, and the service may
+  write a queued tool_request before the extension has sent a byte. NO hello frame is added to this
+  endpoint, so the sacred `host.rs` wire, the policy-free relay, and every fake-extension test stay
+  byte-for-byte unchanged.
+- the ADAPTER/CONTROL endpoint -- a separate well-known name, and the single-instance election target
+  (Decision 8) -- carries the multiplexed, speak-first sessions. Its first frame is a session-hello
+  (Decision 4); a `role` member distinguishes only the speak-first peers (`adapter` vs the reserved
+  `control`). The extension is never one of these roles.
+
+The endpoint is the peer's identity; the extension is a singleton, spoken-to, sacred-wire peer and
+gets its own door rather than being forced to speak first behind a shared demux. This is fewer
+meaningful moving parts than one endpoint plus a role-negotiation layer, and it is why nothing in
+this design touches the extension's wire or its golden tests.
 
 ## Decision 2: HubCore / ServiceContext vs per-session state
 
@@ -100,7 +120,8 @@ sessions. We do not engineer around the singleton; we queue honestly.
 ## Decision 4: identity model (adapter-minted GUID; core stays PID-agnostic)
 
 Session identity is minted by the thin ADAPTER, not the orchestrator: a CSPRNG UUIDv4 GUID
-presented in the connection handshake. The service routes and isolates by that opaque GUID only;
+presented as the `guid` member of the adapter/control endpoint's session-hello (Decision 1; never on
+the extension endpoint, which sends no hello). The service routes and isolates by that opaque GUID only;
 the governance core gains NO concept of pid / ancestor / creation-time. Same adapter process
 reuses its GUID (same group); a new adapter process mints a new one (D7: two adapters in one
 editor -> two GUIDs -> two groups).
@@ -191,9 +212,11 @@ policy and rejects an unexpected `Host` (DNS-rebind defense). The authenticated 
 anonymous principal) is recorded in the EXISTING `identity` field of the audit record (position 3 of
 the frozen 14-key order; `Option<Identity>`, today always built as `None`), which is distinct from
 the self-reported `client` field -- so this adds NO new audit key and all-open stays byte-identical
-(anonymous/local resolves to `None`). The batch pins this in `docs/tasks/hub/PINS.md` section 2. The adapter <-> service LOCAL boundary keeps the owner-only
-pipe/UDS (OS same-user ACL) -- transport-as-a-port with two trust models; only the app-facing web
-API is TCP.
+(anonymous/local resolves to `None`). The batch pins this in `docs/tasks/hub/PINS.md` section 2. The adapter/control sessions and the
+extension link are two SEPARATE owner-only pipe/UDS endpoints (OS same-user ACL; Decision 1): the
+extension endpoint stays hello-free and server-speaks-first, the adapter/control endpoint carries the
+session-hello over that TCP-style session source -- transport-as-a-port with two trust models; only
+the app-facing web API is TCP.
 
 The local Console (a loopback-pinned static site served from the same HTTP stack, embedded in the
 binary) is the control plane: live sessions/groups, a provenance-aware config view (per key: value,
@@ -234,6 +257,12 @@ Never disturbed, in any phase:
   pinned by `tests/tool_schema_fidelity.rs`).
 - The native-messaging wire: 4-byte LE length prefix, `MAX_MESSAGE_LEN`, `encode`/`read_message`
   (`src/transport/native/host.rs`), shared with the policy-free extension.
+- The extension-facing contract, not just the `host.rs` wire but the server-speaks-first ordering the
+  relay and every fake-extension test double depend on. The extension link keeps its own dedicated
+  endpoint with NO hello frame added (amended 2026-07-04); a lone client's extension path is
+  byte-for-byte unchanged. (Adding a hello-first demux to this endpoint is exactly what a first H2
+  attempt did, and it deadlocked the spoken-to extension against `tests/all_open_golden.rs` -- see
+  Provenance.)
 - All-open byte-identity: a lone all-open session's output stays byte-identical through H0-H8
   (`tests/all_open_golden.rs`); every new session/isolation path is a no-op for a lone all-open
   session.
@@ -311,3 +340,12 @@ Every prefix leaves a green, shippable tree; the process-lifecycle risk lands la
   a user-layer policy edit made from the Console, not a hardcoded gate. The stress-test's
   refuse-remote-bind / mandatory-auth position is explicitly rejected as a separation-of-concerns
   violation.
+- The two-endpoint amendment (2026-07-04, correcting Decision 1 as first ratified): the original
+  single "role-demuxed core endpoint" was split into a hello-free EXTENSION endpoint plus an
+  ADAPTER/CONTROL session-hello endpoint after implementing H2 surfaced a deadlock -- a hello-first
+  demux on the shared endpoint inverts the extension's load-bearing server-speaks-first contract (the
+  extension is spoken-to; it has nothing to send until asked), which `tests/all_open_golden.rs`
+  faithfully encodes, so the block was the test doing its job, not a stale double. The `ext` hello
+  role is deleted and the extension is identified by its endpoint; the session-hello (with the GUID)
+  rides the adapter/control endpoint only. Fewer meaningful moving parts, and no sacred file is
+  touched. The batch (PINS.md SS1, H2, H3) is re-authored to match.

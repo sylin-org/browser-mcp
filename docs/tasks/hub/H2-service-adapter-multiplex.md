@@ -96,50 +96,73 @@ If they conflict, the higher wins.
 
 ### Coupling that pins scope
 
-The `serve_session`/`ServiceContext` seam (H1), the `Browser` shared-Arc correlation (executor),
-the endpoint accept loop (ipc.rs), and the role branch (main.rs) are one connected change: you cannot
-land multiplex without all four moving together. This is the ADR's "one large coupled commit"
-(Migration H2; Consequences). The ONLY governance/executor-level behavior change is the kill-hook
-fan-out; everything else is transport wiring.
+The `serve_session`/`ServiceContext` seam (H1), the `Browser` shared-Arc correlation (executor), the
+two endpoint accept loops (ipc.rs: the unchanged `serve` for the extension + the new `serve_adapters`
+for adapters), and the election/role branch (`run_mcp_server` in `src/hub/mod.rs`, post-H0) are one
+connected change: you cannot land multiplex without all four moving together. This is the ADR's "one
+large coupled commit" (Migration H2; Consequences). The ONLY governance/executor-level behavior change
+is the kill-hook fan-out; everything else is transport wiring.
 
 ## Required behavior
 
-### 1. The SERVICE role owns shared state and multiplexes (ADR-0030 Decision 1, Decision 2)
+### 1. The SERVICE owns shared state and multiplexes over TWO endpoints (ADR-0030 Decision 1, Decision 2)
+
+Read PINS.md SS1 in full first: ADR-0030 Decision 1 was amended 2026-07-04 to TWO local endpoints, NOT
+one role-demuxed endpoint. The extension endpoint is UNCHANGED and carries NO hello; the hello is a
+session-hello on the adapter/control endpoint ONLY. There is NO `ROLE_EXT`.
 
 - The SERVICE holds ONE `ServiceContext` (H1's shared state: the one `Browser`, `ConfigStore`, audit
-  `Recorder`) and owns the native pipe/UDS via `ipc::serve` for its whole life (Decision 1: "SOLE
-  owner of the ONE extension link").
-- `ipc::serve` accepts N connections and DEMUXES by role (Decision 1: "CORE ENDPOINT
-  (role-demuxed)"): an extension-link (native-host RELAY, role `ext_hello`) connection is handed to
-  `Browser::attach` EXACTLY as today (the single-physical-link invariant is unchanged); an ADAPTER
-  connection is handed to `serve_session(stream, ctx)` on the SHARED `ServiceContext`. Every
-  `serve_session` clones the one `Browser`, so replies route by id with no new correlation code
-  (Decision 2).
-- The single governance chokepoint stays ONE `serve_session`/`handle_tools_call` that every transport
-  calls (Decision 2: "never re-implemented per adapter"). Do NOT fork a second dispatch path.
-
-  The role discriminator is PINNED in PINS.md SS1: a first "hello" frame
-  `{"hub":1,"role":"<role>","guid":<uuid>?}` carried ON TOP OF the existing 4-byte-LE framing (NEVER
-  a change to `host.rs` framing -- STOP precondition). `serve` reads it first and demuxes `"ext"` ->
-  `Browser::attach` (the unchanged single physical-link path), `"adapter"` -> `serve_session` on the
-  shared `ServiceContext`. THREE handshake edits are required, all per PINS.md SS1:
-  1. `relay_native_host` (ipc.rs:48) must send `{"hub":1,"role":"ext"}` on connect. `tests/peer_death.rs`
-     (server + relay) MUST stay green through this added frame.
-  2. the new `relay_adapter` (item 2) must send `{"hub":1,"role":"adapter","guid":<the GUID>}` on
-     connect (the GUID seam is H3; before H3 an empty placeholder guid is acceptable and H3 fills it).
-  3. `serve` must read the hello frame before demuxing; an unknown or absent role fails the
-     connection cleanly (never a panic).
-  Define the constants in a new `src/hub/handshake.rs` (`HUB_PROTO`, `ROLE_EXT`, `ROLE_ADAPTER`,
-  `ROLE_CONTROL`) per PINS.md SS1.
+  `Recorder`) and, for its whole life, owns BOTH local endpoints (Decision 1: "SOLE owner of the ONE
+  extension link", now on its own endpoint):
+  1. the EXTENSION endpoint -- the existing `ipc::default_endpoint()` -- accepted via the UNCHANGED
+     `ipc::serve(browser, endpoint)` -> `Browser::attach`. Server-speaks-first, NO hello read. Do NOT
+     add a hello, a pre-read, or any byte to this path; `relay_native_host` stays byte-for-byte as is.
+     The single-physical-link invariant is unchanged.
+  2. the ADAPTER/CONTROL endpoint -- PINNED in PINS.md SS1 as the extension base name + literal suffix
+     `-adapter`, wrapped by the SAME `pipe_path`/socket-path helper (RE-READ ipc.rs for that helper).
+     Claimed via `ipc::claim_adapter_endpoint(endpoint)` returning the PLATFORM listener handle
+     (cfg-split, NO unified `Listener` type; PINS.md SS1 pin 1: the SAME bind-with-stale-heal `serve`
+     does today, including the Unix `AddrInUse` -> probe -> remove dead / `SessionBusy` if live path --
+     NOT just the accept loop, or a leftover `-adapter` socket wedges startup). A NEW acceptor
+     `ipc::serve_adapters(ctx, listener)` runs the accept loop over the ALREADY-claimed listener
+     (never re-claims the name; PINS.md SS1
+     pin 1). It is accept-ahead + spawn-per-connection and reads+demuxes the session-hello INSIDE the
+     spawned task (PINS.md SS1 pin 2; never inline -- a silent peer must not head-of-line-block other
+     adapters). Reading the hello first is SAFE here because the peer speaks first (the adapter dials
+     and sends the hello before any reply is expected, so no server-speaks-first deadlock). Demux:
+     `"adapter"` -> `serve_session` over the SHARED `ServiceContext`; `"control"` reserved and cleanly
+     refused until H8; unknown or absent role fails the connection cleanly (never a panic).
+- Every `serve_session` clones the one `Browser`, so replies route by id with no new correlation code
+  (Decision 2). The single governance chokepoint stays ONE `serve_session`/`handle_tools_call` that
+  every transport calls (Decision 2: "never re-implemented per adapter"). Do NOT fork a second
+  dispatch path. Build the `ServiceContext` ONCE and CLONE it per session (PINS.md SS1 pin 4: derive
+  `Clone`; do NOT call `from_startup` per session -- it leaks one recorder-reload watcher per call).
+- The session-hello is PINNED in PINS.md SS1: `{"hub":1,"role":"<role>","guid":<uuid>?}` carried ON
+  TOP OF the existing 4-byte-LE framing (NEVER a change to `host.rs` framing -- STOP precondition).
+  Define the constants in a new `src/hub/handshake.rs` (`HUB_PROTO`, `ROLE_ADAPTER`, `ROLE_CONTROL`;
+  NO `ROLE_EXT`) per PINS.md SS1. The GUID member is the H3 seam; before H3 an empty placeholder guid
+  is acceptable and H3 fills it.
 
 ### 2. The ADAPTER role is a stdio<->service byte relay (ADR-0030 Decision 1)
 
-- Add an ADAPTER relay that mirrors `ipc::relay_native_host`: connect to the running service endpoint
-  (sending the `adapter` role handshake from item 1), then `select!` two byte-copy futures between
-  this process's stdin/stdout and the service stream, exiting when either side closes -- identical in
-  shape to `relay_native_host` (ipc.rs lines 48-80), including the "do NOT add a post-`select!`
-  `shutdown().await`" note and the `process::exit` teardown reason.
-  - Pinned name: `ipc::relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()>`.
+- Add an ADAPTER relay: connect to the running service's ADAPTER/CONTROL endpoint (item 1); send the
+  `adapter` session-hello FIRST as ONE 4-byte-LE FRAMED message via `host::write_message`
+  (`{"hub":1,"role":"adapter","guid":<the GUID>}`; GUID seam is H3, empty placeholder before H3); THEN
+  enter a RAW bidirectional byte copy between this process's stdin/stdout and the service stream,
+  exiting when either side closes.
+  - CRITICAL (PINS.md SS1 pin 3): the DATA phase is a RAW copy (`tokio::io::copy`/`copy_bidirectional`),
+    NOT a `host::read_message` framed copy. `relay_adapter` mirrors `relay_native_host` ONLY in
+    lifecycle shape (the `select!`/exit-on-either-close, the "do NOT add a post-`select!`
+    `shutdown().await`" note, the `process::exit` teardown reason), NEVER in its framing:
+    `relay_native_host` frames every byte because the Chrome native-messaging wire is framed
+    end-to-end; the adapter wire is framed for the hello ONLY, then raw newline JSON-RPC (what the MCP
+    client writes and what the service's `serve_session` `BufReader::lines()` reads). A framed data
+    copy here corrupts every multiplexed session's JSON-RPC.
+  - Symmetrically on the SERVICE side: after `serve_adapters` reads the framed hello via
+    `host::read_message` (`read_exact`, no buffer-ahead), it hands the RAW stream to `serve_session`;
+    it does NOT keep framing the peer.
+  - Pinned name: `ipc::relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()>`
+    (the `endpoint` passed is the ADAPTER/CONTROL endpoint, not the extension endpoint).
 - The ADAPTER is a BYTE relay only. It NEVER rewrites the MCP JSON-RPC wire and NEVER re-serializes
   the 13 trained schemas or the `notifications/tools/list_changed` line (ADR-0030 "Preserved
   invariants"; global never-touch). It relays bytes verbatim.
@@ -149,20 +172,35 @@ fan-out; everything else is transport wiring.
 ### 3. Repeal ADR-0004 at the MCP-client layer (ADR-0030 Decision 1 + Relationship-to-other-decisions)
 
 - In `src/hub/mod.rs::run_mcp_server` (post-H0; NOT `main.rs`, where `run_server` no longer exists),
-  the default (no-subcommand, stdio) invocation becomes service-OR-adapter by endpoint contention:
-  - If this process wins the endpoint (becomes the SERVICE): run the service (own `Browser` +
-    `ipc::serve` role-demuxed per PINS.md SS1) AND serve THIS process's own stdio as the first session
-    via `serve_session` on the shared `ServiceContext`. A lone client thus stays a single
-    self-contained process (byte-identity preserved -- see Tests).
-  - If the endpoint is already owned (`ipc::serve` reports `Error::SessionBusy`): DELETE the old
-    degrade-warning branch (the `Err(Error::SessionBusy)` arm, relocated into `run_mcp_server` by H0)
-    and instead run the ADAPTER role (`ipc::relay_adapter`, item 2), connecting this process's stdio
-    to the running service.
-- Update the ipc.rs module doc (lines 17-18): `Error::SessionBusy` now means "the singleton service
-  is already up; connect to it as an adapter", NOT "tools unavailable". Do not change the `Error`
-  variant.
+  the default (no-subcommand, stdio) invocation becomes service-OR-adapter by contention on the
+  ADAPTER/CONTROL endpoint (the election target; PINS.md SS1). Call `ipc::claim_adapter_endpoint`
+  FIRST (PINS.md SS1 pin 1) so the branch below knows win vs lose BEFORE opening anything else:
+  - On win (returns the claimed platform listener, so the process IS the SERVICE): open the EXTENSION endpoint
+    via the unchanged `ipc::serve(browser, ext_endpoint)`, accept adapter/control sessions via
+    `ipc::serve_adapters(ctx, listener)` over the ALREADY-claimed listener (item 1; do NOT re-claim the
+    name), AND serve THIS process's own stdio as the first session via `serve_session` on the shared
+    `ServiceContext`. A lone client thus stays a single self-contained process whose extension path is
+    byte-identical to today (byte-identity preserved -- see Tests). Only the winner opens the extension
+    endpoint, so there is no extension-endpoint race.
+  - On lose (`Err(Error::SessionBusy)` from the ADAPTER/CONTROL claim): run the ADAPTER role
+    (`ipc::relay_adapter`, item 2) against the adapter/control endpoint, connecting this process's stdio
+    to the running service. This REPLACES the old reject-2nd DEGRADE behavior: DELETE the
+    degrade-warning arm (the `Err(Error::SessionBusy)` branch relocated into `run_mcp_server` by H0
+    that warned "another ghostlight session already owns the browser; tool calls ... unavailable") --
+    remove its DEGRADE SEMANTICS, not the winner's extension `serve` error handling.
+- The winner's `ipc::serve(browser, ext_endpoint)` keeps its OWN `Ok`/`Err` handling (a stale
+  extension-endpoint owner remains possible via the retained single-physical-link guard and should
+  degrade quietly, not `error!`-spam). Only the ADAPTER/CONTROL-endpoint `SessionBusy` drives the
+  service-or-adapter election.
+- Update the ipc.rs module doc (lines 17-18): `Error::SessionBusy` (on the adapter/control endpoint)
+  now means "the singleton service is already up; connect to it as an adapter", NOT "tools
+  unavailable". Do not change the `Error` variant.
 - The single physical-extension-link rejection (`Browser::attach` ->
   `AttachOutcome::AlreadyAttached`) is NOT repealed and NOT weakened (ADR-0030 Relationship section).
+- OUT OF SCOPE here (H6): the ADAPTER keeps the `"mcp-server"` debug role label for now (it is minted
+  before the election in `build_debug_sink`), and `doctor` probes/reaps only the extension endpoint;
+  the distinct `"adapter"` label and adapter-endpoint diagnosis are H6 (PINS.md SS5). Do NOT re-scope
+  doctor or relabel the adapter in this task.
 
 ### 4. Kill-hook fan-out (ADR-0030 Decision 7) -- THE ONE FORCED executor change
 
@@ -211,6 +249,12 @@ JSON-RPC wire and the `notifications/tools/list_changed` line; the hop-attribute
 ## Tests (BY NAME; assertions pinned)
 
 ### Keep green (do not modify)
+
+Under the amended two-endpoint design (PINS.md SS1) these pass UNMODIFIED: the extension endpoint keeps
+its exact server-speaks-first contract, so NO fake-extension harness sends a hello. If
+`tests/all_open_golden.rs` or `tests/mcp_protocol.rs` would need a hello added to their fake-extension
+helper to go green, the endpoints were NOT actually split -- STOP, do not edit the harness (see STOP
+preconditions and the LEDGER H2 log; this is the exact deadlock the first H2 attempt hit).
 
 - `tests/mcp_protocol.rs` (a lone MCP client over the default binary invocation must still initialize
   and list tools byte-identically -- proves the service+own-session path).
@@ -279,6 +323,23 @@ kill-hook registry) -- unaffected by this task.
    Decision 2) and the N records land in one stream, distinguished by `client`. Do not infer
    per-session Recorders are the design.
 
+3. `adapter_endpoint_two_phase_wire_round_trips` (in `tests/hub_multiplex.rs`)
+
+   Fences the PINS.md SS1 pin 3 framed-hello-then-raw-JSON-RPC wire (the framing trap that would ship
+   green otherwise -- a framed data copy corrupts the JSON-RPC and this test fails). Spawn the binary
+   with a unique `GHOSTLIGHT_ENDPOINT` (the service; its own stdio is the first session, and no fake
+   extension is needed since `initialize` needs no browser call). Connect a raw client to the
+   ADAPTER/CONTROL endpoint (`<GHOSTLIGHT_ENDPOINT>` + `-adapter`, via `ipc::connect`). Send the FRAMED
+   session-hello `{"hub":1,"role":"adapter","guid":""}` via `host::write_message`, then write a RAW
+   newline-terminated `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` line to the same
+   stream.
+
+   Pinned assertions (structural wire invariant, NOT a value oracle):
+   - a RAW newline-delimited JSON-RPC reply line comes back on the same stream with `["id"] == 1`
+     (proving the service read the raw JSON-RPC after the framed hello, i.e. the data phase is raw on
+     both sides);
+   - the reply is NOT length-prefixed / framed (read it as a line, not via `host::read_message`).
+
 ## Verification (literal commands)
 
 ```
@@ -305,9 +366,16 @@ cargo fmt --all -- --check
   void and the design must be re-scoped.
 - If `executor.rs::on_session_killed` no longer documents single-consumer replace (someone already
   changed it), STOP and re-scope the fan-out against the actual current state.
-- If implementing the role discriminator (item 1/2) would require changing `src/transport/native/
+- If implementing the session-hello (item 1/2) would require changing `src/transport/native/
   host.rs` framing (the 4-byte LE prefix, `MAX_MESSAGE_LEN`, `encode`/`read_message`), STOP: the
   handshake must ride on top of framing, never alter it.
+- If landing the adapter/control endpoint would require adding ANY hello, pre-read, or extra byte to
+  the EXTENSION endpoint path, editing `relay_native_host`, or editing a fake-extension test harness
+  (`tests/all_open_golden.rs`, `tests/mcp_protocol.rs`) to send a hello, STOP: the amended
+  two-endpoint design (PINS.md SS1) keeps the extension endpoint hello-free and server-speaks-first.
+  Needing to touch it means the two endpoints were not actually separated -- fix the separation, do
+  NOT weaken the extension contract. (This is the exact conflict that BLOCKED the first H2 attempt;
+  see the LEDGER H2 log.)
 - If any change would weaken `Browser::attach`'s single-EXTENSION-link rejection
   (`AttachOutcome::AlreadyAttached`), STOP.
 - If a never-touch fence below would have to move (other than the two sanctioned exceptions named),
@@ -319,7 +387,9 @@ cargo fmt --all -- --check
   exception.
 - `tests/tool_schema_fidelity.rs`. No exception; keep green untouched.
 - `tests/all_open_golden.rs` + the all-open byte-identity invariant. No exception; every new
-  session/multiplex/adapter path MUST be a no-op for a lone all-open session.
+  session/multiplex/adapter path MUST be a no-op for a lone all-open session, and this file MUST pass
+  UNMODIFIED. The two-endpoint design (PINS.md SS1) guarantees the extension path is untouched, so if
+  this test fails the implementation is wrong, not the test -- do NOT edit it to add a hello.
 - `tests/architecture.rs` a7 (`governance_core_has_no_forbidden_back_edges`): all session / multiplex
   / isolation code lands in `src/hub`, never `src/governance/**`. No exception in this task (the H8
   `channels.webapi.from` allowlist exception does NOT apply here).

@@ -6,12 +6,14 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**H2 is BLOCKED (`H2-service-adapter-multiplex.md`).** H0 landed (pure code move; `src/hub`
-composition root extracted). H1 landed (transport-generic `serve_session<S>` + `ServiceContext`,
-byte-identical single-session refactor). H2's own tree is reverted to the clean H1 baseline (build
-and the full sacred/named suite verified green at that baseline -- see the H2 Log entry below for
-the exact conflict). Do NOT re-attempt H2 or any later task until the frontier author resolves the
-conflict described there (one of the three options listed) and re-issues or amends the task.
+**Next task: H2 (`H2-service-adapter-multiplex.md`), RE-ISSUED 2026-07-04.** H0 landed (pure code
+move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>` +
+`ServiceContext`, byte-identical single-session refactor). H2 previously BLOCKED (see the H2 Log
+entry) on a hello-first-vs-server-speaks-first deadlock; the frontier author has since AMENDED the
+design (ADR-0030 Decision 1 two-endpoint split; PINS.md SS1 rewritten; H2 + H3 re-authored;
+`ROLE_EXT` deleted; the extension endpoint stays hello-free and its tests pass UNMODIFIED). The tree
+is at the clean H1 baseline. Start H2 fresh against the re-authored task file and amended PINS.md
+SS1, following the per-task procedure in `BOOTSTRAP.md`.
 
 ## Status
 
@@ -19,7 +21,7 @@ conflict described there (one of the three options listed) and re-issues or amen
 | --- | --- | --- | --- | --- |
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
-| H2 | Persistent service + thin adapter + multiplex | BLOCKED | -- | the one large coupled commit; see Log |
+| H2 | Persistent service + thin adapter + multiplex | pending | -- | RE-ISSUED after 2026-07-04 two-endpoint amendment; prior BLOCKED in Log |
 | H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
@@ -124,6 +126,16 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   test change.
 
 ### H2
+- RE-ISSUED 2026-07-04 (frontier author). The BLOCKED entry below stands as provenance. Resolution:
+  the design was AMENDED, not patched. ADR-0030 Decision 1 now specifies TWO local endpoints (a
+  hello-free EXTENSION endpoint + an ADAPTER/CONTROL session-hello endpoint) instead of one
+  role-demuxed endpoint; `ROLE_EXT` is deleted; the extension endpoint keeps its exact
+  server-speaks-first contract so `tests/all_open_golden.rs` and `tests/mcp_protocol.rs` pass
+  UNMODIFIED. PINS.md SS1 was rewritten, and H2 + H3 re-authored, to match. The first BLOCKED attempt
+  was the golden test doing its job (it faithfully encodes the extension's spoken-to contract), not a
+  stale double. Chosen over the three stopgaps the executor listed because those either edited a
+  sacred file, invented an unpinned timeout, or bolted a second endpoint on WITHOUT removing the
+  role-demux -- the amendment removes the role discriminator entirely (fewer, more meaningful parts).
 - BLOCKED. Implemented the task in full (`src/hub/handshake.rs` new; `src/transport/native/ipc.rs`
   split `serve` into `claim_endpoint`/`serve_claimed` + added `relay_adapter` + a shared
   `handle_connection` hello-demux per PINS.md SS1; `src/transport/executor.rs` converted the
@@ -175,6 +187,10 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   `tests/architecture.rs::governance_core_has_no_forbidden_back_edges`, plus `mcp_protocol`,
   `peer_death`, `audit_recorder` -- all pass), and HALTED without attempting H2 again or any later
   task.
+- RESOLVED (see the RE-ISSUED note at the top of this H2 section): the frontier author chose a variant
+  of option (iii) -- a full two-endpoint split that DELETES the role-demux entirely, not merely a
+  second endpoint bolted beside it. Options (i) and (ii) below were REJECTED (they edit a sacred file
+  or invent an unpinned timeout) and the `role:"ext"` strings in them are historical, not live.
 - What is needed to proceed (any one, decided by the frontier author, not by this executor):
   (i) amend `tests/all_open_golden.rs` (and likely `tests/mcp_protocol.rs`'s
   `tools_call_waits_for_a_late_extension_and_notes_the_wait`) to send the `{"hub":1,"role":"ext"}`

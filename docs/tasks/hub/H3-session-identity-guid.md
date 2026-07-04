@@ -32,9 +32,9 @@ If they conflict, the higher wins.
   mcp-server constructs and parses them, so they are documented here"). It documents the
   binary<->extension vocabulary (`tool_request`/`tool_response`/`tool_error`, hold, `session_killed`,
   `tab_url_*`). H2 introduces the adapter<->service connection handshake: the SS1 "hello" frame
-  (PINS.md SS1) that H2's adapter role already sends. This task ADDS a documentation section for that
-  hello frame's `guid` member; it does NOT invent a second or separate handshake frame. No Rust
-  types are added here.
+  (PINS.md SS1) that H2's adapter role already sends on the adapter/control endpoint. This task ADDS a
+  documentation section for that hello frame's `guid` member; it does NOT invent a second or separate
+  handshake frame. No Rust types are added here.
 - `src/proc.rs` -- ADR-0029 process-liveness primitives (`ProcId {pid, created}`, `parent`,
   `is_alive`, `orphaned`, `terminate`). It STAYS (adapter lifecycle + doctor reap). The SERVICE core
   gains NO dependency on it for identity: the GUID carries no pid/ancestor/creation-time.
@@ -136,9 +136,10 @@ the SS1 "hello" frame the ADAPTER sends (PINS.md SS1: `{ "hub": 1, "role": "adap
 UUIDv4 (`SessionGuid`). The GUID rides in H2's existing hello frame; do NOT invent a second or
 separate handshake frame. The hello frame's `hub`/`role` members are DEFINED BY H2 -- RE-READ
 messages.rs and H2's `src/hub/handshake.rs` constants; document the `guid` member against that
-existing SS1 hello frame. The relay's `"ext"` role (PINS.md SS1) carries NO `guid` (it is the
-extension link, not a client session). Keep this section doc-only (no Rust types), matching the
-file's existing style.
+existing SS1 hello frame. The EXTENSION link uses NO hello at all (it is on its own endpoint,
+server-speaks-first; PINS.md SS1 as amended 2026-07-04), so there is no `ext` role and nothing about
+the extension link to document here. Keep this section doc-only (no Rust types), matching the file's
+existing style.
 
 ### 5. a7 scanner extension (SANCTIONED `tests/architecture.rs` edit)
 H3 is the ONE task in this batch sanctioned to edit `tests/architecture.rs` (ADR-0030 "Preserved
