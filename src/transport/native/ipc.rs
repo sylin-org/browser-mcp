@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Inter-instance IPC between the mcp-server-role and native-host-role instances.
+//! Inter-instance IPC between the persistent SERVICE, its ADAPTER peers, and the extension's
+//! native-host relay.
 //!
 //! Transport: a **local socket** -- a Windows named pipe (`tokio::net::windows::named_pipe`) or a
 //! Unix domain socket (`tokio::net::Unix*`), chosen at compile time. No localhost TCP, no network
@@ -11,15 +12,30 @@
 //! that never observed the disconnect. tokio's NamedPipe/UnixStream are first-class mio/IOCP sources
 //! whose reads surface `Ok(0)`/`BrokenPipe` promptly on peer death -- no application heartbeat.
 //!
-//! Ownership (mirrors the reference's proven ordering): the **mcp-server** instance (launched first
-//! by the MCP client, long-lived) owns the endpoint and [`serve`]s it; the **native-host** instance
-//! (launched by Chrome, short-lived, may relaunch on service-worker wake) [`connect`]s with retry
-//! and relays frames between the extension and the mcp-server ([`relay_native_host`]). Single active
-//! session: a second mcp-server refuses with [`Error::SessionBusy`].
+//! TWO owner-only local endpoints (ADR-0030 Decision 1, the 2026-07-04 two-endpoint amendment;
+//! PINS.md SS1): a peer's role is the endpoint it arrives at, never a discriminator byte on a
+//! shared door.
+//!
+//! - The EXTENSION endpoint (mirrors the reference's proven ordering; [`default_endpoint`]) --
+//!   UNCHANGED: server-speaks-first, no hello, ever. The SERVICE owns it for its whole life via
+//!   [`serve`] (single active session -- a second claim refuses with [`Error::SessionBusy`], the
+//!   single physical-extension-link invariant, unrelated to the election below); the **native-host**
+//!   instance (launched by Chrome, short-lived, may relaunch on service-worker wake) [`connect`]s
+//!   with retry and relays frames between the extension and the service ([`relay_native_host`]),
+//!   sending nothing first, exactly as before this endpoint split existed.
+//! - The ADAPTER/CONTROL endpoint (`<endpoint>-adapter`) -- the single-instance ELECTION target:
+//!   [`claim_adapter_endpoint`] wins or loses ([`Error::SessionBusy`] on a loss now means "the
+//!   singleton SERVICE is already up; connect to it as an ADAPTER instead", not "tools
+//!   unavailable"). [`serve_adapters`] accepts speak-first sessions over the ALREADY-claimed
+//!   listener and demuxes each connection's session-hello ([`handle_adapter_connection`]) into the
+//!   SAME governance chokepoint every transport calls. [`relay_adapter`] is the thin ADAPTER's
+//!   mirror of [`relay_native_host`] on this endpoint: it sends the hello, then raw-relays its
+//!   stdio, never re-framing the data phase.
 
 use crate::transport::executor::{AttachOutcome, Browser};
 use crate::transport::native::host;
 use crate::{Error, Result};
+use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
 /// Default endpoint base name; override with `GHOSTLIGHT_ENDPOINT` (used by tests and advanced
@@ -30,6 +46,14 @@ const DEFAULT_ENDPOINT: &str = "org.sylin.ghostlight.v1";
 /// The endpoint name both roles use: the `GHOSTLIGHT_ENDPOINT` env override, else the default.
 pub fn default_endpoint() -> String {
     std::env::var("GHOSTLIGHT_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string())
+}
+
+/// The ADAPTER/CONTROL endpoint's name (ADR-0030 Decision 1; PINS.md SS1): the extension
+/// endpoint's base name with the literal suffix `-adapter`, then wrapped by the SAME
+/// `pipe_path`/`socket_path` helper the extension endpoint uses -- so a test-unique
+/// `GHOSTLIGHT_ENDPOINT` automatically makes BOTH endpoints unique.
+fn adapter_endpoint_name(endpoint: &str) -> String {
+    format!("{endpoint}-adapter")
 }
 
 /// native-host role: connect to the mcp-server endpoint and relay frames between Chrome native
@@ -77,6 +101,96 @@ pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) 
     }
     debug.ipc_note("relay ended");
     Ok(())
+}
+
+/// The thin ADAPTER role (ADR-0030 Decision 1): dial the SERVICE's ADAPTER/CONTROL endpoint,
+/// send the `adapter` session-hello as ONE 4-byte-LE FRAMED message, then become a RAW
+/// bidirectional byte relay between this process's stdio and the service stream until either
+/// side closes.
+///
+/// CRITICAL (PINS.md SS1 pin 3): the session-hello is the ONLY framed message on this wire. The
+/// DATA phase that follows is a RAW `tokio::io::copy` -- NEVER a `host::write_message`/
+/// `read_message` framed copy -- because everything after the hello is newline-delimited
+/// JSON-RPC, exactly what `serve_session`'s `BufReader::lines()` expects on the service side and
+/// what an MCP client writes on this side. Mirrors [`relay_native_host`] ONLY in lifecycle shape
+/// (the `select!` that exits on either side closing; deliberately no post-`select!`
+/// `shutdown().await`, which can hang forever on an already-dead Windows pipe): it NEVER frames
+/// the data phase the way `relay_native_host` does (that wire is framed end-to-end because it IS
+/// the Chrome native-messaging wire; this wire is framed for the hello only, then raw).
+///
+/// The GUID member is the H3 seam: an empty placeholder before H3 mints a real
+/// adapter-minted session GUID.
+pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
+    let adapter_endpoint = adapter_endpoint_name(endpoint);
+    let mut stream = connect(&adapter_endpoint).await?;
+    debug.ipc_note("connected to the service's adapter/control endpoint");
+
+    let hello = json!({
+        "hub": crate::hub::handshake::HUB_PROTO,
+        "role": crate::hub::handshake::ROLE_ADAPTER,
+        "guid": "",
+    });
+    let hello_bytes = serde_json::to_vec(&hello)
+        .map_err(|e| Error::NativeMessaging(format!("failed to encode the adapter hello: {e}")))?;
+    host::write_message(&mut stream, &hello_bytes).await?;
+
+    let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
+    let mut client_in = tokio::io::stdin();
+    let mut client_out = tokio::io::stdout();
+
+    tokio::select! {
+        _ = tokio::io::copy(&mut client_in, &mut ipc_write) => {}
+        _ = tokio::io::copy(&mut ipc_read, &mut client_out) => {}
+    }
+    debug.ipc_note("adapter relay ended");
+    Ok(())
+}
+
+/// Demux one ADAPTER/CONTROL connection (ADR-0030 Decision 1; PINS.md SS1): read the
+/// session-hello FIRST (safe here -- unlike the extension endpoint, this peer always speaks
+/// first) and route `"adapter"` into the SAME governance chokepoint every transport calls
+/// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is
+/// reserved until H8; an unknown or absent role is refused cleanly, never a panic. Runs entirely
+/// INSIDE the spawned per-connection task (never inline in the accept loop), so a silent peer
+/// cannot head-of-line-block admission of other adapters (ADR-0030 Decision 3).
+async fn handle_adapter_connection<S>(ctx: crate::hub::ServiceContext, mut stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let hello_bytes = match host::read_message(&mut stream).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            tracing::debug!("adapter/control connection closed before sending a session-hello");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read the adapter/control session-hello");
+            return;
+        }
+    };
+    let hello: Value = match serde_json::from_slice(&hello_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "malformed adapter/control session-hello; refusing");
+            return;
+        }
+    };
+    match hello.get("role").and_then(Value::as_str) {
+        Some(role) if role == crate::hub::handshake::ROLE_ADAPTER => {
+            if let Err(e) = crate::transport::mcp::server::serve_session(stream, ctx).await {
+                tracing::warn!(error = %e, "adapter session ended with an error");
+            }
+        }
+        Some(role) if role == crate::hub::handshake::ROLE_CONTROL => {
+            tracing::debug!("the control role is reserved until H8; refusing the connection");
+        }
+        other => {
+            tracing::warn!(
+                role = ?other,
+                "adapter/control connection sent an unknown or absent role; refusing"
+            );
+        }
+    }
 }
 
 /// Result of a one-shot, synchronous probe of the IPC endpoint (see [`probe_endpoint`]).
@@ -179,6 +293,78 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
                     tracing::debug!("dropped a stray connection; a session is already attached")
                 }
             }
+        });
+    }
+}
+
+/// The ADAPTER/CONTROL endpoint's platform listener handle (ADR-0030 Decision 1; PINS.md SS1
+/// pin 1): cfg-split like the rest of this module -- there is no unified `Listener` type.
+#[cfg(windows)]
+pub type AdapterListener = tokio::net::windows::named_pipe::NamedPipeServer;
+
+/// Claim the ADAPTER/CONTROL endpoint (Windows): the single-instance ELECTION target (ADR-0030
+/// Decision 1, Decision 8; PINS.md SS1 pin 1). Performs the SAME bind-with-stale-heal [`serve`]
+/// does today (`first_pipe_instance(true)`; ACCESS_DENIED / PIPE_BUSY -> [`Error::SessionBusy`])
+/// and returns the claimed, not-yet-connected first pipe instance on a win. The caller must NOT
+/// re-claim the name (a second claim here self-deadlocks) -- pass the returned listener straight
+/// to [`serve_adapters`].
+#[cfg(windows)]
+pub async fn claim_adapter_endpoint(endpoint: &str) -> Result<AdapterListener> {
+    let path = pipe_path(&adapter_endpoint_name(endpoint));
+    let security = win_security::OwnerOnly::build();
+    if security.is_none() {
+        tracing::warn!(
+            "could not build an owner-only pipe DACL for the adapter/control endpoint; falling \
+             back to the default DACL"
+        );
+    }
+
+    let server =
+        win_security::create_instance(&path, true, security.as_ref()).map_err(|e| {
+            match e.raw_os_error() {
+                Some(5) | Some(231) => Error::SessionBusy,
+                _ => Error::Ipc(format!(
+                    "cannot create adapter/control named pipe {path}: {e}"
+                )),
+            }
+        })?;
+    tracing::info!(
+        path,
+        "service owns the adapter/control named pipe (single instance)"
+    );
+    Ok(server)
+}
+
+/// Accept loop for the ADAPTER/CONTROL endpoint (Windows), over the ALREADY-claimed listener
+/// (never re-claims the name). Accept-ahead + spawn-per-connection, exactly like [`serve`]; the
+/// session-hello is read and demuxed INSIDE the spawned task ([`handle_adapter_connection`]),
+/// never inline, so a silent peer cannot head-of-line-block admission of other adapters
+/// (ADR-0030 Decision 3). Re-derives the pipe path from [`default_endpoint`] (the same
+/// process-wide endpoint [`claim_adapter_endpoint`] was called with) rather than taking it as a
+/// parameter, matching the two-argument `serve_adapters(ctx, listener)` shape.
+#[cfg(windows)]
+pub async fn serve_adapters(
+    ctx: crate::hub::ServiceContext,
+    mut server: AdapterListener,
+) -> Result<()> {
+    let path = pipe_path(&adapter_endpoint_name(&default_endpoint()));
+    let security = win_security::OwnerOnly::build();
+
+    loop {
+        server
+            .connect()
+            .await
+            .map_err(|e| Error::Ipc(format!("adapter/control pipe accept failed: {e}")))?;
+        let next = win_security::create_instance(&path, false, security.as_ref()).map_err(|e| {
+            Error::Ipc(format!(
+                "cannot create next adapter/control pipe instance: {e}"
+            ))
+        })?;
+        let connected = std::mem::replace(&mut server, next);
+        tracing::info!("adapter/control peer connected");
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            handle_adapter_connection(ctx, connected).await;
         });
     }
 }
@@ -397,6 +583,80 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
                 });
             }
             Err(e) => tracing::warn!(error = %e, "socket accept failed"),
+        }
+    }
+}
+
+/// The ADAPTER/CONTROL endpoint's platform listener handle (ADR-0030 Decision 1; PINS.md SS1
+/// pin 1): cfg-split like the rest of this module -- there is no unified `Listener` type.
+#[cfg(unix)]
+pub type AdapterListener = tokio::net::UnixListener;
+
+/// Claim the ADAPTER/CONTROL endpoint (Unix): the single-instance ELECTION target (ADR-0030
+/// Decision 1, Decision 8; PINS.md SS1 pin 1). Performs the SAME bind-with-stale-heal [`serve`]
+/// does today for the extension socket (on `AddrInUse`, probe-connect first: a live peer ->
+/// [`Error::SessionBusy`], a dead socket -> remove and rebind) and returns the bound listener on
+/// a win. The caller must NOT re-claim the name (a second bind here self-deadlocks: the process
+/// would probe-connect to its own listener and read `SessionBusy`) -- pass the returned listener
+/// straight to [`serve_adapters`].
+#[cfg(unix)]
+pub async fn claim_adapter_endpoint(endpoint: &str) -> Result<AdapterListener> {
+    use tokio::net::{UnixListener, UnixStream};
+    let path = socket_path(&adapter_endpoint_name(endpoint))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Ipc(format!("cannot create socket dir: {e}")))?;
+        set_mode(parent, 0o700);
+    }
+
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            if UnixStream::connect(&path).await.is_ok() {
+                return Err(Error::SessionBusy);
+            }
+            std::fs::remove_file(&path).ok();
+            UnixListener::bind(&path).map_err(|e| {
+                Error::Ipc(format!(
+                    "cannot bind adapter/control socket {}: {e}",
+                    path.display()
+                ))
+            })?
+        }
+        Err(e) => {
+            return Err(Error::Ipc(format!(
+                "cannot bind adapter/control socket {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    set_mode(&path, 0o600);
+    tracing::info!(
+        path = %path.display(),
+        "service owns the adapter/control unix socket (single instance)"
+    );
+    Ok(listener)
+}
+
+/// Accept loop for the ADAPTER/CONTROL endpoint (Unix), over the ALREADY-claimed listener. The
+/// session-hello is read and demuxed INSIDE the spawned task ([`handle_adapter_connection`]),
+/// never inline, so a silent peer cannot head-of-line-block admission of other adapters
+/// (ADR-0030 Decision 3).
+#[cfg(unix)]
+pub async fn serve_adapters(
+    ctx: crate::hub::ServiceContext,
+    listener: AdapterListener,
+) -> Result<()> {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tracing::info!("adapter/control peer connected");
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    handle_adapter_connection(ctx, stream).await;
+                });
+            }
+            Err(e) => tracing::warn!(error = %e, "adapter/control socket accept failed"),
         }
     }
 }

@@ -6,14 +6,15 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H2 (`H2-service-adapter-multiplex.md`), RE-ISSUED 2026-07-04.** H0 landed (pure code
-move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>` +
-`ServiceContext`, byte-identical single-session refactor). H2 previously BLOCKED (see the H2 Log
-entry) on a hello-first-vs-server-speaks-first deadlock; the frontier author has since AMENDED the
-design (ADR-0030 Decision 1 two-endpoint split; PINS.md SS1 rewritten; H2 + H3 re-authored;
-`ROLE_EXT` deleted; the extension endpoint stays hello-free and its tests pass UNMODIFIED). The tree
-is at the clean H1 baseline. Start H2 fresh against the re-authored task file and amended PINS.md
-SS1, following the per-task procedure in `BOOTSTRAP.md`.
+**Next task: H3 (`H3-session-identity-guid.md`).** H0 landed (pure code move; `src/hub`
+composition root extracted). H1 landed (transport-generic `serve_session<S>` + `ServiceContext`,
+byte-identical single-session refactor). H2 landed (persistent SERVICE + thin ADAPTER + genuine
+multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004 repealed at the
+MCP-client layer) -- the prior BLOCKED attempt's deadlock is resolved by the 2026-07-04 two-endpoint
+amendment (ADR-0030 Decision 1; PINS.md SS1); see the H2 Log entry below for what was built and its
+two logged deviations. The tree is green at the H2 baseline. Start H3 against its task file and
+PINS.md SS1 (the adapter-minted GUID is the empty placeholder H2 left in the session-hello), following
+the per-task procedure in `BOOTSTRAP.md`.
 
 ## Status
 
@@ -21,7 +22,7 @@ SS1, following the per-task procedure in `BOOTSTRAP.md`.
 | --- | --- | --- | --- | --- |
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
-| H2 | Persistent service + thin adapter + multiplex | pending | -- | RE-ISSUED after 2026-07-04 two-endpoint amendment; prior BLOCKED in Log |
+| H2 | Persistent service + thin adapter + multiplex | DONE | pending-hash | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
 | H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
@@ -204,6 +205,107 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   numbers logged (the implementation matched the task's Required Behavior to the letter; the
   conflict is between two of the task's own requirements, not a tree-fact mismatch this executor
   introduced).
+
+**RE-ISSUED RUN (2026-07-04, DONE).** Verified all as-of-authoring facts in the re-authored
+`H2-service-adapter-multiplex.md` and the amended `PINS.md` SS1 against the live tree: `src/hub`
+and `HubCore`-equivalent composition root present (H0), `serve_session<S>(stream, ctx)` +
+`ServiceContext` present (H1) with `next_id`/`pending` shared `Arc` fields on `Browser` confirmed
+at their as-of-authoring locations, `on_session_killed`'s single-consumer replace doc confirmed
+still in force, `Browser::attach`'s `AttachOutcome::AlreadyAttached` confirmed unchanged, and no
+`run_server` in `main.rs` (H0 already moved it). No STOP precondition fired.
+
+Implemented per the re-authored task + PINS.md SS1's two-endpoint split:
+- `src/hub/handshake.rs` (new): `HUB_PROTO = 1`, `ROLE_ADAPTER = "adapter"`, `ROLE_CONTROL =
+  "control"` -- no `ROLE_EXT`, per the amendment.
+- `src/transport/native/ipc.rs`: added `adapter_endpoint_name` (base name + literal `-adapter`
+  suffix, wrapped by the same `pipe_path`/`socket_path` helper); `AdapterListener` (cfg-split type
+  alias, no unified `Listener` type); `claim_adapter_endpoint` (cfg-split, same bind-with-stale-heal
+  `serve` already does, PINS.md SS1 pin 1); `serve_adapters(ctx, listener)` (accept-ahead +
+  spawn-per-connection on the ALREADY-claimed listener, never re-claiming the name); the shared
+  `handle_adapter_connection` (reads the framed hello INSIDE the spawned task via
+  `host::read_message`, demuxes `"adapter"` into `transport::mcp::server::serve_session`,
+  `"control"` cleanly refused, unknown/absent role refused, never a panic); `relay_adapter`
+  (dials the adapter/control endpoint, sends the framed `{"hub":1,"role":"adapter","guid":""}`
+  hello, then a RAW `tokio::io::copy` bidirectional relay -- PINS.md SS1 pin 3 -- mirroring
+  `relay_native_host`'s lifecycle shape only, never its framing). The EXTENSION endpoint's `serve`,
+  `connect`, `relay_native_host`, and every fake-extension test double are byte-for-byte unchanged.
+- `src/transport/executor.rs` (the one sanctioned executor change, ADR-0030 Decision 7): replaced
+  the single `kill_hook: Arc<Mutex<Option<KillHook>>>` with a `kill_hooks: Arc<Mutex<Vec<(u64,
+  KillHook)>>>` fan-out registry plus `next_hook_id`; `on_session_killed` now APPENDS a permanent
+  hook (doc comment updated from "replaces the first" to append semantics); added
+  `register_session_kill_hook` returning a `#[must_use]` `KillHookHandle` whose `Drop` removes
+  exactly its own entry; `handle_session_killed` now invokes every registered hook once per
+  false->true transition. `Browser::attach`'s single-physical-link rejection is untouched.
+- `src/transport/mcp/server.rs`: `serve_session`'s kill-hook registration swapped from
+  `on_session_killed` to `register_session_kill_hook`, held as `_kill_handle` for the whole
+  function body (session-scoped, deregisters on session end; `hold`/`killed`/`connected` stay
+  global on the one shared `Browser`).
+- `src/hub/mod.rs`: `ServiceContext` now `#[derive(Clone)]` (PINS.md SS1 pin 4; built ONCE via
+  `from_startup`, cloned per session, never re-run per session). `run_mcp_server` now calls
+  `ipc::claim_adapter_endpoint` FIRST; on win, `run_as_service` builds the `Browser`, spawns the
+  UNCHANGED extension `ipc::serve`, builds the shared `ServiceContext` once, spawns
+  `ipc::serve_adapters` over the already-claimed listener, and serves this process's own stdio as
+  the first session over the shared context (byte-identical lone-client extension path); on loss
+  (`Error::SessionBusy` from the adapter/control claim), `run_as_adapter` runs
+  `ipc::relay_adapter` instead of the old reject-2nd degrade-and-continue arm, which no longer
+  exists in this path (the loser never reaches the extension `serve` call at all).
+- `tests/hub_multiplex.rs` (new): `two_sessions_route_replies_independently` (two `Browser::call`
+  callers standing in for two sessions, per the task's own sanctioned lower-level alternative,
+  share one `Browser`/one fake extension; asserts neither ever receives the other's reply);
+  `one_kill_emits_one_audit_record_per_live_session` (three all-open `Governance`s with distinct
+  client names, three file-backed `Recorder`s, one shared `Browser`; asserts exactly 3
+  `session_killed` records, each with the 6-key `SessionEventRecord` order transcribed verbatim
+  from ADR-0030's pinned oracle, each `client.name` matching its own session);
+  `adapter_endpoint_two_phase_wire_round_trips` (spawns the real binary, connects to
+  `<endpoint>-adapter` via `ipc::connect`, sends the framed hello then a RAW newline JSON-RPC
+  `initialize` line, asserts a RAW newline-delimited reply with `id == 1` comes back -- fencing the
+  PINS.md SS1 pin 3 framing trap).
+
+D1: PINS.md SS1's "Pinned name: `ipc::relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink)
+    -> Result<()>` (the `endpoint` passed is the ADAPTER/CONTROL endpoint, not the extension
+    endpoint)" -> implemented `relay_adapter` to take the SAME plain BASE endpoint every other
+    call site threads (`ipc::default_endpoint()`), computing the `-adapter` suffix internally via
+    the same `adapter_endpoint_name()` helper `claim_adapter_endpoint`/`serve_adapters` use, rather
+    than requiring the caller to pre-suffix the argument -- because PINS.md SS1's own naming pin
+    ("wrapped by the SAME `pipe_path`/socket-path helper") centralizes the derivation in one place,
+    and every sibling adapter/control function already takes the base endpoint and suffixes
+    internally; making `relay_adapter` alone expect a pre-suffixed argument would be an
+    inconsistent, easy-to-misuse convention that no pinned test distinguishes from this reading
+    either way (the resulting wire bytes and endpoint paths are identical). Impact on later tasks:
+    none -- H6's spawn-on-demand call site should keep passing the plain base endpoint to
+    `relay_adapter`, exactly as H2's own `run_as_adapter` does.
+D2: the task's prose names the new acceptor `ipc::serve_adapters(ctx, listener)` (two arguments)
+    -> implemented exactly that two-argument signature on both platforms (an earlier draft added a
+    third `endpoint: &str` parameter so the Windows accept-ahead loop could re-create pipe
+    instances, then was simplified to re-derive the same path via `default_endpoint()` internally,
+    since that is already the single source of truth for the process's one endpoint name) --
+    because the task's own text is closer to a two-argument shape than the explicitly-labeled
+    "Pinned name:" bullet is for `relay_adapter`, and re-deriving avoids threading an extra
+    parameter through every call site for no behavioral difference. Impact on later tasks: none --
+    H6/H8 call sites should keep calling `ipc::serve_adapters(ctx, listener)` with no endpoint
+    argument.
+
+Verification: all four commands passed for real. `cargo build --all-targets` clean.
+`cargo test --test hub_multiplex --test mcp_protocol --test peer_death --test all_open_golden
+--test tool_schema_fidelity --test audit_recorder --test architecture` all green (26 tests across
+the seven suites); `cargo test -p ghostlight --lib executor` green (17/17, including
+`kill_hook_fires_exactly_once_per_transition` and
+`a_second_attach_is_rejected_without_disturbing_the_live_session`); the full `cargo test` is green
+(423 lib tests + every integration suite, 0 failed). `cargo clippy --all-targets -- -D warnings`
+clean. `cargo fmt --all -- --check` clean (after running `cargo fmt --all` twice to normalize
+wrapping introduced by the edits and by the D2 simplification -- whitespace only, no semantic
+change, not logged as its own numbered deviation). Sacred tests
+(`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`,
+`tests/architecture.rs::governance_core_has_no_forbidden_back_edges`) green and byte-unmodified;
+`git diff --stat` shows only `src/hub/mod.rs`, `src/transport/executor.rs`,
+`src/transport/mcp/server.rs`, `src/transport/native/ipc.rs` modified plus the two new files
+(`src/hub/handshake.rs`, `tests/hub_multiplex.rs`). No NEVER-touch fence moved; the sanctioned
+kill-hook-fan-out exception to the executor fence, and the sanctioned two-endpoint-split scoping of
+the extension fence, are the only fences touched, both as pinned.
+- Note: as in H0/H1, `CARGO_TARGET_DIR` was pointed at a scratch directory (not the repo's
+  `target/`) because three live `ghostlight.exe` processes (this environment's own dogfooded
+  MCP/native-host session) held the repo's `target/debug/ghostlight.exe`; build-artifact routing
+  only, not a source or test change.
 
 ### H3
 - (not started)

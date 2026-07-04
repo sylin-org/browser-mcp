@@ -166,19 +166,26 @@ where
     let governance_slot: Arc<Mutex<Arc<Governance>>> = Arc::new(Mutex::new(governance));
 
     // Panic kill switch (g11, ADR-0018 step 2): the extension signals `session_killed` once it
-    // has severed its own debugger attachments; the binary writes exactly one audit
+    // has severed its own debugger attachments; this session writes exactly one audit
     // session-event record per kill (`tracing::info!` fires regardless of `audit.enabled`, so
     // the operational log always has the event). Reads the CURRENT snapshot at kill time
     // (ADR-0025 Decision 6: holds and the kill switch are orthogonal to the manifest, but the
     // client identity every rebuilt `Governance` carries forward is easiest to prove correct by
     // always reading the live slot rather than a startup-time capture).
-    browser.on_session_killed({
+    //
+    // H2 (ADR-0030 Decision 7): registered via the SESSION-SCOPED, removable
+    // `register_session_kill_hook` (not the permanent `on_session_killed`), so this session's
+    // hook fires on every kill (global: `hold`/`killed`/`connected` all latch on the ONE shared
+    // `Browser`, never per-session) but deregisters when this session ends -- a dead session
+    // records nothing on a later kill. `_kill_handle` is held for the whole function body so the
+    // registration outlives every kill this session may observe.
+    let _kill_handle = {
         let governance_slot = Arc::clone(&governance_slot);
-        move || {
+        browser.register_session_kill_hook(move || {
             current_governance(&governance_slot).record_session_killed();
             tracing::info!("session killed by the user");
-        }
-    });
+        })
+    };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
 
