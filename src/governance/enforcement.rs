@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Per-call grant enforcement (ADR-0022 Decision 5): the pure decision core. This IS the
 //! `PolicyDecisionPoint::decide` the a2 seam anticipated; [`LocalPdp`] is the concrete,
 //! in-process implementation `Governance::governed` uses once a manifest is active, alongside

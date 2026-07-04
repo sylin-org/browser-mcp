@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G16 `policy explain`: spawns the built binary
 //! (`env!("CARGO_BIN_EXE_ghostlight")`, the pattern `tests/mcp_protocol.rs` line 22 uses) and
 //! checks its stdout/stderr/exit code directly, since the renderer's own byte-for-byte

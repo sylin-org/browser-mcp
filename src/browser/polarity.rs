@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Host polarity evaluation for schema-3 grants (ADR-0022 Decision 4). A grant's
 //! `hosts.allow` grants coverage, `hosts.deny` carves holes out of it, and the default is
 //! DENY: a host matched by neither list is [`HostRuleOutcome::Unmatched`]. Specificity

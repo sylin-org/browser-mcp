@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The ADR-0019 CLI surface over the layered configuration registry: `ghostlight config
 //! list/get/set`. Renders the resolved (value, source, locked) triple and writes the user
 //! layer only; layer resolution and value validation live in [`super::layers`] and

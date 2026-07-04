@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G17 `policy simulate`: spawns the built binary
 //! (`env!("CARGO_BIN_EXE_ghostlight")`, the pattern `tests/mcp_protocol.rs` uses) and checks
 //! its stdout/stderr/exit code directly. The pure replay/report core already has its own inline

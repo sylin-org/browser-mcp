@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Policy manifest -- the org policy / grants document (ADR-0020). Domain-agnostic core:
 //! generic over any policy doc, names no browser type.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The governance seam -- the S4 policy-decision-point / policy-enforcement-point contract.
 //!
 //! The decision is a PURE, serializable function so it can run in-process today and

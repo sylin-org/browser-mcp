@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Native messaging and inter-instance IPC.
 //!
 //! The **same executable** runs in two roles, selected at startup by launch context:

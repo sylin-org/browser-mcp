@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Self-registering installer: `ghostlight install` / `uninstall` / `doctor`.
 //!
 //! Registers the native-messaging host (Windows registry / macOS+Linux file drop) for detected

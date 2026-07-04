@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Debug / observability sink for the mcp-server role.
 //!
 //! When enabled (`--debug` or `GHOSTLIGHT_DEBUG=1`), the server records what it does at the three

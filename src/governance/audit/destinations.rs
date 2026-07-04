@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Where audit lines go: the default file path and the two write primitives (file, stderr).
 
 /// Default audit file path (shared format doc section 1.4): `dirs::data_local_dir()` joined

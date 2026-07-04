@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The `Browser` handle -- the mcp-server's view of the connected browser extension.
 //!
 //! A tool call becomes a framed request sent to the extension (through the native-host instance

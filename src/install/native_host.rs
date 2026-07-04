@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Native-messaging host registration: browser detection, the host manifest, and the per-OS
 //! registration target (Windows registry key / macOS+Linux file drop).
 //!

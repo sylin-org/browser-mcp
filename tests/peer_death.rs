@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Regression test for the IPC peer-death defect.
 //!
 //! Before the tokio-native transport migration, a force-killed mcp-server left the native-host as a

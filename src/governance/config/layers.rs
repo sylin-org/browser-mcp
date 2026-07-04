@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The ADR-0019 layer model (shared format doc section 2): resolve a single typed value per
 //! key from up to five precedence layers. Precedence, highest to lowest: org-mandatory, user,
 //! org-recommended, preset default, built-in Minimal. Layer 5 (the registry defaults) always

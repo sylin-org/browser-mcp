@@ -11,8 +11,8 @@ that task's single commit.
   f66fbf02ae4a3b54c8b9cf92a8f448519be0662a)
 - Baseline: `cargo test` (via `CARGO_TARGET_DIR=target/it`, see deviation in
   m01 entry) = 475 passed, 0 failed
-- Progress: m01 done
-- NEXT TASK: m02 (docs/tasks/maturity-1/m02-spdx-headers.md)
+- Progress: m01, m02 done
+- NEXT TASK: m03 (docs/tasks/maturity-1/m03-ci-workflows.md)
 - Authority: BOOTSTRAP.md, then the task prompt, then 00-design.md, then
   ADR-0026/0027
 - Invariants: tree green and clean between tasks; no push; ASCII diff scan per
@@ -53,6 +53,31 @@ that task's single commit.
   lines (no existing line changed). ASCII diff scan on staged changes: empty
   (clean). Baseline `cargo test` (isolated target dir): 475 passed, 0 failed.
   Spot-run `cargo test --test hot_reload`: 1 passed (org_policy_hot_swap_end_to_end).
+- Notes for the reviewer: none.
+
+### m02 per-file SPDX license headers -- 2026-07-03
+- Commit: (see this task's commit)
+- Files touched: 21 files under src/governance/ (LicenseRef-Ghostlight-Commercial
+  header), 29 non-governance .rs files under src/, 15 .rs files under tests/
+  (all except tests/tool_schema_fidelity.rs, untouched), 4 .js files directly
+  under extension/ (service-worker.js, content.js, agent-visual-indicator.js,
+  popup.js) -- all Apache-2.0 OR MIT header. 69 files total, 69 insertions,
+  0 deletions, 0 other changes. Plus docs/tasks/maturity-1/LEDGER.md.
+- Summary: Re-counted the in-scope file sets before editing (rule 7); counts
+  matched 00-design.md/the prompt exactly (21 governance, 29+15=44 Apache/MIT
+  engine files, 4 extension .js), so no recount deviation was needed. Inserted
+  the pinned SPDX header as line 1 of every in-scope file via a small Python
+  script that detects each file's existing newline convention (CRLF vs LF) and
+  reuses it for the header line, so no file's line-ending style changed.
+  tests/tool_schema_fidelity.rs was excluded from the file list from the start
+  (never modified).
+- Deviations from the prompt/design: none.
+- Verification: `cargo fmt --check` clean; `cargo clippy --all-targets -- -D
+  warnings` clean; `cargo test` -- 475 passed, 0 failed (unchanged from
+  baseline, comment-only change). Pinned rg assertions: governance count 21,
+  Apache/MIT count 44, extension count 4, tool_schema_fidelity.rs has no
+  header (rg exit 1), every match is on line 1 (rg -v ":1:" empty). ASCII diff
+  scan on staged changes: empty (clean).
 - Notes for the reviewer: none.
 
 ## RUN SUMMARY

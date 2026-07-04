@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Manifest identity (ADR-0020 commitment 5; shared format doc sections 4.1, 4.2). Every
 //! policy manifest carries a required `name`, a required `version`, and a SHA-256 content
 //! hash computed over its canonical bytes, so every logged decision is attributable to the

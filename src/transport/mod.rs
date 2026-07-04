@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Transport infra -- the composition-root I/O and protocol layer.
 //!
 //! This bounded context (see docs/design/ghostlight-service-architecture.md section 3)

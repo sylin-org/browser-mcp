@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Governance configuration -- the typed registry of policy keys (ADR-0019).
 //!
 //! The full policy engine (manifest parsing, grants, per-call enforcement; SPEC sec 4-5) is

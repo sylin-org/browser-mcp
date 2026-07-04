@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 // Ghostlight -- background service worker.
 //
 // Policy-free CDP executor + native-messaging endpoint + tab-group manager. It holds MECHANISM

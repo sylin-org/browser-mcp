@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G18 `policy init`: spawns the built binary
 //! (`env!("CARGO_BIN_EXE_ghostlight")`, the `tests/mcp_protocol.rs` pattern) with `--out`
 //! pointed at a per-test temp directory, so nothing outside the repository is ever touched.

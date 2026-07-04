@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Governance core -- the domain-agnostic policy layer.
 //!
 //! This bounded context (see docs/design/ghostlight-service-architecture.md section 3)

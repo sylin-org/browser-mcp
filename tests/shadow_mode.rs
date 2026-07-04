@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G15 shadow enforcement: the SAME denied call, under two manifests
 //! identical except for the top-level `mode`, blocks under `enforce` and runs-but-records
 //! under `observe`. No extension is ever connected (mirrors `tests/tool_enforcement.rs`'s own

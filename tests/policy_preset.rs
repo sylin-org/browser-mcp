@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Integration tests for G18 `config preset`: spawns the built binary
 //! (`env!("CARGO_BIN_EXE_ghostlight")`, the `tests/mcp_protocol.rs` pattern).
 //!

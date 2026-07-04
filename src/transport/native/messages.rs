@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The binary <-> extension wire protocol (reference documentation).
 //!
 //! Both directions carry UTF-8 JSON, one object per native message (Chrome frames each with a

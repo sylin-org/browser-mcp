@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Tool-call dispatch chokepoint -- the single Policy Enforcement Point (PEP).
 //!
 //! Every `tools/call` opens a per-call audit scope ([`Governance::begin`], producing a

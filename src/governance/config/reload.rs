@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The ADR-0019 hot-reload substrate: the in-force resolved [`Config`] held behind an atomic
 //! swap, a validate-then-swap re-resolve, a debounced file-watch on the three configuration
 //! sources (user config file, org policy file, active manifest source), and a change signal

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Deterministic plain-language policy rendering (ADR-0020 commitment 2, g16; grant rendering
 //! updated for ADR-0022 Decisions 3/4/8).
 //!

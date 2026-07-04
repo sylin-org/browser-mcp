@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! MCP JSON-RPC 2.0 response type and small result builders.
 //!
 //! Requests are parsed field-by-field from a raw `serde_json::Value` in `server::handle_line` (so

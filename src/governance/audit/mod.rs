@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The audit flight recorder (ADR-0018 step 1). Records are written by the binary only; the
 //! extension never logs (SPEC section 7 trust boundary). One record per tool call, plus one
 //! session-EVENT record per session event (g11: the panic kill switch); write failures never

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Tool registry and `tools/list` advertisement.
 //!
 //! The tool **schemas are sacred**: they are byte-identical to the reference's advertised surface

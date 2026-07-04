@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Committed-origin state (Fork 7a -- engine correctness).
 //!
 //! Tracks the true, **browser-process-committed** origin per frame, derived from CDP

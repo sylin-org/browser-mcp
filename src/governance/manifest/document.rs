@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! The schema-3 manifest document: format types, parsing, and validation (ADR-0022 Decisions
 //! 3/4/6). Domain-agnostic core: this module knows the manifest's SHAPE (grants, config
 //! entries, identity, mode) but resolves no host pattern grammar itself -- both `hosts.allow`/

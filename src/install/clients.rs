@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! MCP-client detection and config targets: which clients are installed, where their config lives,
 //! how we add our server entry (CLI vs safe JSON merge), and the dialect each uses (doc 11 B.*).
 

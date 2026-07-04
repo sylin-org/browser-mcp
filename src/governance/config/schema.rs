@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
 //! Generates the user-config-file JSON Schema and the markdown key reference from the typed
 //! key registry (ADR-0020 commitment 1). The registry ([`super::KEYS`]) is the single source
 //! of truth; both outputs are pinned by golden tests (`tests/config_schema_golden.rs`) so any

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The sacred-domains never-touch list (browser plugin; RECONCILIATION.md section 1, g08).
 //!
 //! `content.security.sacred_domains` (ADR-0018 step 2) is a user-authored deny-list, always
