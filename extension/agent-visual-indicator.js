@@ -478,5 +478,14 @@
     }
   });
 
+  // Action captions are a persisted, off-by-default preference (set in the extension popup): read it
+  // on load and react to changes, so the subtitle survives navigation without a per-page message.
+  try {
+    chrome.storage.local.get("ghostlight_captions", function (r) { captionsEnabled = !!(r && r.ghostlight_captions); });
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area === "local" && changes.ghostlight_captions) captionsEnabled = !!changes.ghostlight_captions.newValue;
+    });
+  } catch (e) { /* storage unavailable: captions stay off */ }
+
   window.addEventListener("beforeunload", () => { hideGlow(); });
 })();

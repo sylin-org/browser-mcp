@@ -54,6 +54,22 @@
     color: #fff;
     border: 1px solid #7f1d1d;
   }
+  #captions-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #captions-row input {
+    cursor: pointer;
+    margin: 0;
+  }
+  #captions-note {
+    font-size: 11px;
+    color: #666;
+    margin-top: 6px;
+  }
 </style>
 </head>
 <body>
@@ -66,6 +82,9 @@
   <hr>
   <div id="session-status">Loading...</div>
   <button id="session-button" disabled>Loading...</button>
+  <hr>
+  <label id="captions-row"><input type="checkbox" id="captions-toggle"> Show action captions</label>
+  <div id="captions-note">A subtitle naming each agent action. Off by default; handy when recording a demo.</div>
   <script src="popup.js"></script>
 </body>
 </html>
