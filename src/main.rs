@@ -241,6 +241,10 @@ struct DoctorArgs {
     /// Print extra detail.
     #[arg(long)]
     verbose: bool,
+    /// Repair, not just report: reap orphaned mcp-server sessions (alive process, exited client)
+    /// and clear stale state files. The only doctor mode that kills or deletes anything (ADR-0029).
+    #[arg(long)]
+    fix: bool,
 }
 
 #[derive(Debug, Args)]
@@ -287,7 +291,10 @@ impl From<UninstallArgs> for UninstallOptions {
 
 impl From<DoctorArgs> for DoctorOptions {
     fn from(a: DoctorArgs) -> Self {
-        DoctorOptions { verbose: a.verbose }
+        DoctorOptions {
+            verbose: a.verbose,
+            fix: a.fix,
+        }
     }
 }
 
@@ -462,6 +469,13 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     // parent-death watchdog below watches it; None (no resolvable parent) simply skips the
     // watchdog and leaves stdin EOF as the sole exit trigger, as before.
     let parent = ghostlight::proc::parent();
+
+    // Startup self-heal (ADR-0029 part 4): reap any orphaned predecessor -- a server whose client
+    // exited but that did not terminate (e.g. one built before the watchdog, or killed uncleanly)
+    // -- before we serve. Best-effort and safe (only parent-dead orphans; see doctor::reap): a
+    // no-op in a release build (no session registry) and when nothing is orphaned. Runs before the
+    // sink is enabled, so our own not-yet-written state file is never a self-reap candidate.
+    ghostlight::doctor::sweep_orphans();
 
     let sink = build_debug_sink(debug_on, "mcp-server");
     let rt = tokio::runtime::Runtime::new()?;
