@@ -739,6 +739,16 @@ function clickRipple(tabId, x, y, count, button) { sendToTab(tabId, { type: "AGE
 // A comet-trail dot along a drag path, and a soft shimmer on the focused field when typing.
 function dragTrail(tabId, x, y) { sendToTab(tabId, { type: "AGENT_DRAG_TRAIL", x, y }); }
 function typeShimmer(tabId) { sendToTab(tabId, { type: "AGENT_TYPE_SHIMMER" }); }
+// Extended vocabulary (the visual feedback dictionary): one treatment per action, all rendered by
+// agent-visual-indicator.js and all hidden from the agent's own screenshots.
+function targetGlow(tabId, x, y) { sendToTab(tabId, { type: "AGENT_TARGET_GLOW", x, y }); }
+function keystrokeCue(tabId, text, kind) { sendToTab(tabId, { type: "AGENT_KEYSTROKE", text, kind }); }
+function scrollCue(tabId, direction) { sendToTab(tabId, { type: "AGENT_SCROLL_CUE", direction }); }
+function readScan(tabId) { sendToTab(tabId, { type: "AGENT_READ_SCAN" }); }
+function navigatePill(tabId, url) { sendToTab(tabId, { type: "AGENT_NAVIGATE_PILL", url }); }
+function screenshotFx(tabId) { sendToTab(tabId, { type: "AGENT_SCREENSHOT_FX" }); }
+function zoomFrameCue(tabId, x0, y0, x1, y1) { sendToTab(tabId, { type: "AGENT_ZOOM_FRAME", x0, y0, x1, y1 }); }
+function waitPulse(tabId) { sendToTab(tabId, { type: "AGENT_WAIT_PULSE" }); }
 const { KEY_MAP, BUTTON_BITS, modifierBits, keyCode, VK_NAMED, VK_PUNCT, CODE_PUNCT, vkCode, SHIFT_BASE, charKeyInfo } = self.GhostlightKeys;
 // CLICK_GAP_MS (press/release + inter-click spacing) comes from lib/constants.js.
 async function click(tabId, x, y, opts) {
@@ -746,6 +756,7 @@ async function click(tabId, x, y, opts) {
   const bit = BUTTON_BITS[button] || 0;
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers, buttons: 0, force: 0 });
   clickRipple(tabId, x, y, clickCount, button);
+  targetGlow(tabId, x, y); // glow the element under the point -- confirm WHAT was acted on
   await sleep(CLICK_GAP_MS);
   // Real N-clicks are N press/release pairs with clickCount incrementing 1..N, not one pair with
   // clickCount set to N.
@@ -883,6 +894,7 @@ async function computer(a) {
     case "screenshot": {
       const caption = "Screenshot captured (jpeg).";
       const shot = await screenshot(tabId);
+      screenshotFx(tabId); // shutter flash + viewfinder, AFTER the capture (never in the image)
       return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
     }
     case "zoom": {
@@ -893,9 +905,11 @@ async function computer(a) {
         return text("zoom region is empty: x1 must be greater than x0 and y1 must be greater than y0.");
       const z = await zoomScreenshot(tabId, r);
       if (z.error) return text(z.error);
+      zoomFrameCue(tabId, z.x0, z.y0, z.x1, z.y1); // magnifier frame on the region, AFTER the capture
       return textImage(`Zoom region (${z.x0}, ${z.y0}) -> (${z.x1}, ${z.y1}) captured (jpeg${z.clamped ? "; clamped to the visible viewport" : ""}).`, z.base64);
     }
     case "wait": {
+      waitPulse(tabId);
       const s = Math.min(a.duration || 1, 30);
       await sleep(s * 1000);
       return text(`Waited ${s}s.`);
@@ -921,6 +935,7 @@ async function computer(a) {
       if (!a.text) return text("text is required for type.");
       await ensureAttached(tabId);
       typeShimmer(tabId);
+      keystrokeCue(tabId, a.text, "type");
       const chars = Array.from(a.text);
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
@@ -946,6 +961,7 @@ async function computer(a) {
     case "key": {
       if (!a.text) return text("text is required for key.");
       await ensureAttached(tabId);
+      keystrokeCue(tabId, a.text, "key");
       const repeat = Math.min(a.repeat || 1, 100);
       for (let i = 0; i < repeat; i++) {
         for (const combo of a.text.split(" ").filter(Boolean)) await pressKey(tabId, combo);
@@ -960,6 +976,7 @@ async function computer(a) {
       const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
       const before = await probeScrollState(tabId, c[0], c[1]);
       await moveCursor(tabId, c[0], c[1]);
+      scrollCue(tabId, dir);
       await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
       const scrolled = `Scrolled ${dir} by ${amount}.`;
       if (before === null) {
@@ -1068,21 +1085,25 @@ const handlers = {
     }
     await waitForLoad(tabId);
     const tab = await chrome.tabs.get(tabId);
+    navigatePill(tabId, tab.url); // destination pill on the freshly loaded page
     return text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
   },
   computer,
   async read_page(a) {
     const tabId = await effectiveTabId(a.tabId);
+    readScan(tabId);
     const r = await content(tabId, { type: "accessibilityTree", options: a });
     return text((r && r.result) || "Could not read the page.");
   },
   async get_page_text(a) {
     const tabId = await effectiveTabId(a.tabId);
+    readScan(tabId);
     const r = await content(tabId, { type: "pageText", max_chars: a.max_chars });
     return text((r && r.result) || "Could not extract page text.");
   },
   async find(a) {
     const tabId = await effectiveTabId(a.tabId);
+    readScan(tabId);
     const r = await content(tabId, { type: "find", query: a.query });
     const data = (r && r.result) || { results: [] };
     const results = data.results || [];
