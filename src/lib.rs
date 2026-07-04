@@ -18,6 +18,7 @@ pub mod debug;
 pub mod doctor;
 pub mod error;
 pub mod governance;
+pub mod hub;
 pub mod install;
 pub mod origin;
 pub mod proc;
