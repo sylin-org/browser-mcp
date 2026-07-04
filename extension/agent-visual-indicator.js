@@ -250,6 +250,7 @@
   // flash is the one that fires only AFTER a capture. -----
   const CHEV = "<svg width='40' height='24' viewBox='0 0 40 24' fill='none' aria-hidden='true'>" +
     "<path d='M6 6 L20 18 L34 6' stroke='" + SKY + "' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/></svg>";
+  let effectsEnabled = true; // master switch (options page); default on
   let captionsEnabled = false;
   let captionEl = null;
 
@@ -437,6 +438,27 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    // Master switch: with effects off, swallow every render message (capture-management and the
+    // caption preference still work; non-ours messages fall through to content.js below).
+    if (!effectsEnabled) {
+      switch (msg && msg.type) {
+        case "UPDATE_PHANTOM_CURSOR":
+        case "AGENT_CLICK_RIPPLE":
+        case "AGENT_DRAG_TRAIL":
+        case "AGENT_TYPE_SHIMMER":
+        case "AGENT_TARGET_GLOW":
+        case "AGENT_KEYSTROKE":
+        case "AGENT_SCROLL_CUE":
+        case "AGENT_READ_SCAN":
+        case "AGENT_NAVIGATE_PILL":
+        case "AGENT_SCREENSHOT_FX":
+        case "AGENT_ZOOM_FRAME":
+        case "AGENT_WAIT_PULSE":
+        case "SHOW_AGENT_INDICATORS":
+          sendResponse({ success: true });
+          return true;
+      }
+    }
     switch (msg && msg.type) {
       case "UPDATE_PHANTOM_CURSOR":
         moveCursor(msg.x, msg.y).then(() => sendResponse({ success: true }));
@@ -478,14 +500,22 @@
     }
   });
 
-  // Action captions are a persisted, off-by-default preference (set in the extension popup): read it
-  // on load and react to changes, so the subtitle survives navigation without a per-page message.
+  // Visual-feedback preferences (extension options / popup): the effects master switch (default on)
+  // and the captions subtitle (default off), read on load and reacted to live, so they survive
+  // navigation without a per-page message.
   try {
-    chrome.storage.local.get("ghostlight_captions", function (r) { captionsEnabled = !!(r && r.ghostlight_captions); });
-    chrome.storage.onChanged.addListener(function (changes, area) {
-      if (area === "local" && changes.ghostlight_captions) captionsEnabled = !!changes.ghostlight_captions.newValue;
+    chrome.storage.local.get(["ghostlight_effects", "ghostlight_captions"], function (r) {
+      if (r) {
+        effectsEnabled = r.ghostlight_effects !== false;
+        captionsEnabled = !!r.ghostlight_captions;
+      }
     });
-  } catch (e) { /* storage unavailable: captions stay off */ }
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== "local") return;
+      if (changes.ghostlight_effects) effectsEnabled = changes.ghostlight_effects.newValue !== false;
+      if (changes.ghostlight_captions) captionsEnabled = !!changes.ghostlight_captions.newValue;
+    });
+  } catch (e) { /* storage unavailable: effects on, captions off */ }
 
   window.addEventListener("beforeunload", () => { hideGlow(); });
 })();

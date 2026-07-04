@@ -90,3 +90,7 @@ chrome.storage.local.get("ghostlight_captions", (r) => {
 captionsToggle.addEventListener("change", () => {
   chrome.storage.local.set({ ghostlight_captions: captionsToggle.checked });
 });
+
+document.getElementById("open-options").addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
+});
