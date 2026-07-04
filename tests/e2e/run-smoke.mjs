@@ -14,7 +14,7 @@ import {
   rmSync,
   existsSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -66,8 +66,6 @@ function startFixtureServer() {
 // before exec'ing the real binary.
 function buildProfile(endpoint, binaryPath) {
   const userDataDir = mkdtempSync(path.join(tmpdir(), "ghostlight-e2e-"));
-  const nmhDir = path.join(userDataDir, "NativeMessagingHosts");
-  mkdirSync(nmhDir, { recursive: true });
 
   const wrapperPath = path.join(userDataDir, "ghostlight-wrapper.sh");
   const wrapperBody = `#!/bin/sh\nexport GHOSTLIGHT_ENDPOINT=${endpoint}\nexec "${binaryPath}" "$@"\n`;
@@ -78,7 +76,6 @@ function buildProfile(endpoint, binaryPath) {
     // best-effort on platforms without POSIX permission bits (Windows dry-run plan only)
   }
 
-  const manifestPath = path.join(nmhDir, "org.sylin.ghostlight.json");
   const manifest = {
     name: "org.sylin.ghostlight",
     description: "Ghostlight native messaging host",
@@ -86,9 +83,33 @@ function buildProfile(endpoint, binaryPath) {
     type: "stdio",
     allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
   };
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  const manifestJson = JSON.stringify(manifest, null, 2) + "\n";
 
-  return { userDataDir, wrapperPath, manifestPath };
+  // Chromium on Linux/macOS looks up native-messaging host manifests in fixed
+  // per-user config directories, NOT relative to --user-data-dir (unlike Windows,
+  // which uses the registry). We therefore write the manifest to every plausible
+  // location: the user-data-dir (harmless), plus the Chromium and Chrome per-user
+  // dirs under $HOME/.config (Linux) and $HOME/Library/Application Support (macOS).
+  const candidateDirs = [
+    path.join(userDataDir, "NativeMessagingHosts"),
+    path.join(homedir(), ".config", "chromium", "NativeMessagingHosts"),
+    path.join(homedir(), ".config", "google-chrome", "NativeMessagingHosts"),
+    path.join(homedir(), "Library", "Application Support", "Chromium", "NativeMessagingHosts"),
+    path.join(homedir(), "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts"),
+  ];
+  const manifestPaths = [];
+  for (const dir of candidateDirs) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      const p = path.join(dir, "org.sylin.ghostlight.json");
+      writeFileSync(p, manifestJson);
+      manifestPaths.push(p);
+    } catch {
+      // best-effort: a location we cannot write (e.g. wrong platform) is skipped
+    }
+  }
+
+  return { userDataDir, wrapperPath, manifestPath: manifestPaths[0], manifestPaths };
 }
 
 function cleanupProfile(userDataDir) {
@@ -226,7 +247,19 @@ async function runLive(binaryPath, endpoint) {
   // Dynamic import: playwright is a devDependency of tests/e2e/, not needed for --dry-run.
   const { chromium } = await import("playwright");
 
+  // Capture page + service-worker console so a native-messaging connect failure
+  // (the extension logs chrome.runtime.lastError) is visible in the CI log.
+  const browserLogs = [];
+  const attachConsole = (ctx) => {
+    try {
+      ctx.on("console", (m) => browserLogs.push(`[${m.type()}] ${m.text()}`));
+    } catch {
+      // console events may not surface for service workers on this Playwright version
+    }
+  };
+
   let context = await launchContext(chromium, userDataDir, true);
+  attachConsole(context);
   let sw = await waitForServiceWorker(context, 15000);
   if (!sw) {
     await context.close().catch(() => {});
@@ -235,6 +268,7 @@ async function runLive(binaryPath, endpoint) {
       reExecUnderXvfb(); // never returns
     }
     context = await launchContext(chromium, userDataDir, false);
+    attachConsole(context);
     sw = await waitForServiceWorker(context, 15000);
   }
   if (!sw) {
@@ -338,6 +372,11 @@ async function runLive(binaryPath, endpoint) {
     console.log("smoke: ok");
     process.exit(0);
   } catch (err) {
+    if (browserLogs.length) {
+      console.error("--- browser/extension console (last 40 lines) ---");
+      for (const line of browserLogs.slice(-40)) console.error(line);
+      console.error("--- end console ---");
+    }
     await cleanup();
     fail(err && err.message ? err.message : String(err));
   }
