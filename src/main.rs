@@ -479,29 +479,33 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
 
     let sink = build_debug_sink(debug_on, "mcp-server");
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move {
-        let browser = Browser::with_debug(sink.clone());
-        let endpoint = ipc::default_endpoint();
 
-        // Parent-death watchdog (ADR-0029): stdin EOF is the intended shutdown signal, but on
-        // Windows a killed (not cleanly closed) client can leave our stdin read parked forever, so
-        // the read loop would never end and the process would orphan, holding the IPC endpoint. If
-        // the parent exits, flush observability and exit directly -- process::exit does not join the
-        // parked stdin thread (the reason the native-host role exits the same way), and it releases
-        // the endpoint for the next session.
+    // Single shutdown coordinator (ADR-0029). Every shutdown trigger is a pure detector that reports
+    // to `shutdown`; the one ordered teardown runs exactly once, below. No detector tears down or
+    // exits on its own -- that is the single point of concern the design centers on.
+    let block_sink = sink.clone();
+    let code = rt.block_on(async move {
+        let browser = Browser::with_debug(block_sink);
+        let endpoint = ipc::default_endpoint();
+        let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        // Detector: parent-death watchdog. stdin EOF is the intended shutdown signal, but on Windows
+        // a killed (not cleanly closed) client can leave our stdin read parked forever, so the read
+        // loop alone would never notice the client is gone. The watchdog signals shutdown when the
+        // parent process exits; it only signals -- the coordinator does the teardown.
         if let Some(parent) = parent {
-            let sink = sink.clone();
+            let shutdown = shutdown.clone();
             tokio::spawn(async move {
                 ghostlight::transport::watchdog::wait_until_orphaned(parent).await;
                 tracing::warn!(
                     parent_pid = parent.pid,
-                    "MCP client exited; ghostlight mcp-server shutting down"
+                    "MCP client exited; ordering shutdown"
                 );
-                sink.flush();
-                std::process::exit(0);
+                shutdown.notify_one();
             });
         }
 
+        // The browser IPC endpoint: native-host connections attach here for the session's life.
         tokio::spawn({
             let browser = browser.clone();
             async move {
@@ -515,11 +519,31 @@ fn run_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
                 }
             }
         });
-        let result = ghostlight::mcp::server::run(browser, loaded_policy, user_source).await;
-        sink.flush(); // final snapshot after stdin closes
-        result
-    })?;
-    Ok(())
+
+        // The coordinator: whichever shutdown trigger fires first lands here. stdin EOF makes
+        // `server::run` return (after its own internal task cleanup); a detector signal arrives on
+        // `shutdown`. Both paths fall through to the single teardown below.
+        tokio::select! {
+            result = ghostlight::mcp::server::run(browser, loaded_policy, user_source) => {
+                match result {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        tracing::error!(error = %e, "mcp-server loop ended with an error");
+                        1
+                    }
+                }
+            }
+            _ = shutdown.notified() => 0,
+        }
+    });
+
+    // The single ordered teardown. process::exit rather than unwinding: on a detector-triggered
+    // shutdown the stdin read may still be parked in a blocking ReadFile, and dropping the runtime
+    // would hang forever trying to join that thread (the same reason the native-host role exits
+    // directly). Flush the final observability snapshot first; exiting then releases the IPC
+    // endpoint for the next session.
+    sink.flush();
+    std::process::exit(code)
 }
 
 /// Build the observability sink for `role` ("mcp-server" or "native-host"). Debug-off yields a

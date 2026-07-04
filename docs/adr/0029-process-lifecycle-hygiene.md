@@ -37,18 +37,33 @@ Make the server self-terminating, make staleness legible, and give the user a on
 repair. Four parts, prioritized by invisibility (a user should never learn the word
 "zombie").
 
-1. **Parent-death watchdog (the primary fix).** At mcp-server startup, record the parent
-   process and poll its liveness on a light interval. When the parent is gone, shut the
-   server down (flush observability, then exit), releasing the endpoint. This is
-   self-contained -- no cross-process coordination, no registry -- and works in every mode.
-   It is a second exit trigger alongside stdin EOF, not a replacement: whichever fires
-   first ends the process. Platform mechanism lives behind a small `crate::proc` seam:
-   - Windows: the parent pid (one CreateToolhelp32Snapshot walk at startup) plus the
-     parent's creation time (GetProcessTimes). "Orphaned" means that pid is no longer alive
-     with the same creation time, so a reused pid reads as dead, not alive.
+1. **One shutdown coordinator, many detectors (the primary fix).** Shutdown is a single point
+   of concern, not spread across the code. Every trigger is a pure *detector* that reports to
+   one coordinator; the coordinator runs the ordered teardown (flush observability, then exit,
+   releasing the endpoint) exactly once. No detector tears down or exits on its own. The
+   detectors are stdin EOF (the MCP read loop returning) and the **parent-death watchdog**: at
+   startup it records the parent process and polls its liveness on a light interval, signalling
+   the coordinator once the parent is gone. The teardown uses `process::exit`, not an unwind,
+   because a detector-triggered shutdown can leave the stdin read parked in a blocking ReadFile,
+   and dropping the runtime would hang joining that thread (the same reason the native-host role
+   exits directly). Detecting the parent lives behind a small `crate::proc` seam:
+   - Windows: the parent pid (one CreateToolhelp32Snapshot walk at startup) plus the parent's
+     creation time (GetProcessTimes). "Orphaned" means that pid is no longer *running* with the
+     same creation time, so a reused pid reads as dead, not alive.
    - Unix: the original `getppid()`. "Orphaned" means `getppid()` no longer equals it (the
-     kernel reparents an orphan to init/launchd). No pid-reuse hazard, since getppid
-     reflects the real current parent.
+     kernel reparents an orphan to init/launchd). No pid-reuse hazard, since getppid reflects
+     the real current parent.
+
+   **Liveness is the termination signal, not object existence (a correctness landmine).** A
+   Windows process object stays queryable via `OpenProcess` for as long as *any* handle to it is
+   open, and a parent holds handles to its children -- so "OpenProcess succeeds" does NOT mean
+   "running". The MCP client's own parent (e.g. VS Code) holds the client's handle, so a naive
+   existence check would see a dead client as alive and the watchdog would never fire in
+   production. `crate::proc` therefore tests liveness with `WaitForSingleObject(handle, 0)`: a
+   process handle becomes signalled on termination and every handle observes it, so a
+   terminated-but-held process correctly reads as dead. This is pinned by a regression test
+   (`terminated_process_reads_as_dead_even_while_a_handle_is_held`). Do not "simplify" liveness
+   back to an OpenProcess existence check.
 
 2. **Liveness-aware doctor.** `doctor` cross-references each recorded session's pid against
    the OS: a dead pid is labelled "exited" (informational, not a problem), a live pid whose

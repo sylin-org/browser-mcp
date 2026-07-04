@@ -40,9 +40,13 @@ pub fn parent() -> Option<ProcId> {
     imp::parent()
 }
 
-/// Whether any process with this pid currently exists (ignores creation time). `false` for pid 0.
+/// Whether a process with this pid is currently **running** (ignores creation time). `false` for
+/// pid 0, and -- crucially -- `false` for a process that has terminated but whose object is still
+/// held open by another handle (a parent holds handles to its children). This asks "is it running?"
+/// via the OS termination signal, not "does its object exist?", so a dead-but-held process reads as
+/// dead. See [`imp::is_running`].
 pub fn pid_exists(pid: u32) -> bool {
-    pid != 0 && imp::pid_exists(pid)
+    pid != 0 && imp::is_running(pid)
 }
 
 /// A live pid's creation time, or `None` if the pid is not alive or the platform does not record it.
@@ -59,16 +63,20 @@ pub fn terminate(pid: u32) -> bool {
     pid != 0 && imp::terminate(pid)
 }
 
-/// Whether `proc` still names the same live process: pid alive AND, when a creation time is known,
-/// still matching it (so a reused pid reads as dead rather than alive).
+/// Whether `proc` still names the same **running** process: it is running (not terminated -- see
+/// [`pid_exists`] for why "running" is stronger than "object exists") AND, when a creation time is
+/// known, still matching it (so a reused pid reads as a different, unrelated process, hence dead).
 pub fn is_alive(proc: ProcId) -> bool {
     if proc.pid == 0 {
+        return false;
+    }
+    if !imp::is_running(proc.pid) {
         return false;
     }
     if proc.created != 0 {
         creation_time(proc.pid) == Some(proc.created)
     } else {
-        pid_exists(proc.pid)
+        true
     }
 }
 
@@ -101,9 +109,15 @@ mod imp {
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_TERMINATE,
+        GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
     };
+
+    /// SYNCHRONIZE access (to wait on a process handle) and the WaitForSingleObject "still running"
+    /// result, defined locally as their stable Win32 values so this does not depend on which
+    /// windows-sys feature module happens to export each constant.
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
     fn filetime_to_u64(ft: FILETIME) -> u64 {
         ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64)
@@ -144,18 +158,25 @@ mod imp {
         })
     }
 
-    pub(super) fn pid_exists(pid: u32) -> bool {
-        // Safety: OpenProcess returns a null handle on failure; we close a non-null one immediately.
+    pub(super) fn is_running(pid: u32) -> bool {
+        // Safety: handle checked for null and closed on every path. The key correctness point: a
+        // process object stays queryable via OpenProcess as long as ANY handle to it is open, and a
+        // parent holds handles to its children -- so OpenProcess succeeding does NOT mean the process
+        // is running. WaitForSingleObject(handle, 0) asks the OS the right question: the process
+        // handle becomes signaled (WAIT_OBJECT_0) once the process terminates and stays signaled;
+        // WAIT_TIMEOUT means it is still running. Every handle observes the signal, regardless of who
+        // holds one, so a terminated-but-held process correctly reads as not running.
         unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if !handle.is_null() {
-                CloseHandle(handle);
-                return true;
+            let handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // Not openable: a genuinely gone process, or (rare, and never for our same-user
+                // targets) access denied, which we treat as still-present rather than risk a false
+                // "dead" that could strand a session.
+                return GetLastError() == ERROR_ACCESS_DENIED;
             }
-            // Access-denied means the process exists but is not queryable by us (e.g. a higher
-            // integrity level); treat it as alive. Any other error (typically invalid parameter for
-            // a non-existent pid) means dead. Our own targets are same-user and never hit this.
-            GetLastError() == ERROR_ACCESS_DENIED
+            let wait = WaitForSingleObject(handle, 0);
+            CloseHandle(handle);
+            wait == WAIT_TIMEOUT
         }
     }
 
@@ -219,10 +240,12 @@ mod imp {
         })
     }
 
-    pub(super) fn pid_exists(pid: u32) -> bool {
+    pub(super) fn is_running(pid: u32) -> bool {
         // kill(pid, 0) performs the permission/existence checks without sending a signal: Ok(0)
         // means it exists and we may signal it; EPERM means it exists but we may not; ESRCH means no
-        // such process. Safety: kill is a plain libc call with no memory arguments.
+        // such process. On Unix an orphaned child is reparented to init and reaped, so a stale
+        // terminated entry does not linger the way a handle-held Windows object can. Safety: kill is
+        // a plain libc call with no memory arguments.
         let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
         if rc == 0 {
             return true;
@@ -314,6 +337,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(gone, "the killed+reaped pid no longer exists");
+    }
+
+    /// The bug that broke the watchdog live-test: on Windows a terminated process's object stays
+    /// queryable via OpenProcess while ANY handle to it is open, and a parent holds handles to its
+    /// children (VS Code holds the MCP client's handle). Liveness must reflect the termination
+    /// SIGNAL, not object existence -- so a killed child whose `std::process::Child` handle we
+    /// deliberately keep open must still read as dead. Had this test existed first, the OpenProcess-
+    /// success liveness would have failed it immediately.
+    #[test]
+    fn terminated_process_reads_as_dead_even_while_a_handle_is_held() {
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        let id = ProcId::of(pid);
+        assert!(is_alive(id), "alive right after spawn");
+
+        child.kill().expect("terminate the child");
+        child.wait().expect("reap the child's exit status");
+        // Deliberately do NOT drop `child`: on Windows it keeps the process handle open, exactly the
+        // parent-holds-child-handle case that made a dead process look alive.
+        assert!(
+            !is_alive(id),
+            "a terminated process must read as dead even while its handle is held"
+        );
+        assert!(
+            !pid_exists(pid),
+            "pid_exists must reflect actual termination, not object existence"
+        );
+        drop(child); // release the handle only now
     }
 
     /// The Windows creation-time discriminator: a live pid carrying the WRONG creation time (as a
