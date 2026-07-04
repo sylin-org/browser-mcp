@@ -27,11 +27,17 @@ docs/business/PLAN.md). Check items off in place; add dates.
 
 ## Launch window (Phase 1)
 
+- [x] First tagged release -- **v0.1.0 shipped 2026-07-04**
+      (https://github.com/sylin-org/ghostlight/releases/tag/v0.1.0): 4 platform binaries
+      + extension zip, checksums, signed build-provenance. CI/release infra harvested
+      from Koi. (Agent-driven; listed here only as the milestone marker.)
 - [ ] GitHub Pages site skeleton + sylin.org DNS (half a day; content arrives from the
       frontier queue).
 - [ ] Stripe account; draft (unpublished) payment links for team and enterprise.
-- [ ] Chrome Web Store developer account ($5 one-time) and submit the prepared CWS
-      package (scripts/package-extension.ps1 output).
+- [ ] **Chrome Web Store listing (IN PROGRESS, step by step).** Needs the $5 one-time
+      developer account (founder action), then submit the package
+      (scripts/package-extension.ps1 output). Prep already in place: extension/icons/,
+      docs/legal/PRIVACY.md, docs/legal/PERMISSION_JUSTIFICATIONS.md.
 - [ ] Record the demo: scripts/live-demo.ps1 under OBS, cut to ~90 seconds, export GIF
       for the README and MP4 for the site. (1 evening.)
 - [ ] Write the Show HN post yourself (founder voice; HN detects ghostwriting). Post
@@ -67,3 +73,9 @@ docs/business/PLAN.md). Check items off in place; add dates.
   ADR-0028 initial prices as list), SECURITY.md, three guides, COMPARISON.md, README
   refresh. First live CI run: core suite green on all three OSes; extension-unit fixed
   forward; e2e-smoke quarantined (continue-on-error) pending log access via gh auth.
+- 2026-07-04: **v0.1.0 SHIPPED.** gh CLI authenticated (via Ghostlight dogfooding the
+  browser to mint a token). CI hardened (least-privilege, --locked, cargo-audit, per-OS
+  cache) + dependabot; release.yml overhauled (dry-run, archives, checksums, provenance,
+  GitHub Release) -- all harvested from Koi. main reconciled with dev and is now the
+  release branch; dev is trunk. e2e-smoke stays quarantined (native-messaging in headless
+  Playwright, a design question). NEXT: Chrome Web Store listing, step by step.
