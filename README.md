@@ -173,7 +173,9 @@ The model in brief:
 
 - **Capabilities, not tool lists.** Every action is classified `read` / `action` / `write` /
   `execute` (some require none). Grants allow capabilities on hosts; the classification is intrinsic
-  to each action.
+  to each action. This vocabulary is published as an open, vendor-neutral spec -- the
+  [RAWX capability model](open-spec/rawx-capability-model.md) (`rwx` for agents) -- so it can be
+  adopted beyond Ghostlight.
 - **Host polarity.** A grant's `allow` patterns can carry `deny` carve-outs, so "everywhere except
   this site" is expressible directly.
 - **Sacred domains.** A never-touch list denies every tool on a matching tab, regardless of grants.
@@ -256,6 +258,16 @@ single dispatch chokepoint inside the binary without touching any tool code.
   first tagged release, the Chrome Web Store listing, offline license keys (see
   [PRICING.md](PRICING.md)), and the `http` audit destination.
 
+## Direction
+
+The governance engine -- capability grants, host polarity, audit, layered configuration, and
+licensing -- is domain-agnostic by design; the browser is its first adapter. The same
+policy-and-audit spine is what any future adapter would reuse, which is why this is the first of a
+planned family rather than a one-off. The vocabulary that engine speaks is published for the whole
+ecosystem as the [RAWX capability model](open-spec/rawx-capability-model.md): the durable asset in
+agent governance is the way you classify and grant capabilities, not the mechanism that carries
+them, and mechanisms change.
+
 ## Documentation
 
 | Doc | What it is |
@@ -270,6 +282,7 @@ single dispatch chokepoint inside the binary without touching any tool code.
 | [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. |
 | [docs/adr/](docs/adr/) | Architecture Decision Records: the reasons behind the design and how it evolved. |
 | [docs/design/](docs/design/) | Forward-looking design discussions (family and service architecture). |
+| [open-spec/](open-spec/) | Open, vendor-neutral specifications we publish for the ecosystem (starts with the RAWX capability model). |
 | [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md) | Governing design principles. |
 
 ## Positioning and prior art

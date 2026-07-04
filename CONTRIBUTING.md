@@ -1,16 +1,14 @@
 # Contributing, questions, and requests
 
-Ghostlight is built in the open by a very small team (currently: one founder and a
-frontier-model collaborator; the ADRs and docs/business/ show the working process).
 Input is genuinely wanted -- questions, requests, and contributions have three lanes.
 
 ## Where to reach us
 
-| Lane | Use it for |
-|---|---|
-| [GitHub Issues](../../issues) | Bugs, defects, anything reproducible. |
-| [GitHub Discussions](../../discussions) | Questions, ideas, feature requests, policy patterns, show-and-tell. |
-| hello@sylin.org | Anything that cannot be public: security reports (see [SECURITY.md](SECURITY.md)), licensing and founding-program matters, or a compliance team that cannot post publicly. |
+| Lane                                    | Use it for                                                                                                                                                                 |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [GitHub Issues](../../issues)           | Bugs, defects, anything reproducible.                                                                                                                                      |
+| [GitHub Discussions](../../discussions) | Questions, ideas, feature requests, policy patterns, show-and-tell.                                                                                                        |
+| hello@sylin.org                         | Anything that cannot be public: security reports (see [SECURITY.md](SECURITY.md)), licensing and founding-program matters, or a compliance team that cannot post publicly. |
 
 Public lanes are preferred when possible: an answered question becomes documentation,
 and a discussed request becomes a visible roadmap decision. Founding and enterprise
