@@ -65,7 +65,8 @@ Linear; every prefix leaves a coherent, buildable, green tree:
 2. l02-disk-resolution-and-recorder-stamp.md (paths + Recorder stamp mechanics)
 3. l03-license-cli-and-fixture.md (CLI subcommands + dev fixture + integration tests)
 4. l04-startup-wiring-and-doctor.md (server.rs wiring + doctor section)
-5. l05-security-md-and-sbom.md (SECURITY.md + release.yml SBOM step)
+5. l05-security-md-and-sbom.md (release.yml SBOM step ONLY; SECURITY.md landed outside
+   the batch and is never-touch)
 6. l06-business-templates.md (docs/business/templates/, transcription only)
 
 l05 and l06 are independent of l01-l04: if an earlier task is BLOCKED, still run them.
@@ -79,6 +80,8 @@ Absolute (no sanctioned exception in this batch):
   NO goldens; if a golden test fails, STOP)
 - tests/audit_recorder.rs (the stamp design keeps it green unchanged; a failure is a STOP)
 - LICENSE, LICENSE-APACHE, LICENSE-MIT, LICENSE-GOVERNANCE, LICENSING.md
+- SECURITY.md, PRICING.md, README.md, docs/guides/**, docs/COMPARISON.md (public content
+  owned outside this batch)
 - docs/adr/** (read-only authority)
 - docs/SPEC.md, extension/** (no extension change in this batch)
 - .github/workflows/ci.yml (this batch touches only release.yml, owner l05)

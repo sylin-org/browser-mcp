@@ -6,9 +6,10 @@ docs/business/PLAN.md). Check items off in place; add dates.
 
 ## Now (Phase 0, unblocks everything else)
 
-- [ ] Cloudflare Email Routing on sylin.org; aliases founding@, security@, licensing@;
-      Gmail send-as for outbound. (~1 hour. Blocks: founding applications, SECURITY.md
-      contact going live, renewal emails.)
+- [ ] Cloudflare Email Routing on sylin.org; single sink address hello@sylin.org
+      (decided 2026-07-04; aliases can come later); Gmail send-as for outbound.
+      (~1 hour. Blocks: founding applications, the SECURITY.md contact going live,
+      renewal emails. PRICING.md and SECURITY.md already publish hello@sylin.org.)
 - [ ] Create the PRIVATE GitHub repo `ghostlight-licensing`; copy
       docs/business/templates/expiry-reminder-workflow.yml into
       .github/workflows/ there; create the issued/ directory.
@@ -40,7 +41,7 @@ docs/business/PLAN.md). Check items off in place; add dates.
 
 ## Ongoing (Phase 2 onward)
 
-- [ ] Respond to founding@ applications; sign the one-page agreement; issue founding
+- [ ] Respond to hello@ founding applications; sign the one-page agreement; issue founding
       licenses (sign with the gen-1 seed; commit claims JSON to ghostlight-licensing).
 - [ ] Quarterly: one 30-minute call per founding org; harvest an anonymized policy
       pattern from each into the examples/ cookbook.
@@ -57,3 +58,8 @@ docs/business/PLAN.md). Check items off in place; add dates.
 
 - 2026-07-03: ADR-0028 accepted; plan persisted publicly; licensing-1 batch prepared
   (not yet executed).
+- 2026-07-04: hello@sylin.org chosen as the single sink address (changeable later).
+  Public content pass landed: PRICING.md (pricing numbers now PUBLISHED, freezing the
+  ADR-0028 initial prices as list), SECURITY.md, three guides, COMPARISON.md, README
+  refresh. First live CI run: core suite green on all three OSes; extension-unit fixed
+  forward; e2e-smoke quarantined (continue-on-error) pending log access via gh auth.

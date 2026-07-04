@@ -116,7 +116,8 @@ All zero-dollar, all frontier-authored, all public under docs/ or the site:
 - Stripe payment links (no fixed cost); manual key issuance within 24 hours until
   volume forces automation.
 - Email: Cloudflare Email Routing on sylin.org (receive) + Gmail send-as (send).
-  Aliases: founding@, security@, licensing@.
+  Single sink address: hello@sylin.org for everything (founding applications, security
+  reports, licensing); per-purpose aliases can come later without changing anything.
 
 ## Phase 1 -- Visibility (weeks 2-6)
 
@@ -143,7 +144,7 @@ All zero-dollar, all frontier-authored, all public under docs/ or the site:
 - Publish the offer: 10 slots, 12 months enterprise-equivalent free, quarterly
   30-minute feedback call plus a reference (named preferred, anonymized accepted),
   post-year price locked at 50% of list forever. One-page agreement
-  (docs/business/templates/founding-org-agreement.md). Applications: founding@sylin.org.
+  (docs/business/templates/founding-org-agreement.md). Applications: hello@sylin.org.
 - Sourcing: Show HN reply threads ("we need this at work" commenters), org-affiliated
   stargazers, the MCP Discord, LinkedIn, Anthropic community channels.
 - Each onboarding yields an anonymized policy pattern for an examples/ policy cookbook

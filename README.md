@@ -1,5 +1,7 @@
 # Ghostlight Browser
 
+[![CI](https://github.com/sylin-org/browser-mcp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/browser-mcp/actions/workflows/ci.yml)
+
 **Governed access to your own browser, for AI agents.**
 
 Ghostlight Browser is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
@@ -25,10 +27,11 @@ has been verified against a real browser:
   in-page JavaScript, console and network inspection, and tab management.
 - **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
   / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
-  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` / `shadow` /
-  `enforce` modes, and structured JSON-Lines audit. Layered configuration with organization policy
-  locks, and live manifest hot-reload (edit the policy file and the running session re-resolves with
-  no restart, failing closed on a bad edit).
+  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` / `enforce` modes
+  (observe records shadow denials without blocking), and structured JSON-Lines audit to file,
+  stderr, or RFC 5424 syslog. Layered configuration with organization policy locks, and live
+  manifest hot-reload (edit the policy file and the running session re-resolves with no restart,
+  failing closed on a bad edit).
 - **All-open is first-class.** With no manifest, the engine runs unrestricted: the agent has the
   full capability surface with no access decisions beyond secret-field redaction. Governance is an
   overlay you opt into, not a stripped-down build.
@@ -174,12 +177,15 @@ The model in brief:
 - **Host polarity.** A grant's `allow` patterns can carry `deny` carve-outs, so "everywhere except
   this site" is expressible directly.
 - **Sacred domains.** A never-touch list denies every tool on a matching tab, regardless of grants.
-- **Modes.** `observe` records only, `shadow` records what it would deny without blocking, and
-  `enforce` blocks. Sacred and user-authored protections always enforce.
+- **Modes.** `observe` dispatches every call and records what enforce would have denied (as
+  `shadow_deny` audit records with the same stable denial ids); `enforce` blocks. Sacred and
+  user-authored protections always enforce, in every mode.
 - **Advertisement filtering.** A governed client sees only the tools its grants can use, plus
   `explain`.
 - **Audit.** Every call produces one JSON-Lines record (permitted, denied, and shadow-denied alike):
-  identity, host, capability, grant id, decision, denial id, duration, and manifest hash.
+  identity, host, capability, grant id, decision, denial id, duration, and manifest hash. Destinations:
+  local file, stderr, or RFC 5424 syslog over UDP for SIEM ingestion (see the
+  [SIEM guide](docs/guides/siem-integration.md)).
 - **Layered configuration.** Settings resolve through built-in defaults, org policy, and a user
   layer, with organization policy able to lock keys. Inspect and edit with `ghostlight config`.
 - **Hot-reload.** The org policy path and a `file://` user manifest are watched; edits re-resolve the
@@ -240,16 +246,26 @@ single dispatch chokepoint inside the binary without touching any tool code.
 - **Engine (done).** The 13-tool automation surface, hardened and live-verified.
 - **Governance (done).** The audit flight recorder; sacred never-touch domains with a take-the-wheel
   pause and panic kill switch; the full manifest engine (identity-bound grants, capability
-  enforcement, tool-advertisement filtering, `observe` / `shadow` / `enforce` modes) with layered
+  enforcement, tool-advertisement filtering, `observe` / `enforce` modes) with layered
   configuration and org policy locks; the `explain` tool; and live manifest hot-reload. Built and
   live-verified against a real browser on Windows.
-- **Packaging (partial).** Cross-platform release builds, CI, and macOS/Linux live verification are
-  still to do, along with the `http` audit destination.
+- **CI (done).** A three-OS gate (fmt, clippy `-D warnings`, the full test suite on Ubuntu, macOS,
+  and Windows) plus extension unit tests on every push, and a tag-triggered release workflow that
+  builds the four shipping targets.
+- **Packaging (partial).** Still to do: macOS/Linux live verification against a real browser, a
+  first tagged release, the Chrome Web Store listing, offline license keys (see
+  [PRICING.md](PRICING.md)), and the `http` audit destination.
 
 ## Documentation
 
 | Doc | What it is |
 |---|---|
+| [docs/guides/solo-developer.md](docs/guides/solo-developer.md) | Ten minutes from clone to a working agent, plus personal safety rails. |
+| [docs/guides/compliance-team.md](docs/guides/compliance-team.md) | Taking a policy from blank page to org-wide enforcement, with evidence. |
+| [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion. |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | How Ghostlight compares to the alternatives, honestly. |
+| [PRICING.md](PRICING.md) | Editions, the founding program, and the Continuity Promise. |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting and what to expect. |
 | [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. |
 | [docs/adr/](docs/adr/) | Architecture Decision Records: the reasons behind the design and how it evolved. |
 | [docs/design/](docs/design/) | Forward-looking design discussions (family and service architecture). |
@@ -280,3 +296,7 @@ nonprofit/open-source use; production use with governance configured by an organ
 requires a commercial subscription. See [LICENSING.md](LICENSING.md) for the plain-language
 guide and [docs/adr/0027-open-core-business-model-and-licensing.md](docs/adr/0027-open-core-business-model-and-licensing.md)
 for the decision.
+
+Editions, prices, the founding program (12 months free for the first ten organizations), and
+the Continuity Promise -- license state never affects behavior, and the binary never phones
+home -- are in [PRICING.md](PRICING.md).
