@@ -38,6 +38,9 @@ docs/business/PLAN.md). Check items off in place; add dates.
       it; stay in the thread all day; DM the "we need this at work" commenters.
 - [ ] Submit the free listings: official MCP servers directory, Smithery, Glama,
       mcp.so, PulseMCP, relevant Awesome lists.
+- [ ] Enable GitHub Discussions on the repo (Settings -> Features) and post a short
+      welcome pinned thread pointing at CONTRIBUTING.md's three lanes; enable the
+      Q&A and Ideas categories.
 
 ## Ongoing (Phase 2 onward)
 

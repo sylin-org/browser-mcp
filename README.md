@@ -265,6 +265,7 @@ single dispatch chokepoint inside the binary without touching any tool code.
 | [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion. |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | How Ghostlight compares to the alternatives, honestly. |
 | [PRICING.md](PRICING.md) | Editions, the founding program, and the Continuity Promise. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to ask questions, request features, and contribute code. |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting and what to expect. |
 | [docs/SPEC.md](docs/SPEC.md) | The authoritative design specification. |
 | [docs/adr/](docs/adr/) | Architecture Decision Records: the reasons behind the design and how it evolved. |
@@ -285,6 +286,14 @@ Ghostlight is the brand for a planned family of governance-friendly MCP tools; t
 is the first. The theatrical ghost light metaphor sits alongside the publisher's register of
 guardian-in-a-bounded-space names. See [docs/adr/0021-ghostlight-brand-and-family.md](docs/adr/0021-ghostlight-brand-and-family.md)
 for the naming decision.
+
+## Questions, requests, and contributing
+
+Three lanes: [GitHub Issues](../../issues) for bugs, [GitHub Discussions](../../discussions) for
+questions, ideas, and feature requests, and hello@sylin.org for anything that cannot be public
+(security, licensing, or a compliance team that cannot post in the open). Every request gets a
+disposition with reasoning -- accepted, deferred, or declined against the project's recorded
+vision. See [CONTRIBUTING.md](CONTRIBUTING.md) for the details and the contribution terms.
 
 ## License
 
