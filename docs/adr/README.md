@@ -35,6 +35,7 @@ history live here.
 | [0025](0025-manifest-hot-reload.md) | Manifest hot-reload | Accepted |
 | [0026](0026-release-maturity-and-externalities.md) | Release maturity and externalities sequencing (license, CI, spec currency, syslog + managed://, extension JS coverage, live-verify) | Accepted |
 | [0027](0027-open-core-business-model-and-licensing.md) | Open-core business model and licensing (permissive engine, commercial source-available governance module) | Accepted (supersedes ADR-0021 whole-repo license stance) |
+| [0028](0028-tripwire-licensing-and-continuity-promise.md) | Tripwire licensing, tiers, and the Continuity Promise (purely observational license keys; never phone home) | Accepted |
 
 ## Conventions
 
