@@ -140,6 +140,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         },
         session_registry: Arc::new(Mutex::new(SessionRegistry::new())),
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
+        mint_quota: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 

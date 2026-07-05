@@ -198,6 +198,20 @@ async fn handle_adapter_connection<S>(
                     return;
                 }
             };
+            // H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): per-peer (never global) mint
+            // quota, checked BEFORE admission proceeds. Held for the connection's whole lifetime
+            // (including a Refused admission below) so the slot frees only once this connection
+            // genuinely ends -- the cap counts CONCURRENT sessions, not lifetime mints.
+            let _mint_guard = match crate::hub::try_mint(&ctx.mint_quota, &peer_cred.user) {
+                Ok(guard) => guard,
+                Err(message) => {
+                    tracing::warn!(
+                        message = %message,
+                        "adapter/control connection refused: per-peer mint quota exceeded"
+                    );
+                    return;
+                }
+            };
             let admission = ctx
                 .session_registry
                 .lock()

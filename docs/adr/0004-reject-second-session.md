@@ -32,3 +32,15 @@ sharing is deferred, not designed away.
   must release the endpoint before a new one can bind. Prompt native-host exit (ADR-0003)
   and stale-socket cleanup on Unix keep that window short.
 - Follow-up: primary/client sharing remains a possible future extension if demand appears.
+
+## Amendment (2026-07-04, ADR-0030)
+
+ADR-0030 (Ghostlight Hub) REPEALS this decision at the MCP-client layer: a persistent SERVICE
+now multiplexes any number of MCP clients as sessions instead of rejecting the second one. This
+is a documentation cross-reference only -- this ADR's Status and its retained
+single-physical-extension-link invariant (`Browser::attach`'s `AttachOutcome::AlreadyAttached`,
+the one Chrome-spawned extension connection) are UNCHANGED: ADR-0030 repeals the CLIENT-facing
+rejection this ADR documents, never the one-extension-link rule. See ADR-0030's "Relationship to
+other decisions" section and Decision 3 ("D1 -- the honest singleton queue": the single MV3
+service worker plus the single native port is an accepted, truthful serialization bottleneck, not
+a hidden limitation) for the full scope of the repeal.

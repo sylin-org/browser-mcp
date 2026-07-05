@@ -23,6 +23,11 @@
 //! session event, and -- iff the swap changed the ADVERTISED tool set -- sends
 //! `notifications/tools/list_changed` through the SAME single-writer stdout task every other
 //! outbound message uses (the writer channel is now [`Outbound`], not a bare `JsonRpcResponse`).
+//!
+//! ADR-0030 Decision 3 (H5, "MANDATORY screenshot chunking"): this session's own writer task
+//! relays every reply through [`write_chunked`], which chunks a reply at or above
+//! [`SCREENSHOT_CHUNK_THRESHOLD`] bytes with an explicit yield between chunks -- see the module
+//! doc on `src/hub/mod.rs` for the accepted-bottleneck framing this closes a gap in.
 
 use crate::browser::{advertise, directory, polarity};
 use crate::governance::config::reload::ConfigStore;
@@ -49,6 +54,39 @@ use tokio::sync::mpsc;
 /// standard MCP, no `id`, no `params`.
 const TOOLS_LIST_CHANGED_LINE: &str =
     r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+
+/// Oversize threshold (ADR-0030 Decision 3, "MANDATORY screenshot chunking"; PINNED in
+/// `docs/tasks/hub/PINS.md` SS4): a reply serialized at or above this many bytes is written to
+/// this session's own stream in fixed-size chunks (below [`write_chunked`]) instead of one
+/// `write_all` call, so a large payload cannot head-of-line-block a shared single-threaded
+/// runtime and starve another session's small reply. Well under `native::host::MAX_MESSAGE_LEN`
+/// (128 MiB); this is a hub-internal relay/scheduling property on the service<->adapter/web hop
+/// ONLY, never a change to the frozen extension `host.rs` wire.
+pub const SCREENSHOT_CHUNK_THRESHOLD: usize = 8 * 1024 * 1024;
+
+/// Chunk size for [`write_chunked`]'s fixed-size relay writes. Not itself a pinned oracle (only
+/// [`SCREENSHOT_CHUNK_THRESHOLD`] and the yield-between-chunks behavior are pinned in PINS.md
+/// SS4); 1 MiB keeps any one chunk's write time small relative to `TOOL_TIMEOUT`.
+const CHUNK_SIZE: usize = 1024 * 1024;
+
+/// Write `buf` to `out`, chunked (ADR-0030 Decision 3; PINS.md SS4) once `buf.len()` is `>=`
+/// [`SCREENSHOT_CHUNK_THRESHOLD`]: fixed [`CHUNK_SIZE`] `write_all` calls with an explicit
+/// `tokio::task::yield_now().await` between them, so the runtime gets a scheduling point another
+/// session's small reply can use instead of waiting out the whole write. Below the threshold:
+/// ONE `write_all` call, byte-identical to the pre-H5 behavior (a lone all-open session's
+/// ordinary replies never cross this threshold, so this stays a pass-through no-op for it).
+/// Writes the SAME bytes either way -- chunking changes only the NUMBER of write calls and
+/// inserts yield points, never the content or the JSON-RPC framing.
+async fn write_chunked<W: AsyncWrite + Unpin>(out: &mut W, buf: &[u8]) -> std::io::Result<()> {
+    if buf.len() < SCREENSHOT_CHUNK_THRESHOLD {
+        return out.write_all(buf).await;
+    }
+    for chunk in buf.chunks(CHUNK_SIZE) {
+        out.write_all(chunk).await?;
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
 
 /// The single-writer stdout channel's message type (ADR-0025 Decision 4): an ordinary JSON-RPC
 /// response, or the `list_changed` notification. Widened from a bare `JsonRpcResponse` so both
@@ -140,6 +178,7 @@ where
         initial_policy: loaded_policy,
         session_registry: _,
         owned_tabs,
+        mint_quota: _,
     } = ctx;
 
     let (read_half, write_half) = tokio::io::split(stream);
@@ -220,7 +259,8 @@ where
                 Outbound::ToolsListChanged => TOOLS_LIST_CHANGED_LINE.to_string(),
             };
             buf.push('\n');
-            if out.write_all(buf.as_bytes()).await.is_err() || out.flush().await.is_err() {
+            if write_chunked(&mut out, buf.as_bytes()).await.is_err() || out.flush().await.is_err()
+            {
                 break;
             }
         }

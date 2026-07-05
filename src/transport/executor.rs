@@ -68,6 +68,13 @@ type KillHooks = Arc<Mutex<Vec<(u64, KillHook)>>>;
 /// How long to wait for the extension to answer a single tool call before giving up.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Bounded reconnect grace window (ADR-0030 Decision 3, "D1 -- the honest singleton queue":
+/// "truthful failure on a real drop"; PINNED in PINS.md SS4). STRICTLY LESS THAN
+/// [`TOOL_TIMEOUT`]: a brief extension disconnect HOLDS the session's pending calls awaiting
+/// reconnect instead of failing them the instant the stream closes; only a REAL drop (this
+/// window elapsing with no reconnect) fails them, with the unchanged disconnect error text.
+pub const GRACE_WINDOW: Duration = Duration::from_secs(10);
+
 /// The truthful, hop-attributed error for every call while [`Browser::is_killed`] is true
 /// (g11): the user severed the session; never a generic connection failure.
 fn kill_error() -> ToolError {
@@ -449,10 +456,36 @@ impl Browser {
         self.debug.set_connected(false);
         self.connected.send_replace(false);
         writer.abort();
-        for (_, tx) in self.pending.lock().unwrap().drain() {
-            let _ = tx.send(Err(drain_err.clone()));
-        }
+
+        // ADR-0030 Decision 3 (H5): hold pending calls for a bounded grace window awaiting
+        // reconnect instead of failing them the instant the stream closes. Spawned so `attach`
+        // itself still returns `Detached` promptly regardless of the window's length -- neither
+        // `ipc::serve`'s per-connection task nor any other caller here blocks on it.
+        self.spawn_grace_drain(GRACE_WINDOW, drain_err);
+
         AttachOutcome::Detached
+    }
+
+    /// Hold pending calls for `window` awaiting reconnect (ADR-0030 Decision 3: "truthful failure
+    /// on a real drop"). If [`Browser::wait_connected`] reports a reconnect (a fresh
+    /// [`Browser::attach`] claims the slot again) within `window`, pending calls are left
+    /// untouched -- each is still bounded by its own [`Browser::send_and_await`]/[`TOOL_TIMEOUT`].
+    /// If `window` elapses with no reconnect, this IS a real drop: drain pending with `drain_err`,
+    /// byte-identical to the pre-H5 immediate-fail error text, just delayed until the window has
+    /// genuinely elapsed. A `session_killed` event during the window is unaffected: it can only
+    /// arrive over a LIVE (reconnected) stream, and [`Browser::handle_session_killed`] already
+    /// drains pending with [`kill_error`] independently and immediately -- if that already ran,
+    /// this later, empty drain is a harmless no-op, and [`Browser::is_killed`] still wins for any
+    /// subsequent call regardless of what this function does.
+    fn spawn_grace_drain(&self, window: Duration, drain_err: ToolError) {
+        let browser = self.clone();
+        tokio::spawn(async move {
+            if !browser.wait_connected(window).await {
+                for (_, tx) in browser.pending.lock().unwrap().drain() {
+                    let _ = tx.send(Err(drain_err.clone()));
+                }
+            }
+        });
     }
 
     /// Route one framed message from the extension: the kill-switch event (g11:
@@ -1040,5 +1073,76 @@ mod tests {
         // Give a possible (incorrect) second invocation a moment to land before asserting.
         sleep(Duration::from_millis(50)).await;
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// H5 (ADR-0030 Decision 3): `GRACE_WINDOW` is pinned strictly less than `TOOL_TIMEOUT`
+    /// (docs/tasks/hub/PINS.md SS4). Not one of the task's named tests; a direct transcription
+    /// check on the two pinned constants themselves, no derived value.
+    #[test]
+    fn grace_window_is_pinned_and_strictly_less_than_tool_timeout() {
+        assert_eq!(GRACE_WINDOW, Duration::from_secs(10));
+        assert!(GRACE_WINDOW < TOOL_TIMEOUT);
+    }
+
+    /// H5 (ADR-0030 Decision 3): a reconnect within the grace window must NOT fail a pending
+    /// call. Drives `spawn_grace_drain` directly (a private fn in this same module) with a short
+    /// window so the test stays fast; the real `GRACE_WINDOW` constant (10s) is exercised
+    /// separately by `grace_window_is_pinned_and_strictly_less_than_tool_timeout` above and by
+    /// `attach` calling it verbatim.
+    #[tokio::test]
+    async fn a_reconnect_within_the_grace_window_does_not_fail_a_pending_call() {
+        let browser = Browser::new();
+        let (tx, rx) = oneshot::channel();
+        browser
+            .pending
+            .lock()
+            .unwrap()
+            .insert("held".to_string(), tx);
+
+        let drain_err = ToolError::extension("Browser extension disconnected before responding");
+        browser.spawn_grace_drain(Duration::from_millis(200), drain_err);
+
+        // Reconnect well within the window.
+        sleep(Duration::from_millis(20)).await;
+        browser.connected.send_replace(true);
+
+        // Give the grace task time to observe the reconnect and skip draining.
+        sleep(Duration::from_millis(300)).await;
+        assert!(
+            browser.pending.lock().unwrap().contains_key("held"),
+            "a reconnect within the grace window must not fail the pending call"
+        );
+        drop(rx);
+    }
+
+    /// H5 (ADR-0030 Decision 3): once the grace window elapses with NO reconnect (a real drop),
+    /// pending calls fail with the exact, unchanged disconnect error text -- the grace window
+    /// changes WHEN pending fail, never the error TEXT.
+    #[tokio::test]
+    async fn grace_window_elapsing_with_no_reconnect_drains_pending_with_the_pinned_disconnect_text(
+    ) {
+        let browser = Browser::new();
+        let (tx, rx) = oneshot::channel();
+        browser
+            .pending
+            .lock()
+            .unwrap()
+            .insert("held".to_string(), tx);
+
+        browser.spawn_grace_drain(
+            Duration::from_millis(50),
+            ToolError::extension("Browser extension disconnected before responding"),
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .expect("the grace window must elapse and drain within the bound")
+            .expect("the sender must have sent a result, not been dropped silently");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Browser extension disconnected before responding"),
+            "{err}"
+        );
     }
 }

@@ -5,6 +5,17 @@
 //! owns the shared [`ServiceContext`], the extension endpoint, and the adapter/control endpoint),
 //! and the thin ADAPTER role (`run_as_adapter`: a byte relay to an already-running service). The
 //! session-hello constants the ADAPTER/CONTROL endpoint uses live in [`handshake`].
+//!
+//! ADR-0030 Decision 3 ("D1 -- the honest singleton queue"): the single MV3 service worker plus
+//! the single native port is an ACCEPTED, TRUTHFUL serialization bottleneck -- fair ordering and
+//! truthful failure on a real drop, never a hidden work-around. H5 lands the three properties
+//! Decision 3 names: a bounded reconnect grace window (`transport::executor::Browser::attach`,
+//! `GRACE_WINDOW`, strictly less than `TOOL_TIMEOUT`), a per-peer (never global) mint quota
+//! (below, [`try_mint`]/[`PER_PEER_MINT_CAP`]), and mandatory oversize-reply chunking on the
+//! service<->adapter/web hop (`transport::mcp::server::write_chunked`,
+//! `SCREENSHOT_CHUNK_THRESHOLD`) so one session's large payload cannot head-of-line-block
+//! another's small one. See `docs/adr/0004-reject-second-session.md`'s amendment note for the
+//! cross-reference from the ORIGINAL single-session decision this multiplexes past.
 
 use crate::browser::pattern;
 use crate::debug::DebugSink;
@@ -16,11 +27,75 @@ use crate::native::ipc;
 use crate::transport::executor::Browser;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub mod handshake;
 pub mod role;
 pub mod session;
+
+/// Per-peer (never global) mint quota (ADR-0030 Decision 3: "per-peer-identity mint/group
+/// quotas (never a single global cap, which is itself a lockout DoS)"; Decision 4's "per-peer
+/// rate-limit key" amendment). PINNED in `docs/tasks/hub/PINS.md` SS4: max CONCURRENT
+/// adapter-minted [`session::SessionGuid`] sessions per minting peer identity.
+pub const PER_PEER_MINT_CAP: usize = 32;
+
+/// The paired per-peer live-tab-group cap (H7; PINNED in PINS.md SS4, equal to
+/// [`PER_PEER_MINT_CAP`] by design -- "the paired ... equal by design"). Not yet consumed: H7
+/// wires this in when it adds per-session tab groups.
+pub const PER_PEER_GROUP_CAP: usize = 32;
+
+/// The quota-exceeded result (PINNED in `docs/tasks/hub/PINS.md` SS4): a plain tool error, never
+/// a governance denial-id -- this is a HUB admission decision, not a change to the 13+`explain`
+/// tool surface.
+pub const MINT_QUOTA_EXCEEDED: &str = "session limit reached for this client";
+
+/// Shared per-peer mint-quota table (ADR-0030 Decision 3 + Decision 4): keyed on the peer's OS
+/// credential ([`session::PeerUser`]), NEVER a single global counter. A `ServiceContext` field,
+/// added the same way H3's `session_registry` and H4's `owned_tabs` were.
+pub type MintQuota = Arc<Mutex<HashMap<session::PeerUser, usize>>>;
+
+/// RAII handle for one minted, live slot against a peer's [`PER_PEER_MINT_CAP`]. Decrements the
+/// SAME counter [`try_mint`] incremented when this drops (the connection/session ends), so the
+/// cap counts CONCURRENT sessions, never lifetime mints.
+#[must_use = "dropping the guard immediately frees the peer's mint-quota slot"]
+pub struct MintGuard {
+    quota: MintQuota,
+    peer: session::PeerUser,
+}
+
+impl Drop for MintGuard {
+    fn drop(&mut self) {
+        let mut quota = self.quota.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = quota.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                quota.remove(&self.peer);
+            }
+        }
+    }
+}
+
+/// Check-and-increment `peer`'s live mint count against [`PER_PEER_MINT_CAP`] (ADR-0030
+/// Decision 3: "per-peer-identity mint/group quotas"). `Ok` increments and returns a
+/// [`MintGuard`] that frees the slot on drop; `Err` is the pinned [`MINT_QUOTA_EXCEEDED`] text,
+/// with no state change -- a flooding peer is denied while every OTHER peer's own counter (and
+/// thus its own admission) is completely unaffected (never a single global cap).
+pub fn try_mint(
+    quota: &MintQuota,
+    peer: &session::PeerUser,
+) -> std::result::Result<MintGuard, String> {
+    let mut guard = quota.lock().unwrap_or_else(PoisonError::into_inner);
+    let count = guard.entry(peer.clone()).or_insert(0);
+    if *count >= PER_PEER_MINT_CAP {
+        return Err(MINT_QUOTA_EXCEEDED.to_string());
+    }
+    *count += 1;
+    drop(guard);
+    Ok(MintGuard {
+        quota: Arc::clone(quota),
+        peer: peer.clone(),
+    })
+}
 
 /// mcp-server invocation (ADR-0030 Decision 1): claims the ADAPTER/CONTROL endpoint FIRST (PINS.md
 /// SS1 pin 1), before opening anything else, so this process learns whether it is the persistent
@@ -280,6 +355,11 @@ pub struct ServiceContext {
     /// state lives here, in `src/hub`, NEVER in `src/governance` (a7: the core stays
     /// handle-agnostic).
     pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
+    /// H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): the per-peer (never global) mint-quota
+    /// table, shared by every adapter/control connection so `ipc::handle_adapter_connection`
+    /// checks/increments the SAME counter regardless of which connection presents a peer's
+    /// credential. See [`try_mint`].
+    pub mint_quota: MintQuota,
 }
 
 impl ServiceContext {
@@ -328,6 +408,7 @@ impl ServiceContext {
             initial_policy: loaded_policy.clone(),
             session_registry: Arc::new(std::sync::Mutex::new(session::SessionRegistry::new())),
             owned_tabs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            mint_quota: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }

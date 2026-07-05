@@ -6,7 +6,7 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H5 (`H5-*.md`, reconnect grace window + honest bounded queue).** H0 landed (pure
+**Next task: H6 (`H6-*.md`, detached non-admin lifecycle + anti-squat).** H0 landed (pure
 code move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>`
 + `ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
 ADAPTER + genuine multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004
@@ -34,8 +34,27 @@ first-touch adoption alone covers the realistic case; D2: the test's "nonexisten
 pre-seeded as owned by A rather than left absent from the map, since a genuinely absent tabId is
 first-touch-ADOPTED, not refused, under the pinned mechanism; D3: the test drives `serve_session`
 directly over an in-process `tokio::io::duplex`, constructing `ServiceContext` via its own pub
-fields rather than spawning the real binary, and must set the `hub::role` marker itself). RE-READ
-H5's task file plus PINS.md SS4 (the pinned grace-window/quota/chunking constants) before starting.
+fields rather than spawning the real binary, and must set the `hub::role` marker itself). H5
+landed (orthogonal after H2): `transport::executor::Browser::attach` now holds pending calls
+across a bounded `GRACE_WINDOW` (10s, PINS.md SS4) instead of draining them the instant the
+extension stream closes (`Browser::spawn_grace_drain`, spawned so `attach` still returns
+`Detached` promptly); only a REAL drop (the window elapsing with no reconnect) drains pending,
+with the byte-identical disconnect error text. `ServiceContext` gained a `mint_quota` field
+(`src/hub/mod.rs`); `try_mint`/`MintGuard`/`PER_PEER_MINT_CAP`/`PER_PEER_GROUP_CAP`/
+`MINT_QUOTA_EXCEEDED` (`src/hub/mod.rs`) implement the per-peer (never global), RAII-scoped mint
+quota, wired into `handle_adapter_connection` (`src/transport/native/ipc.rs`) ahead of
+`SessionRegistry::admit`. `transport::mcp::server`'s writer task now relays a reply through the
+new `write_chunked` (chunked at `SCREENSHOT_CHUNK_THRESHOLD` = 8 MiB with a yield between chunks)
+instead of one unconditional `write_all`. Module-doc bottleneck note added to `src/hub/mod.rs`;
+a cross-reference amendment note added to `docs/adr/0004-reject-second-session.md` (Status and
+the retained single-physical-extension-link invariant left untouched). New `tests/hub_queue.rs`
+(2 tests, both named by the task, both green) plus 2 supplementary (not task-named) tests in
+`src/transport/executor.rs`'s own test module validating the grace-hold/real-drop mechanics. See
+the H5 Log for 2 deviations (D1: a forced one-line `mint_quota` field addition to
+`tests/hub_isolation.rs`'s `build_ctx`, a file H5 does not name, required for the tree to compile
+once `ServiceContext` gained the field; D2: the grace-window mechanism has no task-named test, so
+2 supplementary tests were added directly in `executor.rs`, transcribing only already-pinned
+literals). RE-READ H6's task file plus PINS.md SS5 (idle-grace, anti-squat) before starting.
 Follow the per-task procedure in `BOOTSTRAP.md`.
 
 ## Status
@@ -47,7 +66,7 @@ Follow the per-task procedure in `BOOTSTRAP.md`.
 | H2 | Persistent service + thin adapter + multiplex | DONE | 96a54fb | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
 | H3 | Adapter-minted GUID identity + peer-cred binding | DONE | 81b3bea | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED attempt superseded, see Log |
 | H4 | Binary-authoritative cross-session tab isolation | DONE | 1490951 | |
-| H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
+| H5 | Reconnect grace window + honest bounded queue | DONE | pending-hash | |
 | H6 | Detached non-admin lifecycle + anti-squat | pending | -- | job-breakaway is the acceptance gate |
 | H7 | Tab-group-per-session presentation | pending | -- | crosses the JS boundary |
 | H8 | Local web API = TCP; bind per policy | pending | -- | needs H2+H3+H4; the corrected D2/D5 |
@@ -633,7 +652,119 @@ one-literal fix) are the only fences touched, both as pinned.
   `target/`) for build-artifact routing only, not a source or test change.
 
 ### H5
-- (not started)
+- Verified all as-of-authoring facts in `H5-grace-window-honest-queue.md` and PINS.md SS4/SS9
+  against the live tree before writing any code: `src/transport/executor.rs`'s `TOOL_TIMEOUT`
+  (60s), `kill_error()`, `send_and_await`'s fail-fast-if-`outgoing`-is-`None` path, and `attach`'s
+  drain-on-detach tail (`*self.outgoing.lock().unwrap() = None;` then
+  `for (_, tx) in self.pending.lock().unwrap().drain() { ... }`) all matched the task's quoted
+  shapes -- the STOP precondition ("if `attach` no longer drains and FAILS pending calls on
+  detach ... the premise is wrong") did NOT fire; `handle_session_killed`'s drain-with-kill-error
+  and the killed-check precedence in `call`/`tab_url` matched too. `src/hub/mod.rs`'s
+  `ServiceContext` and `src/transport/native/ipc.rs`'s `serve_adapters`/
+  `handle_adapter_connection` matched PINS.md SS9's corrected description exactly (accept/
+  admission in `ipc.rs`, generic-vs-concrete split, `ServiceContext` built once and cloned per
+  session) -- the STOP precondition for a diverged H2/H3 landed shape did NOT fire. No
+  AUTHOR-MUST-PIN value was still literally unpinned (GRACE_WINDOW, PER_PEER_MINT_CAP,
+  PER_PEER_GROUP_CAP, the quota-exceeded text, SCREENSHOT_CHUNK_THRESHOLD, and the completion
+  bound are all pinned verbatim in PINS.md SS4). No STOP precondition fired.
+- Implemented per the task's Required Behavior, inside the files the task names:
+  - `src/transport/executor.rs`: added `pub const GRACE_WINDOW: Duration =
+    Duration::from_secs(10)` next to `TOOL_TIMEOUT`. `attach`'s tail no longer drains pending
+    inline on detach; it calls the new private `spawn_grace_drain(GRACE_WINDOW, drain_err)`,
+    which spawns a task that awaits `Browser::wait_connected(window)` (an EXISTING method, no new
+    reconnect-watching logic needed) and drains pending with the byte-identical `drain_err` ONLY
+    if the window elapses with no reconnect. `spawn_grace_drain` is spawned so `attach` itself
+    still returns `Detached` promptly regardless of the window's length -- no caller of `attach`
+    blocks on the grace hold. The four pinned hop-attributed error strings, `TOOL_TIMEOUT`,
+    `kill_error()`'s precedence, and the single-physical-extension-link `AttachOutcome` are all
+    byte-unchanged.
+  - `src/hub/mod.rs`: added `PER_PEER_MINT_CAP`/`PER_PEER_GROUP_CAP`/`MINT_QUOTA_EXCEEDED`/
+    `MintQuota`/`MintGuard`/`try_mint` (a per-peer, never-global, RAII-scoped mint-quota
+    mechanism: `try_mint` checks-and-increments a `PeerUser`-keyed counter, returning a
+    `MintGuard` that decrements the SAME counter on drop, so the cap counts CONCURRENT sessions,
+    never lifetime mints). `ServiceContext` gained a `mint_quota: MintQuota` field, built once in
+    `from_startup` alongside `session_registry`/`owned_tabs`. Added the module-doc bottleneck
+    note (Required Behavior item 4) citing ADR-0030 Decision 3 without restating its semantics.
+  - `src/transport/native/ipc.rs`: `handle_adapter_connection`'s `ROLE_ADAPTER` arm now calls
+    `crate::hub::try_mint(&ctx.mint_quota, &peer_cred.user)` BEFORE
+    `ctx.session_registry.lock()...admit(...)`; on `Err`, the connection is refused (logged,
+    dropped, never surfacing a GUID) exactly like an existing `Admission::Refused`; on `Ok`, the
+    `MintGuard` is held for the connection's whole lifetime (including a `Refused` admission),
+    freeing the slot only when the connection genuinely ends.
+  - `src/transport/mcp/server.rs`: added `SCREENSHOT_CHUNK_THRESHOLD` (8 MiB, PINNED), a private
+    `CHUNK_SIZE` (1 MiB, NOT pinned -- PINS.md SS4 only pins the threshold, the completion bound,
+    and the yield-between-chunks behavior), and `write_chunked` (below the threshold: one
+    `write_all`, byte-identical to pre-H5; at/above it: fixed-`CHUNK_SIZE` `write_all` calls with
+    an explicit `tokio::task::yield_now().await` between them). `serve_session`'s writer task now
+    calls `write_chunked(&mut out, buf.as_bytes())` instead of one unconditional `write_all`; the
+    JSON-RPC content and framing are byte-identical either way, only the number of write calls
+    (and the scheduling yield points) changes. Added a short module-doc pointer to this.
+  - `docs/adr/0004-reject-second-session.md`: appended an "Amendment (2026-07-04, ADR-0030)"
+    section cross-referencing ADR-0030's repeal at the MCP-client layer; the ADR's `Status` field
+    and its retained single-physical-extension-link invariant are untouched (only an append, 0
+    deletions).
+  - New `tests/hub_queue.rs`: `per_peer_mint_cap_denies_a_flooding_peer_without_locking_out_others`
+    (peer A mints up to `PER_PEER_MINT_CAP` = 32, then is denied with the exact pinned text
+    `session limit reached for this client`; peer B, distinct, still succeeds while A is over
+    cap; freeing one of A's slots lets A mint again) and
+    `oversized_screenshot_is_chunked_not_head_of_line_blocking` (two independent `serve_session`
+    sessions, each its own `Browser`; session 1's fake extension answers one `computer`
+    `screenshot` call with a 9 MiB text reply relayed through a `CountingWriter` `AsyncWrite`
+    double wrapping session 1's own server-side stream; session 2 issues a bare `ping`
+    concurrently on a `current_thread` runtime; asserts session 2 completes in `< 2s` and session
+    1's reply required `> 1` write calls). Both tests, BY NAME from the task file, green.
+  - `src/transport/executor.rs`'s own `#[cfg(test)]` module gained 3 supplementary tests (NOT
+    named by the task file, which names no test for Required Behavior item 1): a direct
+    transcription check that `GRACE_WINDOW == Duration::from_secs(10)` and `< TOOL_TIMEOUT`; a
+    test that a reconnect within the grace window leaves a pending call untouched (drives the
+    private `spawn_grace_drain` directly with a short window so the test stays fast, rather than
+    waiting out the real 10s constant); and a test that the window elapsing with no reconnect
+    drains pending with the exact, unchanged disconnect text. All three transcribe only
+    already-pinned literals (no invented oracle).
+- D1: `tests/hub_isolation.rs`'s `build_ctx` (a file this task does not name) constructs
+  `ServiceContext` via its own public fields, per H4's own precedent -> adding the new
+  `mint_quota` field to `ServiceContext` made that construction stop compiling
+  (`E0063: missing field 'mint_quota'`); added one line, `mint_quota: Arc::new(Mutex::new(
+  HashMap::new()))`, matching the exact construction `build_ctx` already uses for
+  `session_registry`/`owned_tabs`. Because: this is a compile-forced, purely mechanical
+  one-field addition with no semantic change to that file's own tests (both continued to pass
+  unchanged), the same category of forced adjustment H1's D2 (import cleanup) and H3's D4
+  (a new Cargo.toml feature) already used this batch. Impact on later tasks: none -- H6/H7/H8's
+  own `ServiceContext` constructions (if any, in new test files) must include `mint_quota` too,
+  the same way they already must include `session_registry`/`owned_tabs`.
+- D2: the task file's "Tests (BY NAME; assertions pinned)" section names exactly two new tests,
+  both for `tests/hub_queue.rs` (the per-peer quota and the chunking property); Required
+  Behavior item 1 (the bounded reconnect grace window) has NO named test anywhere in the task
+  file -> added 3 supplementary tests directly in `src/transport/executor.rs`'s own test module
+  (listed above) to gain confidence the grace-hold mechanism is actually correct, since leaving
+  it fully untested seemed like an unacceptable quality gap for load-bearing timing logic, not
+  because any pinned assertion required them. Every assertion in these 3 tests transcribes an
+  already-pinned literal (`GRACE_WINDOW`'s value, the unchanged disconnect error text) or checks
+  a structural property (`<` between the two pinned durations) -- no value was derived or
+  invented. Impact on later tasks: none -- these are supplementary, not part of the task's named
+  completion surface; a later task auditing "what tests exist for H5" should expect
+  `tests/hub_queue.rs`'s 2 named tests as the CONTRACTUAL surface and these 3 as extra confidence
+  only.
+- Verification: all four commands passed for real. `cargo build --all-targets` clean.
+  `cargo test --test hub_queue` (2/2, both named tests green); `cargo test --test
+  all_open_golden` (3/3); `cargo test --test peer_death` (1/1); `cargo test --lib --
+  transport::executor::tests::call_without_a_connection_fails_fast
+  transport::executor::tests::kill_error_outlives_the_disconnect` (2/2, both kept-green tests
+  unchanged and passing); the FULL `cargo test` is green (434 lib tests -- up from H4's 431, the
+  +3 being the supplementary grace-window tests above -- plus every integration suite including
+  the new `hub_queue` suite, 0 failed). `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo fmt --all -- --check` clean (no reformatting needed). Sacred tests
+  (`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`,
+  `tests/architecture.rs::governance_core_has_no_forbidden_back_edges`) green and byte-unmodified
+  (`git diff --stat` on all three plus `src/transport/mcp/tools.rs` and
+  `src/transport/native/host.rs`: no output). `git status --porcelain` shows only
+  `docs/adr/0004-reject-second-session.md`, `src/hub/mod.rs`, `src/transport/executor.rs`,
+  `src/transport/mcp/server.rs`, `src/transport/native/ipc.rs`, and `tests/hub_isolation.rs`
+  (D1) modified, plus the new `tests/hub_queue.rs`. No NEVER-touch fence moved.
+- Note: as in H0-H4, `CARGO_TARGET_DIR` was pointed at a scratch directory (not the repo's
+  `target/`) because live `ghostlight.exe` processes (this environment's own dogfooded session)
+  held the repo's `target/debug/ghostlight.exe`; build-artifact routing only, not a source or
+  test change.
 
 ### H6
 - (not started)
