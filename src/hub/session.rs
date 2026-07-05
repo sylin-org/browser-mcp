@@ -215,6 +215,49 @@ impl Default for SessionRegistry {
     }
 }
 
+/// One admitted binding's Console-safe summary (PINS.md CS3/CS9, `docs/tasks/console`): the FIRST
+/// 8 CHARACTERS of the GUID ONLY (never the full canonical string, ADR-0030 Decision 4), the
+/// peer's OS process id (not secret), and its full current owned-tab set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub guid: String,
+    pub pid: u32,
+    pub owned_tab_ids: Vec<i64>,
+}
+
+/// Read-only snapshot for the Console's sessions view (PINS.md CS3). HONEST LIMITATION
+/// (transcribed into the API response too, CS3): `registry`'s bindings are never pruned on
+/// disconnect, so an entry here may no longer be live right now; pair this with
+/// `ServiceContext.live_sessions` for an accurate CURRENT count. Acquires `registry`'s lock only
+/// long enough to clone the (guid, PeerCred) pairs out, then drops it before acquiring
+/// `owned_tabs`'s SEPARATE lock per entry (via the existing [`owned_tab_ids`]), so the two locks
+/// are never held simultaneously.
+#[allow(dead_code)] // consumed at K4 (docs/tasks/console/K4-live-sessions-api.md)
+pub fn live_session_summaries(
+    registry: &Mutex<SessionRegistry>,
+    owned_tabs: &Mutex<HashMap<i64, SessionGuid>>,
+) -> Vec<SessionSummary> {
+    let bindings: Vec<(String, PeerCred)> = {
+        let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+        reg.bindings
+            .iter()
+            .map(|(g, c)| (g.clone(), c.clone()))
+            .collect()
+    };
+    bindings
+        .into_iter()
+        .map(|(full_guid, cred)| {
+            let guid = SessionGuid::parse(&full_guid)
+                .expect("registry keys are valid canonical guids (only admit() inserts them)");
+            SessionSummary {
+                guid: full_guid[..8].to_string(),
+                pid: cred.pid,
+                owned_tab_ids: owned_tab_ids(owned_tabs, &guid),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +374,40 @@ mod tests {
         };
         assert_eq!(registry.admit(&g, &a), Admission::Admitted);
         assert_eq!(registry.admit(&g, &b), Admission::Refused);
+    }
+
+    /// PINS.md CS3/CS9 (`docs/tasks/console`): `live_session_summaries` reports the TRUNCATED
+    /// 8-character guid prefix (never the full canonical string), the admitted peer's pid, and
+    /// the full owned-tab set for that guid, and never includes another guid's tabs.
+    #[test]
+    fn live_session_summaries_reports_truncated_guid_pid_and_owned_tabs() {
+        let g = SessionGuid::mint();
+        let other = SessionGuid::mint();
+        let mut registry = SessionRegistry::new();
+        let peer = PeerCred {
+            user: PeerUser("user-A".into()),
+            pid: 4242,
+        };
+        assert_eq!(registry.admit(&g, &peer), Admission::Admitted);
+        let registry = Mutex::new(registry);
+
+        let owned_tabs = Mutex::new(HashMap::new());
+        assert_eq!(claim_tab(&owned_tabs, &g, 101), TabClaim::Adopted);
+        assert_eq!(claim_tab(&owned_tabs, &g, 202), TabClaim::Adopted);
+        assert_eq!(claim_tab(&owned_tabs, &other, 303), TabClaim::Adopted);
+
+        let summaries = live_session_summaries(&registry, &owned_tabs);
+        assert_eq!(summaries.len(), 1, "only the ADMITTED guid appears");
+
+        let summary = &summaries[0];
+        assert_eq!(summary.guid.len(), 8, "guid is truncated to 8 characters");
+        assert_eq!(summary.guid, &g.as_str()[..8]);
+        assert_ne!(
+            summary.guid.len(),
+            g.as_str().len(),
+            "never the full canonical guid"
+        );
+        assert_eq!(summary.pid, 4242);
+        assert_eq!(summary.owned_tab_ids, vec![101, 202]);
     }
 }

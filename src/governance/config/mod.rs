@@ -374,6 +374,13 @@ pub const AUDIT_SYSLOG_ADDRESS: &str = "audit.syslog.address";
 /// manifest `mode` > this resolved value.
 pub const GOVERNANCE_MODE: &str = "governance.mode";
 
+/// `channels.webapi.from` -- sources allowed to connect to the local web API (Console/HTTP
+/// listener, ADR-0030 Decision 5/9; PINS.md CS8, `docs/tasks/console`). `["localhost"]` (loopback
+/// only) unless the machine owner explicitly opens it via the Console's "Enable remote
+/// connections" or an org override. Governs WHO may connect, never which tools exist (ADR-0030
+/// Decision 6 is preserved: this key has no bearing on the tool/resource axes).
+pub const CHANNELS_WEBAPI_FROM: &str = "channels.webapi.from";
+
 /// The static registry of every governance key: the single source of truth for names,
 /// descriptions, constraints, and per-preset defaults (shared format doc section 3.4). The
 /// `restricted` preset equals `safe` for every stage-2 key by design; it is registered now so
@@ -445,6 +452,14 @@ pub const KEYS: &[KeyDef] = &[
         default_fully_open: KeyValue::Enum("observe"),
         default_safe: KeyValue::Enum("enforce"),
         default_restricted: KeyValue::Enum("enforce"),
+    },
+    KeyDef {
+        key: CHANNELS_WEBAPI_FROM,
+        description: "Sources allowed to connect to the local web API (Console/HTTP). \"localhost\" only, unless opened to \"*\" or specific hosts.",
+        constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::StrList(&["localhost"]),
+        default_safe: KeyValue::StrList(&["localhost"]),
+        default_restricted: KeyValue::StrList(&["localhost"]),
     },
 ];
 

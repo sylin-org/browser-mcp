@@ -74,6 +74,17 @@
             "enforce"
           ],
           "default": "enforce"
+        },
+        "channels.webapi.from": {
+          "description": "Sources allowed to connect to the local web API (Console/HTTP). \"localhost\" only, unless opened to \"*\" or specific hosts.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "default": [
+            "localhost"
+          ]
         }
       }
     }

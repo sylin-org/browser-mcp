@@ -85,3 +85,13 @@ Default enforcement mode when the active manifest does not set one: observe reco
 - Default (fully_open): "observe"
 - Default (safe, = built-in Minimal): "enforce"
 - Default (restricted): "enforce"
+
+## `channels.webapi.from`
+
+Sources allowed to connect to the local web API (Console/HTTP). "localhost" only, unless opened to "*" or specific hosts.
+
+- Type: string list
+- Constraints: unique string elements
+- Default (fully_open): ["localhost"]
+- Default (safe, = built-in Minimal): ["localhost"]
+- Default (restricted): ["localhost"]

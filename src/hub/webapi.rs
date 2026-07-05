@@ -83,14 +83,41 @@ pub fn classify_source(addr: IpAddr) -> String {
 
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 
+/// The live `channels.webapi.from` allowlist (PINS.md CS8, `docs/tasks/console`), read from the
+/// store's current resolution (CS6). Every registered key always resolves (`layers::resolve` is
+/// infallible), so this never falls back to [`builtin_webapi_from`] in practice; `expect` matches
+/// the existing idiom in `governance::config::mod` (`resolution.get(key).expect("registered
+/// key")`).
+fn live_channels_webapi_from(
+    store: &crate::governance::config::reload::ConfigStore,
+) -> Vec<String> {
+    let resolution = store.current_resolution();
+    let resolved = resolution
+        .get(crate::governance::config::CHANNELS_WEBAPI_FROM)
+        .expect("registered key resolves");
+    resolved
+        .value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_else(builtin_webapi_from)
+}
+
 /// Run the local web API listener for the life of the service (ADR-0030 Decision 9). Binds per
-/// [`resolve_bind`] over the builtin default allowlist. A bind failure (e.g. the port is already
-/// in use by another process, or by another Ghostlight service instance in a test run) is
-/// LOGGED, never fatal: the web API is simply unavailable for this service instance, exactly like
-/// the extension endpoint's `SessionBusy` handling in `run_service_loop` -- MCP/adapter
-/// multiplexing must never be affected by this second, optional session source.
+/// [`resolve_bind`] over the STARTUP-resolved live allowlist (PINS.md CS8.2): the bind address is
+/// decided ONCE, at process start (a live policy edit takes effect on the next service restart,
+/// per the Console's own disclaimer text); PER-CONNECTION authorization, however, re-reads the
+/// live allowlist fresh (below), so narrowing or widening WHO may connect takes effect
+/// immediately without a restart. A bind failure (e.g. the port is already in use by another
+/// process, or by another Ghostlight service instance in a test run) is LOGGED, never fatal: the
+/// web API is simply unavailable for this service instance, exactly like the extension endpoint's
+/// `SessionBusy` handling in `run_service_loop` -- MCP/adapter multiplexing must never be affected
+/// by this second, optional session source.
 pub async fn run(ctx: ServiceContext) {
-    let allowlist = builtin_webapi_from();
+    let allowlist = live_channels_webapi_from(&ctx.store);
     let bind = resolve_bind(&allowlist);
     let addr = format!("{bind}:{DEFAULT_WEBAPI_PORT}");
     let listener = match TcpListener::bind(&addr).await {
@@ -115,7 +142,9 @@ pub async fn run(ctx: ServiceContext) {
             }
         };
         let ctx = ctx.clone();
-        let allowlist = allowlist.clone();
+        // PINS.md CS8.2: re-read the live allowlist per accepted connection (never the
+        // loop-hoisted startup value) so a policy edit is honored without a service restart.
+        let allowlist = live_channels_webapi_from(&ctx.store);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, peer_addr, ctx, allowlist, bind).await {
                 tracing::debug!(error = %e, "local web API connection ended with an error");

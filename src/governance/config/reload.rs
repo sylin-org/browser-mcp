@@ -53,6 +53,14 @@ pub struct ConfigStore {
     /// The in-force snapshot. A per-call read clones the `Arc` and releases the lock
     /// immediately; a reload stores a fresh `Arc` in one operation.
     snapshot: Mutex<Arc<Config>>,
+    /// The in-force per-key PROVENANCE (PINS.md CS6, `docs/tasks/console`): value, source layer,
+    /// locked -- the same `layers::Resolution` `snapshot`'s `Config` is derived from, retained
+    /// separately since `Config` only keeps the derived typed value. Written at the SAME two call
+    /// sites as `snapshot` (`load_initial_with_policy`, `apply_plan`), from the resolution value
+    /// already computed there (never a second `layers::resolve` call). Updated UNCONDITIONALLY in
+    /// `apply_plan` (never gated by `Config`'s `changed` check): a key's source layer can change
+    /// even when its resolved value does not.
+    resolution: Mutex<Arc<layers::Resolution>>,
     /// Monotonic reload generation; bumped on every successful swap. Lets a subscriber cheaply
     /// answer "did the snapshot change since I last looked".
     generation: AtomicU64,
@@ -120,6 +128,16 @@ impl ConfigStore {
     /// snapshot the call already started with.
     pub fn current(&self) -> Arc<Config> {
         self.snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The current in-force resolution (PINS.md CS6): per-key provenance (value, source layer,
+    /// lock state). Mirrors [`Self::current`]'s exact Arc-clone-and-release shape; kept in sync
+    /// with `snapshot` at the same two write sites.
+    pub fn current_resolution(&self) -> Arc<layers::Resolution> {
+        self.resolution
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -216,6 +234,7 @@ impl ConfigStore {
         let (policy_tx, _policy_rx) = watch::channel(policy_snapshot.clone());
         Ok(Arc::new(ConfigStore {
             snapshot: Mutex::new(config),
+            resolution: Mutex::new(Arc::new(resolution)),
             generation: AtomicU64::new(0),
             tx,
             last_good: Mutex::new(last_good),
@@ -367,6 +386,14 @@ impl ConfigStore {
             .last_good
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = plan.new_last_good;
+
+        // PINS.md CS6: the provenance snapshot updates UNCONDITIONALLY, never gated by `Config`'s
+        // own `changed` check below -- a key's source layer can change (e.g. an org-mandatory
+        // lock lifts back to user) even when its resolved value happens to compare equal.
+        *self
+            .resolution
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(resolution);
 
         let changed = {
             let mut slot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -706,6 +733,7 @@ impl ConfigStore {
         let (policy_tx, _policy_rx) = watch::channel(all_open.clone());
         Arc::new(ConfigStore {
             snapshot: Mutex::new(config),
+            resolution: Mutex::new(Arc::new(layers::resolve(&layers::LayerInputs::default()))),
             generation: AtomicU64::new(0),
             tx,
             last_good: Mutex::new(last_good),
@@ -737,6 +765,7 @@ impl ConfigStore {
         let (policy_tx, _policy_rx) = watch::channel(all_open.clone());
         Arc::new(ConfigStore {
             snapshot: Mutex::new(config),
+            resolution: Mutex::new(Arc::new(layers::resolve(&layers::LayerInputs::default()))),
             generation: AtomicU64::new(0),
             tx,
             last_good: Mutex::new(LastGoodInputs::default()),
@@ -964,6 +993,59 @@ mod tests {
         assert_ne!(*new, *old);
         // The previously-held Arc is still valid and still holds the old value.
         assert_eq!(*old, initial);
+    }
+
+    /// PINS.md CS6 (`docs/tasks/console`): `current_resolution()` reflects the SAME per-key
+    /// provenance a fresh `layers::resolve` over the equivalent inputs would give -- for a lone
+    /// `for_test` store with no org/user/preset overlay, every key resolves at `Source::Builtin`.
+    #[test]
+    fn current_resolution_reports_builtin_source_with_no_overlay() {
+        let store = ConfigStore::for_test(Config::minimal(), LastGoodInputs::default());
+        let resolution = store.current_resolution();
+        let resolved = resolution
+            .get(super::super::AUDIT_ENABLED)
+            .expect("registered key resolves");
+        assert_eq!(resolved.source, layers::Source::Builtin);
+        assert!(!resolved.locked);
+    }
+
+    /// PINS.md CS6: the provenance snapshot updates UNCONDITIONALLY, never gated by `Config`'s
+    /// own `changed` check -- an org-mandatory override that happens to resolve to the SAME
+    /// boolean value the builtin default already gave (`AUDIT_ENABLED`'s builtin/Minimal default
+    /// is `true`, matching the Safe preset by design, per its own `KeyDef` doc comment) produces
+    /// an UNCHANGED derived `Config` (`report.swapped == false`) but a CHANGED resolved source
+    /// (`Builtin` -> `OrgMandatory`) -- proving `current_resolution()` is never gated by
+    /// `Config`'s `PartialEq`.
+    #[test]
+    fn current_resolution_updates_even_when_the_derived_config_does_not_change() {
+        let store = ConfigStore::for_test(Config::minimal(), LastGoodInputs::default());
+        let before = store.current_resolution();
+        let before_resolved = before
+            .get(super::super::AUDIT_ENABLED)
+            .expect("registered key resolves");
+        assert_eq!(before_resolved.source, layers::Source::Builtin);
+        assert_eq!(before_resolved.value, json!(true));
+
+        let report = store.reload_with(
+            Ok(org_with_audit_enabled(true)),
+            Ok((UserConfig::default(), Vec::new())),
+        );
+        assert!(
+            !report.swapped,
+            "the derived Config is unchanged (true -> true)"
+        );
+
+        let after = store.current_resolution();
+        let after_resolved = after
+            .get(super::super::AUDIT_ENABLED)
+            .expect("registered key resolves");
+        assert_eq!(
+            after_resolved.source,
+            layers::Source::OrgMandatory,
+            "the resolved SOURCE must update even though the value and the derived Config did not"
+        );
+        assert!(after_resolved.locked);
+        assert_eq!(after_resolved.value, json!(true));
     }
 
     #[tokio::test]
