@@ -45,10 +45,16 @@ If they conflict, the higher wins.
     killed check at the top of `call`/`tab_url` (approx lines 222-224, 252-254) makes the kill error
     win over everything. The grace window MUST NOT weaken this: a kill still fails immediately and
     outlives a disconnect (see `kill_error_outlives_the_disconnect`).
-- `src/hub/mod.rs` hosts `HubCore` / the composition root and the local accept/admission layer
-  (created by H0; the per-peer OS-credential rate-limit key is Decision 4's "per-peer rate-limit
-  key" clause; session/isolation/quota code lives HERE, never in `src/governance/**`, per the a7
-  arch-test). RE-READ it; if it does not exist, see STOP preconditions.
+- CORRECTED 2026-07-04 (PINS.md SS9; RE-READ it in full): the accept/admission layer is
+  `src/transport/native/ipc.rs` (`serve_adapters`/`handle_adapter_connection`), NOT `src/hub/mod.rs`
+  -- H2's two-endpoint re-authoring put it there. `src/hub/mod.rs` hosts the composition root and
+  `ServiceContext` (the SHARED state every session clones), including H3's `session_registry` and
+  H4's `owned_tabs` fields, added the same way this task adds its quota table. The per-peer
+  OS-credential rate-limit key is Decision 4's "per-peer rate-limit key" clause: the `PeerCred` H3
+  captures inside `serve_adapters` (per SS9), threaded into `handle_adapter_connection`. Session/
+  isolation/quota code lives in `src/hub` and `src/transport/native/ipc.rs`, never in
+  `src/governance/**`, per the a7 arch-test. RE-READ `src/hub/mod.rs` and `src/transport/native/
+  ipc.rs`; if H2's landed shape does not match, see STOP preconditions.
 - `src/transport/native/host.rs`: `MAX_MESSAGE_LEN = 128 * 1024 * 1024` (128 MiB), the `encode` /
   `read_message` framing (4-byte LE prefix). FROZEN this task; the chunking H5 adds is a HUB relay /
   scheduling property, never a change to this extension wire.
@@ -85,11 +91,16 @@ four hop-attributed error strings and the `[hop: extension]` prefix (oracle belo
 
 ### 2. Per-peer (never global) mint/group quota (Decision 3 + Decision 4)
 
-In `src/hub/mod.rs`, key a mint/group quota on the connecting peer's OS credential (Decision 4's
-"per-peer rate-limit key" clause; the GUID is treated as secret material, so the QUOTA key is the
-peer credential, not the GUID value in logs). The quota is PER PEER, NEVER a single global cap (a
-global cap is itself a lockout DoS, per Decision 3). When a peer exceeds its cap, the offending
-mint/enqueue is DENIED; other peers are unaffected and continue to be served.
+CORRECTED 2026-07-04 (PINS.md SS9): in `handle_adapter_connection` (`src/transport/native/ipc.rs`),
+using the `PeerCred` captured in `serve_adapters` (per SS9 and H3), check/increment a per-peer quota
+counter BEFORE admission (`SessionRegistry::admit`) proceeds. The counter is a NEW shared
+`ServiceContext` field (`src/hub/mod.rs`), added the same way H3's `session_registry` and H4's
+`owned_tabs` were: e.g. `mint_quota: Arc<std::sync::Mutex<HashMap<PeerUser, usize>>>` (RE-READ
+`src/hub/session.rs` for the exact `PeerUser` type H3 landed). The quota is keyed on the peer
+credential (Decision 4's "per-peer rate-limit key" clause; the GUID is treated as secret material,
+so the QUOTA key is the peer credential, not the GUID value in logs). The quota is PER PEER, NEVER a
+single global cap (a global cap is itself a lockout DoS, per Decision 3). When a peer exceeds its
+cap, the offending mint/enqueue is DENIED; other peers are unaffected and continue to be served.
 
 - `PER_PEER_MINT_CAP` is PINNED in PINS.md SS4: `pub const PER_PEER_MINT_CAP: usize = 32;` (and the
   paired `pub const PER_PEER_GROUP_CAP: usize = 32;`, equal by design), never a single global cap.
@@ -104,11 +115,29 @@ Decision 4 ("the per-peer rate-limit key" transport-side amendment, in `src/hub`
 
 ### 3. Mandatory screenshot chunking so a large payload cannot head-of-line-block (Decision 3)
 
-In `src/hub/mod.rs`, relay a large reply (a screenshot payload up to `MAX_MESSAGE_LEN`) to its
-requesting session via a chunked path so that draining it does NOT block the hub's dispatch to OTHER
-sessions. The single service worker + single native port is an accepted, DOCUMENTED serialization
-bottleneck (fair ordering, truthful failure on a real drop); H5 does not hide it. The chunking is a
-HUB relay / scheduling property only.
+CORRECTED 2026-07-04 (PINS.md SS9, RESOLVED after fresh-eyes review found the original phrasing
+would likely re-block): the file "src/hub/mod.rs" no longer holds per-connection relay code (see
+SS9) -- RE-READ H2's landed reply-routing before writing a line. `Browser`
+(`src/transport/executor.rs`) routes each extension reply to its requesting session's pending
+oneshot by id (the `Arc<Mutex<HashMap>> pending` correlation H2 relies on); that hop is a single
+in-memory channel send (not itself a bottleneck). The actual relay to the outside world is each
+session's OWN writer task inside `serve_session` (`src/transport/mcp/server.rs`), writing the
+JSON-RPC reply to that session's OWN stream (adapter pipe, or the web socket from H8). Sessions
+already run as independent tokio tasks, so one session's large write does not block another
+session's task BY DEFAULT under a multi-threaded runtime -- but it CAN starve others under a
+single-threaded runtime, or if a future change introduces a shared lock across the write path, and
+Decision 3 wants this guaranteed, not incidental. RESOLVED mechanism: in `serve_session`'s writer
+task, when the serialized reply is `>= SCREENSHOT_CHUNK_THRESHOLD` bytes, write it in FIXED-SIZE
+chunks (e.g. 1 MiB) via repeated `write_all` calls, with an explicit `tokio::task::yield_now().await`
+between chunks. This is a concrete, testable guarantee -- the runtime is given an explicit
+scheduling point between chunks, so another session's small reply is never starved for longer than
+one chunk's write time, even in the worst case. This is a WRITE-OUT chunking on the
+service<->adapter/web hop ONLY: it never touches the frozen `host.rs` extension wire (the
+extension's OWN reply to the service is read as a single frame, unchanged) and never changes the
+JSON-RPC message's content or framing, only how many `write_all` calls deliver it. The single
+service worker + single native port is an accepted, DOCUMENTED serialization bottleneck (fair
+ordering, truthful failure on a real drop); H5 does not hide it. The chunking is a HUB relay /
+scheduling property only.
 
 - The oversize threshold is PINNED in PINS.md SS4:
   `pub const SCREENSHOT_CHUNK_THRESHOLD: usize = 8 * 1024 * 1024;` (payloads at/above 8 MiB are
@@ -174,9 +203,16 @@ executor runs; the executor TRANSCRIBES, never derives.
     head-of-line-blocked behind session 1. The exact completion bound is PINNED in PINS.md SS4 at
     `< 2s` (a tiny call must complete while a chunked large payload streams; strictly less than the
     60s oracle).
-  - Pinned assertion 2: the large payload is delivered to session 1 in more than one chunk (assert
-    the chunk count `> 1` given a payload `>= OVERSIZE_THRESHOLD`), and `src/transport/native/host.rs`
-    framing is untouched (this is a build-time invariant, not a runtime assert).
+  - Pinned assertion 2: the large payload is delivered to session 1's stream in more than one
+    `write_all` call (assert the chunk count `> 1` given a payload `>= OVERSIZE_THRESHOLD`). CLARIFIED
+    2026-07-04 (PINS.md SS9): the resolved chunking mechanism (item 3) writes the SAME bytes as an
+    unchunked write would -- chunking changes the NUMBER of write calls and inserts a yield between
+    them, not the byte content -- so this assertion CANNOT be observed by reading the final byte
+    stream (chunked and unchunked writes are byte-identical on the wire). Session 1's test-side
+    stream/writer must be a wrapped/counting `AsyncWrite` double that records each `poll_write`/
+    `write_all` invocation, so the test observes the WRITE CALLS, not just the delivered bytes.
+    Separately, assert `src/transport/native/host.rs` framing is untouched (this is a build-time
+    invariant, not a runtime assert).
   - Oracle transcribed: `MAX_MESSAGE_LEN = 128 * 1024 * 1024` and `TOOL_TIMEOUT = 60s`. The oversize
     threshold (`SCREENSHOT_CHUNK_THRESHOLD` = 8 MiB), chunk size, and the session-2 completion bound
     (`< 2s`) are PINNED in PINS.md SS4.
@@ -218,8 +254,10 @@ cargo fmt --all -- --check
   tests pin (`Browser extension disconnected before responding`, `Tool request timed out after 60s`,
   `Browser extension not connected`, `The user ended the browser session (kill switch)`), STOP and
   keep the strings byte-identical; the grace window changes timing only.
-- If `src/hub/mod.rs` (the `HubCore` / local accept layer from H0/H2) does not exist, H5's
-  prerequisite (H2 landed) is absent: STOP.
+- If `src/hub/mod.rs`'s `ServiceContext`, or `src/transport/native/ipc.rs`'s `serve_adapters`/
+  `handle_adapter_connection`, do not exist or no longer match PINS.md SS9's description, H5's
+  prerequisite (H2/H3 landed as SS9 describes) is absent or diverged: STOP and reconcile against the
+  ACTUAL landed shape.
 - If any AUTHOR-MUST-PIN value in this file is still literally "AUTHOR MUST PIN" when you reach it,
   STOP: those are pinned by the batch author before execution, never derived by the executor.
 - If landing any part of this task would require moving a NEVER-touch fence below, STOP.

@@ -35,19 +35,35 @@ seams that H0-H7 land. As of 2026-07-04 those seams DO NOT EXIST yet; the execut
 only after H0-H7 are green. RE-READ the tree and honor the STOP preconditions below before writing a
 line.
 
-- `src/hub/` does NOT exist as of 2026-07-04 authoring (H0 creates it: the `HubCore` composition
-  root; ADR-0030 Decision 2). By the time H8 runs it exists and hosts `HubCore` / `ServiceContext`
-  (SHARED: the one `Browser` handle, `ConfigStore`, audit `Recorder`) plus per-session state and the
-  local accept layer (H2/H3/H4). RE-READ `src/hub/mod.rs` for the real names.
+- CORRECTED 2026-07-04 (PINS.md SS9; RE-READ it in full before relying on any location below): the
+  ADAPTER's accept/admission layer -- minting nothing itself, but capturing `PeerCred`, reading the
+  session-hello, and calling `SessionRegistry::admit` -- lives in `src/transport/native/ipc.rs`
+  (`serve_adapters`/`handle_adapter_connection`), NOT `src/hub/mod.rs`. `src/hub/mod.rs` hosts the
+  composition root and `ServiceContext` (SHARED: `Browser`, `ConfigStore`, `Recorder`, plus H3's
+  `session_registry` and H4's `owned_tabs`, each a plain field added the same way). RE-READ
+  `src/hub/mod.rs` and `src/transport/native/ipc.rs` for the real names before mirroring the
+  pattern below.
 - `serve_session` / `handle_tools_call` -- the ONE governance chokepoint EVERY transport calls
   (ADR-0030 Decision 2) -- is introduced by H1 (`serve_session<S>(stream, ctx)` + `ServiceContext`)
-  and made genuinely multiplexed by H2. RE-READ its real signature before calling it; H8 must call
-  it UNCHANGED, adding only a second caller (the web listener), never a second implementation.
+  and made genuinely multiplexed by H2; H3 adds a plain `guid: SessionGuid` parameter -- NOT
+  `Option<SessionGuid>` (every session, including the service's own lone one, carries a real GUID;
+  see SS9). RE-READ its real signature before calling it; H8 must call it UNCHANGED, adding only a
+  second caller (the web listener) that passes its own minted `guid` for its own sessions, never a
+  second implementation.
 - H3 lands the adapter-minted opaque GUID identity + local peer-cred admission binding (ADR-0030
-  Decision 4). H4 lands binary-authoritative cross-session tab isolation, ownership-before-probe
-  (ADR-0030 Decision 6). The web API creates sessions the SAME way an adapter does: mint a GUID,
-  register a session, route through the chokepoint. RE-READ how the MCP adapter path mints/registers
-  a session and mirror it exactly.
+  Decision 4), wired in `ipc.rs`'s `serve_adapters`/`handle_adapter_connection` (SS9). H4 lands
+  binary-authoritative cross-session tab isolation via `ServiceContext.owned_tabs`, gated inside
+  `serve_session`'s read loop (ADR-0030 Decision 6). REVISED 2026-07-04 (PINS.md SS9 forward
+  guidance for H8, fresh-eyes review): the web API does NOT call
+  `ctx.session_registry.lock().unwrap().admit(...)` -- `SessionRegistry`'s binding model exists to
+  stop a DIFFERENT local OS user from hijacking a reused GUID, which has no meaning for a remote TCP
+  peer (there is no OS credential to bind, and no pinned formula for one; a raw IP:port breaks
+  reuse, a bare IP over-collapses NAT'd clients). The web listener mints a fresh
+  `SessionGuid::mint()` per accepted connection (mirroring ONLY the minting half of
+  `handle_adapter_connection`'s pattern, not its admission half) and calls
+  `serve_session(stream, ctx, guid)` directly, in its OWN `src/hub/webapi.rs` (a distinct TCP
+  source, per Decision 9). Trust for a web session is decided entirely by the resolved
+  `channels.webapi.from` policy (item 4 below), not by peer-cred binding.
 - `src/governance/ports.rs` (RE-READ): `DecisionRequest` (as-of-authoring around lines 292-325)
   is the complete PURE serde-serializable input to a decision. `resource: GoverningResource` is
   stamped there by the enforcement point AFTER an injected concrete resolver runs (resolve-in-adapter,

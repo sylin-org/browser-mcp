@@ -240,6 +240,109 @@ all-open byte-identity invariant.
     creates for its own Tests section): asserts the source of H6's own spawn-on-demand function
     contains the literal substring `assert_adapter_role`.
 
+## SS9 -- Per-session state: corrected location post-H2 (added 2026-07-04; H3 BLOCKED on this)
+
+H3 BLOCKED on landing: H2's two-endpoint re-authoring put the ADAPTER/CONTROL accept loop and the
+session-hello read entirely in `src/transport/native/ipc.rs` (`serve_adapters`,
+`handle_adapter_connection`), NOT in `src/hub/mod.rs` as H3/H4/H5/H7/H8 were drafted to assume (they
+predate H2's two-endpoint amendment). `src/hub/mod.rs` only builds the shared `ServiceContext` and
+spawns `ipc::serve_adapters`/opens the extension endpoint; it holds no accept loop and no
+per-connection code itself. This section is the SINGLE corrected description every later task cites
+instead of re-deriving its own.
+
+- Peer-cred capture happens INSIDE `serve_adapters` (both platform variants, `ipc.rs`), on the
+  CONCRETE platform type (`NamedPipeServer` post-`.connect()` on Windows; `UnixStream` from
+  `.accept()` on Unix) -- BEFORE the stream passes to `handle_adapter_connection<S>`, which is
+  GENERIC over `S: AsyncRead + AsyncWrite` and therefore CANNOT itself call
+  `GetNamedPipeClientProcessId`/`SO_PEERCRED` (no concrete type reachable inside a generic body).
+  H3 adds a platform-specific `capture_peer_cred` fn per platform in `ipc.rs` (Windows: the pipe
+  client's process id + token SID; Unix: `SO_PEERCRED`/`getpeereid`), called at the capture point
+  above, threading the resulting `PeerCred` as a new plain parameter into `handle_adapter_connection`
+  (signature becomes `handle_adapter_connection<S>(ctx, stream: S, peer_cred: PeerCred)`).
+- The session-hello is read and demuxed UNCHANGED, inside `handle_adapter_connection` itself
+  (reading framed bytes off generic `S` needs no concrete type).
+- Admission: `handle_adapter_connection`, immediately after parsing the GUID from the hello, calls
+  `ctx.session_registry.lock().unwrap().admit(&guid, &peer_cred)` (see the new `ServiceContext`
+  field below). `Refused` drops the connection (no dispatch, no session created; do not surface the
+  GUID). `Admitted` proceeds to call `crate::mcp::server::serve_session(stream, ctx, guid)`.
+- FIXED 2026-07-04 (fresh-eyes review after the first version of this section): `relay_adapter`
+  (`src/transport/native/ipc.rs`) currently sends a PLACEHOLDER empty `"guid": ""` in its hello
+  frame (its own doc comment already flags this as "the H3 seam"). H3 fixes this: `relay_adapter`
+  mints ONE `SessionGuid::mint()` as a local variable at its top (before building the hello) and
+  embeds `guid.as_str()` in place of `""`. Because `relay_adapter` itself runs exactly once per
+  adapter process (it is not called in a loop), minting it as a local variable there already
+  satisfies Decision 4 ("same adapter process reuses its GUID; a new adapter process mints a new
+  one") -- no `OnceLock` or extra plumbing needed.
+- `ServiceContext` (`src/hub/mod.rs`) gains ONE new field for H3:
+  `session_registry: Arc<std::sync::Mutex<SessionRegistry>>`, built once in
+  `ServiceContext::from_startup` alongside `browser`/`store`/`recorder` (`ServiceContext` is already
+  `Clone`, so every session shares the one registry). `SessionRegistry` itself -- the H3
+  admission/binding table, GUID -> bound `PeerCred` -- is UNCHANGED from `src/hub/session.rs`'s
+  original design; only WHERE it is reachable from changes (a `ServiceContext` field, not a bespoke
+  table dangling in `src/hub/mod.rs`).
+- `serve_session`'s signature GAINS a parameter: `serve_session<S>(stream: S, ctx: ServiceContext,
+  guid: SessionGuid) -> Result<()>` -- REVISED 2026-07-04 (fresh-eyes review): NOT `Option<SessionGuid>`.
+  Every session gets a REAL, uniquely-minted GUID, including the SERVICE's own directly-served stdio
+  session -- `run_as_service` calls `SessionGuid::mint()` for itself too (it is not "adapter-minted"
+  in the Decision-4 sense, but minting one locally costs nothing and closes a real isolation gap: a
+  `None`/exempt lone session would sit OUTSIDE H4's owned-tab bookkeeping entirely, so if an adapter
+  session later touched the same tabId the lone session was already using, the adapter session could
+  first-touch-adopt it with no refusal ever surfacing to either side -- two sessions silently sharing
+  one tab. A uniformly-real GUID for every session, checked through the SAME `owned_tabs` map,
+  closes this: a genuinely lone session still "owns everything it touches" (Decision 6), simply
+  because first-touch-adoption always succeeds when nothing else contests it -- no `None`-branch
+  special-casing needed anywhere downstream (H4's gate, H7's group-request emit). This is NOT a
+  violation of H1's byte-identical-signature pin (H1 pinned transport-genericity over the STREAM
+  type and byte-identical OUTPUT for the golden tests, never an eternal 2-parameter arity) -- H3's
+  own Goal was ALWAYS "give every session an opaque identity". Minting/threading a GUID writes
+  nothing to stdout or audit by itself (H3 does not stamp it into audit -- that is H8), so this
+  produces IDENTICAL behavior/output to today (all-open byte-identity) regardless.
+- FIXED 2026-07-04 (fresh-eyes review): `src/transport/mcp/server.rs::run` (the H1-era thin wrapper,
+  `pub async fn run(browser, loaded_policy, user_source)`) is DEAD CODE as of H2's landing --
+  `run_mcp_server` (`src/hub/mod.rs`) now calls `run_as_service`/`run_as_adapter` directly and never
+  calls `run`. Confirmed via a repo-wide grep: no remaining call site, only stale doc-comment
+  mentions (in `dispatch.rs`, `hub/mod.rs`, `tests/audit_recorder.rs`, `tests/manifest_validation.rs`
+  -- comments only, not compiled call sites). Since `run` still calls
+  `serve_session(stream, ctx)` with the OLD 2-arg signature, it will FAIL TO COMPILE once
+  `serve_session` gains the `guid` parameter. H3 DELETES `run` (do not thread a fake guid into dead
+  code) and, in passing, may correct the doc comments that describe it as live (not load-bearing;
+  do this only if trivial, do not let it become a scope creep hunt).
+- `SessionGuid` (`src/hub/session.rs`) needs `#[derive(Clone, PartialEq, Eq)]` (comparing
+  `map.get(&tab_id) == Some(&my_guid)` and cloning it into a map entry both require it -- H4's
+  design, added below, depends on this). `PeerUser` needs `#[derive(Clone, PartialEq, Eq, Hash)]`
+  (H5's `mint_quota: Arc<Mutex<HashMap<PeerUser, usize>>>` requires `Hash`; H3's original pin listed
+  only `Clone, PartialEq, Eq`, missing it). Both fixed here so H3 lands with the derives H4/H5
+  actually need, rather than H5 discovering a missing `Hash` at its own build time.
+- Downstream tasks (H4, H5, H7, H8) that assumed "the per-session dispatch / accept / admission
+  layer lives in `src/hub/mod.rs`" instead read: the ACCEPT/ADMISSION layer is
+  `src/transport/native/ipc.rs` (`serve_adapters`/`handle_adapter_connection`); the PER-REQUEST
+  GOVERNANCE DISPATCH layer (where a per-request gate like H4's ownership check or H5's chunking
+  actually runs, once per tool call) is `src/transport/mcp/server.rs::serve_session`'s read loop
+  (which calls `crate::transport::mcp::pipeline::handle_tools_call` per request) -- NOT
+  `src/hub/mod.rs`, which only builds shared state and spawns the two endpoints. Any NEW shared,
+  cross-session state (H4's owned-tab map; H5's per-peer quota counters) is added as a NEW field on
+  `ServiceContext`, exactly as `session_registry` is added here -- never as a standalone table
+  floating in `src/hub/mod.rs`.
+- Forward guidance for H4 (not a full spec -- H4's own task file decides the details): the
+  cross-session "does anyone else own this tab" check does NOT require per-session records that
+  cross-reference each other. A single SHARED map on `ServiceContext`,
+  `owned_tabs: Arc<std::sync::Mutex<HashMap<i64, SessionGuid>>>` (tabId -> owning GUID), makes both
+  checks O(1) without a session table: ownership is `map.get(&tab_id) == Some(&my_guid)`; adoption is
+  `map.entry(tab_id).or_insert_with(|| my_guid.clone())`. `src/hub/session.rs` still holds the pure
+  types (`SessionGuid`/`PeerCred`/`SessionRegistry`); it does not need to become a "session table of
+  records" for H4 to build on. Because every session now carries a REAL `SessionGuid` (the revision
+  above, not `Option<SessionGuid>`), H4's ownership gate runs THE SAME WAY for every session --
+  there is no `None`-branch to special-case. A genuinely lone session still owns everything it
+  touches (Decision 6), simply because first-touch-adoption always succeeds when no other live
+  session contests the tabId.
+- Forward guidance for H8 (not a full spec): `SessionRegistry`'s admission/binding model (H3) exists
+  to stop a DIFFERENT local OS user from hijacking a reused GUID -- it has no meaning for a remote
+  TCP peer, which has no OS credential to bind. The web listener does NOT call
+  `ctx.session_registry.lock().unwrap().admit(...)` at all; it mints a fresh `SessionGuid::mint()`
+  per accepted connection (mirroring the MINTING half of `handle_adapter_connection`'s pattern, not
+  its admission half) and calls `serve_session(stream, ctx, guid)` directly. Trust for a web session
+  is decided entirely by the `channels.webapi.from` policy (Decision 5/9), not by peer-cred binding.
+
 ## Resolved AUTHOR-MUST-PIN index (so none is left open)
 
 | Task | value | pinned in |

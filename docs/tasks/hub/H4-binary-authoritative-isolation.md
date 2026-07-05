@@ -36,6 +36,13 @@ GUID identity + local peer-cred admission). RE-READ `src/hub/mod.rs` and `src/hu
 whatever session table / GUID routing key H2/H3 actually landed) before writing a line. If they are
 absent, a STOP precondition below fires.
 
+CORRECTED 2026-07-04 (PINS.md SS9; H3's first attempt BLOCKED on this exact stale assumption before
+this fix -- RE-READ SS9 in full before writing a line): the per-session GOVERNANCE DISPATCH (the
+loop that calls `handle_tools_call` once per request) is `src/transport/mcp/server.rs::serve_session`,
+NOT anything in `src/hub/mod.rs`. `src/hub/mod.rs` only builds the shared `ServiceContext` and spawns
+the two endpoints; it holds no per-request dispatch loop. The ACCEPT/ADMISSION layer (where H3 mints
+and admits a GUID) is `src/transport/native/ipc.rs` (`serve_adapters`/`handle_adapter_connection`).
+
 - `src/transport/mcp/pipeline.rs` (as-of-authoring 1883 lines). The `tools/call` chokepoint is
   `pub(crate) async fn handle_tools_call(browser, store, governance, id, params)` at ~:50. The FIRST
   tab-URL probe machinery is `LazyTabUrl::new(browser, args.get("tabId").and_then(Value::as_i64))`
@@ -44,18 +51,26 @@ absent, a STOP precondition below fires.
   sacred check at ~:133, or `resolve_governing_resource` at ~:179). Decision 6's "BEFORE any
   `tab_url` probe" means the ownership gate must decide and (on refusal) return BEFORE `LazyTabUrl`
   can probe -- i.e. ahead of pipeline.rs:118 for this call's tabId. The gate does NOT live inside
-  `handle_tools_call`'s governance stages; it is a service-layer check in `src/hub` that runs before
-  (or as the first thing inside) the per-session dispatch that calls `handle_tools_call`.
-- `src/hub/session.rs` (created by H0-H3; RE-READ): holds PER-SESSION state (ADR Decision 2:
-  per-session `Governance`, the opaque subject GUID, "and the owned-handle set"). This is where the
-  owned-tab set lives. The GUID is H3's routing key (STOP precondition below).
-- `src/hub/mod.rs` (created by H0-H3; RE-READ): the `HubCore` / service composition root and the
-  per-session dispatch entry that every transport calls. The ownership gate is invoked here, ahead
-  of the call into `handle_tools_call`.
-- Coupling that pins scope: the owned-handle set is an OPAQUE handle that MAY name a tabId, and it
-  lives in `src/hub` (ADR Decision 6: "Owned-handle sets live in `src/hub` ...; the governance core
-  stays handle-agnostic"). `src/governance/**` must gain NO concept of tabId/token/socket (a7,
-  extended). The extension's per-group checks remain defense-in-depth ONLY; do not touch them.
+  `handle_tools_call`'s governance stages; it is a check in `serve_session`'s read loop
+  (`src/transport/mcp/server.rs`) that runs before its call into `handle_tools_call`, using the
+  session's own `guid: SessionGuid` parameter (H3; REVISED 2026-07-04 PINS.md SS9 -- every session,
+  including the service's own directly-served one, carries a REAL guid, not `Option<SessionGuid>`)
+  and the shared owned-tab map below.
+- `src/hub/session.rs` (created by H3; RE-READ): holds the PURE identity types
+  (`SessionGuid`/`PeerCred`/`SessionRegistry`) only -- it does NOT hold a per-session record or an
+  owned-handle set (H3 does not create one; see PINS.md SS9's forward guidance for H4, below).
+- `ServiceContext` (`src/hub/mod.rs`; RE-READ H3's landed shape): the SHARED, `Clone`-able state
+  every session clones (per Decision 2), already holding `browser`/`store`/`recorder` and (after H3)
+  `session_registry`. This task ADDS the owned-tab set here as ANOTHER shared field -- PINS.md SS9's
+  forward guidance: `owned_tabs: Arc<std::sync::Mutex<HashMap<i64, SessionGuid>>>` (tabId -> owning
+  GUID). Ownership check: `map.get(&tab_id) == Some(&my_guid)`. Adoption:
+  `map.entry(tab_id).or_insert_with(|| my_guid.clone())`. This needs NO per-session record and NO
+  cross-referencing between sessions' own state -- one shared map answers both questions in O(1).
+- Coupling that pins scope: the owned-tab map is OPAQUE-keyed (tabId -> GUID) and lives on
+  `ServiceContext` in `src/hub` (ADR Decision 6: "Owned-handle sets live in `src/hub` ...; the
+  governance core stays handle-agnostic"). `src/governance/**` must gain NO concept of tabId/
+  token/socket (a7, extended). The extension's per-group checks remain defense-in-depth ONLY; do not
+  touch them.
 - `tabs_create_mcp` is a free action (`Handler::Local`-adjacent free dispatch; see pipeline.rs
   comment ~:157). Its result carries the newly created tabId. The session adopts that tabId into its
   owned set on success. First-touch adoption: a tab-scoped call naming a tabId that NO live session
@@ -66,19 +81,25 @@ absent, a STOP precondition below fires.
 
 Mandated by docs/adr/0030-ghostlight-hub-orchestrator.md Decision 6 unless noted.
 
-1. PER-SESSION owned-tab set. Add to the H3 per-session state in `src/hub/session.rs` a set of owned
-   tabIds. A tabId enters the set when: (a) `tabs_create_mcp` returns it successfully to this
-   session, or (b) this session issues a tab-scoped call naming a tabId that no OTHER live session
-   owns (first-touch adoption). Ownership is service-authoritative; the extension is never consulted
-   to decide ownership.
+1. SHARED owned-tab map (CORRECTED 2026-07-04, PINS.md SS9). Add a NEW field to `ServiceContext`
+   (`src/hub/mod.rs`): `owned_tabs: Arc<std::sync::Mutex<HashMap<i64, SessionGuid>>>`, built once
+   alongside `session_registry`. A tabId enters the map when: (a) `tabs_create_mcp` returns it
+   successfully to this session, or (b) this session issues a tab-scoped call naming a tabId that no
+   OTHER live session owns (first-touch adoption: `map.entry(tab_id).or_insert_with(|| my_guid.clone())`).
+   Ownership is service-authoritative; the extension is never consulted to decide ownership. There is
+   no per-session record and no per-session HashSet -- one shared map answers "do I own it" AND
+   "can I adopt it" without cross-referencing other sessions' state.
 
-2. OWNERSHIP GATE BEFORE PROBE. In the `src/hub` per-session dispatch (`src/hub/mod.rs`), for a call
-   carrying a numeric `tabId`, run the ownership check BEFORE calling `handle_tools_call` (hence
-   before `LazyTabUrl` at pipeline.rs:118 can probe, and before any policy resolution). If the tabId
-   is owned by a DIFFERENT session (or by no session AND cannot be adopted because another session
-   owns it), RETURN the uniform "unknown tab" result immediately; do NOT enter `handle_tools_call`,
-   do NOT issue a `tab_url` frame. This ordering is the whole point of Decision 6 ("BEFORE any
-   `tab_url` probe ... leaks neither the tab's existence nor its host").
+2. OWNERSHIP GATE BEFORE PROBE (CORRECTED 2026-07-04, PINS.md SS9). In `serve_session`'s read loop
+   (`src/transport/mcp/server.rs`), for a call carrying a numeric `tabId`, run the ownership check
+   against `ctx.owned_tabs` using this session's own `guid: SessionGuid` (every session has a real
+   one, per H3's revision -- there is NO `None` case and NO special-casing here) BEFORE calling
+   `handle_tools_call` (hence before `LazyTabUrl` at pipeline.rs:118 can probe, and before any policy
+   resolution). If the tabId is owned by a DIFFERENT guid in the map (first-touch always succeeds
+   for an unowned tabId; refusal only fires for a tabId owned by a DIFFERENT guid), RETURN the
+   uniform "unknown tab" result immediately; do NOT enter
+   `handle_tools_call`, do NOT issue a `tab_url` frame. This ordering is the whole point of Decision 6
+   ("BEFORE any `tab_url` probe ... leaks neither the tab's existence nor its host").
 
 3. UNIFORM, LEAK-FREE RESULT. The refusal result MUST be byte-identical whether the tabId belongs to
    another live session (the tab EXISTS, on some host) or names no tab at all (does not exist). It
@@ -190,11 +211,15 @@ cargo fmt --all -- --check
 
 ## STOP preconditions
 
-- If `src/hub/session.rs` or `src/hub/mod.rs` does not exist, STOP (H0-H3 have not landed; this task
-  builds on them).
-- If H3's session identity (the adapter-minted GUID) is NOT the routing key at the service, STOP
-  (Decision 6 keys ownership on Decision 4's GUID; without it there is nothing to key the owned set
-  on).
+- If `src/hub/session.rs`, `src/hub/mod.rs`'s `ServiceContext`, or `src/transport/mcp/server.rs`'s
+  `serve_session` does not exist or no longer matches PINS.md SS9's description (in particular,
+  `serve_session` taking a plain `guid: SessionGuid` parameter -- NOT `Option` -- and `ServiceContext`
+  being `Clone`), STOP (H0-H3 have not landed, or landed differently; reconcile against the ACTUAL
+  shape, do not guess).
+- If H3's session identity (the adapter-minted or service-self-minted GUID, threaded into
+  `serve_session` as a plain `SessionGuid`) is NOT available at the per-request dispatch point,
+  STOP (Decision 6 keys ownership on Decision 4's GUID; without it there is nothing to key the owned
+  map on).
 - If enforcing ownership would edit any file under `src/governance/`, STOP and relocate the check to
   `src/hub`.
 - If a lone all-open session's owned-set logic changes `tests/all_open_golden.rs` output bytes, STOP

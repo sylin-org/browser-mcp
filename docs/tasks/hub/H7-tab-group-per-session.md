@@ -28,11 +28,14 @@ extension's per-group checks "defense-in-depth only"; ADR-0030 Migration line H7
 
 ## Current-tree facts (as-of-authoring; RE-READ before relying)
 
-- `src/hub/` and `src/hub/session.rs` DO NOT EXIST at the time this file was authored. They are
-  created earlier in this batch: H0 extracts the `HubCore` composition root into `src/hub`; H4
-  adds the binary-authoritative per-session owned-tab set (`tabs_create_mcp`-created or
-  legitimately adopted tabIds, keyed on the adapter-minted GUID). RE-READ `src/hub/session.rs`
-  before touching it; if the owned-tab set is absent, this task's STOP precondition fires.
+- CORRECTED 2026-07-04 (PINS.md SS9; RE-READ it in full): `src/hub/` (`mod.rs`, `session.rs`,
+  `handshake.rs`) is created earlier in this batch. `src/hub/session.rs` (H3) holds the PURE
+  identity types (`SessionGuid`/`PeerCred`/`SessionRegistry`) ONLY -- it does NOT hold a per-session
+  record or the owned-tab set. H4's binary-authoritative owned-tab tracking (`tabs_create_mcp`-
+  created or legitimately adopted tabIds, keyed on the adapter-minted GUID) is a SHARED field on
+  `ServiceContext` (`src/hub/mod.rs`): `owned_tabs: Arc<std::sync::Mutex<HashMap<i64, SessionGuid>>>`
+  (tabId -> owning GUID). RE-READ `src/hub/mod.rs`'s `ServiceContext` before touching it; if
+  `owned_tabs` is absent, this task's STOP precondition fires.
 - `extension/service-worker.js` (RE-READ; ~1264 lines as-of-authoring) is the policy-free CDP
   executor + native endpoint + tab-group manager. It currently manages a SINGLE group:
   - `const GROUP_TITLE = "\u{1F47B}Ghostlight";` (line ~29; a ghost emoji written as an ASCII
@@ -58,9 +61,13 @@ extension's per-group checks "defense-in-depth only"; ADR-0030 Migration line H7
 - Coupling that pins scope: the SEND path from the hub to the extension is H2's plumbing. As-of-
   authoring the only code that frames and posts native messages to the extension is
   `src/transport/executor.rs` (`Browser::tab_url` uses `send_and_await`; `Browser` holds the one
-  extension link). `src/hub/session.rs` reaches the extension only THROUGH the shared `Browser`
-  handle carried on H2's `ServiceContext`. H7 does NOT build native-send transport; it emits the
-  group request through that existing seam. If the seam is absent, STOP (see STOP preconditions).
+  extension link). CORRECTED 2026-07-04 (PINS.md SS9): the code that reacts to "a session's
+  owned-tab set changed" runs wherever H4's ownership-gate/adoption logic runs --
+  `serve_session`'s read loop (`src/transport/mcp/server.rs`), NOT `src/hub/session.rs` (which
+  holds only H3's pure identity types). That dispatch code reaches the extension THROUGH the shared
+  `Browser` handle carried on `ServiceContext`. H7 does NOT build native-send transport; it emits
+  the group request through that existing seam, from wherever H4's owned-tab update actually lands.
+  If the seam is absent, STOP (see STOP preconditions).
 - Extension tests are Node `node:test` files that `require` a PURE `extension/lib/*.js` module
   (see `tests/extension/geometry.test.js` requiring `extension/lib/geometry.js`).
   `service-worker.js` is NOT a pure module (it calls `importScripts` and registers chrome
@@ -109,14 +116,23 @@ state: tabs, tab GROUPS, ...)"; CLAUDE.md; ADR-0005):
      module (`extension/lib/grouping.js`) imported by `service-worker.js` that groups ONLY on a
      `group_request` and makes no policy decision; the service side lives in `src/hub/session.rs`.
 
-3. `src/hub/session.rs`: when a session's owned-tab set (H4) changes (a tab is created via
-   `tabs_create_mcp` or legitimately adopted), the service emits the group request naming that
-   session's GUID and its current owned tabIds, THROUGH the shared `Browser` seam on H2's
-   `ServiceContext`. This is the only new call site. It MUST be a no-op for a lone all-open session
-   with respect to the sacred tool wire: grouping is out-of-band presentation and MUST NOT alter
-   any `tool_response` bytes (ADR-0030 Preserved invariants: "every new session/isolation path is
-   a no-op for a lone all-open session"). Session/owned-tab/GUID code stays in `src/hub`, NEVER in
-   `src/governance` (the a7 arch-test holds).
+3. CORRECTED 2026-07-04 (PINS.md SS9): wherever H4's owned-tab update actually runs (RE-READ H4's
+   landed shape -- `serve_session`'s read loop in `src/transport/mcp/server.rs`, right after the
+   ownership-gate/adoption logic updates `ctx.owned_tabs`, NOT `src/hub/session.rs`), when a
+   session's owned-tab set changes (a tab is created via `tabs_create_mcp` or legitimately adopted),
+   emit the group request naming that session's GUID and its current owned tabIds (read from
+   `ctx.owned_tabs`, filtered to this GUID), THROUGH the shared `Browser` seam on `ServiceContext`.
+   This is the only new call site. It MUST be a no-op for a lone all-open session with respect to
+   the sacred tool wire: grouping is out-of-band presentation and MUST NOT alter any `tool_response`
+   bytes (ADR-0030 Preserved invariants: "every new session/isolation path is a no-op for a lone
+   all-open session"). REVISED 2026-07-04 (PINS.md SS9): every session, including the service's own
+   lone stdio session, now carries a REAL `SessionGuid` (H3's revision -- there is no `None` case),
+   so this emit path fires the SAME WAY for a lone session as for any other -- there is no
+   special-casing to skip it. Byte-identity is preserved anyway because `group_request` is an
+   OUT-OF-BAND native-messaging branch, entirely separate from the sacred `tool_response` stream
+   this invariant governs; it cannot alter those bytes regardless of whether it fires. Session/
+   owned-tab/GUID code stays in `src/hub`/`src/transport`, NEVER in `src/governance` (the a7
+   arch-test holds).
 
 4. `src/transport/native/messages.rs`: add ONE doc section for the group-request wire, mirroring
    the "Tab-URL query (g13)" section (a `//!` doc block: the JSON shape, "binary -> extension",
@@ -181,12 +197,11 @@ RE-READ `package.json` and use that script; the pinned assertions do not change.
 
 ## STOP preconditions
 
-- If H4's per-session owned-tab tracking is ABSENT in `src/hub/session.rs` (no per-session,
-  GUID-keyed owned-tabId set), STOP. H7 builds on it and must not invent it.
-- If `src/hub` does NOT expose a hub-side seam to send an out-of-band native message to the
-  extension (the shared `Browser` handle on H2's `ServiceContext`, reachable from
-  `src/hub/session.rs`), STOP. H7 MUST NOT build native-send transport itself; that is H2's
-  plumbing.
+- If H4's owned-tab tracking (`ServiceContext.owned_tabs`, per PINS.md SS9) is ABSENT or no longer
+  matches SS9's description, STOP. H7 builds on it and must not invent it.
+- If no seam exposes a hub-side path to send an out-of-band native message to the extension (the
+  shared `Browser` handle on `ServiceContext`, reachable from wherever H4's owned-tab update runs),
+  STOP. H7 MUST NOT build native-send transport itself; that is H2's plumbing.
 - If grouping would require the extension to make ANY policy decision -- inspect a tab's
   url/host/domain/grant to decide membership -- STOP. The extension stays policy-free
   (ADR-0005; ADR-0030 Decision 6).
