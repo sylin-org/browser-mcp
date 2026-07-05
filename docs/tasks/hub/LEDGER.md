@@ -6,16 +6,25 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**H3 is BLOCKED (`H3-session-identity-guid.md`).** H0 landed (pure code move; `src/hub`
-composition root extracted). H1 landed (transport-generic `serve_session<S>` + `ServiceContext`,
-byte-identical single-session refactor). H2 landed (persistent SERVICE + thin ADAPTER + genuine
-multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004 repealed at the
-MCP-client layer). H3's own tree has NO working-tree changes to revert -- the blocking tree-fact
-mismatch was found during the per-task procedure's step 2 (RE-READ every source file the task
-names), before any test or implementation code was written. Do NOT re-attempt H3 or any later task
-until the frontier author resolves the conflict described in the H3 Log entry below (H2's actual
-landed accept-loop location vs. this task's authoring assumption) and re-issues or amends the
-task.
+**Next task: H3 (`H3-session-identity-guid.md`), RE-ISSUED 2026-07-04.** H0 landed (pure code move;
+`src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>` +
+`ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
+ADAPTER + genuine multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004
+repealed at the MCP-client layer). H3 previously BLOCKED (see the H3 Log entry) because its own
+Required Behavior assumed the ADAPTER/CONTROL accept loop lived in `src/hub/mod.rs`, when H2's
+actual landing put it in `src/transport/native/ipc.rs`. The frontier author has since: (1) pinned
+the corrected architecture in `docs/tasks/hub/PINS.md` SS9 (the single description H3/H4/H5/H7/H8
+now cite) and re-authored H3's Required Behavior, STOP preconditions, and Tests to match; (2)
+re-authored H4, H5, H7, and H8 too, since they shared the SAME stale assumption and would have
+blocked in turn; (3) run two independent fresh-eyes verification passes against the LIVE, landed H2
+code (not just the doc text) and closed 7 further gaps those passes found (missing `Hash`/`Clone`/
+`PartialEq` derives on `PeerUser`/`SessionGuid`; a dead `server::run()` that would fail to compile
+against the new `serve_session` signature; `relay_adapter`'s placeholder empty guid; H5's
+screenshot-chunking location and mechanism; H8's web-session admission model; a malformed/empty-guid
+parse-failure path at admission). `serve_session` now takes a plain `guid: SessionGuid` (not
+`Option`) for every session, including the service's own lone one -- see PINS.md SS9 for why. The
+tree is at the clean H2 baseline. Start H3 fresh against the re-authored task file, PINS.md SS1/SS8/
+SS9, following the per-task procedure in `BOOTSTRAP.md`.
 
 ## Status
 
@@ -24,7 +33,7 @@ task.
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
 | H2 | Persistent service + thin adapter + multiplex | DONE | 96a54fb | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
-| H3 | Adapter-minted GUID identity + peer-cred binding | BLOCKED | -- | see Log |
+| H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED in Log |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
 | H6 | Detached non-admin lifecycle + anti-squat | pending | -- | job-breakaway is the acceptance gate |
@@ -309,6 +318,16 @@ the extension fence, are the only fences touched, both as pinned.
   only, not a source or test change.
 
 ### H3
+- RE-ISSUED 2026-07-04 (frontier author). The BLOCKED entry below stands as provenance. Resolution:
+  PINS.md SS9 pins the corrected architecture (accept/admission in `ipc.rs`, not `src/hub/mod.rs`;
+  `ServiceContext` gains `session_registry`/`owned_tabs`/quota fields as siblings; `serve_session`
+  gains a plain `guid: SessionGuid`, not `Option`). H3, H4, H5, H7, H8 were all re-authored to match
+  (H4/H5/H7/H8 shared the exact same stale assumption and would have blocked in turn). Two further
+  fresh-eyes passes against the live H2 code closed 7 more gaps (derives, dead code, the
+  `relay_adapter` placeholder guid, H5's chunking mechanism, H8's admission model, a guid
+  parse-failure path). See commits `9402312`-adjacent amendment history and `18746aa` for the full
+  fix. Chosen over re-deriving each task's location independently, to guarantee cross-file pin
+  agreement rather than risk 4 more independently-worded (and possibly inconsistent) corrections.
 - BLOCKED at the per-task procedure's step 2 (RE-READ every source file the task names; verify
   each as-of-authoring fact), before writing any test or implementation code -- no working-tree
   changes exist to revert.
