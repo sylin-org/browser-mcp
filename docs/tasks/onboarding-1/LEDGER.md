@@ -12,26 +12,39 @@ from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**o02 (Add agentGuide + per-tool example to tools.json) is NEXT.** o01 landed; the ADR is
-reconciled.
+**o03 (Emit initialize.instructions from agentGuide) is NEXT.** o01 and o02 landed.
 
 ## o01 -- Reconcile ADR-0031
 
+Status: DONE (0157fa1).
+
+## o02 -- Add agentGuide + per-tool example to tools.json
+
 Status: DONE (this commit).
 
-Files: `docs/adr/0031-agent-onboarding-contract.md` (Decision 3 rewritten as WITHDRAWN; Decision
-4 sharpened to hard-fail with the ToolError discovery note; Consequences updated to match).
+Files: `src/transport/mcp/schemas/tools.json` (additive only).
 
-What landed: the ADR now matches the design the planning phase converged on. Decision 3 is
-withdrawn -- the directory's per-variant description is load-bearing (it feeds `explain_text()`,
-the `explain` tool's response body, golden-pinned), not parallel documentation. Decision 4 is
-sharpened from "corrective errors" to "hard-fail inputSchema validation with corrective errors,"
-with the discovery that the codebase's existing `ToolError` taxonomy already carries a `next_step`
-field on every variant -- so Decision 4 USES the existing convention rather than inventing a
-parallel mechanism.
+What landed: the additive agent-facing content in the fixture. A new top-level `agentGuide`
+section (summary + workflow + flow + denials, ~350 tokens), and an `example` block per tool.
+The 13 trained tools each carry a complete, valid `example.call`; deterministic-shape tools
+(navigate, tabs_context_mcp, tabs_create_mcp, update_plan) also carry `example.returns`;
+page-dependent tools (find, form_input, get_page_text, javascript_tool, read_console_messages,
+read_network_requests, resize_window) omit `returns`. `read_page` carries `example.returns`
+pinning the `ref_N` invariant (the page-independent fact that refs flow to form_input.ref and
+computer.ref). `computer`'s example uses `screenshot` as a representative action and its
+`returns` documents the action-dependent return shape. `explain` (the 14th, unsanctioned tool)
+omits `example` per the ADR (argument-less, self-describing).
 
-Verification: docs-only task; no code or test change. The ADR's section structure (Decisions 1-5
-+ Consequences) reads coherently after the rewrites.
+The 14 existing tool objects' `name`/`description`/`inputSchema` are byte-stable: all 7 existing
+fidelity tests pass unchanged.
+
+Verification: 567 tests pass (the dev baseline; security-1's +17 are on a separate branch),
+clippy `-D warnings` clean, fmt clean. JSON validates; agentGuide carries all four fields; 14
+tools present. The example-against-schema validation lands in o05.
+
+Deviation D1: `update_plan.example.call` carries full `domains` + `approach` arrays (required
+fields) -- the plan said "deterministic-shape tools carry returns" but update_plan's return is
+auto-approved echo, so it carries a short `returns` string noting that. No impact on later tasks.
 
 ## o02 -- Add agentGuide + per-tool example to tools.json
 

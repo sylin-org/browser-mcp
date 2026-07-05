@@ -1,4 +1,10 @@
 {
+  "agentGuide": {
+    "summary": "Ghostlight drives the user's own authenticated browser. You observe and act on the web pages they're already logged into, in an isolated Ghostlight tab group separate from their own tabs. Default (no policy) is unrestricted; a policy can scope what's allowed.",
+    "workflow": "BEFORE ANYTHING ELSE: GET A tabId. Every tool below that touches a page requires a `tabId` (a number) -- it is required, not optional. Get one with tabs_context_mcp (pass createIfEmpty: true to create the group if none exists; usually your first call) or tabs_create_mcp (open a new tab). Then navigate (tabId + url) to go somewhere. COST DISCIPLINE: computer screenshot and zoom return large images costing many tokens; prefer read_page (structured tree) or get_page_text (plain text) when you only need structure or text, and screenshot only when you need to see layout.",
+    "flow": "tabs_context_mcp -> navigate -> read (read_page or get_page_text or computer screenshot) -> act (computer or form_input) -> re-read.",
+    "denials": "If a call is denied you'll see `Denied (D-xxxxxxxx): ...`. Call `explain` (no arguments) to see what's permitted in this session; hand the denial id to the policy administrator."
+  },
   "tools": [
     {
       "name": "tabs_context_mcp",
@@ -13,6 +19,10 @@
         },
         "required": [],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "createIfEmpty": true },
+        "returns": "Returns the tab group id and the tabs it contains (tabId, title, url for each). Call this first to get the tabId every other tool needs."
       }
     },
     {
@@ -23,6 +33,10 @@
         "properties": {},
         "required": [],
         "additionalProperties": false
+      },
+      "example": {
+        "call": {},
+        "returns": "Returns the new tab's tabId and the group id; use the tabId with navigate to go to a URL."
       }
     },
     {
@@ -46,6 +60,10 @@
         },
         "required": ["url", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "url": "https://example.com" },
+        "returns": "Returns a short confirmation that the tab navigated to the URL."
       }
     },
     {
@@ -122,6 +140,10 @@
         },
         "required": ["action", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "action": "screenshot" },
+        "returns": "Returns depend on action: screenshot/zoom return an image (large; prefer read_page/get_page_text when you only need structure or text); clicks/typing/scroll/hover return a short text confirmation."
       }
     },
     {
@@ -141,6 +163,9 @@
         },
         "required": ["query", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "query": "search bar" }
       }
     },
     {
@@ -164,6 +189,9 @@
         },
         "required": ["ref", "value", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "ref": "ref_1", "value": "hello" }
       }
     },
     {
@@ -183,6 +211,9 @@
         },
         "required": ["tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0 }
       }
     },
     {
@@ -206,6 +237,9 @@
         },
         "required": ["action", "text", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "action": "javascript_exec", "text": "document.title" }
       }
     },
     {
@@ -237,6 +271,9 @@
         },
         "required": ["tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "pattern": "error|warning" }
       }
     },
     {
@@ -264,6 +301,9 @@
         },
         "required": ["tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "urlPattern": "/api/" }
       }
     },
     {
@@ -296,6 +336,10 @@
         },
         "required": ["tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "filter": "interactive" },
+        "returns": "Returns an accessibility tree; each interactive element carries a reference id of the form `ref_N`. Pass that id to form_input.ref, or use it as computer.ref for click/scroll_to actions."
       }
     },
     {
@@ -319,6 +363,9 @@
         },
         "required": ["width", "height", "tabId"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "tabId": 0, "width": 1280, "height": 800 }
       }
     },
     {
@@ -340,6 +387,10 @@
         },
         "required": ["domains", "approach"],
         "additionalProperties": false
+      },
+      "example": {
+        "call": { "domains": ["example.com"], "approach": ["read the page", "report the main heading"] },
+        "returns": "Returns the plan echoed back; auto-approved by the engine. The user sees it in their client."
       }
     },
     {
