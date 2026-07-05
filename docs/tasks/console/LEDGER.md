@@ -8,15 +8,12 @@ fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**K5 is BLOCKED (see the K5 Log entry below).** K1, K2, K3, K4 are DONE and committed; the tree is
-green and clean at `635ccaa`. K5's own STOP precondition fired for real: the env-override
-isolation approach the task anticipated (mirroring `spawn_service_with_program_data`'s
-`ProgramData` precedent) does NOT transfer to the user config path on Windows. This ALSO caused a
-real, accidental write to THIS machine's actual `%APPDATA%\ghostlight\config.json`
-(`audit.enabled: true`) during the proof step the task itself required running before writing any
-code -- that file has NOT been cleaned up (a destructive-action guard blocked the cleanup attempt
-and correctly redirected to this BLOCKED report instead). A human must decide how to proceed
-before K5 is re-attempted; see the Log entry's "What is needed to proceed."
+**The K1-K5 Console batch is COMPLETE.** All five tasks are DONE and committed; the tree is green.
+K5 was re-issued after a genuine BLOCKED finding (see the K5 Log entry): the user, acting as
+frontier author, decided (a) clean up the extraneous real file the isolation proof had created,
+and (b) add a real `GHOSTLIGHT_USER_CONFIG_DIR` env override to
+`governance::config::load::user_config_path()`. Both were executed; the re-verified isolation
+proof succeeded before any K5 test was written.
 
 ## Status
 
@@ -26,7 +23,7 @@ before K5 is re-attempted; see the Log entry's "What is needed to proceed."
 | K2 | Console static GET routes in src/hub/webapi.rs | DONE | 7eea843 | needs K1; PINS.md CS1, CS10, CS11; see Log for D1 |
 | K3 | GET /api/v1/config + config table UI | DONE | d8ada7b | needs K2; PINS.md CS2 |
 | K4 | GET /api/v1/sessions + sessions UI | DONE | c20958a | needs K2; PINS.md CS3 |
-| K5 | POST /api/v1/config/webapi-enable-remote + UI control | BLOCKED | -- | real user-config-path isolation failed; see Log |
+| K5 | POST /api/v1/config/webapi-enable-remote + UI control | DONE | b12fa75 | re-issued after BLOCKED (dd33ba1); see Log |
 
 Status values: `pending` | `in-progress` | `DONE` | `BLOCKED`.
 
@@ -274,6 +271,46 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
 - No deviation numbers logged: this is a tree-fact mismatch between this task's own authored
   hypothesis (isolation transfers from the org path to the user path) and the platform's actual
   behavior, not a choice this executor made mid-task.
+
+**RE-ISSUED RUN (DONE, commit `b12fa75`).** The user, acting as frontier author, decided: (a) the
+extraneous real file (`%APPDATA%\ghostlight\config.json`, confirmed net-new before removal) was
+deleted with explicit authorization; (b) option (i) from the BLOCKED entry's remediation list --
+add a real `GHOSTLIGHT_USER_CONFIG_DIR` env override to
+`governance::config::load::user_config_path()`, mirroring the existing `GHOSTLIGHT_LOG_DIR`/
+`GHOSTLIGHT_ENDPOINT`/`GHOSTLIGHT_WEBAPI_PORT` convention. Implemented exactly that (doc comment
+explains why this has no security implication: org-mandatory/org-recommended always outrank the
+user layer regardless of where its file lives, unlike `org_policy_path`, which is deliberately
+never overridable). RE-RAN the isolation proof with the new override
+(`GHOSTLIGHT_USER_CONFIG_DIR=<temp dir> ghostlight.exe config set audit.enabled true`) and
+confirmed the write landed in the temp dir with the real `%APPDATA%\ghostlight\config.json`
+untouched, BEFORE writing any K5 test.
+- Implemented the route per PINS.md CS1/CS4/CS5 exactly: a new `("POST",
+  "/api/v1/config/webapi-enable-remote")` match arm calls `write_enable_remote_response`, which
+  calls `cli::set_user_value(CHANNELS_WEBAPI_FROM, json!(["*"]), is_valid_pattern)` (the request
+  body is never read), returns the pinned 200 JSON shape on success (recording ONE `config_changed`
+  `SessionEventRecord` via `ctx.recorder.record_session_event` directly -- no per-session
+  `Governance` exists for a plain HTTP action) or the uniform 409 `{"error": "<message>"}` on any
+  `Err`. Added `/api/v1/config/webapi-enable-remote` to `is_known_console_path`. UI: the pinned
+  disclaimer text and an enable-remote button in `index.html`/`console.js` (the token-mint/revoke
+  note was already present since K2).
+- Added TWO new `tests/support/mod.rs` helpers (every existing function there, including K3's
+  `spawn_service_with_program_data_and_webapi_port`, unmodified):
+  `spawn_service_with_user_config_dir_and_webapi_port` and
+  `spawn_service_with_program_data_user_config_dir_and_webapi_port` (needed to combine an
+  org-mandatory lock with user-config-write isolation for the locked-key test).
+- Verification: all four commands passed for real. `cargo build --all-targets` clean. `cargo test`
+  green: 465 lib tests (unchanged) plus every integration suite, 0 failed -- including the new
+  `tests/console_enable_remote.rs` (4/4: pinned-value write, one `config_changed` audit record,
+  clean 409 refusal under an org-mandatory lock with the user config file never created, and the
+  POST body proven ignored), every other Console-batch test suite unaffected, and H8's own `tests/
+  webapi_auth.rs` (3/3)/`tests/channels_policy.rs` (1/1) unmodified. `cargo clippy --all-targets --
+  -D warnings` clean. `cargo fmt --all -- --check` clean (after one normalization pass, whitespace
+  only). Sacred tests green and byte-unmodified (`git diff --stat`: zero diff on all of them). Only
+  `src/governance/config/load.rs` (the new file, per the frontier author's decision),
+  `src/hub/console/{console.js,index.html}`, `src/hub/webapi.rs`, `tests/support/mod.rs`, plus the
+  new `tests/console_enable_remote.rs` changed. No NEVER-touch fence moved. Re-confirmed the real
+  `%APPDATA%\ghostlight\config.json` was absent both before and after the full test run.
+- Note: `CARGO_TARGET_DIR` was pointed at a scratch directory for build-artifact routing only.
 
 ## Deviation format
 
