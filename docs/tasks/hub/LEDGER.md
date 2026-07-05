@@ -6,6 +6,39 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
+**H7 is DONE (f12a728). H8 (local web API; loopback policy) is NEXT.** H7 landed the additive
+`group_request`/`group_response` native-messaging pair (ADR-0030 Decision 6/7; PINS.md SS6): the
+service's SHARED `check_tab_ownership` gate (`src/transport/mcp/server.rs`, H4's own pre-dispatch
+chokepoint) now switches on a NEW `crate::hub::session::TabClaim` (`Owned`/`Adopted`/`Refused`, new
+in `src/hub/session.rs`, which `owns_or_adopts_tab` is now reimplemented in terms of so the two
+never drift) and fires a NEW `emit_group_request` helper ONLY on `Adopted` -- never on an
+already-owned re-touch, never on a refusal -- naming the session's FULL current owned-tab set
+(`crate::hub::session::owned_tab_ids`, sorted) and the PINNED title format
+(`crate::hub::session::group_title`, `"\u{1F47B} Ghostlight <short>"`, first 8 GUID chars). The
+send itself is `Browser::request_group` (`src/transport/executor.rs`), a fire-and-forget send over
+H2's existing `outgoing` channel mirroring `send_hold_reply`'s posture (the pinned wire carries no
+`id` to correlate a `group_response` by; `route_reply` already drops an id-less non-`session_killed`
+frame as an ordinary event, so no new routing/pending-map logic was needed). `messages.rs` gained
+one additive doc section (every byte-frozen section untouched). On the extension side: a NEW pure
+module `extension/lib/grouping.js` (`groupSessionTabs`, unit-tested in isolation by the task-named
+`tests/extension/grouping.test.js::owned_tabs_are_grouped_on_service_request_only`, covering all 4
+pinned assertions in one test as named) makes the actual grouping decision given an injected
+`chrome`; `service-worker.js` imports it, adds the `group_request` branch to the existing
+`nativePort.onMessage` handler, and adds a NEW `sessionGroups` (guid -> Chrome tab-group id) map,
+persisted/restored via the EXISTING `persistSessionState`/`rehydrate` functions under a NEW,
+additive `sessionGroupsState` storage key (the pre-existing `sessionState` key/shape is untouched).
+See the H7 Log entry below for the one significant design decision this task required beyond its
+own text: the pre-existing single-group access-control mechanism
+(`groupId`/`ensureGroup`/`groupTabs`/`inGroup`/`effectiveTabId`) was left COMPLETELY UNTOUCHED,
+deliberately NOT unified with the new per-session `sessionGroups` map, because the sacred
+`tool_request`/`tool_response` wire carries no session identity at all -- that mechanism
+structurally cannot become session-aware, and the task names no test exercising it. Flagged as a
+real (untested, out of this task's named scope) production interaction for the frontier author's
+awareness, not solved here.
+
+RE-READ H8's own task file plus PINS.md SS7 before starting; H8 needs H2+H3+H4 (all DONE) and adds
+the local web API's `channels.webapi.from` policy. Follow the per-task procedure in `BOOTSTRAP.md`.
+
 **H6 is DONE (927d102). H7 (tab-group-per-session presentation) is NEXT.** H6 landed the
 always-ready-service amendment in full: `src/hub/mod.rs`'s `run_mcp_server` is now ALWAYS the thin
 ADAPTER (argv dispatch, never a claim election; role decided before anything else); the new
@@ -146,7 +179,7 @@ session carries a REAL `SessionGuid`, there is no `None` branch; new shared cros
 | H4 | Binary-authoritative cross-session tab isolation | DONE | 1490951 | |
 | H5 | Reconnect grace window + honest bounded queue | DONE | 33b361d | |
 | H6 | Always-ready service + thin adapters + anti-squat | DONE | 927d102 | RE-ISSUED run landed on the Decision 8 amendment (was BLOCKED); see Log + RESUME HERE |
-| H7 | Tab-group-per-session presentation | pending | -- | crosses the JS boundary |
+| H7 | Tab-group-per-session presentation | DONE | f12a728 | crossed the JS boundary; see Log |
 | H8 | Local web API = TCP; bind per policy | pending | -- | needs H2+H3+H4; the corrected D2/D5 |
 | H9 | Installer auto-start (register+start supervisor) | pending | -- | NEW; needs H6; mostly command/file builders + install wiring |
 
@@ -1108,7 +1141,129 @@ task itself grants.
   only, not a source or test change.
 
 ### H7
-- (not started)
+- Verified all as-of-authoring facts in `H7-tab-group-per-session.md` and PINS.md SS6/SS9 against
+  the live tree: `ServiceContext.owned_tabs` present exactly as SS9 describes (`src/hub/mod.rs`);
+  the ownership-gate/adoption logic runs in `check_tab_ownership` inside
+  `serve_session`'s read loop (`src/transport/mcp/server.rs`), NOT `src/hub/session.rs`, matching
+  the task's own CORRECTED note; the shared `Browser` handle on `ServiceContext` is the only extant
+  send seam to the extension (`Browser::call`/`Browser::tab_url` via `send_and_await`,
+  `send_hold_reply`'s fire-and-forget pattern for an id-less reply); `extension/service-worker.js`
+  matched the task's line-~29/32/490/514/517/1063 description closely enough (drift only in exact
+  line numbers, expected per BOOTSTRAP authority order item 4). No STOP precondition fired.
+- Implemented per the task's Required Behavior items 1-4 and PINS.md SS6, keeping the change
+  additive throughout:
+  - `src/hub/session.rs`: new `TabClaim` enum (`Owned`/`Adopted`/`Refused`) and `claim_tab` (the
+    same first-touch-adoption operation as the existing `owns_or_adopts_tab`, but reporting which
+    outcome occurred); `owns_or_adopts_tab` is now `!matches!(claim_tab(...), TabClaim::Refused)`
+    so the two can never drift, and its own existing test/callers are untouched. New
+    `owned_tab_ids` (the full, sorted, guid-filtered owned-tab set) and `group_title` (the PINNED
+    `"\u{1F47B} Ghostlight <short>"` format, first 8 GUID chars). 3 supplementary (not task-named)
+    unit tests added alongside H4's own.
+  - `src/transport/executor.rs`: new `Browser::request_group(guid: &str, tab_ids: &[i64], title:
+    &str)`, fire-and-forget over the existing `outgoing` channel (mirrors `send_hold_reply`'s
+    posture exactly: encode, frame, best-effort send, silent no-op if unconnected or unencodable).
+    No new routing/pending-map logic: the pinned `group_response` carries no `id`, so
+    `Browser::route_reply`'s existing "no id -> not `session_killed` -> drop as an event" path
+    already handles it with zero code changes. 2 supplementary tests (a no-connection no-op; a
+    connected round-trip asserting the exact pinned wire shape, no `id` member, and that an
+    incoming `group_response` never wedges a subsequent ordinary `call`).
+  - `src/transport/mcp/server.rs`: `check_tab_ownership` now takes an added `browser: &Browser`
+    parameter and matches on `TabClaim` instead of the old boolean: `Owned` -> `None` (unchanged
+    pass-through), `Refused` -> the unchanged uniform-denial path, `Adopted` -> a NEW
+    `emit_group_request` call (reads the session's full current owned-tab set via
+    `owned_tab_ids`, computes the title via `group_title`, calls `Browser::request_group`) then
+    `None`. This is the ONLY new call site, exactly as the task requires; it fires for EVERY
+    session including a lone all-open one (PINS.md SS9: every session carries a real GUID), which
+    is a no-op for the sacred `tool_response` wire per the task's own STOP-precondition reasoning
+    (the emit is a separate, out-of-band native message, never touching the JSON-RPC reply bytes)
+    -- confirmed empirically: `tests/all_open_golden.rs` stayed green byte-for-byte unmodified.
+  - `src/transport/native/messages.rs`: one additive `//!` doc section, "Tab-group-per-session
+    request (H7, ADR-0030 Decision 6/7)", mirroring the "Tab-URL query (g13)" section's style
+    exactly as the task specifies. No existing section edited.
+  - `extension/lib/grouping.js` (new): the pure grouping DECISION, `groupSessionTabs(chrome,
+    sessionGroups, guid, tabIds, title)` -- probes each named tabId's liveness via
+    `chrome.tabs.get` (existence only; no field of the result is ever read, closing off any
+    possibility of a url/host-based policy decision), reuses `sessionGroups.get(guid)`'s existing
+    Chrome group if it still resolves via `chrome.tabGroups.get`, else creates one via
+    `chrome.tabs.group({ tabIds })`, always re-applies the title via `chrome.tabGroups.update`,
+    and records the (possibly new) group id back into the caller's `sessionGroups` map.
+  - `extension/service-worker.js`: `importScripts` gained `"lib/grouping.js"`; a new
+    `group_request` branch in the existing `nativePort.onMessage` handler (alongside
+    `tab_url_request`) calls `groupSessionTabs`, then `persistSessionState()`, then posts the
+    PINNED `group_response` (fire-and-forget on both legs, matching item 1's shape exactly, no
+    `id` member added by mistake). A NEW `sessionGroups` map (guid -> Chrome tab-group id) is
+    ADDITIVE alongside the pre-existing single `groupId`/`ensureGroup`/`groupTabs`/`inGroup`
+    machinery, which is completely untouched (see D1 below for why). `persistSessionState`/
+    `rehydrate` gained a NEW, additive `sessionGroupsState` storage key persisting/restoring
+    `sessionGroups`'s entries; the pre-existing `sessionState` key/shape is byte-identical to
+    before.
+  - `tests/extension/grouping.test.js` (new): the ONE task-named test,
+    `owned_tabs_are_grouped_on_service_request_only`, covering all 4 pinned assertions in a single
+    `test()` body as the task file itself structures them (not 4 separate `test()` calls), with
+    the ADR oracle transcribed verbatim into the file's header comment exactly as instructed.
+
+D1 (a design decision, not a tree-fact mismatch -- logged because it goes beyond the task file's
+own text): Required Behavior item 2 says to "replace the single process-global `groupId` model
+with a session-GUID -> groupId map." The pre-existing `groupId`/`ensureGroup`/`groupTabs`/
+`inGroup`/`effectiveTabId` machinery is NOT a presentation feature -- `effectiveTabId` is the
+extension's own tab-scope ACCESS-CONTROL gate, called by nearly every tool handler, and `inGroup`
+decides membership by comparing a tab's LIVE `chrome.tabs.get(id).groupId` against the single
+in-memory `groupId`. The sacred `tool_request` wire (frozen; ADR-0030 "Preserved invariants") never
+carries a session GUID, so this mechanism cannot be made session-aware by construction -- there is
+no session identity available at the point `effectiveTabId` runs. Read literally, "replace" would
+mean calling `chrome.tabs.group` with a session's groupId on every first-touched tab, which moves
+that tab OUT of the legacy single group (a Chrome tab belongs to at most one group at a time) and
+would make `inGroup`/`effectiveTabId` refuse it on the very next call -- a real functional
+regression with no pinned test covering it either way. Chose the conservative, minimal-footprint
+reading instead: interpreted "replace the single process-global model" as describing the SHAPE of
+the NEW state this task introduces (a map from the start, never "yet another single global var"),
+built it as a genuinely SEPARATE, additive `sessionGroups` map, and left the pre-existing
+`groupId`/`ensureGroup`/`groupTabs`/`inGroup`/`effectiveTabId`/`tabs_create_mcp`/`tabs_context_mcp`
+functions completely untouched (all still current-tree facts the task file itself only describes,
+never lists under Required Behavior as something to change). This satisfies every pinned assertion
+(all 4, `tests/extension/grouping.test.js`) and every STOP precondition (no sacred wire touched, no
+all-open byte drift, no policy decision, additive-only) to the letter. Impact on later tasks: NONE
+directly (H8/H9 do not touch tab grouping), but the frontier author should be aware that in REAL
+multi-session usage, a tab created via `tabs_create_mcp` (which still auto-groups into the legacy
+single group, unchanged) will visually move into its session's NEW per-session group the first time
+any OTHER tab-scoped tool call adopts it and triggers `emit_group_request` -- at which point the
+legacy `inGroup`/`effectiveTabId` check for that tab now compares against a `groupId` the tab no
+longer belongs to, and would refuse it. Since ADR-0030 Decision 6 already frames the extension's
+own group check as "defense-in-depth only" (the SERVICE's `owned_tabs` gate is the real isolation
+boundary, and it does not consult `groupId`/`inGroup` at all), this is a live-usage interaction, not
+a security regression -- but it is untested by anything in this batch and may need a follow-up task
+(e.g., relaxing `inGroup` to accept membership in ANY tracked group, or teaching `effectiveTabId`
+about `sessionGroups`) once H7 lands in real dogfooding. Flagged here rather than silently designed
+around, per the Failure protocol's spirit of never inventing an oracle or improvising past a gap the
+task file's own text does not resolve.
+
+Verification: all four literal commands from the task file passed for real. `cargo build
+--all-targets` clean. `cargo test --test all_open_golden --test tool_schema_fidelity` both green
+(3/3, 7/7) -- `all_open_golden.rs` byte-unmodified and still passing confirms the emit path is a
+true no-op for the sacred wire. `node --test tests/extension/grouping.test.js
+tests/extension/geometry.test.js` both green (10/10 total); the full extension suite (`+
+constants.test.js keys.test.js`) also re-run, 18/18 green. `cargo clippy --all-targets -- -D
+warnings` clean. `cargo fmt --all -- --check` clean (after one `cargo fmt --all` pass to wrap a
+line in `src/hub/session.rs::owned_tab_ids`'s signature -- whitespace only, no semantic change, not
+logged as its own numbered deviation). The FULL `cargo test` (not just the task's two named
+targets) was also run: 447 lib tests + every integration suite green, including the sacred/named
+suites (`tests/tool_schema_fidelity.rs` 7/7, `tests/all_open_golden.rs` 3/3,
+`tests/architecture.rs::governance_core_has_no_forbidden_back_edges` and its 4 siblings, all green
+and byte-unmodified) and every OTHER existing suite that touches a `tabId` over a live session
+(`tests/hub_isolation.rs` 2/2) -- traced by hand first (both its tests only exercise the REFUSED
+path for session B, and session A's ownership is pre-seeded directly on the map rather than driven
+live, so neither test's fake extension -- which panics on any message type it does not recognize --
+ever receives an unexpected `group_request` frame) and then confirmed green. `git diff --stat`
+shows exactly `extension/service-worker.js`, `src/hub/session.rs`, `src/transport/executor.rs`,
+`src/transport/mcp/server.rs`, `src/transport/native/messages.rs` modified plus the two new files
+(`extension/lib/grouping.js`, `tests/extension/grouping.test.js`); no NEVER-touch fence moved
+(`src/transport/mcp/tools.rs`, `tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`,
+`src/transport/native/host.rs`, every EXISTING native-messaging message shape, the MCP JSON-RPC
+wire, and `Browser::attach`'s single-link rejection are all byte-identical to before this task).
+- Note: as in H0-H6, `CARGO_TARGET_DIR` was pointed at a scratch directory (not the repo's
+  `target/`) because four live `ghostlight.exe` processes (this environment's own dogfooded
+  MCP/native-host session) held the repo's `target/debug/ghostlight.exe`; build-artifact routing
+  only, not a source or test change.
 
 ### H8
 - (not started)
