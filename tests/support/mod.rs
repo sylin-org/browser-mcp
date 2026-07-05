@@ -103,6 +103,33 @@ pub fn spawn_service_with_webapi_port(endpoint: &str, port: u16) -> Child {
     child
 }
 
+/// Combines [`spawn_service_with_program_data`] and [`spawn_service_with_webapi_port`] (K3,
+/// `docs/tasks/console`): a real spawned service with BOTH an isolated org-policy `ProgramData`
+/// override AND a test-unique web API port, for tests that need to fetch a real org-mandatory
+/// config override over a real TCP connection.
+pub fn spawn_service_with_program_data_and_webapi_port(
+    endpoint: &str,
+    program_data_dir: &Path,
+    port: u16,
+) -> Child {
+    let log_dir = log_dir_for(endpoint);
+    let _ = std::fs::remove_dir_all(&log_dir);
+    let child = Command::new(bin())
+        .arg("service")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("ProgramData", program_data_dir)
+        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_DEBUG", "1")
+        .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn ghostlight service");
+    wait_for_debug_state(&log_dir, Duration::from_secs(15));
+    child
+}
+
 /// Spawn a bare `ghostlight` invocation (the thin ADAPTER) with piped stdin/stdout, relaying to the
 /// SERVICE already running on `endpoint`. Because the service is spawned FIRST and awaited-ready
 /// ([`spawn_service`]), the adapter's first dial succeeds and the self-heal path is never taken --

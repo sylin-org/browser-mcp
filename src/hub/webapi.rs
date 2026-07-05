@@ -314,7 +314,10 @@ fn strip_query(path: &str) -> &str {
 /// distinguishes a 404 ("no such path") from a 405 ("wrong method on a path that exists"). Grows
 /// as later tasks (K3/K4/K5) add their own routes.
 fn is_known_console_path(stripped_path: &str) -> bool {
-    matches!(stripped_path, "/" | "/console.css" | "/console.js")
+    matches!(
+        stripped_path,
+        "/" | "/console.css" | "/console.js" | "/api/v1/config"
+    )
 }
 
 /// PINS.md CS1/CS10: the Console's own router. Authorizes the connecting source against
@@ -364,11 +367,41 @@ async fn route_console_request(
             )
             .await
         }
+        ("GET", "/api/v1/config") => write_config_response(stream, ctx).await,
         _ if is_known_console_path(stripped_path) => {
             write_plain_error(stream, 405, "Method Not Allowed", "method not allowed").await
         }
         _ => write_plain_error(stream, 404, "Not Found", "not found").await,
     }
+}
+
+/// `GET /api/v1/config` (PINS.md CS2, `docs/tasks/console`): the provenance-aware config view --
+/// per registered key, its resolved value, source layer, lock state, and description, in `KEYS`
+/// registry order. A READ of `layers::Resolution` (CS6) only; never a manifest document.
+async fn write_config_response(stream: &mut TcpStream, ctx: &ServiceContext) -> crate::Result<()> {
+    let resolution = ctx.store.current_resolution();
+    let keys: Vec<serde_json::Value> = resolution
+        .iter()
+        .map(|(key, resolved)| {
+            let description = crate::governance::config::key_def(key)
+                .map(|def| def.description)
+                .unwrap_or_default();
+            serde_json::json!({
+                "key": key,
+                "value": resolved.value,
+                "source": resolved.source.as_str(),
+                "locked": resolved.locked,
+                "description": description,
+            })
+        })
+        .collect();
+    let payload = serde_json::json!({ "keys": keys }).to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+        payload.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
 }
 
 /// Serve one embedded Console asset (PINS.md CS10) verbatim, with a `Content-Length` computed
