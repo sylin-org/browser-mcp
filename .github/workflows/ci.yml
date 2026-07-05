@@ -38,7 +38,9 @@ jobs:
         with:
           key: ${{ matrix.os }}
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      # --no-fail-fast: report EVERY failing test binary, not just the first (ADR-0032 Context:
+      # cargo's default fail-fast masked the true cross-platform scope behind the first failure).
+      - run: cargo test --locked --no-fail-fast
 
   extension-unit:
     strategy:
