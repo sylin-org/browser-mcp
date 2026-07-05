@@ -18,6 +18,8 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 
 pub mod handshake;
+pub mod role;
+pub mod session;
 
 /// mcp-server invocation (ADR-0030 Decision 1): claims the ADAPTER/CONTROL endpoint FIRST (PINS.md
 /// SS1 pin 1), before opening anything else, so this process learns whether it is the persistent
@@ -120,6 +122,11 @@ async fn run_as_service(
     user_source: Option<String>,
     parent: Option<crate::proc::ProcId>,
 ) -> i32 {
+    // Role marker (ADR-0030 Decision 1 addendum; PINS.md SS8): this process won the
+    // ADAPTER/CONTROL claim, so it IS the SERVICE. Recorded once, before anything else, so the
+    // governance chokepoint's `assert_service_role` below can rely on it.
+    role::set_role(role::Role::Service);
+
     let browser = Browser::with_debug(debug_sink);
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -182,9 +189,14 @@ async fn run_as_service(
     // The coordinator: whichever shutdown trigger fires first lands here. stdin EOF makes
     // `serve_session` return (after its own internal task cleanup); a detector signal arrives on
     // `shutdown`. Both paths fall through to the single teardown in `run_mcp_server`.
+    //
+    // H3 (PINS.md SS9): this process's own directly-served stdio session mints its OWN GUID --
+    // every session gets a real one, including this lone-client path (closes an isolation gap a
+    // `None`/exempt session would otherwise leave in a later cross-session ownership map).
+    let own_guid = session::SessionGuid::mint();
     let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
     tokio::select! {
-        result = crate::mcp::server::serve_session(stream, ctx) => {
+        result = crate::mcp::server::serve_session(stream, ctx, own_guid) => {
             match result {
                 Ok(()) => 0,
                 Err(e) => {
@@ -202,6 +214,10 @@ async fn run_as_service(
 /// byte relay, never a rewriter (ADR-0030 "Preserved invariants"). Connects to an already-running
 /// service only; spawn-on-demand is H6, out of scope here.
 async fn run_as_adapter(endpoint: &str, debug_sink: DebugSink) -> i32 {
+    // Role marker (ADR-0030 Decision 1 addendum; PINS.md SS8): this process LOST the
+    // ADAPTER/CONTROL claim, so it IS the thin ADAPTER. Recorded once, before anything else.
+    role::set_role(role::Role::Adapter);
+
     match ipc::relay_adapter(endpoint, &debug_sink).await {
         Ok(()) => 0,
         Err(e) => {
@@ -235,10 +251,11 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
 }
 
 /// SHARED per-service state (ADR-0030 Decision 2: "HubCore / ServiceContext vs per-session
-/// state"): the one [`Browser`] handle, the [`ConfigStore`], and the audit [`Recorder`] -- built
-/// ONCE at startup and handed to every `transport::mcp::server::serve_session` invocation.
-/// PER-SESSION state (the swappable `Governance`, the writer task, the policy-subscription task)
-/// is built PER session, inside `serve_session` itself, never here.
+/// state"): the one [`Browser`] handle, the [`ConfigStore`], the audit [`Recorder`], and (H3) the
+/// GUID -> bound-peer [`session::SessionRegistry`] -- built ONCE at startup and handed to every
+/// `transport::mcp::server::serve_session` invocation. PER-SESSION state (the swappable
+/// `Governance`, the writer task, the policy-subscription task, and the `SessionGuid` itself) is
+/// built PER session, inside `serve_session` itself, never here.
 ///
 /// `Clone` (H2, PINS.md SS1 pin 4): built ONCE at service start, then cloned per session for
 /// `serve_session` -- every field is a cheap `Arc` clone or an already-`Clone` value (`Browser`,
@@ -251,6 +268,10 @@ pub struct ServiceContext {
     pub store: Arc<ConfigStore>,
     pub recorder: Arc<Recorder>,
     pub initial_policy: LoadedPolicy,
+    /// H3 (PINS.md SS9): the GUID -> bound-peer admission table, shared by every session so a
+    /// re-presented GUID is checked against the SAME registry regardless of which adapter
+    /// connection presents it.
+    pub session_registry: Arc<std::sync::Mutex<session::SessionRegistry>>,
 }
 
 impl ServiceContext {
@@ -297,6 +318,7 @@ impl ServiceContext {
             store,
             recorder,
             initial_policy: loaded_policy.clone(),
+            session_registry: Arc::new(std::sync::Mutex::new(session::SessionRegistry::new())),
         })
     }
 }

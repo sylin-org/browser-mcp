@@ -224,8 +224,14 @@ fn adapter_endpoint_two_phase_wire_round_trips() {
             .await
             .expect("connect to the service's adapter/control endpoint");
 
-        // Phase 1: the session-hello, FRAMED (PINS.md SS1 pin 3).
-        let hello = json!({ "hub": 1, "role": "adapter", "guid": "" });
+        // Phase 1: the session-hello, FRAMED (PINS.md SS1 pin 3). H3 sanctioned fix (item 3,
+        // "SANCTIONED TEST FIX"): this test exercises the two-phase wire mechanics, not guid
+        // validity (`tests/hub_identity.rs` covers that separately), so the placeholder empty
+        // guid PINS.md SS1 originally anticipated ("before H3 an empty placeholder guid is
+        // acceptable and H3 fills it") is replaced with a well-formed v4 UUID literal so this
+        // test continues to exercise successful admission once H3's parse-failure refusal lands.
+        let hello =
+            json!({ "hub": 1, "role": "adapter", "guid": "00000000-0000-4000-8000-000000000000" });
         host::write_message(&mut stream, &serde_json::to_vec(&hello).unwrap())
             .await
             .expect("write the framed session-hello");

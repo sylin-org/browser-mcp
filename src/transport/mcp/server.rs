@@ -98,45 +98,46 @@ fn current_governance(slot: &Arc<Mutex<Arc<Governance>>>) -> Arc<Governance> {
 /// MCP protocol version this server speaks.
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Run the stdio MCP server loop until stdin closes. `browser` is the (shared) handle to the
-/// extension; tool calls are forwarded through it. `loaded_policy` is the manifest resolved at
-/// startup (G12, shared format doc sections 1.2-1.3): `None` manifest means all-open. G12
-/// itself only feeds a user-supplied manifest's `config` entries into the layer resolver
-/// (below) and holds the rest at this scope for later stage-2 tasks (G13 grant enforcement,
-/// G14 tool-advertisement filtering) to read grants from; loading it does not change which
-/// calls execute.
+/// The manifest resolved at startup (G12, shared format doc sections 1.2-1.3): `None` manifest
+/// means all-open. G12 itself only feeds a user-supplied manifest's `config` entries into the
+/// layer resolver (below) and holds the rest at this scope for later stage-2 tasks (G13 grant
+/// enforcement, G14 tool-advertisement filtering) to read grants from; loading it does not
+/// change which calls execute.
 ///
-/// Thin mcp-server wrapper (ADR-0030 Decision 2): builds the SHARED [`ServiceContext`] once,
-/// joins stdin/stdout into a single duplex stream, and hands both to [`serve_session`] -- the
-/// transport-generic chokepoint every transport (this stdio adapter, and later H2's multiplexed
-/// adapters/web sessions) calls. `serve_session` splits the joined stream back into the same
-/// underlying stdin/stdout handles, so reads still come from stdin and writes still go to
-/// stdout: byte-identical to the pre-H1 single-session path.
-pub async fn run(
-    browser: Browser,
-    loaded_policy: LoadedPolicy,
-    user_source: Option<String>,
-) -> Result<()> {
-    let ctx = ServiceContext::from_startup(browser, loaded_policy, user_source)?;
-    let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
-    serve_session(stream, ctx).await
-}
-
 /// The transport-generic session chokepoint (ADR-0030 Decision 2: "HubCore / ServiceContext vs
 /// per-session state"): every transport calls this ONE function over its own
 /// `S: AsyncRead + AsyncWrite` stream. `ctx` carries the SHARED-per-service state (the `Browser`
 /// handle, the `ConfigStore`, the audit `Recorder`, and the startup `LoadedPolicy`); everything
 /// built in this function's body is PER-SESSION (the swappable `Governance`, the writer task,
-/// the policy-subscription task) and is dropped when the session ends.
-pub async fn serve_session<S>(stream: S, ctx: ServiceContext) -> Result<()>
+/// the policy-subscription task) and is dropped when the session ends. `guid` (H3, ADR-0030
+/// Decision 4; PINS.md SS9) is this session's opaque identity -- EVERY session carries a real
+/// one, including the SERVICE's own directly-served stdio session, never `Option<SessionGuid>`.
+/// It is inert this task (H3 does not stamp it into audit or branch dispatch on it; H4/H8
+/// consume it) and minting/threading it writes nothing to stdout or audit by itself, so this
+/// produces byte-identical output to before H3 (all-open byte-identity).
+pub async fn serve_session<S>(
+    stream: S,
+    ctx: ServiceContext,
+    guid: crate::hub::session::SessionGuid,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
+    // The governance chokepoint (ADR-0030 Decision 1 addendum; PINS.md SS8): every transport
+    // enters here first, and this process must only ever be the SERVICE. A no-op fail-loud
+    // backstop when the role is already correct (as it always is by construction); see
+    // `crate::hub::role`.
+    crate::hub::role::assert_service_role("serve_session");
+    // `guid` is not yet consumed by this task (H4/H8 do); retained so its lifetime/ownership is
+    // established at the chokepoint from H3 onward.
+    let _guid = guid;
+
     let ServiceContext {
         browser,
         store,
         recorder,
         initial_policy: loaded_policy,
+        session_registry: _,
     } = ctx;
 
     let (read_half, write_half) = tokio::io::split(stream);

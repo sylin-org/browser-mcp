@@ -118,17 +118,20 @@ pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) 
 /// the data phase the way `relay_native_host` does (that wire is framed end-to-end because it IS
 /// the Chrome native-messaging wire; this wire is framed for the hello only, then raw).
 ///
-/// The GUID member is the H3 seam: an empty placeholder before H3 mints a real
-/// adapter-minted session GUID.
+/// The GUID member (H3, ADR-0030 Decision 4): minted ONCE here, as a local variable, before the
+/// hello is built. `relay_adapter` runs exactly once per adapter process (called once from
+/// `run_as_adapter`, never in a loop), so this already satisfies "same adapter process reuses its
+/// GUID; a new adapter process mints a new one" with no `OnceLock` or extra plumbing needed.
 pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
     let adapter_endpoint = adapter_endpoint_name(endpoint);
     let mut stream = connect(&adapter_endpoint).await?;
     debug.ipc_note("connected to the service's adapter/control endpoint");
 
+    let guid = crate::hub::session::SessionGuid::mint();
     let hello = json!({
         "hub": crate::hub::handshake::HUB_PROTO,
         "role": crate::hub::handshake::ROLE_ADAPTER,
-        "guid": "",
+        "guid": guid.as_str(),
     });
     let hello_bytes = serde_json::to_vec(&hello)
         .map_err(|e| Error::NativeMessaging(format!("failed to encode the adapter hello: {e}")))?;
@@ -146,15 +149,23 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> R
     Ok(())
 }
 
-/// Demux one ADAPTER/CONTROL connection (ADR-0030 Decision 1; PINS.md SS1): read the
+/// Demux one ADAPTER/CONTROL connection (ADR-0030 Decision 1; PINS.md SS1, SS9): read the
 /// session-hello FIRST (safe here -- unlike the extension endpoint, this peer always speaks
-/// first) and route `"adapter"` into the SAME governance chokepoint every transport calls
+/// first), parse and admit its presented GUID (H3, ADR-0030 Decision 4), and route `"adapter"`
+/// into the SAME governance chokepoint every transport calls
 /// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is
-/// reserved until H8; an unknown or absent role is refused cleanly, never a panic. Runs entirely
-/// INSIDE the spawned per-connection task (never inline in the accept loop), so a silent peer
-/// cannot head-of-line-block admission of other adapters (ADR-0030 Decision 3).
-async fn handle_adapter_connection<S>(ctx: crate::hub::ServiceContext, mut stream: S)
-where
+/// reserved until H8; an unknown or absent role, a malformed/empty guid, or a guid refused by
+/// [`crate::hub::session::SessionRegistry::admit`] are all refused cleanly, never a panic, and
+/// never surface the presented GUID in a log. Runs entirely INSIDE the spawned per-connection
+/// task (never inline in the accept loop), so a silent peer cannot head-of-line-block admission
+/// of other adapters (ADR-0030 Decision 3). `peer_cred` is captured by the CONCRETE-platform
+/// caller in [`serve_adapters`] (before the stream is erased to generic `S`) and threaded in as a
+/// plain parameter -- this function itself never touches a raw OS handle.
+async fn handle_adapter_connection<S>(
+    ctx: crate::hub::ServiceContext,
+    mut stream: S,
+    peer_cred: crate::hub::session::PeerCred,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
     let hello_bytes = match host::read_message(&mut stream).await {
@@ -177,8 +188,35 @@ where
     };
     match hello.get("role").and_then(Value::as_str) {
         Some(role) if role == crate::hub::handshake::ROLE_ADAPTER => {
-            if let Err(e) = crate::transport::mcp::server::serve_session(stream, ctx).await {
-                tracing::warn!(error = %e, "adapter session ended with an error");
+            let presented_guid = hello.get("guid").and_then(Value::as_str).unwrap_or("");
+            let guid = match crate::hub::session::SessionGuid::parse(presented_guid) {
+                Some(guid) => guid,
+                None => {
+                    tracing::warn!(
+                        "adapter session-hello carried a malformed or empty guid; refusing"
+                    );
+                    return;
+                }
+            };
+            let admission = ctx
+                .session_registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .admit(&guid, &peer_cred);
+            match admission {
+                crate::hub::session::Admission::Admitted => {
+                    if let Err(e) =
+                        crate::transport::mcp::server::serve_session(stream, ctx, guid).await
+                    {
+                        tracing::warn!(error = %e, "adapter session ended with an error");
+                    }
+                }
+                crate::hub::session::Admission::Refused => {
+                    tracing::warn!(
+                        "adapter/control connection presented a guid already bound to a \
+                         different peer; refusing"
+                    );
+                }
             }
         }
         Some(role) if role == crate::hub::handshake::ROLE_CONTROL => {
@@ -355,6 +393,10 @@ pub async fn serve_adapters(
             .connect()
             .await
             .map_err(|e| Error::Ipc(format!("adapter/control pipe accept failed: {e}")))?;
+        // Capture the peer's OS credential on the CONCRETE, still-connected pipe instance (H3,
+        // PINS.md SS9), before it is replaced by the next spare instance below and moved into the
+        // spawned task (where it is erased to generic `S` and can no longer yield a raw handle).
+        let peer_cred = capture_peer_cred(&server);
         let next = win_security::create_instance(&path, false, security.as_ref()).map_err(|e| {
             Error::Ipc(format!(
                 "cannot create next adapter/control pipe instance: {e}"
@@ -362,10 +404,127 @@ pub async fn serve_adapters(
         })?;
         let connected = std::mem::replace(&mut server, next);
         tracing::info!("adapter/control peer connected");
-        let ctx = ctx.clone();
-        tokio::spawn(async move {
-            handle_adapter_connection(ctx, connected).await;
-        });
+        match peer_cred {
+            Ok(peer_cred) => {
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    handle_adapter_connection(ctx, connected, peer_cred).await;
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not capture the adapter/control peer's OS credential; refusing"
+                );
+                drop(connected);
+            }
+        }
+    }
+}
+
+/// Capture the connecting peer's OS credential (Windows; ADR-0030 Decision 4 amendment; PINS.md
+/// SS9): the pipe client's process id via `GetNamedPipeClientProcessId`, then that process's
+/// token SID (as a string, via `OpenProcessToken` + `GetTokenInformation(TokenUser)` +
+/// `ConvertSidToStringSidW`) as the OS-user principal admission compares. Called on the CONCRETE
+/// `NamedPipeServer` handle, before it is erased to generic `S` -- [`handle_adapter_connection`]
+/// itself never touches a raw OS handle.
+#[cfg(windows)]
+fn capture_peer_cred(pipe: &AdapterListener) -> Result<crate::hub::session::PeerCred> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    /// Closes the wrapped handle on every return path (including an early `?`).
+    struct OwnedHandle(HANDLE);
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    // SAFETY (this whole function): every Win32 call below is used exactly per its documented
+    // contract (correct argument types/sizes, checked return codes, and every opened HANDLE is
+    // wrapped in `OwnedHandle` so it is closed on every path, including an early `?` return).
+    unsafe {
+        let handle = pipe.as_raw_handle() as HANDLE;
+        let mut pid: u32 = 0;
+        if GetNamedPipeClientProcessId(handle, &mut pid) == 0 {
+            return Err(Error::Ipc(format!(
+                "cannot read the adapter/control peer's process id: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(Error::Ipc(format!(
+                "cannot open the adapter/control peer process {pid}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let process = OwnedHandle(process);
+
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(process.0, TOKEN_QUERY, &mut token) == 0 {
+            return Err(Error::Ipc(format!(
+                "cannot open the adapter/control peer's process token: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let token = OwnedHandle(token);
+
+        let mut needed: u32 = 0;
+        // First call with a null buffer to learn the required size; ERROR_INSUFFICIENT_BUFFER is
+        // expected here and not itself an error.
+        GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            return Err(Error::Ipc(
+                "GetTokenInformation reported zero size for TokenUser".into(),
+            ));
+        }
+        let mut buf = vec![0u8; needed as usize];
+        if GetTokenInformation(
+            token.0,
+            TokenUser,
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            return Err(Error::Ipc(format!(
+                "cannot read the adapter/control peer's token user: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+
+        let mut sid_str_ptr: windows_sys::core::PWSTR = std::ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_str_ptr) == 0
+            || sid_str_ptr.is_null()
+        {
+            return Err(Error::Ipc(format!(
+                "cannot convert the adapter/control peer's SID to a string: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let mut len = 0usize;
+        while *sid_str_ptr.add(len) != 0 {
+            len += 1;
+        }
+        let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str_ptr, len));
+        LocalFree(sid_str_ptr as HLOCAL);
+
+        Ok(crate::hub::session::PeerCred {
+            user: crate::hub::session::PeerUser(sid_string),
+            pid,
+        })
     }
 }
 
@@ -651,14 +810,83 @@ pub async fn serve_adapters(
         match listener.accept().await {
             Ok((stream, _)) => {
                 tracing::info!("adapter/control peer connected");
-                let ctx = ctx.clone();
-                tokio::spawn(async move {
-                    handle_adapter_connection(ctx, stream).await;
-                });
+                // Capture the peer's OS credential on the CONCRETE, just-accepted `UnixStream`
+                // (H3, PINS.md SS9), before it is moved into the spawned task (where it is erased
+                // to generic `S` and can no longer yield a raw fd).
+                match capture_peer_cred(&stream) {
+                    Ok(peer_cred) => {
+                        let ctx = ctx.clone();
+                        tokio::spawn(async move {
+                            handle_adapter_connection(ctx, stream, peer_cred).await;
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "could not capture the adapter/control peer's OS credential; refusing"
+                        );
+                    }
+                }
             }
             Err(e) => tracing::warn!(error = %e, "adapter/control socket accept failed"),
         }
     }
+}
+
+/// Capture the connecting peer's OS credential (Unix, non-macOS; ADR-0030 Decision 4 amendment;
+/// PINS.md SS9): `SO_PEERCRED` on the accepted socket, yielding the peer's uid (the OS-user
+/// principal admission compares) and pid (logging only).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn capture_peer_cred(stream: &tokio::net::UnixStream) -> Result<crate::hub::session::PeerCred> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `fd` is a live, borrowed socket fd for the duration of this call; `cred`/`len` are
+    // valid, correctly-sized out-parameters for `SO_PEERCRED`.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut core::ffi::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(Error::Ipc(format!(
+            "cannot read the adapter/control peer's credentials: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(crate::hub::session::PeerCred {
+        user: crate::hub::session::PeerUser(cred.uid.to_string()),
+        pid: cred.pid as u32,
+    })
+}
+
+/// Capture the connecting peer's OS credential (macOS; ADR-0030 Decision 4 amendment; PINS.md
+/// SS9): `getpeereid`, yielding the peer's uid (the OS-user principal admission compares).
+/// `getpeereid` reports no pid; `pid: 0` here is logging-only and never compared by `admit`.
+#[cfg(target_os = "macos")]
+fn capture_peer_cred(stream: &tokio::net::UnixStream) -> Result<crate::hub::session::PeerCred> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: `fd` is a live, borrowed socket fd for the duration of this call; `uid`/`gid` are
+    // valid out-parameters.
+    let rc = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+    if rc != 0 {
+        return Err(Error::Ipc(format!(
+            "cannot read the adapter/control peer's credentials: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(crate::hub::session::PeerCred {
+        user: crate::hub::session::PeerUser(uid.to_string()),
+        pid: 0,
+    })
 }
 
 /// native-host role (Unix): connect to the mcp-server socket, retrying for ~30s.

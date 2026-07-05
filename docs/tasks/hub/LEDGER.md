@@ -6,25 +6,26 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H3 (`H3-session-identity-guid.md`), RE-ISSUED 2026-07-04.** H0 landed (pure code move;
-`src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>` +
-`ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
+**Next task: H4 (`H4-*.md`, binary-authoritative cross-session tab isolation).** H0 landed (pure
+code move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>`
++ `ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
 ADAPTER + genuine multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004
-repealed at the MCP-client layer). H3 previously BLOCKED (see the H3 Log entry) because its own
-Required Behavior assumed the ADAPTER/CONTROL accept loop lived in `src/hub/mod.rs`, when H2's
-actual landing put it in `src/transport/native/ipc.rs`. The frontier author has since: (1) pinned
-the corrected architecture in `docs/tasks/hub/PINS.md` SS9 (the single description H3/H4/H5/H7/H8
-now cite) and re-authored H3's Required Behavior, STOP preconditions, and Tests to match; (2)
-re-authored H4, H5, H7, and H8 too, since they shared the SAME stale assumption and would have
-blocked in turn; (3) run two independent fresh-eyes verification passes against the LIVE, landed H2
-code (not just the doc text) and closed 7 further gaps those passes found (missing `Hash`/`Clone`/
-`PartialEq` derives on `PeerUser`/`SessionGuid`; a dead `server::run()` that would fail to compile
-against the new `serve_session` signature; `relay_adapter`'s placeholder empty guid; H5's
-screenshot-chunking location and mechanism; H8's web-session admission model; a malformed/empty-guid
-parse-failure path at admission). `serve_session` now takes a plain `guid: SessionGuid` (not
-`Option`) for every session, including the service's own lone one -- see PINS.md SS9 for why. The
-tree is at the clean H2 baseline. Start H3 fresh against the re-authored task file, PINS.md SS1/SS8/
-SS9, following the per-task procedure in `BOOTSTRAP.md`.
+repealed at the MCP-client layer). H3 landed on its RE-ISSUED run (see the H3 Log entry for the
+prior BLOCKED attempt's provenance): `src/hub/session.rs` (`SessionGuid`, `PeerCred`, `PeerUser`,
+`SessionRegistry`, `Admission`) and `src/hub/role.rs` (the process role marker + fail-loud
+chokepoint assertion) are new; `ServiceContext` gained a `session_registry` field;
+`handle_adapter_connection`/`serve_adapters` (`src/transport/native/ipc.rs`) now capture the real
+peer OS credential, parse and admit the presented GUID, and refuse cleanly on a malformed/foreign
+one; `relay_adapter` mints a real GUID instead of the old `""` placeholder; `serve_session` takes a
+plain `guid: SessionGuid` (never `Option`) for every session, including the service's own lone
+stdio session; the dead `server::run()` 2-arg wrapper is deleted; `tests/architecture.rs`'s a7
+scanner is EXTENDED (the sanctioned H3 edit) to also reject bare `tabId`/`token`/`socket`
+identifiers in `src/governance/**`, scoped to code lines (see the H3 Log's D3 for why). PINS.md
+SS9's forward guidance for H4 (a shared `ServiceContext.owned_tabs: Arc<Mutex<HashMap<i64,
+SessionGuid>>>`, ownership = `map.get(&tab_id) == Some(&my_guid)`, adoption =
+`map.entry(tab_id).or_insert_with(|| my_guid.clone())`) is the starting point -- RE-READ it in full,
+plus PINS.md SS3 (the pinned "unknown tab" denial shape), before starting H4. Follow the per-task
+procedure in `BOOTSTRAP.md`.
 
 ## Status
 
@@ -33,7 +34,7 @@ SS9, following the per-task procedure in `BOOTSTRAP.md`.
 | H0 | Extract the HubCore composition root | DONE | a4e87b6 | |
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
 | H2 | Persistent service + thin adapter + multiplex | DONE | 96a54fb | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
-| H3 | Adapter-minted GUID identity + peer-cred binding | pending | -- | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED in Log |
+| H3 | Adapter-minted GUID identity + peer-cred binding | DONE | pending-hash | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED attempt superseded, see Log |
 | H4 | Binary-authoritative cross-session tab isolation | pending | -- | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
 | H6 | Detached non-admin lifecycle + anti-squat | pending | -- | job-breakaway is the acceptance gate |
@@ -386,6 +387,128 @@ the extension fence, are the only fences touched, both as pinned.
   future executor does not re-hit this same STOP. No deviation numbers logged: this is a tree-fact
   mismatch in the task's own authoring assumptions (H2 was re-authored 2026-07-04 for the
   two-endpoint split after H3 was first drafted), not a choice this executor made.
+
+**RE-ISSUED RUN (2026-07-04, DONE).** Verified all as-of-authoring facts in the re-authored
+`H3-session-identity-guid.md` and PINS.md SS1/SS8/SS9 against the live tree: `src/hub/` held
+exactly `handshake.rs` + `mod.rs` (no accept loop, no per-session record type, no
+`SessionGuid`/`PeerCred`/`SessionRegistry` anywhere -- confirmed via a repo-wide grep before
+writing any code); `serve_adapters`/`handle_adapter_connection` in `src/transport/native/ipc.rs`
+matched PINS.md SS9's description exactly (the generic-vs-concrete split, the accept-ahead +
+spawn-per-connection shape); `ServiceContext` was `#[derive(Clone)]` with `browser`/`store`/
+`recorder`/`initial_policy` fields, built once in `from_startup`; `run_as_service`/`run_as_adapter`/
+`serve_session` existed under those exact names and cleanly separated the two roles; `server.rs::run`
+had zero compiled call sites (only stale doc-comment mentions in `dispatch.rs`, `hub/mod.rs`,
+`tests/audit_recorder.rs`, `tests/manifest_validation.rs`), confirmed via a repo-wide grep for
+`server::run(`/`mcp::server::run` before relying on it. No STOP precondition fired.
+
+Implemented per the re-authored task + PINS.md SS8/SS9:
+- `src/hub/session.rs` (new): `SessionGuid` (mint via `uuid::Uuid::new_v4()`; `parse` requires
+  version-4 AND a byte-exact round-trip to the presented string, so uppercase/braced/urn forms and
+  non-v4 UUIDs are refused identically to empty/malformed; redacted `Display`/`Debug`), `PeerCred`/
+  `PeerUser` (`PeerUser`'s tuple field made `pub` -- see D1), `SessionRegistry::admit` (first
+  presentation binds; same-user re-presentation reuses; a different user is `Refused` and the
+  original binding is left untouched), `Admission`. Own `#[cfg(test)]` unit tests plus the pinned
+  `tests/hub_identity.rs` suite (3 tests, all transcribed assertions).
+- `src/hub/role.rs` (new): `Role`, `set_role`/`role` (backed by a `OnceLock`, panicking verbatim per
+  PINS.md SS8 on double-set / read-before-set), `assert_role`/`assert_service_role`/
+  `assert_adapter_role` (verbatim pinned panic message), and the 3 pinned `#[cfg(test)]` unit tests.
+  `pub mod role;` added to `src/hub/mod.rs` alongside the existing `pub mod handshake;`.
+- `src/hub/mod.rs`: `role::set_role(Role::Service)` as the absolute first line of `run_as_service`;
+  `role::set_role(Role::Adapter)` as the absolute first line of `run_as_adapter`; `ServiceContext`
+  gained `session_registry: Arc<Mutex<SessionRegistry>>` (built once in `from_startup` alongside the
+  other shared fields); the service's own lone stdio session now mints `SessionGuid::mint()` and
+  passes it to `serve_session`.
+- `src/transport/native/ipc.rs`: `capture_peer_cred` added per platform (Windows:
+  `GetNamedPipeClientProcessId` on the concrete, still-connected `NamedPipeServer`, then
+  `OpenProcess`+`OpenProcessToken`+`GetTokenInformation(TokenUser)`+`ConvertSidToStringSidW` for the
+  SID string, called BEFORE the pipe instance is replaced/moved into the spawned task; Unix:
+  `SO_PEERCRED` on non-macOS, `getpeereid` on macOS, called on the concrete, just-accepted
+  `UnixStream` before it moves into the spawned task) and threaded into `handle_adapter_connection`
+  as a new plain parameter, exactly as PINS.md SS9 describes (a capture failure refuses the
+  connection cleanly rather than dispatching with no credential). `handle_adapter_connection` now
+  parses the hello's `guid` via `SessionGuid::parse` (a malformed/empty/non-canonical guid refuses
+  cleanly, never surfacing the raw string), calls `ctx.session_registry.lock()...admit(&guid,
+  &peer_cred)`, and on `Admitted` calls `serve_session(stream, ctx, guid)`; on `Refused` the
+  connection is dropped without creating a session or logging the GUID. `relay_adapter` now mints
+  `SessionGuid::mint()` once (a local variable, since it runs exactly once per adapter process) and
+  embeds it in place of the old `""` placeholder.
+- `src/transport/mcp/server.rs`: `serve_session` gained the pinned `guid: SessionGuid` parameter
+  (not `Option`) and calls `crate::hub::role::assert_service_role("serve_session")` as its first
+  line; the dead 2-arg `run` wrapper is deleted (confirmed dead first, per the STOP-precondition-
+  adjacent guidance); its now-orphaned doc-comment fragment describing `run`'s own
+  `browser`/`loaded_policy` parameters was trimmed in passing (trivial, at the deletion site, per the
+  task's own "may correct stale doc comments... not load-bearing" latitude -- not a scope-creep
+  hunt elsewhere).
+- `src/transport/native/messages.rs`: added the doc-only section for the hello's `guid` member
+  (item 4), citing H2's existing `hub`/`role` hello and `src/hub/handshake.rs`; no new Rust types,
+  no second handshake frame.
+- `tests/architecture.rs` (the ONE sanctioned edit this task, item 5): `FORBIDDEN_IDENTIFIERS =
+  ["tabId", "token", "socket"]`, scanned via the existing `contains_path_token` boundary matcher;
+  every existing crate-edge/`url` rule is untouched. Added
+  `governance_core_rejects_tabid_token_socket_identifiers` (pinned via `scan_line` on synthetic
+  code-shaped strings, mirroring the existing `scanner_detects_forbidden_crate_edges` pattern).
+- `tests/hub_multiplex.rs` (the sanctioned one-line fix, item 3):
+  `adapter_endpoint_two_phase_wire_round_trips`'s hand-built hello's placeholder `"guid": ""`
+  literal replaced with a well-formed v4 UUID literal (`00000000-0000-4000-8000-000000000000`) so it
+  keeps exercising successful admission and the two-phase wire mechanics once the parse-failure
+  refusal landed; no other change to that file.
+- New `tests/hub_identity.rs` (3 tests) and `tests/hub_role_wiring.rs` (1 test), all passing, all
+  transcribed per the task's pinned assertions.
+
+D1: the task's pinned shape shows `pub struct PeerUser(String);` with no `pub` on the tuple field,
+    but the task's OWN pinned test (`guid_is_v4_csprng_and_bound_to_minting_peer`, transcribed into
+    `tests/hub_identity.rs`, a separate integration-test crate) constructs
+    `PeerCred { user: PeerUser("user-A".into()), pid: 100 }` directly -> made the tuple field `pub`,
+    since an external crate cannot name a private tuple-struct field. Impact on later tasks: none --
+    any later task constructing a `PeerUser` (H4/H5/H8) does so the same way.
+D2: the task marks `SessionGuid`'s redacted `Display`/`Debug` string form "AUTHOR MUST PIN before
+    execution," but PINS.md's own "Resolved AUTHOR-MUST-PIN index" lists no H3 row for this value,
+    and the task's very next sentence says the pinned test asserts only the non-leak STRUCTURAL
+    invariant (never equality to a specific string) -> implemented a fixed literal redacted
+    rendering (`"<redacted-session-guid>"` for `Display`, `"SessionGuid(<redacted>)"` for `Debug`)
+    with no pinned value found anywhere to transcribe, since no test reads or compares against an
+    exact string. Impact on later tasks: none -- no later task's Required Behavior or pinned test
+    reads `SessionGuid`'s `Display`/`Debug` output.
+D3: item 5's a7 scanner extension, implemented literally (a bare `tabId`/`token`/`socket` match
+    anywhere in `src/governance/**`, matching the existing scanner's whole-file including-doc-
+    comments philosophy), broke the currently-green `governance_core_has_no_forbidden_back_edges`
+    against the REAL live tree: it flagged 6 pre-existing, unrelated doc-comment uses of the
+    ordinary English words "token"/"socket" (a UDP "socket" for the syslog audit destination in
+    `destinations.rs`; an HTML `autocomplete` "token" in `config/mod.rs`; a grammar/wildcard "token"
+    in `enforcement.rs` and `manifest/document.rs` (twice) -- none related to session/credential/
+    handle types) plus one real pre-existing local variable literally named `socket` in
+    `src/governance/audit/destinations.rs::send_line_to_syslog` (a `std::net::UdpSocket` for syslog
+    delivery, unrelated to H3's session-identity concern) -> (a) scoped the NEW identifier check to
+    non-doc-comment lines only (added `is_doc_comment` to `tests/architecture.rs`; the pre-existing
+    crate-edge/`url` checks still scan doc comments, UNCHANGED -- purely additive, no existing rule
+    weakened), resolving 6 of the 7 hits; (b) renamed `destinations.rs`'s one remaining local
+    variable (`socket` -> `udp_socket`, a zero-behavior-change rename in a file this task does not
+    name) to resolve the last hit, since ADR-0030's own text frames this check as a code-level "the
+    core additionally names no tabId/token/socket TYPE" concern, not a ban on the English words
+    themselves in unrelated prose or an incidental local-variable name. Impact on later tasks: none
+    -- H4/H5/H6/H7/H8 do not reference `destinations.rs`'s local variable name, and no test anywhere
+    asserts its identifier; a future task adding NEW governance-core code must still avoid naming
+    `tabId`/`token`/`socket` as a real identifier (the check remains live and enforced for code).
+D4: `Cargo.toml` (not named by the task) needed one new `windows-sys` feature,
+    `Win32_System_Pipes`, to call `GetNamedPipeClientProcessId` for item 2's real Windows
+    peer-credential capture -> added the feature (purely additive; no version bump, no other
+    dependency change). Impact on later tasks: none.
+
+Verification: all four commands passed for real. `cargo build --all-targets` clean.
+`cargo test --test hub_identity --test hub_role_wiring --test hub_multiplex --lib role --test
+all_open_golden --test architecture --test audit_recorder` all green, and the FULL `cargo test` is
+green (430 lib tests + every integration suite, 0 failed -- up from H2's 423 lib tests, the +7 being
+`hub::session::tests` (4) + `hub::role::tests` (3)). `cargo clippy --all-targets -- -D warnings`
+clean. `cargo fmt --all -- --check` clean (after running `cargo fmt --all` once to normalize
+wrapping the new code introduced -- whitespace only, no semantic change, not logged as its own
+numbered deviation). Sacred tests (`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`)
+green and byte-unmodified (confirmed via `git diff --stat` on both paths: no output);
+`tests/architecture.rs::governance_core_has_no_forbidden_back_edges` green, EXTENDED per the one
+sanctioned edit, every pre-existing back-edge rule intact. No NEVER-touch fence moved; the H3
+sanctioned exceptions (the `tests/architecture.rs` a7 extension, the `tests/hub_multiplex.rs`
+one-literal fix) are the only fences touched, both as pinned.
+- Note: as in H0/H1/H2, `CARGO_TARGET_DIR` was pointed at a scratch directory (not the repo's
+  `target/`) for build-artifact routing only, not a source or test change.
 
 ### H4
 - (not started)
