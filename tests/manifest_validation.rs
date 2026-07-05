@@ -7,6 +7,8 @@
 //! real example files on disk, the one thing inline unit tests cannot do without reaching
 //! outside the crate.
 
+mod support;
+
 use ghostlight::browser::pattern;
 use ghostlight::governance::manifest::document::parse_manifest;
 
@@ -126,15 +128,24 @@ fn no_manifest_sources_yields_all_open() {
 /// ADR-0023: the stage-3 outage regression test. Before this task, ANY policy file at the org
 /// path was a fatal startup error (two parsers, mutually exclusive schema gates): a schema-3
 /// org policy died in the now-deleted second org-file parser's schema-2-only gate. This spawns
-/// the real binary with a schema-3 org policy (a read-only grant plus two mandatory config
-/// entries) at a fake `ProgramData`-rooted org path, and proves the server answers
-/// `initialize`/`tools/list` instead of exiting at startup, with the governed (filtered) tool
-/// set for the read-only grant.
+/// the real SERVICE with a schema-3 org policy (a read-only grant plus two mandatory config
+/// entries) at a fake `ProgramData`-rooted org path, plus a thin ADAPTER dialing it, and proves
+/// the session answers `initialize`/`tools/list` instead of exiting at startup, with the governed
+/// (filtered) tool set for the read-only grant.
+///
+/// D (H6, forced): only the standalone SERVICE loads policy now (ADR-0030 Decision 8 amendment,
+/// PINS.md SS5.1); a bare `ghostlight` invocation is ALWAYS the thin ADAPTER and never reads
+/// `ProgramData` at all. Spawns `ghostlight service` (`support::spawn_service_with_program_data`)
+/// plus a thin adapter (`support::spawn_adapter`), preserving every pinned assertion verbatim
+/// (same category of forced fix as `tests/hub_multiplex.rs`'s and `tests/hot_reload.rs`'s own H6
+/// deviation notes). Also reads exactly the two expected replies BEFORE closing the adapter's
+/// stdin (mirroring `tests/mcp_protocol.rs::drive`'s own H6 fix): `relay_adapter` races its two
+/// copy directions, so an early stdin close could tear the relay down before a still-in-flight
+/// reply is delivered -- moot here (both replies are synchronous), but consistent and safe.
 #[cfg(windows)]
 #[test]
 fn org_policy_file_with_config_boots_the_server() {
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -168,34 +179,40 @@ fn org_policy_file_with_config_boots_the_server() {
         .expect("write the org policy file");
 
     let endpoint = format!("ghostlight-t01-{pid}-{seq}");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .env("ProgramData", &program_data_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
+    let mut service = support::spawn_service_with_program_data(&endpoint, &program_data_dir);
+    let mut adapter = support::spawn_adapter(&endpoint);
 
-    {
-        let mut stdin = child.stdin.take().expect("stdin");
-        for req in [
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        ] {
-            stdin
-                .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
+    for req in [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    ] {
+        stdin
+            .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+            .unwrap();
+        stdin.write_all(b"\n").unwrap();
+    }
+
+    // Read exactly the two expected replies BEFORE closing stdin (mirrors
+    // `tests/mcp_protocol.rs::drive`'s own H6 fix): `relay_adapter` races its two copy
+    // directions, so an early close could tear the relay down before a still-in-flight reply is
+    // delivered.
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let responses: Vec<serde_json::Value> = (0..2)
+        .map(|_| {
+            let line = lines
+                .next()
+                .expect("the adapter's stdout closed before both expected replies arrived")
                 .unwrap();
-            stdin.write_all(b"\n").unwrap();
-        }
-    } // drop stdin -> EOF -> the server loop ends
-
-    let stdout = child.stdout.take().expect("stdout");
-    let responses: Vec<serde_json::Value> = BufReader::new(stdout)
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).expect("each stdout line is JSON"))
+            serde_json::from_str(&line).expect("each stdout line is JSON")
+        })
         .collect();
-    child.wait().expect("wait for child");
+
+    drop(stdin);
+    adapter.wait().expect("wait for adapter");
+    let _ = service.kill();
+    let _ = service.wait();
 
     std::fs::remove_file(&policy_path).ok();
     std::fs::remove_dir_all(&program_data_dir).ok();

@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Ghostlight -- H7 tab-group-per-session presentation: the PURE grouping DECISION (ADR-0030
+// Decision 6/7; docs/tasks/hub/H7-tab-group-per-session.md; docs/tasks/hub/PINS.md SS6).
+//
+// Given an injected `chrome`-like object, a session-GUID -> Chrome tab-group-id map, and a
+// `group_request`'s named tabIds/title, groups EXACTLY those tabIds into that session's Chrome
+// tab group -- creating one on first use, reusing it (idempotent) on every later request for the
+// SAME guid, and titling it every call. Makes NO policy decision: it never reads a tab's
+// url/host/domain/grant to decide membership -- it groups the tabIds the caller named, full stop
+// (ADR-0030 Decision 6: "The extension's per-group checks remain defense-in-depth only"; Migration
+// H7: "groups on request only"). This is ADDITIVE to (never a replacement of) the existing
+// single-group `ensureGroup`/`groupTabs`/`inGroup`/`effectiveTabId` access-control mechanism in
+// `service-worker.js`, which this module does not touch or call.
+//
+// IIFE-wrapped so its bindings stay function-scoped under importScripts' shared global (see
+// lib/geometry.js's header for why); this file is ASCII-only source (the ghost glyph the caller
+// embeds in `title` is produced elsewhere as a `\u{1F47B}` escape, never written here).
+(function () {
+
+// Group EXACTLY `tabIds` (a plain array of Chrome tab ids) into the Chrome tab group belonging to
+// `guid` in `sessionGroups` (a `Map<string, number>`, guid -> chrome tab-group id -- mutated in
+// place so the caller's map stays the single source of truth for reuse/persistence). `title` is
+// applied every call (idempotent: `chrome.tabGroups.update` on an unchanged title is a no-op from
+// the caller's point of view). Returns the group id used, or `null` if every named tab was gone.
+//
+// A named tab that no longer exists is a best-effort, silent no-op -- a liveness fact, not a
+// policy decision (mirrors the existing `chrome.tabs.get` failure posture elsewhere in this
+// worker): this function probes each tabId with `chrome.tabs.get` ONLY to check it still exists,
+// never reading any field (`.url` included) off the result.
+async function groupSessionTabs(chrome, sessionGroups, guid, tabIds, title) {
+  const liveTabIds = [];
+  for (const tabId of tabIds) {
+    try {
+      await chrome.tabs.get(tabId);
+      liveTabIds.push(tabId);
+    } catch {
+      // the tab no longer exists: a liveness fact, not a policy decision -- drop it silently.
+    }
+  }
+  if (liveTabIds.length === 0) return sessionGroups.has(guid) ? sessionGroups.get(guid) : null;
+
+  let groupId = null;
+  if (sessionGroups.has(guid)) {
+    const existingGroupId = sessionGroups.get(guid);
+    try {
+      await chrome.tabGroups.get(existingGroupId);
+      groupId = existingGroupId; // still live: reuse it (idempotent)
+    } catch {
+      groupId = null; // the group vanished; a fresh one is created below
+    }
+  }
+
+  if (groupId === null) {
+    groupId = await chrome.tabs.group({ tabIds: liveTabIds });
+  } else {
+    await chrome.tabs.group({ tabIds: liveTabIds, groupId });
+  }
+  await chrome.tabGroups.update(groupId, { title, color: "blue" });
+  sessionGroups.set(guid, groupId);
+  return groupId;
+}
+
+const GhostlightGrouping = { groupSessionTabs };
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = GhostlightGrouping;
+} else {
+  self.GhostlightGrouping = GhostlightGrouping;
+}
+})();

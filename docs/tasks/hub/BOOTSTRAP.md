@@ -9,7 +9,11 @@ by judgment. Read this file fully before touching any code.
 The Hub turns today's single-session dual-role binary into: one persistent per-user SERVICE that
 solely owns the single Chrome extension link, with heterogeneous clients as multiplexed SESSIONS.
 The authoritative design is `docs/adr/0030-ghostlight-hub-orchestrator.md` (ADR-0030). You implement
-it in nine tasks, H0 through H8, one task = one commit.
+it in ten tasks, H0 through H9, one task = one commit.
+
+The service is a STANDALONE process started by argv (`ghostlight service`); every MCP invocation is a
+thin ADAPTER (amended Decision 8, 2026-07-04). There is NO promoted/in-process service and NO
+in-editor spawn/breakaway (that mechanism is deleted). RE-READ Decision 8 + its Provenance before H6.
 
 ## Authority order (higher wins on conflict)
 
@@ -38,12 +42,15 @@ The "Preserved invariants" section of ADR-0030 and the NEVER-touch list below OV
 
 H0 extract HubCore -> H1 transport-generic serve_session -> H2 service + adapter + multiplex
 -> H3 GUID identity -> H4 binary-authoritative isolation -> H5 grace window + honest queue
--> H6 detached lifecycle + anti-squat -> H7 tab-group-per-session -> H8 local web API.
+-> H6 always-ready service + thin adapters + anti-squat -> H7 tab-group-per-session
+-> H8 local web API -> H9 installer auto-start.
 
 Dependencies that are also encoded as STOP preconditions: H1 before H2; H3 before H4; H2+H3+H4
-before H8. H5 is orthogonal (any time after H2) but stays in sequence here. H2 is the one large
-coupled commit (persistent service + adapter + multiplex + the kill-hook fan-out); it is pinned to
-be landed whole, NOT split.
+before H8; H6 before H9. H5 is orthogonal (any time after H2) but stays in sequence here. H2 is the
+one large coupled commit (persistent service + adapter + multiplex + the kill-hook fan-out); it is
+pinned to be landed whole, NOT split. H6 is the other large coupled commit (it reshapes H2's election
+into argv-dispatch + standalone service + thin adapters, so its harness updates and code land
+together); land it whole.
 
 ## Per-task procedure
 
@@ -67,7 +74,7 @@ For each H<N>:
 
 ## Completion criteria
 
-- H0..H8 each landed as its own commit; every prefix left a green tree.
+- H0..H9 each landed as its own commit; every prefix left a green tree.
 - The full suite is green, including the untouched sacred tests and every new `tests/hub_*.rs` /
   `tests/webapi_auth.rs` / `tests/channels_policy.rs` test named by the tasks.
 - All-open output is byte-identical to before the batch (a lone all-open session's new code paths
@@ -93,11 +100,24 @@ to make a test go green.
 
 ## NEVER touch (global; each names its single sanctioned exception if any)
 
+The ONE sacred thing is user DELIGHT (ADR-0030 Provenance, ratified 2026-07-04). Every fence below
+exists only to protect it. That ELEVATES the trained schemas and the extension wire (breaking them
+degrades the model or the extension = destroys delight), and it DEMOTES tests that merely encode the
+old process topology to movable scaffold: their delight-relevant ASSERTIONS are frozen, their spawn
+choreography is not. This is never license to weaken a genuine invariant.
+
 - `src/transport/mcp/tools.rs` (TOOLS_JSON: the 13 trained schemas + `explain`) -- byte-frozen. No
-  exception in any task.
+  exception in any task (Claude's trained behavior on these schemas IS the delight).
 - `tests/tool_schema_fidelity.rs` -- the schema fidelity pin. No exception; keep green untouched.
-- `tests/all_open_golden.rs` and the all-open byte-identity invariant -- no exception; new paths are
-  no-ops for a lone all-open session.
+- `tests/all_open_golden.rs`: the all-open CLIENT-VISIBLE assertions (redaction wired at the
+  chokepoint; advertised surface == the sacred fixture) are FROZEN -- no exception. SANCTIONED
+  EXCEPTION: H6 only may update the spawn CHOREOGRAPHY of the single spawning test
+  (`read_page_redaction_is_still_wired_at_the_chokepoint`) to the standalone-service + thin-adapter
+  topology, preserving every assertion verbatim; the two pure/in-process tests are untouched.
+- `tests/peer_death.rs` and `tests/mcp_protocol.rs` -- movable HARNESS. SANCTIONED EXCEPTION: H6 only
+  may rewrite their spawn choreography to the standalone-service + thin-adapter topology, preserving
+  every pinned assertion verbatim (peer_death's zombie-regression intent = "a native host exits when
+  its real peer dies"; mcp_protocol's exact response bytes). No other task touches them.
 - `tests/architecture.rs` a7 (`governance_core_has_no_forbidden_back_edges`) -- `src/governance/**`
   names no browser/transport/mcp/native/url and no tabId/token/socket type. Session/isolation code
   lands in `src/hub`. SANCTIONED EXCEPTION: H8 only may add the `channels.webapi.from` POLICY

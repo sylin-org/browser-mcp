@@ -9,6 +9,7 @@
 pub mod clients;
 pub mod merge;
 pub mod native_host;
+pub mod supervisor;
 
 use crate::{Error, Result};
 use native_host::{BrowserSpec, HostManifest, WowView};
@@ -688,6 +689,16 @@ pub fn run_install(opts: InstallOptions) -> Result<()> {
         }
     );
     let tally = apply(&actions, opts.dry_run);
+    // The OS supervisor (auto-start) is ALWAYS per-user, regardless of --system (ADR-0030 Decision
+    // 8): register it, then start it once so the first session is already up. Best-effort: never
+    // folded into `tally`/`exit_result` -- a failure here warns (see supervisor::apply_steps) and
+    // never turns an otherwise-successful install into a failure.
+    println!("\nSupervisor (auto-start):");
+    supervisor::apply_steps(
+        "Ghostlight Service",
+        &supervisor::register_steps(&ctx.current_exe, &ctx),
+        opts.dry_run,
+    );
     finish(opts.dry_run, &tally);
     if opts.dry_run {
         println!("\nDry run -- nothing was written.");
@@ -707,6 +718,13 @@ pub fn run_uninstall(opts: UninstallOptions) -> Result<()> {
     let actions = plan_uninstall(&opts, &ctx)?;
     println!("ghostlight uninstall");
     let tally = apply(&actions, opts.dry_run);
+    // Unregister + stop the OS supervisor, best-effort (see run_install's matching note).
+    println!("\nSupervisor (auto-start):");
+    supervisor::apply_steps(
+        "Ghostlight Service",
+        &supervisor::unregister_steps(&ctx),
+        opts.dry_run,
+    );
     finish(opts.dry_run, &tally);
     exit_result(&tally)
 }

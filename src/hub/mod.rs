@@ -1,10 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The Hub composition root (ADR-0030 Decision 2: "Extract the composition root into a
-//! free-licensed `src/hub` module hosting `HubCore`"). As of H2 this module hosts the
-//! service-or-adapter election (`run_mcp_server`), the persistent SERVICE role (`run_as_service`:
-//! owns the shared [`ServiceContext`], the extension endpoint, and the adapter/control endpoint),
-//! and the thin ADAPTER role (`run_as_adapter`: a byte relay to an already-running service). The
-//! session-hello constants the ADAPTER/CONTROL endpoint uses live in [`handshake`].
+//! free-licensed `src/hub` module hosting `HubCore`").
+//!
+//! ADR-0030 Decision 8 (amended 2026-07-04, "the always-ready-service amendment"): role is decided
+//! by ARGV, never a claim race. [`run_mcp_server`] is ALWAYS the thin ADAPTER (`ghostlight`, bare):
+//! it connects to an already-running SERVICE, relays its stdio as a pure byte pipe, and dies with
+//! its editor, asking the OS supervisor to self-heal-start the service if it is down
+//! ([`run_as_adapter`], `supervisor::start_service`). [`run_service`] is the STANDALONE SERVICE
+//! (`ghostlight service`): it owns the shared [`ServiceContext`], the extension endpoint, and the
+//! adapter/control endpoint for its whole life, runs NO parent-death watchdog, and shuts down only
+//! on a continuous idle-grace window ([`run_service_loop`]/`idle_grace_watch`). There is NO
+//! promotion, NO in-process service, and NO on-demand in-editor spawn -- that mechanism (an
+//! earlier H2/H6 draft) is DELETED, not built. The session-hello constants the ADAPTER/CONTROL
+//! endpoint uses live in [`handshake`]; the OS-supervisor identifiers + self-heal in
+//! [`supervisor`]; the per-install anti-squat secret + HMAC proof in [`antisquat`].
+//!
+//! ADR-0030 Decision 3 ("D1 -- the honest singleton queue"): the single MV3 service worker plus
+//! the single native port is an ACCEPTED, TRUTHFUL serialization bottleneck -- fair ordering and
+//! truthful failure on a real drop, never a hidden work-around. H5 lands the three properties
+//! Decision 3 names: a bounded reconnect grace window (`transport::executor::Browser::attach`,
+//! `GRACE_WINDOW`, strictly less than `TOOL_TIMEOUT`), a per-peer (never global) mint quota
+//! (below, [`try_mint`]/[`PER_PEER_MINT_CAP`]), and mandatory oversize-reply chunking on the
+//! service<->adapter/web hop (`transport::mcp::server::write_chunked`,
+//! `SCREENSHOT_CHUNK_THRESHOLD`) so one session's large payload cannot head-of-line-block
+//! another's small one. See `docs/adr/0004-reject-second-session.md`'s amendment note for the
+//! cross-reference from the ORIGINAL single-session decision this multiplexes past.
 
 use crate::browser::pattern;
 use crate::debug::DebugSink;
@@ -15,19 +35,139 @@ use crate::governance::manifest::source::LoadedPolicy;
 use crate::native::ipc;
 use crate::transport::executor::Browser;
 use anyhow::{Context, Result};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
+pub mod antisquat;
+pub mod console_assets;
 pub mod handshake;
 pub mod role;
 pub mod session;
+pub mod supervisor;
+pub mod webapi;
 
-/// mcp-server invocation (ADR-0030 Decision 1): claims the ADAPTER/CONTROL endpoint FIRST (PINS.md
-/// SS1 pin 1), before opening anything else, so this process learns whether it is the persistent
-/// SERVICE or a thin ADAPTER before building a [`Browser`] or a [`ServiceContext`]. This REPEALS
-/// ADR-0004's degrade semantics at the MCP-client layer: a second (or Nth) MCP client no longer
-/// runs a doomed session against its own never-connecting `Browser` -- it multiplexes through the
-/// winner's real one instead ([`run_as_adapter`]).
+/// Idle-grace shutdown window (ADR-0030 Decision 8; PINNED, PINS.md SS5.4): the SERVICE exits only
+/// after zero live sessions AND the extension link gone, CONTINUOUSLY, for this long. Never a
+/// parent-death trigger -- the service has no client parent to watch.
+pub const IDLE_GRACE: Duration = Duration::from_secs(30);
+
+/// Idle-grace poll interval (author-pinned, PINS.md SS5.4; not itself an ADR-0030 value).
+pub const IDLE_POLL: Duration = Duration::from_secs(1);
+
+/// Per-peer (never global) mint quota (ADR-0030 Decision 3: "per-peer-identity mint/group
+/// quotas (never a single global cap, which is itself a lockout DoS)"; Decision 4's "per-peer
+/// rate-limit key" amendment). PINNED in `docs/tasks/hub/PINS.md` SS4: max CONCURRENT
+/// adapter-minted [`session::SessionGuid`] sessions per minting peer identity.
+pub const PER_PEER_MINT_CAP: usize = 32;
+
+/// The paired per-peer live-tab-group cap (H7; PINNED in PINS.md SS4, equal to
+/// [`PER_PEER_MINT_CAP`] by design -- "the paired ... equal by design"). Not yet consumed: H7
+/// wires this in when it adds per-session tab groups.
+pub const PER_PEER_GROUP_CAP: usize = 32;
+
+/// The quota-exceeded result (PINNED in `docs/tasks/hub/PINS.md` SS4): a plain tool error, never
+/// a governance denial-id -- this is a HUB admission decision, not a change to the 13+`explain`
+/// tool surface.
+pub const MINT_QUOTA_EXCEEDED: &str = "session limit reached for this client";
+
+/// Shared per-peer mint-quota table (ADR-0030 Decision 3 + Decision 4): keyed on the peer's OS
+/// credential ([`session::PeerUser`]), NEVER a single global counter. A `ServiceContext` field,
+/// added the same way H3's `session_registry` and H4's `owned_tabs` were.
+pub type MintQuota = Arc<Mutex<HashMap<session::PeerUser, usize>>>;
+
+/// RAII handle for one minted, live slot against a peer's [`PER_PEER_MINT_CAP`]. Decrements the
+/// SAME counter [`try_mint`] incremented when this drops (the connection/session ends), so the
+/// cap counts CONCURRENT sessions, never lifetime mints.
+#[must_use = "dropping the guard immediately frees the peer's mint-quota slot"]
+pub struct MintGuard {
+    quota: MintQuota,
+    peer: session::PeerUser,
+}
+
+impl Drop for MintGuard {
+    fn drop(&mut self) {
+        let mut quota = self.quota.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = quota.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                quota.remove(&self.peer);
+            }
+        }
+    }
+}
+
+/// Check-and-increment `peer`'s live mint count against [`PER_PEER_MINT_CAP`] (ADR-0030
+/// Decision 3: "per-peer-identity mint/group quotas"). `Ok` increments and returns a
+/// [`MintGuard`] that frees the slot on drop; `Err` is the pinned [`MINT_QUOTA_EXCEEDED`] text,
+/// with no state change -- a flooding peer is denied while every OTHER peer's own counter (and
+/// thus its own admission) is completely unaffected (never a single global cap).
+pub fn try_mint(
+    quota: &MintQuota,
+    peer: &session::PeerUser,
+) -> std::result::Result<MintGuard, String> {
+    let mut guard = quota.lock().unwrap_or_else(PoisonError::into_inner);
+    let count = guard.entry(peer.clone()).or_insert(0);
+    if *count >= PER_PEER_MINT_CAP {
+        return Err(MINT_QUOTA_EXCEEDED.to_string());
+    }
+    *count += 1;
+    drop(guard);
+    Ok(MintGuard {
+        quota: Arc::clone(quota),
+        peer: peer.clone(),
+    })
+}
+
+/// The thin ADAPTER entry point (ADR-0030 Decision 1; Decision 8 amendment; PINS.md SS5.1). Role
+/// is decided by ARGV, never a claim race: a bare `ghostlight` invocation is ALWAYS the ADAPTER.
+/// It NEVER claims the adapter/control endpoint, loads policy, builds a [`Browser`], or builds a
+/// [`ServiceContext`] -- it only connects to an already-running SERVICE and relays. A `--manifest`
+/// here is a client-side no-op (the running service's policy governs every session); this REPEALS
+/// ADR-0004's degrade semantics at the MCP-client layer the other direction too: every MCP client,
+/// not just the first, multiplexes through the one real service ([`run_as_adapter`]).
 pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
+    role::set_role(role::Role::Adapter);
+
+    if manifest.is_some() || std::env::var_os("GHOSTLIGHT_MANIFEST").is_some() {
+        tracing::warn!(
+            "a --manifest on a client invocation is ignored; the running Ghostlight service's \
+             policy governs all sessions"
+        );
+    }
+
+    let sink = build_debug_sink(debug_on, "adapter");
+    // Startup self-heal (ADR-0029 part 4; ADR-0030 Decision 8 re-scope, PINS.md SS5.5): reap any
+    // orphaned predecessor ADAPTER whose editor exited but that did not terminate. The SERVICE has
+    // no client parent and idle-graces instead (see `run_service_loop`), so it is never a reap
+    // target. Best-effort and safe (only parent-dead orphans; see `doctor::reap`).
+    crate::doctor::sweep_orphans();
+    // The MCP client that spawned us, captured before the runtime starts (ADR-0029). None (no
+    // resolvable parent) simply skips the watchdog below and leaves stdin EOF as the sole exit
+    // trigger.
+    let parent = crate::proc::parent();
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let block_sink = sink.clone();
+    let endpoint = ipc::default_endpoint();
+    let code = rt.block_on(run_as_adapter(&endpoint, block_sink, parent));
+
+    // The single ordered teardown. process::exit rather than unwinding: on a detector-triggered
+    // shutdown the stdin read may still be parked in a blocking ReadFile, and dropping the runtime
+    // would hang forever trying to join that thread (the same reason the native-host role exits
+    // directly). Flush the final observability snapshot first.
+    sink.flush();
+    std::process::exit(code)
+}
+
+/// The standalone SERVICE entry point (ADR-0030 Decision 8 amendment; PINS.md SS5.1), run only
+/// via the `ghostlight service` subcommand: loads policy (the ONLY role that does), then serves
+/// forever until [`IDLE_GRACE`] elapses with no live sessions and the extension link gone. NEVER
+/// captures a parent or runs the ADR-0029 watchdog -- that lifecycle belongs to the ADAPTER now.
+pub fn run_service(manifest: Option<String>, debug_on: bool) -> Result<()> {
+    role::set_role(role::Role::Service);
+
     // Resolve the user-supplied manifest source (G12, shared format doc section 1.3): the
     // --manifest flag wins when both it and GHOSTLIGHT_MANIFEST are set. Plain synchronous
     // I/O, before the async runtime starts: a source that is SELECTED but cannot be read,
@@ -45,111 +185,69 @@ pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
             mode = ?m.mode,
             origin = ?origin,
             debug_mode = debug_on,
-            "ghostlight starting (mcp-server role; governance overlay active)"
+            "ghostlight starting (service role; governance overlay active)"
         ),
         _ => tracing::info!(
             debug_mode = debug_on,
-            "ghostlight starting (mcp-server role; no manifest: all-open)"
+            "ghostlight starting (service role; no manifest: all-open)"
         ),
     }
 
-    // The MCP client that spawned us, captured before the runtime starts (ADR-0029). The
-    // parent-death watchdog below watches it (SERVICE role only -- ADR-0030 Decision 8 re-scopes
-    // the reaper to the ADAPTER at H6; until then a lone-client SERVICE keeps today's behavior).
-    // None (no resolvable parent) simply skips the watchdog and leaves stdin EOF as the sole exit
-    // trigger, as before.
-    let parent = crate::proc::parent();
-
-    // Startup self-heal (ADR-0029 part 4): reap any orphaned predecessor -- a server whose client
-    // exited but that did not terminate (e.g. one built before the watchdog, or killed uncleanly)
-    // -- before we serve. Best-effort and safe (only parent-dead orphans; see doctor::reap): a
-    // no-op in a release build (no session registry) and when nothing is orphaned. Runs before the
-    // sink is enabled, so our own not-yet-written state file is never a self-reap candidate.
-    crate::doctor::sweep_orphans();
-
     let sink = build_debug_sink(debug_on, "mcp-server");
     let rt = tokio::runtime::Runtime::new()?;
-
     let block_sink = sink.clone();
     let endpoint = ipc::default_endpoint();
-    let code = rt.block_on(async move {
-        // Claim the ADAPTER/CONTROL endpoint FIRST (ADR-0030 Decision 1; PINS.md SS1 pin 1): the
-        // single-instance election. The winner IS the persistent SERVICE; a loser becomes the
-        // thin ADAPTER. Neither branch opens the extension endpoint or builds a Browser/
-        // ServiceContext until this is decided.
-        match ipc::claim_adapter_endpoint(&endpoint).await {
-            Ok(adapter_listener) => {
-                run_as_service(
-                    adapter_listener,
-                    endpoint,
-                    block_sink,
-                    loaded_policy,
-                    user_source,
-                    parent,
-                )
-                .await
-            }
-            Err(crate::Error::SessionBusy) => run_as_adapter(&endpoint, block_sink).await,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to claim the adapter/control endpoint");
-                1
-            }
-        }
-    });
+    let code = rt.block_on(run_service_loop(
+        endpoint,
+        block_sink,
+        loaded_policy,
+        user_source,
+    ));
 
-    // The single ordered teardown. process::exit rather than unwinding: on a detector-triggered
-    // shutdown the stdin read may still be parked in a blocking ReadFile, and dropping the runtime
-    // would hang forever trying to join that thread (the same reason the native-host role exits
-    // directly). Flush the final observability snapshot first; exiting then releases the IPC
-    // endpoint for the next session.
     sink.flush();
     std::process::exit(code)
 }
 
-/// The persistent SERVICE role (ADR-0030 Decision 1, Decision 2): this process won the
-/// ADAPTER/CONTROL endpoint election. For its whole life it owns BOTH local endpoints: the
-/// UNCHANGED, hello-free EXTENSION endpoint (`ipc::serve` -> `Browser::attach`, server-speaks-
-/// first, exactly as before this task) and the NEW ADAPTER/CONTROL endpoint (`ipc::serve_adapters`,
-/// over the ALREADY-claimed listener -- never re-claims the name). This process's OWN stdio is
-/// served as the first session, over the SAME shared [`ServiceContext`] every multiplexed adapter
-/// session clones (Decision 2), so a lone client's extension path stays byte-identical to the
-/// pre-H2 single-session behavior (ADR-0030 "Preserved invariants": all-open byte-identity).
-async fn run_as_service(
-    adapter_listener: ipc::AdapterListener,
+/// The async body of [`run_service`] (ADR-0030 Decision 1, Decision 2, Decision 8; PINS.md SS5.1):
+/// claim the ADAPTER/CONTROL endpoint as a single-instance guard (never a role election -- role
+/// was already decided by argv), then own both local endpoints for the rest of this process's
+/// life, and finally run the [`IDLE_GRACE`] watcher as the returning future. NEVER serves this
+/// process's own stdio as a session (Decision 8 amendment: a standalone service has no stdio
+/// session of its own) and NEVER captures a parent or runs the ADR-0029 watchdog.
+async fn run_service_loop(
     endpoint: String,
     debug_sink: DebugSink,
     loaded_policy: LoadedPolicy,
     user_source: Option<String>,
-    parent: Option<crate::proc::ProcId>,
 ) -> i32 {
-    // Role marker (ADR-0030 Decision 1 addendum; PINS.md SS8): this process won the
-    // ADAPTER/CONTROL claim, so it IS the SERVICE. Recorded once, before anything else, so the
-    // governance chokepoint's `assert_service_role` below can rely on it.
-    role::set_role(role::Role::Service);
+    let adapter_listener = match ipc::claim_adapter_endpoint(&endpoint).await {
+        Ok(listener) => listener,
+        Err(crate::Error::SessionBusy) => {
+            tracing::info!("a Ghostlight service is already running on this endpoint; exiting");
+            return 0;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to claim the adapter/control endpoint");
+            return 1;
+        }
+    };
 
-    let browser = Browser::with_debug(debug_sink);
-    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
-
-    // Detector: parent-death watchdog. stdin EOF is the intended shutdown signal, but on Windows
-    // a killed (not cleanly closed) client can leave our stdin read parked forever, so the read
-    // loop alone would never notice the client is gone. The watchdog signals shutdown when the
-    // parent process exits; it only signals -- the coordinator below does the teardown.
-    if let Some(parent) = parent {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            crate::transport::watchdog::wait_until_orphaned(parent).await;
-            tracing::warn!(
-                parent_pid = parent.pid,
-                "MCP client exited; ordering shutdown"
-            );
-            shutdown.notify_one();
-        });
+    // Anti-squat (ADR-0030 Decision 8; PINS.md SS5.3): prepare the per-install secret now, before
+    // the adapter/control endpoint is actually served below, so no connection can ever race the
+    // key file's first creation. Best-effort: a failure here degrades anti-squat protection for
+    // this run rather than refusing browser automation entirely (defense-in-depth, not a hard
+    // requirement -- Decision 8).
+    if let Err(e) = antisquat::load_or_create_hub_key() {
+        tracing::warn!(
+            error = %e,
+            "could not prepare the per-install hub-key; anti-squat proofs will fail until this is fixed"
+        );
     }
 
+    let browser = Browser::with_debug(debug_sink);
+
     // The EXTENSION endpoint: UNCHANGED, server-speaks-first, no hello (ADR-0030 Decision 1;
-    // PINS.md SS1). Only the winner ever calls this; its own Ok/Err handling is independent of
-    // the adapter/control election above (a stale extension-endpoint owner is a separate, rare
-    // edge case that degrades quietly here, exactly as before this task).
+    // PINS.md SS1).
     tokio::spawn({
         let browser = browser.clone();
         let ext_endpoint = endpoint.clone();
@@ -165,8 +263,8 @@ async fn run_as_service(
         }
     });
 
-    // Build the SHARED ServiceContext ONCE (PINS.md SS1 pin 4); every session -- this process's
-    // own stdio below, and every multiplexed adapter session `serve_adapters` spawns -- clones it.
+    // Build the SHARED ServiceContext ONCE (PINS.md SS1 pin 4); every multiplexed adapter session
+    // `serve_adapters` spawns clones it.
     let ctx = match ServiceContext::from_startup(browser, loaded_policy, user_source) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -186,21 +284,68 @@ async fn run_as_service(
         }
     });
 
-    // The coordinator: whichever shutdown trigger fires first lands here. stdin EOF makes
-    // `serve_session` return (after its own internal task cleanup); a detector signal arrives on
-    // `shutdown`. Both paths fall through to the single teardown in `run_mcp_server`.
-    //
-    // H3 (PINS.md SS9): this process's own directly-served stdio session mints its OWN GUID --
-    // every session gets a real one, including this lone-client path (closes an isolation gap a
-    // `None`/exempt session would otherwise leave in a later cross-session ownership map).
-    let own_guid = session::SessionGuid::mint();
-    let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+    // The local web API (ADR-0030 Decision 9; H8): a SECOND, optional session source, exposed
+    // only through the service. A bind failure (e.g. the port is already in use) is logged and
+    // never fatal -- see `webapi::run`'s own doc comment.
+    tokio::spawn(webapi::run(ctx.clone()));
+
+    // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): the ONLY shutdown trigger. Never
+    // parent-death -- this process has no client parent to watch.
+    idle_grace_watch(ctx).await
+}
+
+/// The idle-grace watcher (ADR-0030 Decision 8; PINS.md SS5.4, transcribed verbatim): the SERVICE
+/// exits once zero live sessions AND the extension link gone hold CONTINUOUSLY for [`IDLE_GRACE`];
+/// any session or a reconnected extension resets the counter to zero.
+async fn idle_grace_watch(ctx: ServiceContext) -> i32 {
+    let mut idle_for = Duration::ZERO;
+    loop {
+        tokio::time::sleep(IDLE_POLL).await;
+        let idle = ctx.live_sessions.load(std::sync::atomic::Ordering::Relaxed) == 0
+            && !ctx.browser.is_connected();
+        idle_for = if idle {
+            idle_for + IDLE_POLL
+        } else {
+            Duration::ZERO
+        };
+        if idle_for >= IDLE_GRACE {
+            tracing::info!(idle_for = ?IDLE_GRACE, "idle-grace elapsed; the service is shutting down");
+            return 0;
+        }
+    }
+}
+
+/// The thin ADAPTER role's async body (ADR-0030 Decision 1; Decision 8 amendment): connect to the
+/// already-running SERVICE and relay this process's stdio to it -- a pure byte relay, never a
+/// rewriter (ADR-0030 "Preserved invariants"). If the service is not reachable,
+/// `ipc::relay_adapter` asks the OS supervisor to self-heal-start it (PINS.md SS5.2) before
+/// retrying. Dies with its editor via the SAME ADR-0029 parent-death watchdog the persistent
+/// service used to run (re-scoped here, PINS.md SS5.5): stdin EOF is still the ordinary exit
+/// trigger; the watchdog is the second, reliable one for an unclean kill.
+async fn run_as_adapter(
+    endpoint: &str,
+    debug_sink: DebugSink,
+    parent: Option<crate::proc::ProcId>,
+) -> i32 {
+    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    if let Some(parent) = parent {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            crate::transport::watchdog::wait_until_orphaned(parent).await;
+            tracing::warn!(
+                parent_pid = parent.pid,
+                "MCP client exited; ordering shutdown"
+            );
+            shutdown.notify_one();
+        });
+    }
+
     tokio::select! {
-        result = crate::mcp::server::serve_session(stream, ctx, own_guid) => {
+        result = ipc::relay_adapter(endpoint, &debug_sink) => {
             match result {
                 Ok(()) => 0,
                 Err(e) => {
-                    tracing::error!(error = %e, "mcp-server loop ended with an error");
+                    tracing::error!(error = %e, "adapter relay ended with an error");
                     1
                 }
             }
@@ -209,27 +354,9 @@ async fn run_as_service(
     }
 }
 
-/// The thin ADAPTER role (ADR-0030 Decision 1): this process LOST the ADAPTER/CONTROL endpoint
-/// election, meaning a SERVICE is already running. Relay this process's stdio to it -- a pure
-/// byte relay, never a rewriter (ADR-0030 "Preserved invariants"). Connects to an already-running
-/// service only; spawn-on-demand is H6, out of scope here.
-async fn run_as_adapter(endpoint: &str, debug_sink: DebugSink) -> i32 {
-    // Role marker (ADR-0030 Decision 1 addendum; PINS.md SS8): this process LOST the
-    // ADAPTER/CONTROL claim, so it IS the thin ADAPTER. Recorded once, before anything else.
-    role::set_role(role::Role::Adapter);
-
-    match ipc::relay_adapter(endpoint, &debug_sink).await {
-        Ok(()) => 0,
-        Err(e) => {
-            tracing::error!(error = %e, "adapter relay ended with an error");
-            1
-        }
-    }
-}
-
-/// Build the observability sink for `role` ("mcp-server" or "native-host"). Debug-off yields a
-/// no-op sink; if the log directory cannot be prepared we warn and continue without observability
-/// rather than failing the process.
+/// Build the observability sink for `role` ("mcp-server" for the standalone SERVICE, "adapter",
+/// or "native-host" -- PINS.md SS5.5). Debug-off yields a no-op sink; if the log directory cannot
+/// be prepared we warn and continue without observability rather than failing the process.
 pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
     if !debug {
         return DebugSink::disabled();
@@ -272,6 +399,23 @@ pub struct ServiceContext {
     /// re-presented GUID is checked against the SAME registry regardless of which adapter
     /// connection presents it.
     pub session_registry: Arc<std::sync::Mutex<session::SessionRegistry>>,
+    /// H4 (ADR-0030 Decision 6; PINS.md SS9 forward guidance): the shared, opaque-keyed
+    /// owned-tab map (tabId -> owning [`session::SessionGuid`]), shared by every session so
+    /// `transport::mcp::server::serve_session`'s pre-dispatch ownership gate answers "do I own
+    /// it" / "can I adopt it" from the SAME map regardless of which session asks. Owned-handle
+    /// state lives here, in `src/hub`, NEVER in `src/governance` (a7: the core stays
+    /// handle-agnostic).
+    pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
+    /// H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): the per-peer (never global) mint-quota
+    /// table, shared by every adapter/control connection so `ipc::handle_adapter_connection`
+    /// checks/increments the SAME counter regardless of which connection presents a peer's
+    /// credential. See [`try_mint`].
+    pub mint_quota: MintQuota,
+    /// H6 (ADR-0030 Decision 8; PINS.md SS5.4): the number of currently-live sessions, incremented
+    /// and decremented at the ONE governance chokepoint (`transport::mcp::server::serve_session`'s
+    /// RAII guard) so the idle-grace watcher (`idle_grace_watch`) can tell whether any session --
+    /// adapter today, web at H8 -- is live, with no per-transport bookkeeping duplicated.
+    pub live_sessions: Arc<AtomicUsize>,
 }
 
 impl ServiceContext {
@@ -319,6 +463,9 @@ impl ServiceContext {
             recorder,
             initial_policy: loaded_policy.clone(),
             session_registry: Arc::new(std::sync::Mutex::new(session::SessionRegistry::new())),
+            owned_tabs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            mint_quota: Arc::new(Mutex::new(HashMap::new())),
+            live_sessions: Arc::new(AtomicUsize::new(0)),
         })
     }
 }

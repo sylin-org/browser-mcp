@@ -12,6 +12,8 @@
 //!   3. `read_page` secret redaction is still wired at the chokepoint (governed by the
 //!      unchanged `content.security.secrets.redact` key), exercised end-to-end over stdio.
 
+mod support;
+
 use ghostlight::browser::directory::descriptor;
 use ghostlight::governance::dispatch::Governance;
 use ghostlight::governance::ports::{
@@ -20,7 +22,6 @@ use ghostlight::governance::ports::{
 use ghostlight::transport::mcp::tools::TOOLS_JSON;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -99,6 +100,11 @@ fn facade_decide_is_all_open_after_the_move() {
 /// secret-redaction overlay: a fake extension answers with a result carrying the engine's
 /// `secret_value="..."` marker, and the client-visible text must come back redacted (the safe
 /// default keeps `content.security.secrets.redact` on) with the marker gone.
+///
+/// H6 (ADR-0030 Decision 8 amendment; the ONE sanctioned exception to this file's otherwise-frozen
+/// spawn choreography, BOOTSTRAP "only delight is sacred"): drives the standalone SERVICE + thin
+/// ADAPTER topology. Every assertion below is verbatim -- the redaction wiring is the invariant;
+/// only WHICH two processes are spawned changed.
 #[test]
 fn read_page_redaction_is_still_wired_at_the_chokepoint() {
     let endpoint = format!(
@@ -106,15 +112,10 @@ fn read_page_redaction_is_still_wired_at_the_chokepoint() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
+    let mut service = support::spawn_service(&endpoint);
+    let mut adapter = support::spawn_adapter(&endpoint);
 
-    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{}}}),
@@ -157,7 +158,7 @@ fn read_page_redaction_is_still_wired_at_the_chokepoint() {
         });
     });
 
-    let stdout = child.stdout.take().expect("stdout");
+    let stdout = adapter.stdout.take().expect("adapter stdout");
     let mut lines = BufReader::new(stdout).lines();
 
     let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -187,5 +188,7 @@ fn read_page_redaction_is_still_wired_at_the_chokepoint() {
 
     fake_ext.join().expect("fake-extension thread panicked");
     drop(stdin);
-    let _ = child.wait();
+    let _ = adapter.wait();
+    let _ = service.kill();
+    let _ = service.wait();
 }

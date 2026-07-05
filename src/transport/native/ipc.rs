@@ -23,14 +23,17 @@
 //!   instance (launched by Chrome, short-lived, may relaunch on service-worker wake) [`connect`]s
 //!   with retry and relays frames between the extension and the service ([`relay_native_host`]),
 //!   sending nothing first, exactly as before this endpoint split existed.
-//! - The ADAPTER/CONTROL endpoint (`<endpoint>-adapter`) -- the single-instance ELECTION target:
-//!   [`claim_adapter_endpoint`] wins or loses ([`Error::SessionBusy`] on a loss now means "the
-//!   singleton SERVICE is already up; connect to it as an ADAPTER instead", not "tools
-//!   unavailable"). [`serve_adapters`] accepts speak-first sessions over the ALREADY-claimed
-//!   listener and demuxes each connection's session-hello ([`handle_adapter_connection`]) into the
-//!   SAME governance chokepoint every transport calls. [`relay_adapter`] is the thin ADAPTER's
-//!   mirror of [`relay_native_host`] on this endpoint: it sends the hello, then raw-relays its
-//!   stdio, never re-framing the data phase.
+//! - The ADAPTER/CONTROL endpoint (`<endpoint>-adapter`) -- owned for its whole life by the
+//!   STANDALONE SERVICE (`ghostlight service`; ADR-0030 Decision 8 amendment). [`claim_adapter_endpoint`]
+//!   is a single-instance GUARD only, never a role election (role is decided by ARGV, PINS.md
+//!   SS5.1): a second `ghostlight service` loses the claim and exits cleanly. [`serve_adapters`]
+//!   accepts speak-first sessions over the ALREADY-claimed listener and demuxes each connection's
+//!   session-hello ([`handle_adapter_connection`]) into the SAME governance chokepoint every
+//!   transport calls, proving this service's anti-squat identity ([`send_service_proof`],
+//!   `crate::hub::antisquat`) before dispatch. [`relay_adapter`] is the thin ADAPTER's mirror of
+//!   [`relay_native_host`] on this endpoint: it self-heals the dial if the service is down
+//!   ([`crate::hub::supervisor`]), sends the hello, verifies the service's proof
+//!   ([`verify_service_proof`]), then raw-relays its stdio, never re-framing the data phase.
 
 use crate::transport::executor::{AttachOutcome, Browser};
 use crate::transport::native::host;
@@ -103,20 +106,22 @@ pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) 
     Ok(())
 }
 
-/// The thin ADAPTER role (ADR-0030 Decision 1): dial the SERVICE's ADAPTER/CONTROL endpoint,
-/// send the `adapter` session-hello as ONE 4-byte-LE FRAMED message, then become a RAW
-/// bidirectional byte relay between this process's stdio and the service stream until either
-/// side closes.
+/// The thin ADAPTER role (ADR-0030 Decision 1; Decision 8 amendment): dial the SERVICE's
+/// ADAPTER/CONTROL endpoint (self-healing the dial if the service is not yet up, PINS.md SS5.2),
+/// send the `adapter` session-hello as ONE 4-byte-LE FRAMED message, verify the SERVICE's
+/// anti-squat proof (PINS.md SS5.3), then become a RAW bidirectional byte relay between this
+/// process's stdio and the service stream until either side closes.
 ///
-/// CRITICAL (PINS.md SS1 pin 3): the session-hello is the ONLY framed message on this wire. The
-/// DATA phase that follows is a RAW `tokio::io::copy` -- NEVER a `host::write_message`/
-/// `read_message` framed copy -- because everything after the hello is newline-delimited
-/// JSON-RPC, exactly what `serve_session`'s `BufReader::lines()` expects on the service side and
-/// what an MCP client writes on this side. Mirrors [`relay_native_host`] ONLY in lifecycle shape
-/// (the `select!` that exits on either side closing; deliberately no post-`select!`
-/// `shutdown().await`, which can hang forever on an already-dead Windows pipe): it NEVER frames
-/// the data phase the way `relay_native_host` does (that wire is framed end-to-end because it IS
-/// the Chrome native-messaging wire; this wire is framed for the hello only, then raw).
+/// CRITICAL (PINS.md SS1 pin 3): the session-hello (and the anti-squat proof that follows it) are
+/// the ONLY framed messages on this wire. The DATA phase after them is a RAW `tokio::io::copy` --
+/// NEVER a `host::write_message`/`read_message` framed copy -- because everything after is
+/// newline-delimited JSON-RPC, exactly what `serve_session`'s `BufReader::lines()` expects on the
+/// service side and what an MCP client writes on this side. Mirrors [`relay_native_host`] ONLY in
+/// lifecycle shape (the `select!` that exits on either side closing; deliberately no
+/// post-`select!` `shutdown().await`, which can hang forever on an already-dead Windows pipe): it
+/// NEVER frames the data phase the way `relay_native_host` does (that wire is framed end-to-end
+/// because it IS the Chrome native-messaging wire; this wire is framed for the hello and the
+/// proof only, then raw).
 ///
 /// The GUID member (H3, ADR-0030 Decision 4): minted ONCE here, as a local variable, before the
 /// hello is built. `relay_adapter` runs exactly once per adapter process (called once from
@@ -124,7 +129,7 @@ pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) 
 /// GUID; a new adapter process mints a new one" with no `OnceLock` or extra plumbing needed.
 pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
     let adapter_endpoint = adapter_endpoint_name(endpoint);
-    let mut stream = connect(&adapter_endpoint).await?;
+    let mut stream = dial_with_self_heal(&adapter_endpoint).await?;
     debug.ipc_note("connected to the service's adapter/control endpoint");
 
     let guid = crate::hub::session::SessionGuid::mint();
@@ -137,6 +142,10 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> R
         .map_err(|e| Error::NativeMessaging(format!("failed to encode the adapter hello: {e}")))?;
     host::write_message(&mut stream, &hello_bytes).await?;
 
+    // Anti-squat (ADR-0030 Decision 8; PINS.md SS5.3): verify the SERVICE's proof before relaying
+    // a single byte of this process's stdio.
+    verify_service_proof(&mut stream, &hello_bytes).await?;
+
     let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
     let mut client_in = tokio::io::stdin();
     let mut client_out = tokio::io::stdout();
@@ -147,6 +156,108 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> R
     }
     debug.ipc_note("adapter relay ended");
     Ok(())
+}
+
+/// Self-heal-aware dial (ADR-0030 Decision 8 amendment; PINS.md SS5.2): a single dial attempt; on
+/// failure, best-effort ask the OS supervisor to start the service
+/// ([`crate::hub::supervisor::start_service`]) exactly once, then retry the dial every
+/// `SELF_HEAL_RETRY_INTERVAL` for up to `SELF_HEAL_RETRY_WINDOW`. If still unreachable, log the
+/// PINNED self-heal failure message and return an error (the process exits non-zero). Tests never
+/// exercise this path -- they spawn `ghostlight service` explicitly so the first dial succeeds.
+async fn dial_with_self_heal(
+    adapter_endpoint: &str,
+) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
+    if let Ok(stream) = dial_once(adapter_endpoint).await {
+        return Ok(stream);
+    }
+    crate::hub::supervisor::start_service();
+    let deadline = tokio::time::Instant::now() + crate::hub::supervisor::SELF_HEAL_RETRY_WINDOW;
+    loop {
+        sleep(crate::hub::supervisor::SELF_HEAL_RETRY_INTERVAL).await;
+        match dial_once(adapter_endpoint).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::error!("{}", crate::hub::supervisor::SELF_HEAL_FAILURE_MESSAGE);
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// Read and verify the SERVICE's anti-squat proof (ADR-0030 Decision 8; PINS.md SS5.3), which
+/// follows the adapter's own hello. Any failure -- a missing/unreadable local `hub-key`, an
+/// unreachable peer, a malformed frame, the wrong role, or a MAC mismatch -- collapses to the
+/// SAME pinned refusal, so a squatter never learns which check caught it.
+async fn verify_service_proof<S>(stream: &mut S, hello_bytes: &[u8]) -> Result<()>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let refuse = || Error::Ipc(crate::hub::antisquat::REFUSAL_MESSAGE.to_string());
+    let key = crate::hub::antisquat::read_hub_key().map_err(|_| refuse())?;
+    let proof_bytes = host::read_message(stream)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(refuse)?;
+    let proof: Value = serde_json::from_slice(&proof_bytes).map_err(|_| refuse())?;
+    let verified = proof.get("role").and_then(Value::as_str)
+        == Some(crate::hub::handshake::ROLE_SERVICE_PROOF)
+        && proof
+            .get("mac")
+            .and_then(Value::as_str)
+            .map(|mac| crate::hub::antisquat::verify_mac_hex(&key, hello_bytes, mac))
+            .unwrap_or(false);
+    if verified {
+        Ok(())
+    } else {
+        tracing::error!("{}", crate::hub::antisquat::REFUSAL_MESSAGE);
+        Err(refuse())
+    }
+}
+
+/// Send the SERVICE's anti-squat proof (ADR-0030 Decision 8; PINS.md SS5.3): the lowercase-hex
+/// HMAC-SHA256 of the EXACT hello bytes just read, keyed by this install's `hub-key` (created
+/// lazily at `hub::run_service` startup). Sent AFTER admitting the hello, BEFORE `serve_session`,
+/// so a proof failure never reaches the governance chokepoint.
+async fn send_service_proof<S>(stream: &mut S, hello_bytes: &[u8]) -> Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let key = crate::hub::antisquat::load_or_create_hub_key().map_err(Error::Io)?;
+    let mac = crate::hub::antisquat::compute_mac_hex(&key, hello_bytes);
+    let proof = json!({
+        "hub": crate::hub::handshake::HUB_PROTO,
+        "role": crate::hub::handshake::ROLE_SERVICE_PROOF,
+        "mac": mac,
+    });
+    let proof_bytes = serde_json::to_vec(&proof)
+        .map_err(|e| Error::NativeMessaging(format!("failed to encode the service-proof: {e}")))?;
+    host::write_message(stream, &proof_bytes).await
+}
+
+/// A single, non-retrying dial attempt at the ADAPTER/CONTROL endpoint (ADR-0030 Decision 8;
+/// PINS.md SS5.2): unlike [`connect`] (which retries for ~30s so ordinary startup timing never
+/// matters to the extension), this makes exactly ONE attempt so [`dial_with_self_heal`] controls
+/// its own bounded retry timing.
+#[cfg(windows)]
+async fn dial_once(endpoint: &str) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    let path = pipe_path(endpoint);
+    ClientOptions::new()
+        .open(&path)
+        .map_err(|e| Error::Ipc(format!("cannot open named pipe {path}: {e}")))
+}
+
+/// Unix variant of [`dial_once`] (see its doc above).
+#[cfg(unix)]
+async fn dial_once(endpoint: &str) -> Result<tokio::net::UnixStream> {
+    use tokio::net::UnixStream;
+    let path = socket_path(endpoint)?;
+    UnixStream::connect(&path)
+        .await
+        .map_err(|e| Error::Ipc(format!("cannot connect to socket {}: {e}", path.display())))
 }
 
 /// Demux one ADAPTER/CONTROL connection (ADR-0030 Decision 1; PINS.md SS1, SS9): read the
@@ -198,6 +309,20 @@ async fn handle_adapter_connection<S>(
                     return;
                 }
             };
+            // H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): per-peer (never global) mint
+            // quota, checked BEFORE admission proceeds. Held for the connection's whole lifetime
+            // (including a Refused admission below) so the slot frees only once this connection
+            // genuinely ends -- the cap counts CONCURRENT sessions, not lifetime mints.
+            let _mint_guard = match crate::hub::try_mint(&ctx.mint_quota, &peer_cred.user) {
+                Ok(guard) => guard,
+                Err(message) => {
+                    tracing::warn!(
+                        message = %message,
+                        "adapter/control connection refused: per-peer mint quota exceeded"
+                    );
+                    return;
+                }
+            };
             let admission = ctx
                 .session_registry
                 .lock()
@@ -205,6 +330,17 @@ async fn handle_adapter_connection<S>(
                 .admit(&guid, &peer_cred);
             match admission {
                 crate::hub::session::Admission::Admitted => {
+                    // Anti-squat (ADR-0030 Decision 8; PINS.md SS5.3): prove this service's
+                    // identity to the adapter AFTER admitting the hello, BEFORE serve_session --
+                    // a proof failure (e.g. the per-install hub-key could not be prepared) must
+                    // never reach the governance chokepoint.
+                    if let Err(e) = send_service_proof(&mut stream, &hello_bytes).await {
+                        tracing::warn!(
+                            error = %e,
+                            "could not prove this service's identity to the connecting adapter; refusing"
+                        );
+                        return;
+                    }
                     if let Err(e) =
                         crate::transport::mcp::server::serve_session(stream, ctx, guid).await
                     {

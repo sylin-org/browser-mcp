@@ -275,15 +275,20 @@ fn write_user_value(key: &str, value: &serde_json::Value) -> crate::Result<std::
     Ok(path)
 }
 
-fn run_set(
+/// Lock-check, validate, and write ONE key to the user layer (PINS.md CS7, `docs/tasks/console`):
+/// the shared body of [`run_set`], pulled out so the Console (`src/hub/webapi.rs`, K5) writes
+/// through the IDENTICAL path the CLI does -- never a second implementation of "write one key to
+/// the user layer". Behavior is byte-identical to what `run_set` did inline before this
+/// extraction: look up the key, re-resolve current state, refuse a locked key before any parsing
+/// or file access, validate the caller-supplied value against the key's type/constraint, then
+/// write it.
+pub(crate) fn set_user_value(
     key: &str,
-    raw_value: &str,
+    value: serde_json::Value,
     domain_pattern_valid: fn(&str) -> bool,
-) -> crate::Result<()> {
+) -> crate::Result<std::path::PathBuf> {
     let def = key_def(key).ok_or_else(|| unknown_key_error(key))?;
 
-    // Lock check happens before any parsing or file access: a locked key is refused even if
-    // the requested value equals the org value, and nothing is read or written.
     let (resolution, _warnings, _loaded_policy) = resolve_with_warnings(domain_pattern_valid)?;
     let resolved = resolution.get(key).expect("registered key resolves");
     if resolved.locked {
@@ -293,12 +298,22 @@ fn run_set(
         )));
     }
 
-    let parsed = parse_cli_value(def, raw_value)
-        .map_err(|detail| crate::Error::Config(format!("invalid value for {key}: {detail}")))?;
-    def.parse_value(&parsed, domain_pattern_valid)
+    def.parse_value(&value, domain_pattern_valid)
         .map_err(|e| crate::Error::Config(format!("invalid value for {key}: {e}")))?;
 
-    let path = write_user_value(key, &parsed)?;
+    write_user_value(key, &value)
+}
+
+fn run_set(
+    key: &str,
+    raw_value: &str,
+    domain_pattern_valid: fn(&str) -> bool,
+) -> crate::Result<()> {
+    let def = key_def(key).ok_or_else(|| unknown_key_error(key))?;
+    let parsed = parse_cli_value(def, raw_value)
+        .map_err(|detail| crate::Error::Config(format!("invalid value for {key}: {detail}")))?;
+
+    let path = set_user_value(key, parsed.clone(), domain_pattern_valid)?;
 
     let compact = serde_json::to_string(&parsed).expect("value serializes");
     println!("{key} = {compact}");
@@ -479,6 +494,29 @@ mod tests {
         // Simulate the refusal path: no write attempted.
         drop(std::fs::remove_dir_all(&dir));
         assert!(!path.exists());
+    }
+
+    /// PINS.md CS7 (`docs/tasks/console`): `set_user_value` is reachable as a real,
+    /// independently-callable `pub(crate)` function (not just inlined dead code inside
+    /// `run_set`) and refuses an unregistered key with the SAME `unknown_key_error` `run_set`
+    /// itself would surface, BEFORE ever calling `resolve_with_warnings` -- the one branch of
+    /// `set_user_value` this module can exercise for real without touching the real,
+    /// non-injectable `user_config_path()`/`org_policy_path()` (the lock-refusal and success
+    /// paths both call `resolve_with_warnings` first, which reads those real, fixed platform
+    /// paths; testing them safely needs the path-isolation K5 -- `docs/tasks/console/
+    /// K5-enable-remote-connections.md` -- addresses for the Console's own write action; this
+    /// task does not attempt that isolation for the CLI's own end-to-end path).
+    #[test]
+    fn set_user_value_rejects_an_unregistered_key_before_touching_any_file() {
+        let err = set_user_value("totally.unregistered.key", json!(true), |_| true)
+            .expect_err("an unregistered key must be refused");
+        match err {
+            crate::Error::Config(msg) => assert!(
+                msg.contains("unknown config key 'totally.unregistered.key'"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Error::Config, got {other:?}"),
+        }
     }
 
     fn with_temp_file<F: FnOnce(&std::path::Path)>(name: &str, initial: Option<&str>, f: F) {

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Cross-platform process-liveness primitives for lifecycle hygiene (ADR-0029).
 //!
-//! The mcp-server role must end when the MCP client that spawned it goes away, even when the
-//! platform does not deliver a stdin EOF (Windows leaves the child's ReadFile parked forever when
-//! the parent is killed rather than closed). The parent-death watchdog polls these primitives; the
+//! The adapter role (ADR-0030 Decision 8 re-scope, PINS.md SS5.5) must end when the MCP client
+//! that spawned it goes away, even when the platform does not deliver a stdin EOF (Windows leaves
+//! the child's ReadFile parked forever when the parent is killed rather than closed). The
+//! parent-death watchdog polls these primitives; the
 //! `doctor` diagnosis and its `--fix` reaper use them to tell an exited process from a hung one and
 //! to reap only genuinely orphaned sessions.
 //!

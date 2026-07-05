@@ -1,50 +1,98 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! End-to-end MCP protocol checks: spawn the binary as an mcp-server and drive it over stdio.
+//! End-to-end MCP protocol checks: spawn the standalone SERVICE + a thin ADAPTER (ADR-0030
+//! Decision 8 amendment; movable harness at H6, PINS.md/BOOTSTRAP "only delight is sacred") and
+//! drive the ADAPTER over stdio.
 //!
 //! Most tests here connect no extension/native-host, so `tools/call` waits out the bounded
 //! handshake window and returns an MCP tool error result (the request/response bridge itself is
 //! covered by the `browser` and `ipc` unit tests). One test below connects a fake extension over
-//! the real IPC to exercise the late-connect / truthful-wait-note path. Each spawned binary gets
-//! a unique IPC endpoint so the tests never contend for one.
+//! the real IPC (to the EXTENSION endpoint the SERVICE owns) to exercise the late-connect /
+//! truthful-wait-note path. Each spawned service pair gets a unique IPC endpoint so the tests
+//! never contend for one.
+
+mod support;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// Spawn the binary (with an isolated IPC endpoint), send each request as a line, close stdin, and
-/// collect the response lines.
-fn drive(requests: &[Value]) -> Vec<Value> {
-    let endpoint = format!(
+fn unique_endpoint() -> String {
+    format!(
         "ghostlight-it-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
+    )
+}
 
-    let mut stdin = child.stdin.take().expect("stdin");
+/// Spawn a SERVICE + ADAPTER pair (with an isolated IPC endpoint), send each request as a line to
+/// the ADAPTER's stdin, and collect exactly one reply per `id`-bearing request (a notification, no
+/// `id` key at all, gets none). Reads all expected replies BEFORE closing stdin: `relay_adapter`
+/// races its two copy directions (PINS.md SS1 pin 3's lifecycle-shape mirror of
+/// `relay_native_host`), so closing the client's write side early would tear the whole relay down
+/// -- and this process's own reply -- before a still-in-flight call (e.g. the ~5s
+/// extension-handshake wait below) is delivered; keeping stdin open until every expected reply has
+/// arrived avoids that race entirely, mirroring this file's own
+/// `tools_call_waits_for_a_late_extension_and_notes_the_wait` pattern. Kills the service in
+/// teardown.
+fn drive(requests: &[Value]) -> Vec<Value> {
+    drive_with_manifest(None, requests)
+}
+
+/// Like [`drive`], but optionally launches the SERVICE under a schema-3 `--manifest` (PINS.md
+/// SS5.1: `--manifest` is forwarded to the SERVICE; the ADAPTER ignores it). `None` is the
+/// all-open posture (no `--manifest` argument).
+fn drive_with_manifest(manifest: Option<&str>, requests: &[Value]) -> Vec<Value> {
+    let endpoint = unique_endpoint();
+    let manifest_path = manifest.map(|body| {
+        let path = std::env::temp_dir().join(format!(
+            "ghostlight-mcp-protocol-{}-{}.json",
+            std::process::id(),
+            SEQ.load(Ordering::Relaxed)
+        ));
+        std::fs::write(&path, body).unwrap();
+        path
+    });
+    let manifest_uri = manifest_path.as_ref().map(|path| {
+        // `file://` source form: forward slashes, and a leading `/` before a Windows drive letter.
+        let forward = path.to_string_lossy().replace('\\', "/");
+        match forward.strip_prefix('/') {
+            Some(rest) => format!("file:///{rest}"),
+            None => format!("file:///{forward}"),
+        }
+    });
+
+    let mut service = support::spawn_service_with_manifest(&endpoint, manifest_uri.as_deref());
+    let mut adapter = support::spawn_adapter(&endpoint);
+
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
     for req in requests {
         stdin
             .write_all(serde_json::to_string(req).unwrap().as_bytes())
             .unwrap();
         stdin.write_all(b"\n").unwrap();
     }
-    drop(stdin); // EOF -> the server loop ends
 
-    let stdout = child.stdout.take().expect("stdout");
-    let responses: Vec<Value> = BufReader::new(stdout)
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).expect("each stdout line is JSON"))
-        .collect();
-    child.wait().expect("wait for child");
+    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let mut responses = Vec::with_capacity(expected);
+    for _ in 0..expected {
+        let line = lines
+            .next()
+            .expect("the adapter's stdout closed before every expected reply arrived")
+            .expect("read a stdout line");
+        responses.push(serde_json::from_str(&line).expect("each stdout line is JSON"));
+    }
+
+    drop(stdin);
+    let _ = adapter.wait();
+    let _ = service.kill();
+    let _ = service.wait();
+    if let Some(path) = &manifest_path {
+        std::fs::remove_file(path).ok();
+    }
     responses
 }
 
@@ -143,57 +191,6 @@ fn explain_is_advertised_last_and_answers_with_no_extension_attached() {
         ),
         "explain's response lists its own row last: {text}"
     );
-}
-
-/// Like [`drive`], but optionally launches the server under a schema-3 `--manifest` (written to a
-/// temp file and cleaned up after). `None` is the all-open posture (no `--manifest` argument).
-fn drive_with_manifest(manifest: Option<&str>, requests: &[Value]) -> Vec<Value> {
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let endpoint = format!("ghostlight-it-{}-{}", std::process::id(), seq);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ghostlight"));
-    cmd.env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let manifest_path = manifest.map(|body| {
-        let path = std::env::temp_dir().join(format!(
-            "ghostlight-mcp-protocol-{}-{}.json",
-            std::process::id(),
-            seq
-        ));
-        std::fs::write(&path, body).unwrap();
-        path
-    });
-    if let Some(path) = &manifest_path {
-        // `file://` source form: forward slashes, and a leading `/` before a Windows drive letter.
-        let forward = path.to_string_lossy().replace('\\', "/");
-        let uri = match forward.strip_prefix('/') {
-            Some(rest) => format!("file:///{rest}"),
-            None => format!("file:///{forward}"),
-        };
-        cmd.arg("--manifest").arg(uri);
-    }
-    let mut child = cmd.spawn().expect("spawn ghostlight");
-
-    let mut stdin = child.stdin.take().expect("stdin");
-    for req in requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-    drop(stdin); // EOF -> the server loop ends
-
-    let stdout = child.stdout.take().expect("stdout");
-    let responses: Vec<Value> = BufReader::new(stdout)
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).expect("each stdout line is JSON"))
-        .collect();
-    child.wait().expect("wait for child");
-    if let Some(path) = &manifest_path {
-        std::fs::remove_file(path).ok();
-    }
-    responses
 }
 
 /// Run `explain` under a given manifest posture and return its response text, asserting along the
@@ -319,22 +316,13 @@ fn malformed_method_and_null_id_follow_jsonrpc_rules() {
 
 #[test]
 fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
-    let endpoint = format!(
-        "ghostlight-it-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
+    let endpoint = unique_endpoint();
+    let mut service = support::spawn_service(&endpoint);
+    let mut adapter = support::spawn_adapter(&endpoint);
 
     // Unlike `drive`, stdin is kept open for the whole test: the tools/call response only
     // arrives after the fake extension below connects, several hundred ms into the test.
-    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com"}}}),
@@ -347,10 +335,11 @@ fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
     }
 
     // Fake extension: connects late (after the tools/call is already queued and waiting) over
-    // the real IPC, reads the one framed tool_request, and answers it. Runs on its own thread
-    // with its own runtime, mirroring the fake-extension pattern in `src/browser.rs` and
-    // `src/native/ipc.rs`, since this test file (like its other tests) drives the child
-    // synchronously.
+    // the real IPC, to the EXTENSION endpoint the SERVICE owns (the plain `endpoint`, unrelated
+    // to the `-adapter` endpoint the adapter dials), reads the one framed tool_request, and
+    // answers it. Runs on its own thread with its own runtime, mirroring the fake-extension
+    // pattern in `src/browser.rs` and `src/native/ipc.rs`, since this test file (like its other
+    // tests) drives the children synchronously.
     let fake_endpoint = endpoint.clone();
     let fake_ext = std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
@@ -379,7 +368,7 @@ fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
         });
     });
 
-    let stdout = child.stdout.take().expect("stdout");
+    let stdout = adapter.stdout.take().expect("adapter stdout");
     let mut lines = BufReader::new(stdout).lines();
 
     let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -412,5 +401,7 @@ fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
 
     fake_ext.join().expect("fake-extension thread panicked");
     drop(stdin);
-    let _ = child.wait();
+    let _ = adapter.wait();
+    let _ = service.kill();
+    let _ = service.wait();
 }

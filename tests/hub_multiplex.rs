@@ -8,7 +8,20 @@
 //! 2. `one_kill_emits_one_audit_record_per_live_session` -- the kill-hook fan-out (Decision 7)
 //!    writes exactly one `session_killed` record per live session's subject.
 //! 3. `adapter_endpoint_two_phase_wire_round_trips` -- the ADAPTER/CONTROL endpoint's wire is
-//!    framed for the session-hello ONLY, then raw newline-delimited JSON-RPC (PINS.md SS1 pin 3).
+//!    framed for the session-hello (and, since H6, the SERVICE's anti-squat proof) ONLY, then raw
+//!    newline-delimited JSON-RPC (PINS.md SS1 pin 3, SS5.3).
+//!
+//! D (H6, forced): `adapter_endpoint_two_phase_wire_round_trips` is not named by H6's own task
+//! file, but H6's argv-dispatch reshape makes a bare `ghostlight` invocation ALWAYS the thin
+//! ADAPTER (never a role election), so the bare-invocation-becomes-the-service assumption this
+//! test's spawn choreography relied on no longer holds; separately, H6 also inserts a NEW framed
+//! anti-squat proof message between the hello and the raw phase, which this test's own hand-rolled
+//! wire walk must now consume. Updated to spawn `ghostlight service` (via `support::spawn_service`)
+//! and to read+consume that one new framed message, preserving every original assertion verbatim
+//! (the two-phase framing shape, the raw reply's `id` echo). Impact on later tasks: none -- H7/H8's
+//! own tests should follow the SAME `support::spawn_service`/`spawn_adapter` pattern.
+
+mod support;
 
 use ghostlight::governance::audit::Recorder;
 use ghostlight::governance::dispatch::Governance;
@@ -16,7 +29,6 @@ use ghostlight::governance::ports::AuditSink;
 use ghostlight::native::host;
 use ghostlight::transport::executor::Browser;
 use serde_json::{json, Value};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -191,10 +203,12 @@ async fn one_kill_emits_one_audit_record_per_live_session() {
     }
 }
 
-/// PINS.md SS1 pin 3: the ADAPTER/CONTROL endpoint's wire is framed for the session-hello ONLY;
-/// everything after it is RAW newline-delimited JSON-RPC. A framed data copy would corrupt every
-/// multiplexed session's JSON-RPC, so this fences exactly that trap. The spawned service's own
-/// stdio is its first session (kept open, untouched, for the whole test); no fake extension is
+/// PINS.md SS1 pin 3 + SS5.3: the ADAPTER/CONTROL endpoint's wire is framed for the session-hello
+/// and (since H6) the SERVICE's anti-squat proof ONLY; everything after is RAW newline-delimited
+/// JSON-RPC. A framed data copy would corrupt every multiplexed session's JSON-RPC, so this fences
+/// exactly that trap. H6 (forced, see the module doc's "D" note): spawns the real, standalone
+/// `ghostlight service` (`support::spawn_service`) instead of a bare invocation (H6's argv dispatch
+/// makes a bare invocation ALWAYS the thin ADAPTER, never a role election); no fake extension is
 /// needed since `initialize` never calls the browser.
 #[test]
 fn adapter_endpoint_two_phase_wire_round_trips() {
@@ -203,19 +217,7 @@ fn adapter_endpoint_two_phase_wire_round_trips() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
-
-    // Keep the service's OWN stdio session open for the whole test: closing it would end its
-    // first session and (since this process IS the service) exit the whole process, taking the
-    // adapter/control endpoint down with it.
-    let _stdin = child.stdin.take();
-    let _stdout = child.stdout.take();
+    let mut service = support::spawn_service(&endpoint);
 
     let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
     rt.block_on(async {
@@ -235,6 +237,21 @@ fn adapter_endpoint_two_phase_wire_round_trips() {
         host::write_message(&mut stream, &serde_json::to_vec(&hello).unwrap())
             .await
             .expect("write the framed session-hello");
+
+        // H6 (PINS.md SS5.3): the SERVICE now sends ONE more FRAMED message -- its anti-squat
+        // proof -- before the raw phase begins. Consume it here (a well-formed service-proof
+        // frame); its MAC verification is exercised for real by
+        // `tests/hub_lifecycle.rs`'s anti-squat tests, not this one.
+        let proof_bytes = host::read_message(&mut stream)
+            .await
+            .expect("read the framed service-proof")
+            .expect("the service sends a service-proof frame before the raw phase");
+        let proof: Value =
+            serde_json::from_slice(&proof_bytes).expect("the proof frame is well-formed JSON");
+        assert_eq!(
+            proof["role"], "service-proof",
+            "the framed message after the hello is the service-proof: {proof:?}"
+        );
 
         // Phase 2: RAW newline-delimited JSON-RPC -- never framed.
         let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
@@ -260,6 +277,6 @@ fn adapter_endpoint_two_phase_wire_round_trips() {
         );
     });
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = service.kill();
+    let _ = service.wait();
 }

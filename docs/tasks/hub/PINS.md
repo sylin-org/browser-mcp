@@ -134,23 +134,144 @@ field, which is separate from the `client` field. No new key; the 14-key order i
   small interleaved call: PINNED at `< 2s` (a tiny call must complete while a chunked large payload
   streams).
 
-## SS5 -- H6 constants
+## SS5 -- H6 constants (REWRITTEN 2026-07-04 for the always-ready-service amendment)
 
-- `pub const IDLE_GRACE: Duration = Duration::from_secs(30);` (the service exits only after no
-  sessions AND the extension link gone for this window).
-- Anti-squat: the service proves possession of a per-install secret. PINNED shape: the secret is 32
-  random bytes at `<data-dir>/hub-key` (0600 / DPAPI-per-user), generated on first service start; on
-  connect the service sends `{"hub":1,"role":"service-proof","mac":<hex hmac-sha256(secret, the
-  adapter's hello bytes)>}` and the adapter verifies it reads the same file. On mismatch the adapter
-  aborts with PINNED text `refusing to connect: the Ghostlight service on this endpoint is not the
-  one this user installed`. (If a task cannot read the same file, that is the impostor case.)
-- `data-dir`: the existing `%ProgramData%\ghostlight` / platform equivalent already used by the
-  debug/session files -- RE-READ `src/debug.rs` / the session-dir helper; do not invent a new dir.
-- Debug/session role labels: the SERVICE keeps the existing `"mcp-server"` role label (so `doctor`'s
-  session listing and its parsing are undisturbed); the ADAPTER gets a new `"adapter"` label at its
-  `build_debug_sink` call site. `doctor::reap` (doctor.rs:600; role filter at doctor.rs:86/465) is
-  re-scoped to reap orphaned `"adapter"` sessions (parent editor dead), NEVER the service (idle-grace
-  only, never parent-reaped).
+ADR-0030 Decision 8 was amended (see its Provenance "always-ready-service amendment"). The service
+is a STANDALONE process launched by argv (`ghostlight service`), never an in-process/promoted
+service and never an in-editor spawned child; every MCP invocation is a thin ADAPTER. The old
+on-demand-spawn / `CREATE_BREAKAWAY_FROM_JOB` / `IsProcessInJob` / promotion mechanism is DELETED
+(never built). These pins replace the old SS5 in full.
+
+### SS5.1 -- Role dispatch by argv (`src/main.rs`, `src/hub/mod.rs`)
+
+- NEW clap subcommand on `Command` (RE-READ the enum): a unit variant `Service` with doc
+  `/// Run the persistent Ghostlight Hub service (owns the browser link; multiplexes clients).`
+- `main()`'s match gains ONE arm, mirroring the existing `command: None` arm:
+  `Cli { command: Some(Command::Service), manifest, debug: debug_flag } => ghostlight::hub::run_service(manifest, debug_flag || debug_env)?,`
+  The `command: None` arm KEEPS calling `ghostlight::hub::run_mcp_server(manifest, debug_flag || debug_env)` (now the adapter). `--manifest`/`--debug` are the existing top-level `Cli` fields (usage: `ghostlight --manifest <src> service`); the `chrome-extension://` relay detection at the top of `main` is UNCHANGED.
+- `pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> anyhow::Result<()>` is
+  RESHAPED into the thin ADAPTER (signature UNCHANGED so `main.rs`'s None arm needs no edit):
+  `role::set_role(role::Role::Adapter)` first; if `manifest.is_some() || std::env::var_os("GHOSTLIGHT_MANIFEST").is_some()`, emit exactly the one-line warning `tracing::warn!("a --manifest on a client invocation is ignored; the running Ghostlight service's policy governs all sessions")` and load NO policy; `build_debug_sink(debug_on, "adapter")`; `crate::doctor::sweep_orphans()` (now reaps orphaned adapters, SS5.5); `let parent = crate::proc::parent();`; build the runtime and `run_as_adapter(&endpoint, sink, parent).await`; `std::process::exit(code)`. It NEVER claims the endpoint, loads policy, builds a `Browser`, or builds a `ServiceContext`.
+- `pub fn run_service(manifest: Option<String>, debug_on: bool) -> anyhow::Result<()>` is NEW.
+  `role::set_role(role::Role::Service)` first; resolve the manifest EXACTLY as today's `run_mcp_server` does (`manifest.or_else(|| std::env::var("GHOSTLIGHT_MANIFEST").ok())`, then `source::load_policy(...)`, fatal on selected-but-unreadable); `build_debug_sink(debug_on, "mcp-server")` (KEEP the `"mcp-server"` label so `doctor`'s health anchor still finds the service); build the runtime; `block_on(run_service_loop(...))`; `std::process::exit(code)`. It NEVER captures a parent, NEVER runs `watchdog::wait_until_orphaned`, NEVER calls `sweep_orphans`, and NEVER serves its own stdio as a session.
+- `run_service_loop` (name at author's discretion; the async body of `run_service`): claim the
+  endpoint via `ipc::claim_adapter_endpoint(&endpoint)`. `Err(crate::Error::SessionBusy)` -> log `tracing::info!("a Ghostlight service is already running on this endpoint; exiting")` and return `0` (single-instance guard). `Err(e)` -> log and return `1`. On `Ok(listener)`: build `Browser::with_debug(sink)`; `tokio::spawn(ipc::serve(browser.clone(), &endpoint))` (UNCHANGED extension endpoint); build `ServiceContext::from_startup(browser, loaded_policy, user_source)?` ONCE; `tokio::spawn(ipc::serve_adapters(ctx.clone(), listener))`; then run the idle-grace watcher (SS5.4) as the returning future.
+
+### SS5.2 -- Thin adapter relay + supervisor self-heal (`src/hub/mod.rs`, `src/hub/supervisor.rs`, `src/transport/native/ipc.rs`)
+
+- `run_as_adapter(endpoint: &str, sink: DebugSink, parent: Option<crate::proc::ProcId>) -> i32`:
+  if `Some(parent)`, `tokio::spawn` the ADR-0029 watchdog exactly as today's `run_as_service` did
+  (`watchdog::wait_until_orphaned(parent).await` then signal shutdown) so the ADAPTER dies with its
+  editor; then run `ipc::relay_adapter(endpoint, &sink)` and return its code. (The watchdog + reaper
+  now live on the ADAPTER; the service runs neither.)
+- NEW module `src/hub/supervisor.rs` (add `pub mod supervisor;` to `src/hub/mod.rs`). PINNED
+  identifiers (the H9 installer registers these SAME names):
+  - Windows Task Scheduler task name: `pub const SUPERVISOR_TASK_NAME: &str = "Ghostlight Service";`
+  - macOS launchd label: `pub const SUPERVISOR_LABEL: &str = "org.sylin.ghostlight.service";`
+  - Linux systemd --user unit: `pub const SUPERVISOR_UNIT: &str = "ghostlight.service";`
+  - `pub fn supervisor_start_command() -> Option<(String, Vec<String>)>` (PURE; `#[cfg]`-split;
+    unit-tested for the exact program+args, NEVER executed in a test):
+    - Windows: `Some(("schtasks".into(), vec!["/run".into(), "/tn".into(), SUPERVISOR_TASK_NAME.into()]))`
+    - macOS: `Some(("launchctl".into(), vec!["kickstart".into(), "-k".into(), format!("gui/{}/{}", unsafe { libc::getuid() }, SUPERVISOR_LABEL)]))`
+    - Linux (non-macOS unix): `Some(("systemctl".into(), vec!["--user".into(), "start".into(), SUPERVISOR_UNIT.into()]))`
+  - `pub fn start_service()`: FIRST line `crate::hub::role::assert_adapter_role("start_service");`
+    (SS8 seam; a SERVICE must never trigger a service start). Then best-effort run
+    `supervisor_start_command()` via `std::process::Command` (spawn + wait; ignore any failure --
+    it is a hint, not a guarantee). This function is the text-scan target of the H6 role-marker test.
+- Self-heal in `ipc::relay_adapter` (RE-READ its current connect-then-relay shape): before the raw
+  relay, DIAL the adapter/control endpoint. On the FIRST dial failure (service down), call
+  `crate::hub::supervisor::start_service()` once, then RETRY the dial every
+  `SELF_HEAL_RETRY_INTERVAL` for up to `SELF_HEAL_RETRY_WINDOW`. If still unreachable, log the PINNED
+  message and return without relaying (the process exits non-zero):
+  - `pub const SELF_HEAL_RETRY_WINDOW: Duration = Duration::from_secs(3);`
+  - `pub const SELF_HEAL_RETRY_INTERVAL: Duration = Duration::from_millis(200);`
+  - PINNED self-heal failure message (verbatim): `the Ghostlight service is not running and could not be started automatically; start it with 'ghostlight service' (or reinstall to enable auto-start)`
+  (Tests never exercise the self-heal path -- they spawn `ghostlight service` explicitly so the
+  first dial succeeds. Only `supervisor_start_command()` is unit-tested, as a pure string.)
+
+### SS5.3 -- Anti-squat: per-install secret + HMAC proof (`src/hub/supervisor.rs` or a new `src/hub/antisquat.rs`; wired in `ipc.rs`)
+
+- Secret: 32 random bytes (`getrandom::getrandom`) at `crate::debug::log_dir()?/hub-key`. RE-READ
+  `src/debug.rs::log_dir()`: it is the PER-USER dir `dirs::data_local_dir()/ghostlight`
+  (`%LOCALAPPDATA%\ghostlight` on Windows, `~/.local/share/ghostlight` on Linux,
+  `~/Library/Application Support/ghostlight` on macOS). This CORRECTS the old SS5's `%ProgramData%`
+  (machine-wide) mismatch: the secret is PER-USER. Do NOT invent a new dir. Created lazily on the
+  first `run_service` start if absent; on Unix set mode `0o600` after write; on Windows the per-user
+  `%LOCALAPPDATA%` ACL suffices (NO DPAPI -- it adds no same-user defense and no dep). Threat scope:
+  the secret defeats a NAIVE or CROSS-USER squatter; a determined same-user process can read any
+  same-user file, so this is defense-in-depth, not a same-user sandbox (stated in Decision 8).
+- Two-phase-plus-proof wire (extends SS1 pin 3; RE-READ SS1). Order, all framed via
+  `host::write_message`/`host::read_message` EXCEPT the final raw phase:
+  1. ADAPTER -> SERVICE: the framed session-hello `{"hub":1,"role":"adapter","guid":"<uuid-v4>"}`
+     (UNCHANGED from H3). The adapter KEEPS the exact serialized hello bytes it sent.
+  2. SERVICE -> ADAPTER (NEW, in `handle_adapter_connection`, AFTER reading + admitting the hello,
+     BEFORE `serve_session`): one framed message
+     `{"hub":1,"role":"service-proof","mac":"<hex>"}` where `<hex>` is the lowercase-hex
+     HMAC-SHA256 of the EXACT hello bytes it read (item 1's payload) keyed by the `hub-key` bytes.
+     `ROLE_SERVICE_PROOF = "service-proof"` (PINNED; add to `src/hub/handshake.rs` beside
+     `ROLE_ADAPTER`/`ROLE_CONTROL`).
+  3. ADAPTER (NEW, in `relay_adapter`, AFTER sending its hello, BEFORE the raw relay): read one
+     framed message; require `role == "service-proof"`; recompute HMAC-SHA256 over its OWN sent
+     hello bytes keyed by the `hub-key` bytes IT reads; verify with `hmac::Mac::verify_slice`
+     (constant-time) against the hex-decoded `mac`. On ANY failure (missing/unreadable key, wrong
+     role, malformed frame, MAC mismatch) ABORT: log the PINNED text `refusing to connect: the Ghostlight service on this endpoint is not the one this user installed` and return WITHOUT relaying.
+  `read_message` is `read_exact` with no buffer-ahead (SS1 pin 3), so no bytes are lost transitioning
+  to the raw phase. HMAC keyed by the raw 32 key bytes over the raw hello bytes -- both sides hash the
+  identical byte string, so a matching key yields a matching MAC.
+
+### SS5.4 -- Idle-grace shutdown (`src/hub/mod.rs`, `src/transport/mcp/server.rs`)
+
+- `pub const IDLE_GRACE: Duration = Duration::from_secs(30);` (the service exits only after zero live
+  sessions AND the extension link gone, continuously, for this window).
+- `pub const IDLE_POLL: Duration = Duration::from_secs(1);` (author-pinned; not in ADR-0030).
+- `ServiceContext` (`src/hub/mod.rs`) gains ONE field, added the SAME way `session_registry`/
+  `owned_tabs`/`mint_quota` were: `pub live_sessions: Arc<std::sync::atomic::AtomicUsize>`, built in
+  `from_startup` as `Arc::new(AtomicUsize::new(0))`. (Existing direct `ServiceContext` constructions
+  in `tests/hub_isolation.rs` and `tests/hub_queue.rs` `build_ctx` each need one added line
+  `live_sessions: Arc::new(AtomicUsize::new(0))` -- a compile-forced deviation, log it like H5's D1.)
+- `serve_session` (`src/transport/mcp/server.rs`) increments `ctx.live_sessions` at entry and
+  decrements at exit via a small RAII guard (so EVERY session -- adapter now, web at H8 -- is counted
+  at the ONE chokepoint). This adds NO output and does NOT touch the frozen
+  `notifications/tools/list_changed` line.
+- Idle-grace watcher (the returning future of `run_service_loop`):
+  ```
+  let mut idle_for = Duration::ZERO;
+  loop {
+      tokio::time::sleep(IDLE_POLL).await;
+      let idle = ctx.live_sessions.load(Ordering::Relaxed) == 0 && !ctx.browser.is_connected();
+      idle_for = if idle { idle_for + IDLE_POLL } else { Duration::ZERO };
+      if idle_for >= IDLE_GRACE { return 0; }
+  }
+  ```
+  (`Browser::is_connected()` is the existing extension-link probe; RE-READ its name.)
+
+### SS5.5 -- Debug labels + doctor reap re-scope (`src/hub/mod.rs`, `src/doctor.rs`, `src/proc.rs`, `src/transport/watchdog.rs`)
+
+- Debug/session role labels: SERVICE -> `build_debug_sink(debug, "mcp-server")` (KEEP; `doctor`'s
+  health anchor and its status parser look for a `"mcp-server"` session with the extension connected,
+  which is now the standalone service). ADAPTER -> `build_debug_sink(debug, "adapter")` (NEW label).
+  native-host stays `"native-host"`.
+- `doctor::reap` and orphan detection RE-SCOPE from `"mcp-server"` to `"adapter"` (RE-READ current
+  line numbers; as-of-authoring the reap filters are at doctor.rs:561 in `orphaned_server_pids`
+  (`s.role == "mcp-server" && classify(s) == Liveness::Orphaned`) and doctor.rs:609 in `reap`
+  (`s.role != "mcp-server" || s.pid == me`) and the reap-report text at doctor.rs:147
+  (`"reaped ... orphaned mcp-server session(s)"`) and the module doc at doctor.rs:20). Change ONLY
+  the REAP-target filters and text to `"adapter"`; the HEALTH-anchor + display filters that find the
+  SERVICE (doctor.rs:86 `NewestServer`, doctor.rs:465/481 display) STAY `"mcp-server"`. Net: the
+  reaper reaps orphaned ADAPTERS (parent editor dead), NEVER the service (which has no client parent
+  and idle-graces).
+- `src/proc.rs` and `src/transport/watchdog.rs`: update ONLY the module-doc narrative from
+  "the mcp-server role" to "the adapter role" (the parent-death lifecycle now belongs to the
+  adapter). NO API change: `ProcId`/`parent`/`orphaned`/`pid_exists`/`is_alive`/`creation_time`/
+  `terminate` and `wait_until`/`wait_until_orphaned` are UNCHANGED (the adapter watchdog + doctor
+  reap still use them). Keep every existing `proc`/`watchdog` inline test green and unmodified.
+
+### SS5.6 -- Dependencies (`Cargo.toml`)
+
+- ADD (additive; no version bump of an existing dep): `hmac = "0.12"`, `sha2 = "0.10"`,
+  `getrandom = "0.2"`. Use `hmac::Mac::verify_slice` for constant-time MAC verification (no `subtle`).
+- Do NOT add any `windows-sys` job-object / breakaway feature (`Win32_System_JobObjects`,
+  `Win32_Security_Cryptography`): the breakaway mechanism is DELETED, not built.
 
 ## SS6 -- H7 group request
 
@@ -182,12 +303,13 @@ field, which is separate from the `client` field. No new key; the 14-key order i
 ## SS8 -- Role marker + fail-loud invariant assertions (shared by H3, H6; added 2026-07-04)
 
 The process's role (Decision 1: SERVICE won the ADAPTER/CONTROL endpoint claim, or ADAPTER lost it),
-once learned, is recorded ONCE in a single hub-owned marker and asserted at the two seams where a
-mismatch would mean the SoC boundary already failed elsewhere: the governance chokepoint (must only
-ever run as SERVICE) and the service-spawn path (must only ever run as ADAPTER, H6). This is a
+once learned (by argv: `service` subcommand -> SERVICE, bare -> ADAPTER), is recorded ONCE in a
+single hub-owned marker and asserted at the two seams where a mismatch would mean the SoC boundary
+already failed elsewhere: the governance chokepoint (must only ever run as SERVICE) and the
+supervisor-start / self-heal path (`start_service`, must only ever run as ADAPTER, H6). This is a
 fail-loud backstop, NOT a substitute for the structural separation (the ADAPTER's code never calls
-governance; the SERVICE's code never calls spawn) -- it exists so a future accidental breach of that
-separation crashes immediately and loudly instead of silently misbehaving. This assertion is a no-op
+governance; the SERVICE's code never calls the supervisor-start path) -- it exists so a future
+accidental breach of that separation crashes immediately and loudly instead of silently misbehaving. This assertion is a no-op
 (no output, no behavior change) whenever the role is already correct, so it does not affect the
 all-open byte-identity invariant.
 
@@ -215,9 +337,10 @@ all-open byte-identity invariant.
   name>")` as the FIRST line of the governance chokepoint (RE-READ H2's landed `serve_session` /
   `handle_tools_call` to find the single function every call path enters first; pass that function's
   own name as `what`).
-- H6 calls `assert_adapter_role("<the spawn-on-demand function's own name>")` as the FIRST line of
-  the spawn-on-demand function it builds (Required behavior item 1), before any process-spawn call;
-  pass that function's own name as `what`.
+- H6 calls `assert_adapter_role("start_service")` as the FIRST line of `src/hub/supervisor.rs`'s
+  `start_service` fn (SS5.2), before the supervisor-start command runs -- a SERVICE must never
+  trigger a service start. (The old "spawn-on-demand" seam is gone; the amended Decision 8 has no
+  in-editor spawn, so this is the sole ADAPTER-only lifecycle seam.)
 - PINNED unit tests (transcribe verbatim; pure, touch no global `OnceLock`, so they cannot leak state
   into other tests) in `src/hub/role.rs`'s own `#[cfg(test)]` module:
   - `adapter_role_hitting_the_governance_chokepoint_panics`: `#[should_panic(expected = "must only run
@@ -236,9 +359,9 @@ all-open byte-identity invariant.
   - H3 adds `tests/hub_role_wiring.rs::governance_chokepoint_asserts_service_role`: asserts the
     source of H2's landed governance-chokepoint function (RE-READ to find it) contains the literal
     substring `assert_service_role`.
-  - H6 adds `spawn_on_demand_asserts_adapter_role` to `tests/hub_lifecycle.rs` (a file H6 already
-    creates for its own Tests section): asserts the source of H6's own spawn-on-demand function
-    contains the literal substring `assert_adapter_role`.
+  - H6 adds `supervisor_start_asserts_adapter_role` to `tests/hub_lifecycle.rs` (a file H6 already
+    creates for its own Tests section): asserts the source of `src/hub/supervisor.rs` contains the
+    literal substring `assert_adapter_role` (guarding that `start_service`'s SS8 seam is wired).
 
 ## SS9 -- Per-session state: corrected location post-H2 (added 2026-07-04; H3 BLOCKED on this)
 

@@ -25,8 +25,10 @@
 
 #![cfg(windows)]
 
+mod support;
+
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,6 +36,17 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
+
+// D (H6, forced): only the standalone SERVICE loads policy now (ADR-0030 Decision 8 amendment,
+// PINS.md SS5.1); a bare `ghostlight` invocation is ALWAYS the thin ADAPTER and never reads
+// `ProgramData`/builds a `Browser`/runs governance at all. This test's own premise (spawn ONE bare
+// invocation and expect it to serve the governed session directly) no longer holds -- not a
+// task-named file, but a direct, mechanical consequence of H6's own Required Behavior (the SAME
+// category of forced fix `tests/hub_multiplex.rs`'s own H6 deviation note applies). Now spawns
+// `ghostlight service` (carrying `ProgramData`, `support::spawn_service_with_program_data`) plus a
+// thin adapter dialing it (`support::spawn_adapter`), preserving every pinned assertion verbatim.
+// Impact on later tasks: none -- H7/H8's own tests should follow the SAME
+// `support::spawn_service`/`spawn_adapter` pattern.
 
 /// Kills and reaps the child on drop unless [`Self::wait_normally`] already consumed it (the
 /// success path). Without this, a mid-test panic (a `wait_for`/`assert_eq!` failure) leaks the
@@ -222,20 +235,14 @@ fn org_policy_hot_swap_end_to_end() {
     .expect("write the initial org policy file");
 
     let endpoint = format!("ghostlight-t06-{pid}-{seq}");
-    let mut child: Child = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
-        .env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .env("ProgramData", &program_data_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ghostlight");
+    let mut service = support::spawn_service_with_program_data(&endpoint, &program_data_dir);
+    let mut adapter: Child = support::spawn_adapter(&endpoint);
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
-    // From here on, any panic (a failed assertion/timeout) force-kills the child instead of
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+    // From here on, any panic (a failed assertion/timeout) force-kills the adapter instead of
     // leaking an orphaned ghostlight.exe process (`std::process::Child` does not kill on drop).
-    let child = ChildGuard::new(child);
+    let child = ChildGuard::new(adapter);
 
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let reader_lines = Arc::clone(&lines);
@@ -372,10 +379,13 @@ fn org_policy_hot_swap_end_to_end() {
         );
     }
 
-    // Close stdin -> EOF -> the server loop ends.
+    // Close stdin -> EOF -> the adapter relay ends (and, since the underlying connection to the
+    // service closes with it, the service's own session for this adapter ends too).
     drop(stdin);
     child.wait_normally();
     reader.join().ok();
+    let _ = service.kill();
+    let _ = service.wait();
 
     // Audit assertions: two manifest_reload session events (the second carrying manifest:
     // null), and a post-swap tools/call record still carrying the initialize clientInfo.
