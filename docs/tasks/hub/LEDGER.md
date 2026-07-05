@@ -6,7 +6,8 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**Next task: H6 (`H6-*.md`, detached non-admin lifecycle + anti-squat).** H0 landed (pure
+**H6 is BLOCKED (`H6-*.md`, detached non-admin lifecycle + anti-squat). H0-H5 are DONE and pushed
+to `origin/dev` (HEAD `666325a`).** H0 landed (pure
 code move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>`
 + `ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
 ADAPTER + genuine multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004
@@ -57,12 +58,39 @@ once `ServiceContext` gained the field; D2: the grace-window mechanism has no ta
 literals). RE-READ H6's task file plus PINS.md SS5 (idle-grace, anti-squat) before starting.
 Follow the per-task procedure in `BOOTSTRAP.md`.
 
-**H6 is now BLOCKED (see the H6 Log entry below) on a genuine requirements conflict discovered
+**H6 is BLOCKED (see the H6 Log entry below) on a genuine requirements conflict discovered
 before any code was written**: ADR-0030 Decision 8's detached, job-breakaway-verified SERVICE
 process is structurally incompatible with `tests/peer_death.rs::native_host_exits_when_server_dies`
 staying green unmodified, per this task's own "Keep green (do not modify)" list. The frontier
 author must reconcile the two (see the H6 Log's "What is needed to proceed") before H6 can be
 re-issued and re-attempted. No working-tree changes were made or reverted.
+
+**Proposed resolution (frontier author, 2026-07-04; NOT YET RATIFIED -- deferred, "we'll address
+this after"):** take option (i) -- lift `tests/peer_death.rs` off H6's "keep green, do not modify"
+list and REWRITE its scenario to match the corrected two-process topology, rather than weaken
+Decision 8. Rationale: `peer_death.rs` is NOT a sacred-surface test (not `all_open_golden.rs`,
+`tool_schema_fidelity.rs`, the a7 arch-test, or the `host.rs` framing); weakening H6 to keep its
+current spawn-one-process-and-kill-it scenario would gut the entire reason H6 exists (a genuinely
+detached service that escapes Chrome's kill-on-close job object -- which on Windows STRUCTURALLY
+forces a two-process "every invocation is a thin adapter that spawns a separate detached service"
+model, because a process cannot retroactively leave a job object). The rewrite preserves exactly
+what the test was written to catch (the zombie-relay regression: a native-host must exit when its
+real IPC peer dies) but fixes the scenario: spawn what becomes the ADAPTER, let it spawn the
+detached SERVICE, discover the SERVICE's pid via its own debug snapshot (the SAME discovery
+mechanism H6's own new `tests/hub_lifecycle.rs::service_survives_the_spawning_adapter_exit` must
+build), kill the SERVICE process specifically, and assert the native-host relay exits. When
+resuming: (1) pin this in a new PINS.md section (SS10) + amend the H6 task file (lift peer_death.rs
+off keep-green with an explicit sanctioned-edit note describing the new scenario; keep the
+zombie-regression intent); (2) run a fresh-eyes verification pass against the live tree as was done
+for the H2/H3 blocks (the two-process spawn model touches lifecycle, doctor reap re-scope, the
+`build_debug_sink` "mcp-server" vs "adapter" role label from PINS.md SS5, and the debug-dir
+mismatch the H6 executor already flagged: `src/debug.rs` uses `%LOCALAPPDATA%\ghostlight` per-user,
+NOT the task's stated `%ProgramData%\ghostlight` -- reuse debug.rs's actual per-user dir per the
+task's own "do not invent a new dir"); (3) also check the H7/H8 ripple for any assumption that the
+winning process is the in-process service; (4) re-issue H6 in the LEDGER, re-scope the workflow
+script (`.../scratchpad/hub-batch-workflow.js`, currently H3-H8) to H6-H8, and resume. Anti-squat
+HMAC + job-breakaway need additive Cargo.toml deps (`hmac`/`rand` + windows-sys
+`Win32_Security_Cryptography`/`Win32_System_JobObjects`) that no prior task added.
 
 ## Status
 
