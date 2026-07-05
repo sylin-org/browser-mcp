@@ -8,9 +8,12 @@ fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**K4 is NEXT (`K4-live-sessions-api.md`).** K1, K2, K3 are DONE and committed. Read
-`docs/tasks/console/BOOTSTRAP.md` in full, then `K4-live-sessions-api.md` and the PINS.md sections
-it cites (CS1, CS3, CS9). Follow the per-task procedure in BOOTSTRAP.md exactly.
+**K5 is NEXT (`K5-enable-remote-connections.md`).** K1, K2, K3, K4 are DONE and committed. Read
+`docs/tasks/console/BOOTSTRAP.md` in full, then `K5-enable-remote-connections.md` and the PINS.md
+sections it cites (CS1, CS4, CS5) VERY CAREFULLY -- this task has a real hazard (a naive test
+could write to this machine's REAL, non-relocatable user config file) with an explicit STOP
+precondition guarding it. Prove the env-override isolation works BEFORE writing any test that
+exercises a real write. Follow the per-task procedure in BOOTSTRAP.md exactly.
 
 ## Status
 
@@ -19,8 +22,8 @@ it cites (CS1, CS3, CS9). Follow the per-task procedure in BOOTSTRAP.md exactly.
 | K1 | Config + session read accessors; shared config-write function | DONE | 908e1d9 | no HTTP, no UI; PINS.md CS6-CS9; see Log for D1 |
 | K2 | Console static GET routes in src/hub/webapi.rs | DONE | 7eea843 | needs K1; PINS.md CS1, CS10, CS11; see Log for D1 |
 | K3 | GET /api/v1/config + config table UI | DONE | d8ada7b | needs K2; PINS.md CS2 |
-| K4 | GET /api/v1/sessions + sessions UI | pending | -- | needs K2; PINS.md CS3 |
-| K5 | POST /api/v1/config/webapi-enable-remote + UI control | pending | -- | needs K1+K2; PINS.md CS4, CS5 |
+| K4 | GET /api/v1/sessions + sessions UI | DONE | c20958a | needs K2; PINS.md CS3 |
+| K5 | POST /api/v1/config/webapi-enable-remote + UI control | pending | -- | needs K1+K2; PINS.md CS4, CS5; SEE the real user-config-path hazard noted above |
 
 Status values: `pending` | `in-progress` | `DONE` | `BLOCKED`.
 
@@ -179,6 +182,42 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   only). Sacred tests green and byte-unmodified (`git diff --stat` confirms zero diff on all of
   them). Only `src/hub/console/console.js`, `src/hub/webapi.rs`, `tests/support/mod.rs`, plus the
   new `tests/console_config_api.rs` changed. No NEVER-touch fence moved.
+- Note: `CARGO_TARGET_DIR` was pointed at a scratch directory for build-artifact routing only.
+
+### K4
+
+- Verified all as-of-authoring facts in `K4-live-sessions-api.md` and PINS.md CS1/CS3/CS9 against
+  the live tree: K1's `SessionSummary`/`live_session_summaries` (still `#[allow(dead_code)]`,
+  unused until now), `ServiceContext.live_sessions`/`.session_registry`/`.owned_tabs` (all `pub`),
+  and `check_tab_ownership`'s gate ordering in `src/transport/mcp/server.rs` (`claim_tab` runs
+  synchronously BEFORE any dispatch to `handle_line`/the browser) all matched exactly. No STOP
+  precondition fired.
+- Implemented per PINS.md CS1/CS3: a new `("GET", "/api/v1/sessions")` match arm calls
+  `write_sessions_response`, which reads `ctx.live_sessions` for the count and
+  `session::live_session_summaries(&ctx.session_registry, &ctx.owned_tabs)` for the per-adapter
+  entries, building the exact pinned JSON shape (`live_session_count`, `adapter_bindings` with
+  `guid`/`pid`/`owned_tab_ids`, and the literal `note` string transcribed verbatim); added
+  `/api/v1/sessions` to `is_known_console_path`. Removed K1's `#[allow(dead_code)]` on
+  `live_session_summaries` now that it has a real caller. `console.js` renders a live-count
+  summary line, a table, and the honest-limitation note.
+- No deviations from the task file. The named integration test drives a REAL adapter's `tools/
+  call` naming a tabId with NO fake extension attached (confirmed safe by re-reading
+  `check_tab_ownership`'s gate order first, per the task file's own instruction to verify this
+  before assuming it), reading the sessions view without ever awaiting or reading back the
+  underlying (extension-less, eventually-failing) tool call's own response. Per the task file's
+  own instruction, the guid-truncation unit-level proof was NOT duplicated here since K1 already
+  added `session::tests::live_session_summaries_reports_truncated_guid_pid_and_owned_tabs`
+  directly in `src/hub/session.rs`.
+- Verification: all four commands passed for real. `cargo build --all-targets` clean. `cargo test`
+  green: 465 lib tests (unchanged) plus every integration suite, 0 failed -- including the new
+  `tests/console_sessions_api.rs` (1/1), `tests/console_config_api.rs` (3/3) and `tests/
+  console_static_routes.rs` (5/5) unaffected, and H8's own `tests/webapi_auth.rs` (3/3)/`tests/
+  channels_policy.rs` (1/1) unmodified. `cargo clippy --all-targets -- -D warnings` clean (removing
+  the now-unnecessary `#[allow(dead_code)]` did not reintroduce a warning). `cargo fmt --all --
+  check` clean (after one normalization pass, whitespace only). Sacred tests green and
+  byte-unmodified (`git diff --stat`: zero diff on all of them). Only `src/hub/console/console.js`,
+  `src/hub/session.rs`, `src/hub/webapi.rs`, plus the new `tests/console_sessions_api.rs` changed.
+  No NEVER-touch fence moved.
 - Note: `CARGO_TARGET_DIR` was pointed at a scratch directory for build-artifact routing only.
 
 ## Deviation format
