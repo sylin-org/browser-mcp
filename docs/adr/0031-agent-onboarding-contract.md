@@ -93,19 +93,46 @@ Rules:
   `form_input.ref` and `computer.ref`. This closes the inference gap a model otherwise has to make
   on its first `form_input` call.
 
-### Decision 3: the directory's parallel prose is removed -- tools.json is the only prose source
+### Decision 3: WITHDRAWN -- the two description strings are distinct and both load-bearing
 
-`src/browser/directory.rs`'s per-variant `description` field is deleted. The directory keeps only
-what governance and dispatch actually need (`tool`, `action_key`, `variants` with `action` +
-`requires` only, `resource`, `handler`, `postprocess`, `post_dispatch`). Anything an agent sees
-(description, example) lives in `tools.json`; anything the runtime needs lives in the directory;
-the Venn overlap (a second description string) is removed. If governance later needs a
-human-facing label for its own logging, it is a different field (`governance_label`), never a
-parallel description.
+This decision was originally "delete the directory's per-variant `description` field; tools.json
+is the only prose source." Implementation review (onboarding-1 planning) discovered this is wrong:
+the directory's per-variant `description` is NOT parallel documentation to tools.json's
+description. It is the production source for `explain_text()` (`src/browser/directory.rs:405-433`),
+the `explain` tool's response body, and that output is golden-pinned (pinned by
+`directory.rs:782-816` and exercised by every `policy explain` integration test).
 
-### Decision 4: corrective validation errors, derived from the fixture
+The two description strings serve DIFFERENT consumers and are not duplicates of each other:
 
-Schema-validation failures at the `tools/call` entry point return a two-part message:
+- `tools.json`'s per-tool `description` -- the agent-facing tool description served in
+  `tools/list`. The trained-surface one (ADR-0007) on the 13 trained tools; ghostlight's own on
+  `explain`.
+- `directory.rs`'s per-variant `description` -- the governance-facing capability description
+  rendered into the `explain` tool's response body (e.g. `"navigate: requires read. Load a URL
+  in a tab, or go back or forward in its history; a top-level GET."`). One per `computer`
+  sub-action; one per single-variant tool.
+
+The revised rule: tools.json is the single source for the `tools/list` contract (name,
+description, inputSchema, example); the directory is the single source for the `explain` body
+(capability classification + per-variant description). Both are kept. The original "Venn overlap"
+framing was a misread -- there is no overlap, because the two description strings target different
+consumers and are consumed by different code paths. If governance later wants a human-facing label
+for its own logging, it is still a different field (`governance_label`), never either description.
+
+### Decision 4: hard-fail inputSchema validation with corrective errors, derived from the fixture
+
+inputSchema violations at the `tools/call` entry point are REJECTED before dispatch (hard-fail),
+returning a corrective `ToolError` in the same tool-result shape the "Unknown tool" path already
+uses (`pipeline.rs:78-80`). This is a behavioral tightening: a missing `tabId` today silently
+becomes `None` downstream and surfaces as an extension error with no corrective content; under
+this decision it surfaces immediately as a corrective error naming the field and the example
+shape. The tightening is strictly better for an untrained model and matches the existing
+convention -- the codebase's `ToolError` taxonomy (`src/error.rs`) ALREADY carries a `next_step`
+field on every variant (the `InvalidRequest`/`Binary`/`Ipc`/`Extension`/`Cdp`/`Page` builders,
+`error.rs:133-184`, plus the `.next_step()` builder at `error.rs:188`). Decision 4 USES that
+existing mechanism rather than inventing a parallel one.
+
+Each validation failure returns a two-part message:
 
 1. **What went wrong** -- the specific failure (missing field `tabId`; wrong type; unknown enum
    value; unknown tool name).
@@ -159,9 +186,13 @@ Drift is not unlikely -- it is a CI failure.
   trained tools stay byte-identical. The new fields (`example`, `agentGuide`) are additive
   ghostlight content, out of scope of the trained-surface protection, and a model trained on the
   old surface sees the same schemas it learned on (plus additive fields it can ignore).
-- The directory loses its `description` field. Any code that read it (today: nothing -- it was
-  documentation-for-governance that nothing consumed) moves to the schema fixture as the prose
-  source.
+- The directory's per-variant `description` is KEPT (Decision 3 withdrawn): it remains the source
+  for the `explain` tool's response body. tools.json owns the `tools/list` contract; the directory
+  owns the `explain` body. Two description strings, two consumers, no overlap.
+- inputSchema validation becomes hard-fail at the `tools/call` entry point (Decision 4). Calls
+  that today silently propagate malformed arguments to the extension now fail fast with a
+  corrective `ToolError`. The cases this catches (missing `tabId`, wrong type, unknown enum
+  value, unexpected property) are exactly those that fail downstream today with worse errors.
 - Future tools, future guide sections (e.g. an enforced-mode appendix), and a possible future
   `discover` tool (if ever wanted, despite Decision 1 already serving the guide at handshake) all
   inherit the single-source property: add the entry to `tools.json`, everything else flows. No new
