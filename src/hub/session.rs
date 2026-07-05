@@ -84,8 +84,74 @@ pub fn owns_or_adopts_tab(
     guid: &SessionGuid,
     tab_id: i64,
 ) -> bool {
+    !matches!(claim_tab(owned_tabs, guid, tab_id), TabClaim::Refused)
+}
+
+/// H7 (ADR-0030 Decision 6/7; PINS.md SS9): the same first-touch-adoption operation as
+/// [`owns_or_adopts_tab`], but reporting WHICH of the three outcomes occurred rather than
+/// collapsing "already owned" and "newly adopted" into one boolean. The group-request emit path
+/// (`transport::mcp::server::check_tab_ownership`) needs exactly this distinction: it must ask
+/// the extension to (re)group a session's tabs on a NEWLY adopted tab, never on every call that
+/// merely touches a tab the session already owned (ADR-0030 Migration H7: "groups on request
+/// only", not on every dispatch). [`owns_or_adopts_tab`] is reimplemented in terms of this
+/// function so the two never drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabClaim {
+    /// `guid` already owned `tab_id`; the map is unchanged.
+    Owned,
+    /// `tab_id` was unclaimed; `guid` just first-touch-adopted it (the map now reflects this).
+    Adopted,
+    /// A DIFFERENT guid already owns `tab_id`; the map is unchanged.
+    Refused,
+}
+
+pub fn claim_tab(
+    owned_tabs: &Mutex<HashMap<i64, SessionGuid>>,
+    guid: &SessionGuid,
+    tab_id: i64,
+) -> TabClaim {
     let mut map = owned_tabs.lock().unwrap_or_else(PoisonError::into_inner);
-    map.entry(tab_id).or_insert_with(|| guid.clone()) == guid
+    match map.get(&tab_id) {
+        Some(owner) if owner == guid => TabClaim::Owned,
+        Some(_) => TabClaim::Refused,
+        None => {
+            map.insert(tab_id, guid.clone());
+            TabClaim::Adopted
+        }
+    }
+}
+
+/// H7 (ADR-0030 Decision 6/7; PINS.md SS9): the FULL set of tabIds `guid` currently owns, read
+/// from the shared map -- not just the tabId that just triggered a [`TabClaim::Adopted`]. The
+/// group-request emit path names this whole set on every emit, so the extension's group for this
+/// session always mirrors the service's authoritative ownership record exactly (ADR-0030 Decision
+/// 6: "cross-session isolation is authoritative in the SERVICE"). Sorted for a deterministic,
+/// testable order; the wire and the extension attach no meaning to the order itself.
+pub fn owned_tab_ids(
+    owned_tabs: &Mutex<HashMap<i64, SessionGuid>>,
+    guid: &SessionGuid,
+) -> Vec<i64> {
+    let map = owned_tabs.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut ids: Vec<i64> = map
+        .iter()
+        .filter(|(_, owner)| *owner == guid)
+        .map(|(&tab_id, _)| tab_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The PINNED per-session group title (`docs/tasks/hub/PINS.md` SS6): `"\u{1F47B} Ghostlight
+/// <short>"`, where `<short>` is the first 8 characters of the GUID's canonical string -- matches
+/// the existing single-group `GROUP_TITLE` ghost-glyph convention in
+/// `extension/service-worker.js`. Embedding this TRUNCATED prefix in an outbound wire
+/// message/Chrome tab-group title is the pinned wire behavior itself, not the log/audit-sink leak
+/// ADR-0030 Decision 4 forbids ([`SessionGuid`]'s [`Display`](std::fmt::Display)/
+/// [`Debug`](std::fmt::Debug) stay fully redacted for every other path). A canonical
+/// [`SessionGuid`] is always at least 8 ASCII characters (the first hyphen falls at index 8), so
+/// this slice never panics.
+pub fn group_title(guid: &SessionGuid) -> String {
+    format!("\u{1F47B} Ghostlight {}", &guid.0[..8])
 }
 
 /// The connecting peer's OS credential, captured by the LOCAL accept layer (`ipc::serve_adapters`)
@@ -198,6 +264,57 @@ mod tests {
             owns_or_adopts_tab(&owned_tabs, &a, 5),
             "the refused attempt above must not have disturbed A's ownership"
         );
+    }
+
+    /// H7 supplementary (not task-named; the pinned H7 assertions live in
+    /// `tests/extension/grouping.test.js` for the extension-side grouping decision): `claim_tab`
+    /// reports which of the three outcomes occurred, since `check_tab_ownership`'s group-request
+    /// emit must fire on `Adopted` only, never on `Owned` or `Refused`.
+    #[test]
+    fn claim_tab_reports_owned_adopted_and_refused_distinctly() {
+        let owned_tabs = Mutex::new(HashMap::new());
+        let a = SessionGuid::mint();
+        let b = SessionGuid::mint();
+        assert_eq!(
+            claim_tab(&owned_tabs, &a, 5),
+            TabClaim::Adopted,
+            "first touch of an unclaimed tabId is a fresh adoption"
+        );
+        assert_eq!(
+            claim_tab(&owned_tabs, &a, 5),
+            TabClaim::Owned,
+            "the SAME guid re-touching its own tab is already-owned, not a new adoption"
+        );
+        assert_eq!(
+            claim_tab(&owned_tabs, &b, 5),
+            TabClaim::Refused,
+            "a DIFFERENT guid touching an already-claimed tab is refused"
+        );
+    }
+
+    /// H7 supplementary: `owned_tab_ids` reports the FULL, sorted, guid-filtered set -- not just
+    /// the most recently touched tabId -- and never includes another session's tabs.
+    #[test]
+    fn owned_tab_ids_reports_the_full_sorted_set_for_one_guid_only() {
+        let owned_tabs = Mutex::new(HashMap::new());
+        let a = SessionGuid::mint();
+        let b = SessionGuid::mint();
+        assert_eq!(claim_tab(&owned_tabs, &a, 202), TabClaim::Adopted);
+        assert_eq!(claim_tab(&owned_tabs, &a, 101), TabClaim::Adopted);
+        assert_eq!(claim_tab(&owned_tabs, &b, 303), TabClaim::Adopted);
+        assert_eq!(owned_tab_ids(&owned_tabs, &a), vec![101, 202]);
+        assert_eq!(owned_tab_ids(&owned_tabs, &b), vec![303]);
+    }
+
+    /// H7 supplementary: the PINNED title format (PINS.md SS6), transcribed -- the ghost glyph
+    /// escape, a literal space, "Ghostlight", another space, then exactly the first 8 characters
+    /// of the GUID's canonical string.
+    #[test]
+    fn group_title_matches_the_pinned_format() {
+        let g = SessionGuid::mint();
+        let title = group_title(&g);
+        let expected_short = &g.0[..8];
+        assert_eq!(title, format!("\u{1F47B} Ghostlight {expected_short}"));
     }
 
     #[test]

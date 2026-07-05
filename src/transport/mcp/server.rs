@@ -366,8 +366,10 @@ where
         // tabId. A pass-through `None` for every other line (not a `tools/call`, no numeric
         // `tabId`, or a `tabId` this session already owns/first-touch-adopts): a lone all-open
         // session owns everything it touches, so this never disturbs that path (ADR-0030
-        // "Preserved invariants": all-open byte-identity).
-        if let Some(resp) = check_tab_ownership(line, &owned_tabs, &guid, &governance) {
+        // "Preserved invariants": all-open byte-identity). H7 (ADR-0030 Decision 6/7; PINS.md
+        // SS6) piggybacks on this SAME gate: a NEWLY adopted tabId (never an already-owned one)
+        // also fires the out-of-band group-request presentation through `browser`.
+        if let Some(resp) = check_tab_ownership(line, &owned_tabs, &guid, &governance, &browser) {
             let _ = tx.send(Outbound::Response(resp));
             continue;
         }
@@ -401,11 +403,16 @@ where
 /// `tools/call` naming a numeric `tabId` a DIFFERENT live session already owns, and only BEFORE
 /// any dispatch, hence before `pipeline::LazyTabUrl`'s own probe could ever fire for it (Decision
 /// 6: "BEFORE any `tab_url` probe").
+///
+/// H7 (ADR-0030 Decision 6/7; PINS.md SS6): a NEWLY adopted tabId (never an already-owned one,
+/// and never a refusal) also emits the out-of-band group-request presentation through `browser`
+/// before returning -- "when a session's owned-tab set changes ... emit the group request".
 fn check_tab_ownership(
     line: &str,
     owned_tabs: &Arc<Mutex<HashMap<i64, SessionGuid>>>,
     guid: &SessionGuid,
     governance: &Governance,
+    browser: &Browser,
 ) -> Option<JsonRpcResponse> {
     let raw: Value = serde_json::from_str(line).ok()?;
     if raw.get("method").and_then(Value::as_str) != Some("tools/call") {
@@ -417,12 +424,33 @@ fn check_tab_ownership(
     let args = params.get("arguments");
     let tab_id = args.and_then(|a| a.get("tabId")).and_then(Value::as_i64)?;
 
-    if crate::hub::session::owns_or_adopts_tab(owned_tabs, guid, tab_id) {
-        return None;
+    match crate::hub::session::claim_tab(owned_tabs, guid, tab_id) {
+        crate::hub::session::TabClaim::Owned => None,
+        crate::hub::session::TabClaim::Adopted => {
+            emit_group_request(browser, owned_tabs, guid);
+            None
+        }
+        crate::hub::session::TabClaim::Refused => {
+            record_unowned_tab_denial(governance, name, args);
+            Some(JsonRpcResponse::success(id, text_content("unknown tab")))
+        }
     }
+}
 
-    record_unowned_tab_denial(governance, name, args);
-    Some(JsonRpcResponse::success(id, text_content("unknown tab")))
+/// H7 (ADR-0030 Decision 6/7; PINS.md SS6): tell the extension to (re)group this session's
+/// CURRENT, complete owned-tab set (not just the tabId that just triggered the call) into its
+/// Chrome tab group. Fire-and-forget through the shared `Browser` seam (H2's existing plumbing --
+/// this function builds no new native-send transport); a missing extension link is a harmless
+/// no-op, same as any other out-of-band presentation call. The GUID is passed only as the wire
+/// argument `Browser::request_group` needs; it is never logged here.
+fn emit_group_request(
+    browser: &Browser,
+    owned_tabs: &Arc<Mutex<HashMap<i64, SessionGuid>>>,
+    guid: &SessionGuid,
+) {
+    let tab_ids = crate::hub::session::owned_tab_ids(owned_tabs, guid);
+    let title = crate::hub::session::group_title(guid);
+    browser.request_group(guid.as_str(), &tab_ids, &title);
 }
 
 /// Record the H4 unowned-tab refusal as a deny (PINS.md SS3, transcribed): `decision: "deny"`,

@@ -12,8 +12,14 @@
 // Tab-URL query (g13): { id, type: "tab_url_request", tabId } gets
 // { id, type: "tab_url_response", result: { url } }, reporting chrome.tabs.get(tabId).url (or
 // null) with no matching or interpretation -- the binary's grant enforcement decides.
+//
+// Tab-group-per-session request (H7, ADR-0030 Decision 6/7): { type: "group_request", guid,
+// tabIds, title } gets { type: "group_response", guid, ok } (both id-less; fire-and-forget). The
+// grouping DECISION (which tabIds get grouped and how) lives in the pure lib/grouping.js module
+// this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
+// ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js");
 
 // Operational tunables (lib/constants.js), destructured once for use throughout this worker.
 const {
@@ -21,6 +27,9 @@ const {
   KEEPALIVE_PERIOD_MINUTES, RECONNECT_DELAY_MS, HOLD_REQUEST_TIMEOUT_MS,
   CAPTURE_SETTLE_MS, CLICK_GAP_MS, NAV_SETTLE_TIMEOUT_MS,
 } = self.GhostlightConstants;
+// The H7 grouping DECISION (lib/grouping.js): pure, unit-tested in isolation
+// (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
+const { groupSessionTabs } = self.GhostlightGrouping;
 
 const NATIVE_HOST = "org.sylin.ghostlight";
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
@@ -30,6 +39,13 @@ const GROUP_TITLE = "\u{1F47B}Ghostlight";
 
 let nativePort = null;
 let groupId = null;
+// H7 (ADR-0030 Decision 6/7; PINS.md SS6): the per-session presentation map, guid -> Chrome
+// tab-group id. ADDITIVE to (never a replacement of) the single `groupId` above: `groupId` still
+// backs the existing access-control mechanism (ensureGroup/groupTabs/inGroup/effectiveTabId),
+// unaware of sessions -- the binary's tool_request wire carries no session identity at all,
+// so that check cannot become session-aware. `sessionGroups` backs ONLY the group_request
+// presentation feature, keyed on the guid a request names.
+const sessionGroups = new Map();
 // Take-the-wheel hold (g10): pending id -> resolver, for get_hold/set_hold/toggle_hold replies.
 // A separate sequence and map from tool_request ids; hold ids never collide with tool ids
 // because tool ids are binary-chosen and hold ids are extension-chosen.
@@ -93,6 +109,23 @@ async function connect() {
             try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: null } }); } catch { /* port gone */ }
           }
         );
+        return;
+      }
+      // Tab-group-per-session request (H7, ADR-0030 Decision 6/7): mechanism only, out of band
+      // from tool dispatch. Groups exactly the named tabIds (the pure lib/grouping.js decision,
+      // given the injected `chrome`) and persists the updated per-session map; fire-and-forget --
+      // neither this request nor its reply carries an `id`, so nothing here awaits a correlated
+      // response.
+      if (msg && msg.type === "group_request" && typeof msg.guid === "string") {
+        const tabIds = Array.isArray(msg.tabIds) ? msg.tabIds : [];
+        groupSessionTabs(chrome, sessionGroups, msg.guid, tabIds, msg.title || GROUP_TITLE)
+          .then(() => persistSessionState())
+          .then(() => {
+            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: true }); } catch { /* port gone */ }
+          })
+          .catch(() => {
+            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: false }); } catch { /* port gone */ }
+          });
         return;
       }
       if (msg && (msg.type === "hold_state" || msg.type === "hold_error") && msg.id) {
@@ -484,7 +517,13 @@ async function persistSessionState() {
     }
   }
   try {
-    await chrome.storage.session.set({ sessionState: { groupId, tabIds } });
+    await chrome.storage.session.set({
+      sessionState: { groupId, tabIds },
+      // H7 (ADR-0030 Decision 6/7): the per-session guid -> groupId map, persisted under its OWN
+      // key -- ADDITIVE alongside `sessionState` above, whose own shape is unchanged -- so a
+      // service-worker restart recovers per-session groups too.
+      sessionGroupsState: Array.from(sessionGroups.entries()),
+    });
   } catch { /* persistence is best-effort; recovery still has the title-based fallback below */ }
 }
 async function ensureGroup(create) {
@@ -535,9 +574,15 @@ async function inGroup(tabId) {
 // dispatch, which awaits this promise before running any tool.
 async function rehydrate() {
   try {
-    const stored = await chrome.storage.session.get("sessionState");
+    const stored = await chrome.storage.session.get(["sessionState", "sessionGroupsState"]);
     const sessionState = stored && stored.sessionState;
-    if (!sessionState) return; // genuinely fresh start: nothing to recover
+    // H7 (ADR-0030 Decision 6/7): restore the per-session map independently of the legacy
+    // single-group `sessionState` below -- a fresh install has neither, but either one being
+    // absent must not block recovering the other.
+    if (Array.isArray(stored && stored.sessionGroupsState)) {
+      for (const [guid, gid] of stored.sessionGroupsState) sessionGroups.set(guid, gid);
+    }
+    if (!sessionState) return; // genuinely fresh start: nothing more to recover
     const priorSession =
       sessionState.groupId !== null ||
       (Array.isArray(sessionState.tabIds) && sessionState.tabIds.length > 0);

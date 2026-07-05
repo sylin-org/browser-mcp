@@ -110,3 +110,29 @@
 //! `transport::mcp::server::serve_session` as that session's opaque identity. The EXTENSION link
 //! uses NO hello at all (its own endpoint, server-speaks-first; PINS.md SS1 as amended
 //! 2026-07-04), so there is no `ext` role and nothing about the extension link to document here.
+//!
+//! ## Tab-group-per-session request (H7, ADR-0030 Decision 6/7)
+//!
+//! ## binary -> extension
+//! ```json
+//! { "type": "group_request", "guid": "<session guid>", "tabIds": [<number>...], "title": "<string>" }
+//! ```
+//!
+//! ## extension -> binary
+//! ```json
+//! { "type": "group_response", "guid": "<echoed>", "ok": <bool> }
+//! ```
+//!
+//! Additive; ONE new `type` value on the SAME channel, out of band from tool dispatch exactly
+//! like the tab-URL query above. Mechanism only; the extension groups the named tabIds and makes
+//! no policy decision (never inspects a tab's url/host/domain/grant to decide membership --
+//! ADR-0030 Decision 6: "The extension's per-group checks remain defense-in-depth only"). No
+//! `id` member on either side: this is fire-and-forget presentation, never correlated back to a
+//! waiting caller the way a `tool_request`/`tab_url_request` reply is (an incoming
+//! `group_response` is simply an id-less event to [`crate::transport::executor::Browser`], same
+//! as `session_killed`). The service tracks which tabIds belong to which session
+//! (`crate::hub::session`, ADR-0030 Decision 6); this message is how it tells the extension to
+//! reflect that in a visible Chrome tab group. Same GUID reuses its existing group; a different
+//! GUID gets a distinct one (ADR-0030 Decision 7: "two adapters in one editor -> two GUIDs -> two
+//! groups"). The GUID here is the SAME secret material as the session-hello's `guid` member above
+//! and MUST NOT be written to any log/audit sink from this path.

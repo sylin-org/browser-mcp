@@ -39,6 +39,13 @@
 //! stay global on this one shared handle while sessions multiplex over it). A fresh
 //! [`Browser::attach`] (only reachable after the extension's own storage-marker gate lets it
 //! reconnect) clears the flag: a fresh session begins only on the user's explicit reconnect.
+//!
+//! Tab-group-per-session request ([`Browser::request_group`], H7, ADR-0030 Decision 6/7): the
+//! mcp-server sends `{ "type": "group_request", "guid", "tabIds", "title" }`; the extension
+//! groups exactly the named tabIds into that session's Chrome tab group and replies
+//! `{ "type": "group_response", "guid", "ok" }`. Fire-and-forget -- neither message carries an
+//! `id`, so no caller awaits a reply; [`Browser::route_reply`] drops an incoming `group_response`
+//! as an ordinary id-less event, same as any other frame nothing is waiting for.
 
 use crate::debug::DebugSink;
 use crate::transport::native::host;
@@ -333,6 +340,34 @@ impl Browser {
             .get("url")
             .and_then(Value::as_str)
             .map(str::to_string))
+    }
+
+    /// Ask the extension to place `tab_ids` into `guid`'s Chrome tab group (H7, ADR-0030 Decision
+    /// 6/7; PINS.md SS6). Fire-and-forget, the SAME posture `send_hold_reply` below uses: this
+    /// is out-of-band PRESENTATION, never a tool call, so a missing connection or an encoding
+    /// failure is a harmless no-op with nothing for a caller to await -- the pinned wire shape
+    /// carries no `id` to correlate a `group_response` by, and [`Browser::route_reply`] already
+    /// drops any id-less, non-`session_killed` frame as an ordinary event. `guid` is written
+    /// verbatim into the outbound wire message (the pinned wire behavior itself) but MUST NOT be
+    /// logged from this function or by any caller (ADR-0030 Decision 4: the GUID is secret
+    /// material in every log/audit sink) -- and it is not: this function contains no `tracing`
+    /// call naming any of its arguments.
+    pub fn request_group(&self, guid: &str, tab_ids: &[i64], title: &str) {
+        let request = json!({
+            "type": "group_request",
+            "guid": guid,
+            "tabIds": tab_ids,
+            "title": title,
+        });
+        let Ok(bytes) = serde_json::to_vec(&request) else {
+            return;
+        };
+        let Ok(framed) = host::encode(&bytes) else {
+            return;
+        };
+        if let Some(tx) = self.outgoing.lock().unwrap().as_ref() {
+            let _ = tx.send(framed);
+        }
     }
 
     /// Shared send-and-await core behind [`Browser::call`] and [`Browser::tab_url`] (g13):
@@ -678,6 +713,62 @@ mod tests {
         let text = err.to_string();
         assert!(text.starts_with("[hop: extension]"), "{text}");
         assert!(text.contains("not connected"), "{text}");
+    }
+
+    /// H7 supplementary (not task-named; the pinned H7 assertions live in
+    /// `tests/extension/grouping.test.js`): `request_group` is a harmless no-op with no connected
+    /// extension -- it must never panic or block a caller that has nothing to await.
+    #[test]
+    fn request_group_without_a_connection_is_a_harmless_no_op() {
+        let browser = Browser::new();
+        browser.request_group("11111111-1111-4111-8111-111111111111", &[101, 202], "title");
+    }
+
+    /// H7 supplementary: a connected fake extension receives EXACTLY the pinned wire shape --
+    /// `type`/`guid`/`tabIds`/`title`, no `id` member (fire-and-forget; nothing correlates a
+    /// reply) -- and sending a `group_response` back (also id-less) never wedges `route_reply`,
+    /// which drops it as an ordinary event.
+    #[tokio::test]
+    async fn request_group_sends_the_pinned_shape_and_a_reply_is_a_harmless_event() {
+        let (browser_side, mut ext_side) = tokio::io::duplex(64 * 1024);
+        let browser = Browser::new();
+        let attached = browser.clone();
+        tokio::spawn(async move { attached.attach(browser_side).await });
+        wait_connected(&browser).await;
+
+        browser.request_group("11111111-1111-4111-8111-111111111111", &[101, 202], "title");
+
+        let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
+        let v: Value = serde_json::from_slice(&req).unwrap();
+        assert_eq!(v["type"], "group_request");
+        assert_eq!(v["guid"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(v["tabIds"], json!([101, 202]));
+        assert_eq!(v["title"], "title");
+        assert!(v.get("id").is_none(), "the pinned shape carries no id");
+
+        let reply = json!({
+            "type": "group_response",
+            "guid": "11111111-1111-4111-8111-111111111111",
+            "ok": true,
+        });
+        host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+            .await
+            .unwrap();
+
+        // Proof the id-less reply did not wedge anything: an ordinary tool call still round-trips
+        // afterward.
+        let fake_ext = tokio::spawn(async move {
+            let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
+            let v: Value = serde_json::from_slice(&req).unwrap();
+            let id = v["id"].as_str().unwrap();
+            let reply = json!({ "id": id, "type": "tool_response", "result": { "ok": true } });
+            host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                .await
+                .unwrap();
+        });
+        let result = browser.call("navigate", &json!({})).await.unwrap();
+        assert_eq!(result, json!({ "ok": true }));
+        fake_ext.await.unwrap();
     }
 
     #[tokio::test]
