@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// `serve_session` asserts `crate::hub::role::assert_service_role` as its first line (PINS.md
-/// SS8): this test drives it directly (never through `run_as_service`), so it must set the
+/// SS8): this test drives it directly (never through `run_service`/`run_service_loop`), so it must set the
 /// ONE-per-process role marker itself, exactly once for the whole test binary (mirrors
 /// `tests/hub_isolation.rs`'s own `ensure_service_role`).
 static SET_SERVICE_ROLE: Once = Once::new();
@@ -67,6 +67,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         session_registry: Arc::new(Mutex::new(SessionRegistry::new())),
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
+        live_sessions: Arc::new(AtomicUsize::new(0)),
     }
 }
 

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Parent-death watchdog for the mcp-server role (ADR-0029).
+//! Parent-death watchdog for the adapter role (ADR-0029; re-scoped from the pre-H6 "mcp-server"
+//! role by ADR-0030 Decision 8, PINS.md SS5.5 -- the standalone SERVICE has no client parent and
+//! idle-graces instead).
 //!
 //! The server's intended exit signal is stdin EOF, delivered when the MCP client closes the pipe.
 //! On Windows that signal is unreliable: when the client is killed rather than closed cleanly (a

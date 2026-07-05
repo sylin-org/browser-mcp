@@ -15,10 +15,11 @@
 //! (`about`/`chrome`/`edge`/`brave`) the extension recognizes and leaves untouched, so it reaches
 //! the matcher as a genuine non-http(s) scheme.
 
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -73,40 +74,53 @@ fn read_audit_lines(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// Spawn the binary with `--manifest file://<manifest_path>` (or no `--manifest` at all when
-/// `manifest_path` is `None`, the all-open case), drive `requests` over stdio, and collect the
-/// response lines.
+/// Spawn `ghostlight service --manifest file://<manifest_path>` (or no `--manifest` at all when
+/// `manifest_path` is `None`, the all-open case) plus a thin adapter dialing it, drive `requests`
+/// over the adapter's stdio, and collect the response lines.
+///
+/// D (H6, forced): only the standalone SERVICE loads policy now (ADR-0030 Decision 8 amendment,
+/// PINS.md SS5.1); a bare `ghostlight` invocation is ALWAYS the thin ADAPTER and ignores
+/// `--manifest`. Spawns `support::spawn_service_with_manifest` plus `support::spawn_adapter`,
+/// preserving every pinned assertion verbatim (same category of forced fix as
+/// `tests/hub_multiplex.rs`'s own H6 deviation note). Reads exactly the expected `id`-bearing
+/// replies BEFORE closing the adapter's stdin (mirrors `tests/mcp_protocol.rs::drive`'s own H6
+/// fix): `relay_adapter` races its two copy directions, so an early close could tear the relay
+/// down before a still-in-flight reply is delivered.
 fn drive(manifest_path: Option<&Path>, requests: &[Value]) -> Vec<Value> {
     let endpoint = format!(
         "ghostlight-ge-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ghostlight"));
-    cmd.env("GHOSTLIGHT_ENDPOINT", &endpoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if let Some(path) = manifest_path {
-        cmd.arg("--manifest").arg(file_uri(path));
-    }
-    let mut child = cmd.spawn().expect("spawn ghostlight");
+    let manifest_uri = manifest_path.map(file_uri);
+    let mut service = support::spawn_service_with_manifest(&endpoint, manifest_uri.as_deref());
+    let mut adapter = support::spawn_adapter(&endpoint);
 
-    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
     for req in requests {
         stdin
             .write_all(serde_json::to_string(req).unwrap().as_bytes())
             .unwrap();
         stdin.write_all(b"\n").unwrap();
     }
-    drop(stdin); // EOF -> the server loop ends
 
-    let stdout = child.stdout.take().expect("stdout");
-    let responses: Vec<Value> = BufReader::new(stdout)
-        .lines()
-        .map(|l| serde_json::from_str(&l.unwrap()).expect("each stdout line is JSON"))
+    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let responses: Vec<Value> = (0..expected)
+        .map(|_| {
+            let line = lines
+                .next()
+                .expect("the adapter's stdout closed before every expected reply arrived")
+                .unwrap();
+            serde_json::from_str(&line).expect("each stdout line is JSON")
+        })
         .collect();
-    child.wait().expect("wait for child");
+
+    drop(stdin);
+    let _ = adapter.wait();
+    let _ = service.kill();
+    let _ = service.wait();
     responses
 }
 

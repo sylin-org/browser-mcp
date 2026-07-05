@@ -38,9 +38,9 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 /// `serve_session` asserts `crate::hub::role::assert_service_role` as its first line (PINS.md
-/// SS8): this test drives it directly (never through `run_as_service`, which is what normally
-/// sets the role marker in production), so it must set the ONE-per-process role marker itself,
-/// exactly once for the whole test binary (`role::set_role` panics if called twice; multiple
+/// SS8): this test drives it directly (never through `run_service`/`run_service_loop`, which is
+/// what normally sets the role marker in production), so it must set the ONE-per-process role
+/// marker itself, exactly once for the whole test binary (`role::set_role` panics if called twice; multiple
 /// `#[tokio::test]` functions in this file run in the SAME process).
 static SET_SERVICE_ROLE: Once = Once::new();
 fn ensure_service_role() {
@@ -141,6 +141,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         session_registry: Arc::new(Mutex::new(SessionRegistry::new())),
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
+        live_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
 }
 

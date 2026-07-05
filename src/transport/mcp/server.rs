@@ -45,6 +45,7 @@ use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::Result;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -98,6 +99,26 @@ async fn write_chunked<W: AsyncWrite + Unpin>(out: &mut W, buf: &[u8]) -> std::i
 pub(super) enum Outbound {
     Response(JsonRpcResponse),
     ToolsListChanged,
+}
+
+/// RAII guard incrementing `ServiceContext::live_sessions` on construction and decrementing on
+/// drop (ADR-0030 Decision 8; PINS.md SS5.4): every session -- adapter today, web at H8 -- is
+/// counted at this ONE chokepoint so the service's idle-grace watcher (`hub::idle_grace_watch`)
+/// can tell whether any session is live. Adds no output; a byte-identical no-op for a lone
+/// all-open session's wire bytes.
+struct LiveSessionGuard(Arc<AtomicUsize>);
+
+impl LiveSessionGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for LiveSessionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Build the live `Governance` facade from a resolved policy (ADR-0025 Decision 2): all-open
@@ -179,7 +200,13 @@ where
         session_registry: _,
         owned_tabs,
         mint_quota: _,
+        live_sessions,
     } = ctx;
+
+    // H6 (ADR-0030 Decision 8; PINS.md SS5.4): count this session for the idle-grace watcher's
+    // whole duration -- the ONE chokepoint every transport (adapter today, web at H8) passes
+    // through. Adds no output; a no-op for the all-open byte-identity invariant.
+    let _live_guard = LiveSessionGuard::new(live_sessions);
 
     let (read_half, write_half) = tokio::io::split(stream);
     // Hot-reload substrate (ADR-0019, extended by ADR-0025 to the manifest): the resolved

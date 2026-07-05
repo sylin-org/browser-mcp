@@ -4,18 +4,24 @@
 //! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0
 //! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
 //!
-//! The same executable runs in several roles, selected at startup:
-//! - **mcp-server** (default, no subcommand) -- launched by the MCP client over stdio. Owns the
-//!   browser IPC endpoint, serves the native-host, and runs the JSON-RPC loop, forwarding tool
-//!   calls to the extension via a shared
-//!   [`Browser`](ghostlight::transport::executor::Browser) handle.
+//! The same executable runs in several roles, selected by ARGV, deterministically, never a claim
+//! race (ADR-0030 Decision 1; Decision 8's always-ready-service amendment):
+//! - **adapter** (default, no subcommand) -- launched by the MCP client over stdio. A THIN relay:
+//!   connects to the already-running SERVICE (self-healing an OS-supervisor start if it is down,
+//!   `ghostlight::hub::supervisor`), relays its stdio, and dies with its editor. Never loads
+//!   policy, never builds a [`Browser`](ghostlight::transport::executor::Browser), never runs
+//!   governance.
+//! - **service** (`ghostlight service`) -- the STANDALONE, persistent Hub. Owns the browser IPC
+//!   endpoint and the adapter/control endpoint for its whole life, multiplexes any number of
+//!   adapter sessions through the one governance chokepoint, and shuts down only on a continuous
+//!   idle-grace window (never on any client's death).
 //! - **native-host** -- launched by Chrome via `connectNative` (Chrome passes the calling
-//!   extension's origin, `chrome-extension://<id>/`, as an argument). Connects to the mcp-server
-//!   endpoint and relays native-messaging frames to/from the extension.
+//!   extension's origin, `chrome-extension://<id>/`, as an argument). Connects to the service's
+//!   browser IPC endpoint and relays native-messaging frames to/from the extension.
 //! - **install / uninstall / doctor** -- synchronous installer subcommands (no async runtime).
 //!
-//! `main` deliberately has no `#[tokio::main]`: the two async roles each build their own runtime,
-//! and the installer needs none.
+//! `main` deliberately has no `#[tokio::main]`: the async roles each build their own runtime, and
+//! the installer needs none.
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -55,6 +61,8 @@ enum Command {
     Config(ConfigArgs),
     /// Inspect and preview policy files.
     Policy(PolicyArgs),
+    /// Run the persistent Ghostlight Hub service (owns the browser link; multiplexes clients).
+    Service,
 }
 
 #[derive(Debug, Args)]
@@ -386,6 +394,11 @@ fn main() -> Result<()> {
                 ghostlight::governance::templates::render_orientation(&outcome)
             );
         }
+        Cli {
+            command: Some(Command::Service),
+            manifest,
+            debug: debug_flag,
+        } => ghostlight::hub::run_service(manifest, debug_flag || debug_env)?,
         Cli {
             command: None,
             manifest,

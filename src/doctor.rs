@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 pub struct DoctorOptions {
     /// Show every debug session (not just the newest few) with its per-session counters.
     pub verbose: bool,
-    /// Repair instead of only reporting (ADR-0029): reap orphaned mcp-server sessions (alive
-    /// process, dead parent) and remove state files whose process has exited. This is the one
+    /// Repair instead of only reporting (ADR-0029; re-scoped to the adapter by ADR-0030 Decision
+    /// 8, PINS.md SS5.5): reap orphaned adapter sessions (alive process, dead parent) and remove
+    /// state files whose process has exited. This is the one
     /// place doctor's otherwise strict "never writes, deletes, or kills anything" contract is
     /// relaxed, and only behind this explicit flag.
     pub fix: bool,
@@ -144,7 +145,7 @@ fn run_fix(log_dir: &Option<PathBuf>, rows: &[SessionRow]) -> bool {
     } else {
         if !report.reaped.is_empty() {
             println!(
-                "  reaped {} orphaned mcp-server session(s): pid {}",
+                "  reaped {} orphaned adapter session(s): pid {}",
                 report.reaped.len(),
                 report
                     .reaped
@@ -553,13 +554,13 @@ fn liveness_tag(s: &Session) -> &'static str {
     }
 }
 
-/// The pids of orphaned mcp-server sessions among `rows` (alive process, dead parent).
+/// The pids of orphaned adapter sessions among `rows` (alive process, dead parent; ADR-0030
+/// Decision 8, PINS.md SS5.5: reap targets the ADAPTER, never the standalone SERVICE, which has
+/// no client parent and idle-graces instead).
 fn orphan_pids(rows: &[SessionRow]) -> Vec<u64> {
     rows.iter()
         .filter_map(|r| match r {
-            SessionRow::Parsed(s)
-                if s.role == "mcp-server" && classify(s) == Liveness::Orphaned =>
-            {
+            SessionRow::Parsed(s) if s.role == "adapter" && classify(s) == Liveness::Orphaned => {
                 Some(s.pid)
             }
             _ => None,
@@ -592,7 +593,9 @@ fn remove_session_files(dir: &Path, pid: u64) -> bool {
     removed
 }
 
-/// Reap orphaned mcp-server sessions and clear stale (exited) session files under `dir`.
+/// Reap orphaned adapter sessions and clear stale (exited) session files under `dir` (ADR-0030
+/// Decision 8, PINS.md SS5.5: re-scoped from the pre-H6 "mcp-server" role -- the standalone
+/// SERVICE has no client parent and idle-graces instead, so it is never a reap target).
 ///
 /// SAFETY (ADR-0029): only parent-dead orphans are terminated. A session with a live parent, an
 /// unrecorded parent, or a mismatched creation time (a reused pid) is never killed; the current
@@ -606,7 +609,7 @@ fn reap(rows: &[SessionRow], dir: &Path) -> ReapReport {
     };
     for row in rows {
         let SessionRow::Parsed(s) = row else { continue };
-        if s.role != "mcp-server" || s.pid == me {
+        if s.role != "adapter" || s.pid == me {
             continue;
         }
         match classify(s) {
@@ -627,9 +630,10 @@ fn reap(rows: &[SessionRow], dir: &Path) -> ReapReport {
     report
 }
 
-/// Startup self-heal (ADR-0029 part 4): reap orphaned mcp-server sessions a predecessor left behind
-/// before this server begins serving. Best-effort; a no-op in a release build (no session registry)
-/// and when nothing is orphaned. Returns the number of orphans terminated. Logs what it reaped.
+/// Startup self-heal (ADR-0029 part 4; ADR-0030 Decision 8 re-scope, PINS.md SS5.5): reap orphaned
+/// adapter sessions a predecessor left behind before this adapter begins relaying. Best-effort; a
+/// no-op in a release build (no session registry) and when nothing is orphaned. Returns the number
+/// of orphans terminated. Logs what it reaped.
 pub fn sweep_orphans() -> usize {
     let (Some(dir), rows) = gather_sessions() else {
         return 0;
@@ -655,7 +659,8 @@ struct Observations {
     sessions_present: bool,
     /// The newest parsed mcp-server session, if any.
     newest_server: Option<NewestServer>,
-    /// How many mcp-server sessions are orphaned (alive process, dead parent) -- reap targets.
+    /// How many adapter sessions are orphaned (alive process, dead parent) -- reap targets
+    /// (ADR-0030 Decision 8, PINS.md SS5.5).
     orphans: usize,
 }
 
@@ -723,9 +728,10 @@ fn findings(obs: &Observations) -> Vec<String> {
         },
     }
 
-    // Orphaned sessions: alive mcp-server processes whose MCP client has exited. These are the
-    // zombies ADR-0029 targets; the watchdog now prevents them, but a pre-watchdog process or one
-    // killed uncleanly can still be present. Point at the repair, not a manual process hunt.
+    // Orphaned sessions: alive adapter processes whose MCP client has exited (ADR-0030 Decision 8
+    // re-scope, PINS.md SS5.5). These are the zombies ADR-0029 targets; the watchdog now prevents
+    // them, but a pre-watchdog process or one killed uncleanly can still be present. Point at the
+    // repair, not a manual process hunt.
     if obs.orphans > 0 {
         out.push(format!(
             "{} orphaned ghostlight session(s) are still running after their MCP client exited: run `ghostlight doctor --fix` to reap them",

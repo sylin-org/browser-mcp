@@ -11,11 +11,18 @@
 /// The session-hello protocol major version (PINS.md SS1).
 pub const HUB_PROTO: u32 = 1;
 
-/// An MCP stdio adapter session (PINS.md SS1): the role `hub::run_mcp_server`'s loser branch
-/// (`ipc::relay_adapter`) sends, and the role dispatched to
+/// An MCP stdio adapter session (PINS.md SS1): the role `hub::run_mcp_server` (ALWAYS the thin
+/// ADAPTER as of ADR-0030 Decision 8's always-ready-service amendment; PINS.md SS5.1) sends via
+/// `ipc::relay_adapter`, and the role dispatched to
 /// [`crate::transport::mcp::server::serve_session`] on the service side.
 pub const ROLE_ADAPTER: &str = "adapter";
 
 /// The reserved control-plane role (doctor/console; not used before H8). Cleanly refused by the
 /// service until then (PINS.md SS1).
 pub const ROLE_CONTROL: &str = "control";
+
+/// The SERVICE's anti-squat proof, sent AFTER admitting the adapter's hello and BEFORE
+/// `serve_session` (ADR-0030 Decision 8 amendment; PINS.md SS5.3): `{"hub":1,"role":"service-proof",
+/// "mac":"<hex>"}`, the lowercase-hex HMAC-SHA256 of the adapter's exact hello bytes, keyed by this
+/// install's per-user `hub-key` (`src/hub/antisquat.rs`).
+pub const ROLE_SERVICE_PROOF: &str = "service-proof";

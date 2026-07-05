@@ -3,6 +3,13 @@
 - Status: Accepted
 - Date: 2026-07
 
+> **Superseded/amended by ADR-0030 Decision 8 (2026-07-04):** the parent-death watchdog and the
+> `doctor --fix` reaper described below are re-scoped to the thin ADAPTER (`ghostlight`, bare
+> invocation). The standalone SERVICE (`ghostlight service`) has no client parent to watch and
+> runs neither mechanism; it shuts down only on a continuous idle-grace window. The historical
+> body below (written when the "mcp-server" role was the one thing an MCP client spawned)
+> otherwise stands unchanged.
+
 ## Context
 
 The mcp-server role is spawned by the MCP client (Claude Code, Claude Desktop, VS Code)
