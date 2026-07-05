@@ -18,9 +18,20 @@ use crate::governance::manifest::source::{
 };
 use crate::{Error, Result};
 
-/// Path of the user config file; `None` when the platform config dir is unavailable.
+/// Path of the user config file; `None` when the platform config dir is unavailable. The
+/// `GHOSTLIGHT_USER_CONFIG_DIR` env override (PINS.md CS5 escalation, `docs/tasks/console`: K5
+/// found that `dirs::config_dir()` does NOT honor a platform env var override -- e.g. `APPDATA`
+/// on Windows -- for the CURRENT process the way `org_policy_path`'s own `ProgramData` read
+/// does) lets tests and advanced deployments relocate this file, mirroring the
+/// `GHOSTLIGHT_LOG_DIR`/`GHOSTLIGHT_ENDPOINT`/`GHOSTLIGHT_WEBAPI_PORT` convention. This has NO
+/// security implication: the org-mandatory/org-recommended layers (`org_policy_path`, never
+/// overridable) always outrank whatever this file holds, regardless of where it lives.
 pub fn user_config_path() -> Option<std::path::PathBuf> {
-    Some(dirs::config_dir()?.join("ghostlight").join("config.json"))
+    let base = std::env::var("GHOSTLIGHT_USER_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(dirs::config_dir)?;
+    Some(base.join("ghostlight").join("config.json"))
 }
 
 /// Path of the org policy file (fixed per platform; shared format section 1.2). No flag,

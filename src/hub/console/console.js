@@ -53,8 +53,33 @@ async function loadSessions() {
   }
 }
 
+function wireEnableRemote() {
+  const button = document.getElementById("enable-remote-button");
+  const status = document.getElementById("remote-status");
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = "Enabling...";
+    try {
+      const res = await fetch("/api/v1/config/webapi-enable-remote", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        status.textContent = "Enabled: channels.webapi.from = " + JSON.stringify(data.value) +
+          ". " + data.note;
+        loadConfig();
+      } else {
+        status.textContent = "Could not enable remote connections: " + data.error;
+      }
+    } catch (e) {
+      status.textContent = "Could not enable remote connections.";
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadConfig();
   loadSessions();
-  // Filled in by K5 (enable-remote control).
+  wireEnableRemote();
 });

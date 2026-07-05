@@ -38,7 +38,7 @@
 //! limitation, not a gap discovered later.
 
 use crate::governance::channels::ChannelsPdp;
-use crate::governance::ports::{Decision, PolicyDecisionPoint};
+use crate::governance::ports::{AuditSink, Decision, PolicyDecisionPoint, SessionEventRecord};
 use crate::hub::console_assets;
 use crate::hub::session::SessionGuid;
 use crate::hub::ServiceContext;
@@ -316,7 +316,11 @@ fn strip_query(path: &str) -> &str {
 fn is_known_console_path(stripped_path: &str) -> bool {
     matches!(
         stripped_path,
-        "/" | "/console.css" | "/console.js" | "/api/v1/config" | "/api/v1/sessions"
+        "/" | "/console.css"
+            | "/console.js"
+            | "/api/v1/config"
+            | "/api/v1/sessions"
+            | "/api/v1/config/webapi-enable-remote"
     )
 }
 
@@ -369,6 +373,9 @@ async fn route_console_request(
         }
         ("GET", "/api/v1/config") => write_config_response(stream, ctx).await,
         ("GET", "/api/v1/sessions") => write_sessions_response(stream, ctx).await,
+        ("POST", "/api/v1/config/webapi-enable-remote") => {
+            write_enable_remote_response(stream, ctx).await
+        }
         _ if is_known_console_path(stripped_path) => {
             write_plain_error(stream, 405, "Method Not Allowed", "method not allowed").await
         }
@@ -441,6 +448,70 @@ async fn write_sessions_response(
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
+}
+
+/// `POST /api/v1/config/webapi-enable-remote` (PINS.md CS4/CS5, `docs/tasks/console`): the
+/// Console's ONE write action. The request body is NEVER read -- the written value is the ONE
+/// pinned literal below, never caller-supplied. Writes the single user-layer
+/// `channels.webapi.from` key via K1's `set_user_value` (the SAME path `ghostlight config set`
+/// uses), refusing cleanly under an org-mandatory lock (or any other failure) with a uniform 409,
+/// and records exactly one `config_changed` session-event audit record on success.
+async fn write_enable_remote_response(
+    stream: &mut TcpStream,
+    ctx: &ServiceContext,
+) -> crate::Result<()> {
+    let key = crate::governance::config::CHANNELS_WEBAPI_FROM;
+    let value = serde_json::json!(["*"]);
+    let outcome = crate::governance::config::cli::set_user_value(
+        key,
+        value.clone(),
+        crate::browser::pattern::is_valid_pattern,
+    );
+    match outcome {
+        Ok(path) => {
+            record_config_changed(ctx);
+            let payload = serde_json::json!({
+                "key": key,
+                "value": value,
+                "written_to": path.display().to_string(),
+                "note": "takes effect the next time the Ghostlight service restarts",
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                payload.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+        }
+        Err(e) => {
+            let payload = serde_json::json!({ "error": e.to_string() }).to_string();
+            let response = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                payload.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+        }
+    }
+    Ok(())
+}
+
+/// PINS.md CS4: record ONE `config_changed` session-event audit record on a SUCCESSFUL write
+/// (mirroring `Governance::record_manifest_reload`'s own "callers only invoke this on a
+/// successful swap" rule). The Console's POST handler has no per-session `Governance` (it is a
+/// plain HTTP action on the shared service, never a tool-call dispatch through `serve_session`),
+/// so it calls the underlying `AuditSink` directly -- the SAME sink every
+/// `Governance::record_session_killed`/`record_manifest_reload` ultimately writes to
+/// (`self.audit.record_session_event(&record)`), one call frame shallower.
+fn record_config_changed(ctx: &ServiceContext) {
+    let record = SessionEventRecord {
+        event_id: uuid::Uuid::new_v4().to_string(),
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        identity: None,
+        client: None,
+        event: "config_changed",
+        manifest: None,
+    };
+    ctx.recorder.record_session_event(&record);
 }
 
 /// Serve one embedded Console asset (PINS.md CS10) verbatim, with a `Content-Length` computed
