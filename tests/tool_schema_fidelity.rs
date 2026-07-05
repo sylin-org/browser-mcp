@@ -265,3 +265,60 @@ fn descriptions_reference_bare_tab_tool_names() {
         Some("tabs_create_mcp")
     );
 }
+
+/// ADR-0031 Decision 5: the agentGuide section is present and well-formed. The four fields are
+/// the agent's workflow contract at handshake; a missing/empty one breaks the onboarding payload.
+#[test]
+fn agent_guide_is_present_with_all_four_non_empty_fields() {
+    let v: Value = serde_json::from_str(TOOLS_JSON).expect("tools.json is valid JSON");
+    let guide = v
+        .get("agentGuide")
+        .and_then(Value::as_object)
+        .expect("tools.json carries a top-level agentGuide object");
+    for key in &["summary", "workflow", "flow", "denials"] {
+        let val = guide
+            .get(*key)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("agentGuide.{key} must be a non-empty string"));
+        assert!(!val.is_empty(), "agentGuide.{key} must be non-empty");
+    }
+    // The load-bearing workflow rule must be present (this is the fact that, when missing, an
+    // untrained model gets wrong on the first call).
+    let workflow = guide["workflow"].as_str().unwrap();
+    assert!(
+        workflow.contains("tabId"),
+        "agentGuide.workflow must state the tabId-first rule"
+    );
+}
+
+/// ADR-0031 Decision 5: every trained tool's `example.call` VALIDATES against its own
+/// `inputSchema` (run through the same validator o04 wires into the pipeline). This is the
+/// "trimmed-for-readability examples are mechanically uncommittable" guardrail -- an example
+/// missing a required field, carrying an unknown property, or a wrong-typed value fails CI.
+#[test]
+fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
+    use ghostlight::transport::mcp::validation::{validate_arguments, ToolSchema};
+
+    for t in tools() {
+        let name = t["name"].as_str().expect("name");
+        // `explain` carries no example (argument-less, self-describing) -- skip it.
+        let Some(example) = t.get("example") else {
+            assert_eq!(
+                name, "explain",
+                "only explain is permitted to omit an example; {name} must carry one"
+            );
+            continue;
+        };
+        let call = example
+            .get("call")
+            .unwrap_or_else(|| panic!("{name}: example must carry a call object"));
+        // Build the schema the same way the pipeline does (o04) and validate.
+        let schema = ToolSchema {
+            input_schema: t["inputSchema"].clone(),
+            example_call: Some(call.clone()),
+        };
+        validate_arguments(&schema, call).unwrap_or_else(|e| {
+            panic!("{name}: example.call must validate against its own inputSchema, but: {e}")
+        });
+    }
+}

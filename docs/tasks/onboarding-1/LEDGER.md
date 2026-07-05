@@ -12,7 +12,7 @@ from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**o05 (Extend the fidelity test) is NEXT.** o01, o02, o03, o04 landed.
+**The batch is COMPLETE.** o01-o05 all landed. See PLAIN STATEMENT below.
 
 ## o01 -- Reconcile ADR-0031
 
@@ -120,7 +120,51 @@ Status: TODO.
 
 ## o05 -- Extend the fidelity test
 
-Status: TODO.
+Status: DONE (this commit).
+
+Files: `tests/tool_schema_fidelity.rs` (+2 assertions: agentGuide well-formed; every trained
+tool's example.call validates against its own inputSchema via the o04 validator).
+
+What landed: the contract is now pinned end to end. The agentGuide assertion guards all four
+fields non-empty + the tabId-first rule present. The example-validation assertion runs each
+trained tool's `example.call` through the SAME validator o04 wires into the pipeline -- so a
+future trimmed-or-stale example is mechanically uncommittable (CI fails), exactly the drift
+class ADR-0031 Decision 5 targets. The validator's per-case behavior is pinned by o04's 7 inline
+unit tests; this test pins the fixture side.
+
+Verification: 580 tests pass (was 576), clippy `-D warnings` clean, fmt clean. The 7 pre-existing
+fidelity assertions stay byte-stable; o05 only ADDS the two new ones.
+
+## PLAIN STATEMENT (per BOOTSTRAP)
+
+The onboarding-1 batch is complete on the `onboarding-1` branch (5 commits beyond the cherry-
+picked ADR baseline, one per task). Baseline was `dev` at 4d8f2de (567 tests); the batch closes
+at 580 tests, clippy `-D warnings` clean, fmt clean.
+
+What landed (ADR-0031 in full): an untrained model connecting to ghostlight now receives, at
+handshake, the workflow contract (every tab-touching tool requires a tabId; get one from
+tabs_context_mcp first; then navigate) plus cost discipline and denial-flow notes via MCP's
+native `initialize.instructions` field, sourced verbatim from the fixture; in `tools/list`, a
+valid `example.call` shape per trained tool; and on a malformed call, a corrective `ToolError`
+naming the missing/wrong field and the example shape, generated from the fixture. The first-call
+success rate for untrained models stops being a function of guessing.
+
+The fixture (`tools.json`) is the single source of agent-facing truth. Three consumers
+(initialize.instructions, tools/list, the validation-error path) all derive from it; the service
+constructs no agent-facing prose. Drift is a CI failure: the fidelity test now validates every
+example against its own schema.
+
+Three deviations from the original plan, all recorded inline (D1: update_plan example carries a
+short returns string; D2: 8 existing tests adapted to well-formed args after the validator's
+tightening, including a minimal NEVER-touch-fence edit; D3: enum check removed -- governance
+already handles unknown actions fail-closed with a better denial). The ADR is reconciled to
+match (Decision 3 withdrawn; Decision 4 records three structural checks + the enums-NOT-checked
+rationale).
+
+What is NOT done here: the live engine verification against a real untrained-model session (the
+whole point of the batch, but it comes AFTER, as the proof). The branch is left for a human to
+merge into `dev` when ready, then rebuild, then re-test the live MCP connection so the model
+receives the new initialize.instructions and the corrective errors.
 
 ## Deviation format
 
