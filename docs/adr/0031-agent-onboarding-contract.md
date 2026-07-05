@@ -144,15 +144,25 @@ suggestion is worse than none -- it sends a model down a wrong path confidently.
 
 - ATTACH a suggestion when the fixture knows enough: missing required field (name the field, its
   type, and the example shape; for a missing `tabId` specifically, append "get one from
-  `tabs_context_mcp` first"), wrong type (name the expected type), unknown enum value (list the
-  valid values from `inputSchema.enum`), unknown tool name (list the advertised tools).
+  `tabs_context_mcp` first"), wrong type (name the expected type), unknown tool name (list the
+  advertised tools).
 - DO NOT attach a suggestion for runtime/state failures (tab not found, extension disconnected),
   governance denials (already self-correcting via `Denied (D-xxxxxxxx):` + the `explain` tool --
   do not double it up), or internal errors. Report these cleanly with no invented suggestion.
 
+THREE structural checks are enforced (in first-failure order): (1) unknown property under
+`additionalProperties: false`, (2) missing required field, (3) wrong type on a present field.
+ENUM VALUES ARE DELIBERATELY NOT CHECKED. An unknown `computer.action` is already handled
+fail-closed by the governance layer (the directory classifies it as a miss and returns a stable
+`Denied (D-xxxxxxxx):` audit-grade denial), which is a MORE informative outcome than a generic
+validation error -- it is a governed decision with a denial id, not a structural rejection.
+Enforcing enums in the validator would shadow that well-designed path. The structural checks
+(required/type/additionalProperties) have no governed alternative, so those are enforced here;
+enum membership has a governed alternative, so it is not.
+
 The suggestion text is GENERATED, never hand-authored per tool: field name and expected type come
-from `inputSchema`; enum alternatives come from `inputSchema.enum`; the example shape comes from
-the tool's `example.call`; the "get a tabId first" hint is one hard-coded conditional in the error
+from `inputSchema`; the example shape comes from the tool's `example.call`; the "get a tabId
+first" hint is one hard-coded conditional in the error
 formatter (the single piece of logic that does not come from the fixture, justified because it
 would otherwise require a per-field `suggestion` annotation that is over-engineering for one
 field).

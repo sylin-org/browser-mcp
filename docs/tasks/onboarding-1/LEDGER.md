@@ -12,7 +12,7 @@ from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**o04 (Hard-fail schema validation with corrective errors) is NEXT.** o01, o02, o03 landed.
+**o05 (Extend the fidelity test) is NEXT.** o01, o02, o03, o04 landed.
 
 ## o01 -- Reconcile ADR-0031
 
@@ -24,7 +24,47 @@ Status: DONE (8965581).
 
 ## o03 -- Emit initialize.instructions from agentGuide
 
+Status: DONE (928c02a).
+
+## o04 -- Hard-fail schema validation with corrective errors (flagship)
+
 Status: DONE (this commit).
+
+Files: new `src/transport/mcp/validation.rs` (`ToolSchema`, `validate_arguments`, the corrective
+hint generators, 7 inline unit tests), `src/transport/mcp/mod.rs` (declare the new module),
+`src/transport/mcp/pipeline.rs` (wire the validator in after the registry lookup), 6 test files
+adapted to well-formed args (see deviation D2), `docs/adr/0031-agent-onboarding-contract.md`
+(Decision 4 refined: three structural checks, NOT enum; see deviation D3).
+
+What landed: the flagship. inputSchema violations are now REJECTED before dispatch with a
+corrective `ToolError::invalid_request(...).next_step(...)`, in the same shape the "Unknown tool"
+path already uses. The three structural checks (unknown property, missing required, wrong type)
+each produce a corrective message naming the field and a derived suggestion (the example shape
+from the fixture; for `tabId` specifically, "get one from tabs_context_mcp first"). The
+behavioral tightening: a missing `tabId` (today: silent None -> extension error) is now an
+explicit corrective error -- exactly the untrained-model delight the ADR targets.
+
+Verification: 576 tests pass (was 569), clippy `-D warnings` clean, fmt clean.
+
+Deviation D2: the validator's tightening rippled through 8 existing tests that sent minimal/malformed
+args (no tabId, etc.) and relied on the validator's absence. Each was updated to send well-formed
+args; their oracles (the actual behavior under test -- redaction, audit records, hold text,
+chunking, multiplex routing) are unchanged. The one substantive change: `resource_shape_drives_
+resolution` previously asserted a `read_page` call with no tabId reaches governance's fail-closed
+"(unknown)" denial; under o04 the validator now catches that earlier with a STRICTLY BETTER
+corrective error ("missing required field 'tabId'; get one from tabs_context_mcp first"). The
+test now asserts the new (better) behavior. `all_open_golden.rs::read_page_redaction` (a
+NEVER-touch fence per the BOOTSTRAP) was adapted minimally -- its input args gained a tabId so
+the call reaches the redaction chokepoint; the redaction oracle (the byte-stable text) is
+unchanged. Impact on later tasks: none.
+
+Deviation D3: the plan and the ADR named FOUR checks (missing required, wrong type, unknown enum,
+unknown property). Implementation removed the enum check: governance already handles an unknown
+`computer.action` fail-closed with a stable denial id, which is MORE informative than a generic
+validation error. Enforcing enums in the validator would shadow that well-designed path. The ADR
+is updated to record three structural checks + the explicit "enums NOT checked" rationale.
+Impact on later tasks: o05 must NOT assert enum-example validation; it asserts the three
+structural checks only.
 
 Files: `src/transport/mcp/tools.rs` (new `agent_guide_text()` helper + 2 inline unit tests; the
 module grew from a single const to a real helper module), `src/transport/mcp/server.rs`

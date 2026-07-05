@@ -401,7 +401,8 @@ fn all_open_invariant_no_manifest_means_no_denials() {
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
+            // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
         ],
     );
     assert_eq!(responses.len(), 3, "got {responses:?}");

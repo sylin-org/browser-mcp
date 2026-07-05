@@ -102,7 +102,8 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}), // no response
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
     ]);
 
     assert_eq!(
@@ -325,7 +326,8 @@ fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com"}}}),
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
     ];
     for req in &requests {
         stdin

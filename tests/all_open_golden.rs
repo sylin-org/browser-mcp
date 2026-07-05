@@ -118,7 +118,11 @@ fn read_page_redaction_is_still_wired_at_the_chokepoint() {
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{}}}),
+        // o04 (ADR-0031 Decision 4): inputSchema validation now runs before dispatch, so the
+        // read_page call needs a tabId to reach the redaction chokepoint (previously the empty
+        // arguments object was forwarded as-is; the validator now catches it earlier). The test's
+        // oracle -- the redacted text in the extension's reply -- is unchanged.
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{"tabId":1}}}),
     ];
     for req in &requests {
         stdin

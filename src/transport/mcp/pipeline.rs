@@ -80,6 +80,17 @@ pub(crate) async fn handle_tools_call(
         return JsonRpcResponse::success(id, error_result(err));
     };
 
+    // ADR-0031 Decision 4: hard-fail inputSchema validation BEFORE dispatch, with a corrective
+    // ToolError naming the missing/wrong field and the example shape. `explain` is the one
+    // argument-less tool whose example_call is None -- the validator still runs (it accepts the
+    // empty object) so the contract is uniform. The behavioral tightening: a missing `tabId`
+    // (today: silent None -> extension error) is now an explicit corrective error.
+    if let Some(schema) = crate::transport::mcp::validation::ToolSchema::for_tool(name) {
+        if let Err(err) = crate::transport::mcp::validation::validate_arguments(&schema, &args) {
+            return JsonRpcResponse::success(id, error_result(err));
+        }
+    }
+
     // The only tool-call argument ever read for audit purposes: the computer sub-action
     // (shared format doc section 6.2 sensitive-parameter omission; no other argument is read,
     // logged, or stored). Stage 4 (ADR-0024 Decision 1): the registry's `action_key` drives
@@ -810,9 +821,10 @@ mod tests {
         );
 
         // Allow resolves without touching the browser at all: an unconnected Browser still
-        // reaches the ordinary not-connected error, never a sacred pre-flight attempt.
+        // reaches the ordinary not-connected error, never a sacred pre-flight attempt. The
+        // navigate args are well-formed (o04: inputSchema validation now runs before dispatch).
         let unconnected = Browser::new();
-        let params2 = json!({ "name": "navigate", "arguments": {} });
+        let params2 = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });
         let resp2 = handle_tools_call(
             &unconnected,
             &store,
@@ -977,7 +989,8 @@ mod tests {
         crate::transport::mcp::server::handle_line(&browser, &store, &governance, &init_line, &tx)
             .await;
 
-        let params = json!({ "name": "navigate", "arguments": {} });
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        let params = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });
         let resp =
             handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
@@ -1015,7 +1028,9 @@ mod tests {
             crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
         let browser = Browser::new();
 
-        let params = json!({ "name": "computer", "arguments": { "action": "screenshot" } });
+        // o04: inputSchema validation now runs before dispatch; computer needs action + tabId.
+        let params =
+            json!({ "name": "computer", "arguments": { "action": "screenshot", "tabId": 5 } });
         let _ =
             handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
 
@@ -1059,7 +1074,9 @@ mod tests {
         let browser = Browser::new();
         browser.set_held(true);
 
-        let params = json!({ "name": "computer", "arguments": { "action": "screenshot" } });
+        // o04: inputSchema validation now runs before dispatch; computer needs action + tabId.
+        let params =
+            json!({ "name": "computer", "arguments": { "action": "screenshot", "tabId": 5 } });
         let resp =
             handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
         assert!(resp.error.is_none(), "a held reply is a JSON-RPC success");
@@ -1122,7 +1139,8 @@ mod tests {
         let browser = Browser::new();
 
         browser.set_held(true);
-        let held_params = json!({ "name": "navigate", "arguments": {} });
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        let held_params = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });
         let _ = handle_tools_call(
             &browser,
             &store,
@@ -1133,7 +1151,8 @@ mod tests {
         .await;
 
         browser.set_held(false);
-        let allowed_params = json!({ "name": "navigate", "arguments": {} });
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        let allowed_params = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });
         let _ = handle_tools_call(
             &browser,
             &store,
@@ -1763,7 +1782,9 @@ mod tests {
             "{read_page_text}"
         );
 
-        let find_params = json!({ "name": "find", "arguments": { "tabId": 5 } });
+        // o04: inputSchema validation now runs before dispatch; find needs query + tabId.
+        let find_params =
+            json!({ "name": "find", "arguments": { "tabId": 5, "query": "password" } });
         let find_resp = handle_tools_call(
             &browser,
             &store,
@@ -1820,6 +1841,11 @@ mod tests {
             "a DomainLess resource never probes a tab_url"
         );
 
+        // o04: inputSchema validation now runs before dispatch. A read_page call with no tabId
+        // previously reached governance's fail-closed path (Indeterminate -> "(unknown)" denial);
+        // the validator now catches it earlier with a STRICTLY BETTER corrective error naming
+        // the missing field and where to get a tabId. The governance fail-closed path is now
+        // unreachable for this specific malformed shape -- which is the intended tightening.
         let denied_params = json!({ "name": "read_page", "arguments": {} });
         let denied_resp = handle_tools_call(
             &browser,
@@ -1833,10 +1859,17 @@ mod tests {
             ["text"]
             .as_str()
             .expect("text content block");
-        assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
         assert!(
-            denied_text.contains("no grant covers (unknown)"),
-            "a TabScoped call with no tabId fails closed via Indeterminate: {denied_text}"
+            denied_text.contains("[hop: invalid-request]"),
+            "a missing-tabId read_page now fails at validation, not governance: {denied_text}"
+        );
+        assert!(
+            denied_text.contains("missing required field 'tabId'"),
+            "the corrective error names the missing field: {denied_text}"
+        );
+        assert!(
+            denied_text.contains("tabs_context_mcp"),
+            "the corrective hint says where to get a tabId: {denied_text}"
         );
     }
 

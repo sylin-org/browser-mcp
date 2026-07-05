@@ -145,11 +145,11 @@ fn two_real_adapters_multiplex_get_own_tab_groups_and_share_one_kill() {
     // group-request emission on the `Adopted` transition only.
     write_line(
         &mut stdin_a,
-        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":101}}}),
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":101,"url":"https://a.example.com"}}}),
     );
     write_line(
         &mut stdin_b,
-        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":202}}}),
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":202,"url":"https://b.example.com"}}}),
     );
 
     let reply_a = read_line(&mut reader_a);
@@ -224,11 +224,11 @@ fn two_real_adapters_multiplex_get_own_tab_groups_and_share_one_kill() {
     // group_request expected) must now fail with the truthful kill-switch error on both.
     write_line(
         &mut stdin_a,
-        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":101}}}),
+        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":101,"url":"https://a.example.com"}}}),
     );
     write_line(
         &mut stdin_b,
-        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":202}}}),
+        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"tabId":202,"url":"https://b.example.com"}}}),
     );
     let killed_a = read_line(&mut reader_a);
     let killed_b = read_line(&mut reader_b);
