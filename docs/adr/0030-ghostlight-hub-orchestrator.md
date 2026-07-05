@@ -71,9 +71,12 @@ existing `chrome-extension://` detection):
 ```
 
 The SERVICE owns only reconstructible coordination state, so its crash loses nothing durable
-(the extension holds durable browser state and survives a service restart). The ADAPTER spins the
-service up on demand and dies with its client. The RELAY only ever connects, so the service is
-never trapped in Chrome's job object. The EXTENSION stays policy-free.
+(the extension holds durable browser state and survives a service restart). The SERVICE runs
+STANDALONE (supervisor-launched at login or user-launched via `ghostlight service`; Decision 8), so
+it is never trapped in an editor's or Chrome's job object. The ADAPTER only connects and relays and
+dies with its client (asking the supervisor to start the service if it is not yet up; it never
+spawns an in-job child and never runs governance). The RELAY only ever connects. The EXTENSION stays
+policy-free.
 
 Two local endpoints, not one demux (amended 2026-07-04; see Provenance). The local core exposes TWO
 owner-only pipe/UDS endpoints, distinguished by which door a peer arrives at rather than by a
@@ -94,18 +97,19 @@ gets its own door rather than being forced to speak first behind a shared demux.
 meaningful moving parts than one endpoint plus a role-negotiation layer, and it is why nothing in
 this design touches the extension's wire or its golden tests.
 
-Role is a fact the process can never be wrong about (amended 2026-07-04). The instant
-`run_mcp_server` learns win or lose from the endpoint claim above, it records its role (SERVICE or
-ADAPTER) in a single hub-owned marker, set exactly once for the process's life. The two seams where a
-role mismatch would be a genuine defect -- the governance chokepoint (`serve_session`/
-`handle_tools_call`) and the service-spawn path (Decision 8's spawn-on-demand) -- each assert against
-that marker as their first action and panic immediately, by name, on a mismatch. This is deliberately
-narrow: it is NOT "every feature checks a flag" (a runtime check a future feature could simply forget
-to add); it is a fail-loud guard at exactly the two places a violation would mean the SoC boundary
-already failed by construction elsewhere. The structural separation (the ADAPTER's code never calls
-governance; the SERVICE's code never calls the spawn path) remains the primary guarantee; the
-assertion is the test-time, crash-loud backstop if that separation is ever accidentally breached by a
-future change. Pinned in `docs/tasks/hub/PINS.md` SS8.
+Role is a fact the process can never be wrong about (amended 2026-07-04). The role is decided by
+ARGV at startup (the `service` subcommand makes this process the SERVICE; a bare invocation makes it
+the ADAPTER) and recorded once in a single hub-owned marker for the process's life. The two seams
+where a role mismatch would be a genuine defect -- the governance chokepoint (`serve_session`/
+`handle_tools_call`, SERVICE only) and the supervisor-start / self-heal path (Decision 8, ADAPTER
+only) -- each assert against that marker as their first action and panic immediately, by name, on a
+mismatch. This is deliberately narrow: it is NOT "every feature checks a flag" (a runtime check a
+future feature could simply forget to add); it is a fail-loud guard at exactly the two places a
+violation would mean the SoC boundary already failed by construction elsewhere. The structural
+separation (the ADAPTER's code never calls governance; the SERVICE's code never calls the
+supervisor-start path) remains the primary guarantee; the assertion is the test-time, crash-loud
+backstop if that separation is ever accidentally breached by a future change. Pinned in
+`docs/tasks/hub/PINS.md` SS8.
 
 ## Decision 2: HubCore / ServiceContext vs per-session state
 
@@ -196,21 +200,47 @@ session") becomes a fan-out registry so every live session's subject gets exactl
 other groups. A browser-originated hold (the context-free popup gesture) is likewise global; a
 per-session pause is exposed only as a programmatic adapter/API verb.
 
-## Decision 8: lifecycle -- detached, non-admin, idle-grace, anti-squat
+## Decision 8: lifecycle -- always-ready standalone service, thin-only adapters (amended 2026-07-04)
 
-The persistent service is spawned DETACHED and unparented (Windows: no job inheritance / verified
-breakaway; Unix: setsid) so it sits in neither the adapter's nor Chrome's job object, and runs as
-the logged-in user, NEVER admin/SYSTEM (a browser-driving service must not exceed the medium
-integrity of the user's Chrome). It shuts down on an idle-grace window (no sessions AND the
-extension link gone for the window), never on parent-death. The ADR-0029 parent-death reaper is
-re-scoped to the ADAPTER. The relay never spawns the service. To defeat a same-user process that
-merely squats the well-known endpoint name, the service proves possession of a per-install secret
-to the adapter on connect (anti-squat) before any GUID/pairing flow proceeds.
+The persistent service is a STANDALONE process the user always has running. It is started one of
+two ways, both per-user and zero-admin, and NEVER by an editor as an in-job child:
 
-Reachability is LAYERED and all per-user, zero-admin: an OS supervisor registered at install
-(Windows Task Scheduler LeastPrivilege logon task; macOS launchd LaunchAgent; Linux systemd --user
-Restart=on-failure) keeps it warm and restarts it on crash, AND the adapter's spawn-on-demand is
-the universal fallback, with the race-free endpoint create-claim as the single-instance arbiter.
+- AUTO-START (the installed default): an OS supervisor registered at install (Windows Task
+  Scheduler LeastPrivilege logon task; macOS launchd LaunchAgent; Linux systemd --user
+  Restart=on-failure) starts `ghostlight service` at login and restarts it on crash. The installer
+  ALSO starts it once at install time, so the first session is already up.
+- DIRECTLY (dev / portable): the user runs `ghostlight service` themselves.
+
+Because the OS (or the user) launches the service standalone, it sits in NEITHER an editor's NOR
+Chrome's job object BY CONSTRUCTION. There is nothing to break away from. This DELETES the earlier
+"the adapter spawns a detached, job-breakaway-verified child" mechanism entirely: Windows in-job
+breakaway (`CREATE_BREAKAWAY_FROM_JOB`) is not reliably achievable (it fails inside a kill-on-close
+job that lacks `JOB_OBJECT_LIMIT_BREAKAWAY_OK`), and it was the source of the H6 block (see
+Provenance). The service runs as the logged-in user, NEVER admin/SYSTEM (a browser-driving service
+must not exceed the medium integrity of the user's Chrome). It has NO client parent and runs NO
+parent-death watchdog; it shuts down only on an idle-grace window (no live sessions AND the
+extension link gone for the window). To defeat a process that squats the well-known endpoint name
+without knowing the per-install secret, the service proves possession of that secret to the adapter
+on connect (anti-squat) before any GUID/pairing flow proceeds (defense-in-depth: it stops a naive
+or cross-user squatter; a determined same-user process can read any same-user file, so this is not
+a same-user sandbox).
+
+Every MCP invocation is ALWAYS a thin ADAPTER -- never a service, never a promoted service, never a
+spawner of an in-job child. It connects to the service, sends the session-hello (Decision 4),
+relays its stdio as a pure byte pipe, and dies with its editor (the ADR-0029 parent-death watchdog
+and reaper live HERE, on the adapter). If the service is not reachable, the adapter asks the
+supervisor to start it (an idempotent, out-of-job OS call: Windows `schtasks /run`, macOS
+`launchctl kickstart`, Linux `systemctl --user start`), waits briefly, and connects; if that cannot
+be done (no supervisor registered) it fails with a clear, actionable message. The adapter NEVER
+spawns an in-job child service and NEVER runs a governance decision.
+
+Role is selected by ARGV, deterministically, not by a race: the `service` subcommand is the
+SERVICE; a bare invocation is the ADAPTER; a `chrome-extension://` positional is the RELAY
+(connect-only, unchanged). The endpoint create-claim is NOT a role election; it is only the
+service's own single-instance guard (a second `ghostlight service` loses the claim and exits
+cleanly). The relay never spawns the service. Governance policy (the manifest / ConfigStore) is
+loaded ONCE by the service (`ghostlight service --manifest ...`); a `--manifest` on a bare adapter
+invocation is ignored (the running service's policy governs all sessions), with a one-line warning.
 
 ## Decision 9: web API transport (D2 as corrected)
 
@@ -276,9 +306,13 @@ Never disturbed, in any phase:
   byte-for-byte unchanged. (Adding a hello-first demux to this endpoint is exactly what a first H2
   attempt did, and it deadlocked the spoken-to extension against `tests/all_open_golden.rs` -- see
   Provenance.)
-- All-open byte-identity: a lone all-open session's output stays byte-identical through H0-H8
-  (`tests/all_open_golden.rs`); every new session/isolation path is a no-op for a lone all-open
-  session.
+- All-open output-identity: a lone all-open session's CLIENT-VISIBLE output stays byte-identical
+  through H0-H9; every new session / isolation / lifecycle path is a no-op for the client-visible
+  bytes of a lone all-open session. `tests/all_open_golden.rs` asserts this; from H6 its harness
+  drives the standalone-service + thin-adapter topology (the delight-relevant assertions -- redaction
+  wired at the chokepoint, advertised surface == the sacred fixture -- are the invariant and are
+  preserved verbatim; the spawn choreography is movable scaffold, per the "only delight is sacred"
+  provenance entry).
 - The a7 arch-test (`tests/architecture.rs::governance_core_has_no_forbidden_back_edges`):
   `src/governance/**` names no browser/transport/mcp/native type nor the `url` crate. All
   session/multiplex/isolation code lands in `src/hub`, so the core additionally names no
@@ -314,11 +348,16 @@ Every prefix leaves a green, shippable tree; the process-lifecycle risk lands la
 - H3 Adapter-minted GUID identity + local peer-cred admission binding.
 - H4 Binary-authoritative cross-session tab isolation (ownership-before-probe).
 - H5 Reconnect grace window + honest bounded queue (orthogonal; any time after H2).
-- H6 Adapter spawn-on-demand + detached non-admin lifecycle + anti-squat; reaper re-scoped to the
-  adapter; delete the core's proc-identity role.
+- H6 Always-ready standalone service (`ghostlight service`) + thin-only adapters + supervisor
+  self-heal + anti-squat + idle-grace; reaper re-scoped to the adapter; delete the core's
+  proc-identity role AND the on-demand-spawn / job-breakaway mechanism (it is never built).
 - H7 Tab-group-per-session presentation (extension owns the durable group; groups on request only).
 - H8 Local web API = TCP; bind per policy (builtin loopback default); `channels.webapi.from` in the
   PDP; anonymous is a valid principal; the Console control plane.
+- H9 Installer auto-start: register + start the per-user OS supervisor (Windows Task Scheduler /
+  macOS launchd / Linux systemd --user) that keeps `ghostlight service` warm and restarts it on
+  crash; unregister + stop it on uninstall. This is what makes "always-ready" true for the installed
+  product; the H6 adapter self-heal targets the same supervisor identifiers.
 
 ## Consequences
 
@@ -326,8 +365,11 @@ Every prefix leaves a green, shippable tree; the process-lifecycle risk lands la
   class is designed out; the matrix of input x tool adapters through one chokepoint becomes real;
   the largest core deletion the project has earned (proc-identity/liveness) becomes possible at H6.
 - Negative: one large coupled commit (H2); the singleton browser link is an irreducible shared
-  blast radius (Decision 3 makes it honest, not invisible); a new lifecycle surface (the detached
-  service) that H6 lands last, on a proven base, with job breakaway as an explicit acceptance gate.
+  blast radius (Decision 3 makes it honest, not invisible); a new lifecycle surface (the standalone
+  always-ready service + thin-only adapters) that H6 lands on a proven base, with the OS supervisor
+  (NOT in-editor job breakaway) as the strong-lifetime guarantee; and a dependency on the H9
+  installer registering that supervisor for the zero-friction "always up" experience (absent it, the
+  user runs `ghostlight service` themselves, or the adapter's self-heal reports it clearly).
 - Out of scope (future, each behind its own ADR): the authenticated REMOTE adapter as a product
   (mTLS/PoP, per-principal scoped manifests, threat-model ADR); the full recursive federated grant
   grammar; a governed shell/filesystem tool adapter; `upload_image`; OIDC/SAML/LDAP; a remote policy
@@ -362,3 +404,34 @@ Every prefix leaves a green, shippable tree; the process-lifecycle risk lands la
   role is deleted and the extension is identified by its endpoint; the session-hello (with the GUID)
   rides the adapter/control endpoint only. Fewer meaningful moving parts, and no sacred file is
   touched. The batch (PINS.md SS1, H2, H3) is re-authored to match.
+- The always-ready-service amendment (2026-07-04, ratified by the user, correcting Decision 8's
+  spawn-on-demand + implicit in-process-service model): H2's scaffold made whichever process won the
+  endpoint claim host the service IN-PROCESS and serve its own stdio as the first session. That welds
+  the service's lifetime to the first client: when the first editor closes, `run_as_service` returns
+  and `process::exit` tears down `serve_adapters`, orphaning every other client -- the exact orphan
+  cascade this ADR exists to kill, latent in the scaffold and first exposed at H6. Decision 8's
+  original fix (the adapter spawns a detached, job-breakaway-verified child) is not reliably
+  achievable on Windows (`CREATE_BREAKAWAY_FROM_JOB` fails inside a kill-on-close job lacking
+  `JOB_OBJECT_LIMIT_BREAKAWAY_OK`), which is what BLOCKED H6. The ratified resolution has fewer, more
+  meaningful moving parts: the service is a STANDALONE, always-ready process (supervisor-launched at
+  login + started at install, H9; or user-launched via `ghostlight service`), and EVERY MCP
+  invocation is a thin adapter that only connects and relays. No promotion, no in-process service, no
+  on-demand in-job child, no breakaway. Role is decided by ARGV, not by a race. The service is never
+  in an editor/Chrome job by construction, so the strong lifetime guarantee needs no breakaway
+  trickery; the OS supervisor (H9) provides it. If the service is down, the adapter asks the
+  supervisor to start it (idempotent, out-of-job) and otherwise reports a clear message. The batch
+  (PINS.md SS5, H6, and the new H9) is re-authored to match; H2's in-process-service sub-decision is
+  superseded, while its multiplex, identity, isolation, and queue work all stand unchanged.
+- The sacred surface is user DELIGHT (ratified by the user, 2026-07-04). The single sacred thing is
+  the user's delight; every "never touch" fence exists only insofar as it protects that. This
+  ELEVATES the 13+`explain` trained tool schemas (Claude's trained behavior on them IS the delight;
+  breaking `TOOLS_JSON` degrades the model, so `tests/tool_schema_fidelity.rs` stays byte-frozen with
+  no exception, ever) and the extension `host.rs` wire (breaking it breaks the extension). It also
+  makes explicit that tests which merely encode the OLD process topology are non-sacred SCAFFOLD:
+  their delight-relevant ASSERTIONS are preserved (and may be strengthened) while their harness is
+  updated to track the architecture. Concretely, from H6, `tests/peer_death.rs`,
+  `tests/all_open_golden.rs`'s spawn choreography, and `tests/mcp_protocol.rs`'s spawn helpers drive
+  the standalone-service + thin-adapter topology, preserving every assertion (redaction wired at the
+  chokepoint, advertised surface == the sacred fixture, a native host exits when its real peer dies).
+  This is NOT license to weaken a genuine invariant: the all-open CLIENT-VISIBLE output stays
+  byte-identical, the trained schemas and the native wire stay frozen, and the a7 core boundary holds.

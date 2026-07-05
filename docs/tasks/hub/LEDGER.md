@@ -6,8 +6,9 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**H6 is BLOCKED (`H6-*.md`, detached non-admin lifecycle + anti-squat). H0-H5 are DONE and pushed
-to `origin/dev` (HEAD `666325a`).** H0 landed (pure
+**H6 is RE-ISSUED and is NEXT (`H6-detached-lifecycle-antisquat.md`, now "always-ready service +
+thin adapters + anti-squat") under the ADR-0030 Decision 8 amendment -- see the RESOLVED note lower
+in this section. H0-H5 are DONE and pushed to `origin/dev`.** H0 landed (pure
 code move; `src/hub` composition root extracted). H1 landed (transport-generic `serve_session<S>`
 + `ServiceContext`, byte-identical single-session refactor). H2 landed (persistent SERVICE + thin
 ADAPTER + genuine multiplex over the amended two-endpoint design; the kill-hook fan-out; ADR-0004
@@ -65,32 +66,36 @@ staying green unmodified, per this task's own "Keep green (do not modify)" list.
 author must reconcile the two (see the H6 Log's "What is needed to proceed") before H6 can be
 re-issued and re-attempted. No working-tree changes were made or reverted.
 
-**Proposed resolution (frontier author, 2026-07-04; NOT YET RATIFIED -- deferred, "we'll address
-this after"):** take option (i) -- lift `tests/peer_death.rs` off H6's "keep green, do not modify"
-list and REWRITE its scenario to match the corrected two-process topology, rather than weaken
-Decision 8. Rationale: `peer_death.rs` is NOT a sacred-surface test (not `all_open_golden.rs`,
-`tool_schema_fidelity.rs`, the a7 arch-test, or the `host.rs` framing); weakening H6 to keep its
-current spawn-one-process-and-kill-it scenario would gut the entire reason H6 exists (a genuinely
-detached service that escapes Chrome's kill-on-close job object -- which on Windows STRUCTURALLY
-forces a two-process "every invocation is a thin adapter that spawns a separate detached service"
-model, because a process cannot retroactively leave a job object). The rewrite preserves exactly
-what the test was written to catch (the zombie-relay regression: a native-host must exit when its
-real IPC peer dies) but fixes the scenario: spawn what becomes the ADAPTER, let it spawn the
-detached SERVICE, discover the SERVICE's pid via its own debug snapshot (the SAME discovery
-mechanism H6's own new `tests/hub_lifecycle.rs::service_survives_the_spawning_adapter_exit` must
-build), kill the SERVICE process specifically, and assert the native-host relay exits. When
-resuming: (1) pin this in a new PINS.md section (SS10) + amend the H6 task file (lift peer_death.rs
-off keep-green with an explicit sanctioned-edit note describing the new scenario; keep the
-zombie-regression intent); (2) run a fresh-eyes verification pass against the live tree as was done
-for the H2/H3 blocks (the two-process spawn model touches lifecycle, doctor reap re-scope, the
-`build_debug_sink` "mcp-server" vs "adapter" role label from PINS.md SS5, and the debug-dir
-mismatch the H6 executor already flagged: `src/debug.rs` uses `%LOCALAPPDATA%\ghostlight` per-user,
-NOT the task's stated `%ProgramData%\ghostlight` -- reuse debug.rs's actual per-user dir per the
-task's own "do not invent a new dir"); (3) also check the H7/H8 ripple for any assumption that the
-winning process is the in-process service; (4) re-issue H6 in the LEDGER, re-scope the workflow
-script (`.../scratchpad/hub-batch-workflow.js`, currently H3-H8) to H6-H8, and resume. Anti-squat
-HMAC + job-breakaway need additive Cargo.toml deps (`hmac`/`rand` + windows-sys
-`Win32_Security_Cryptography`/`Win32_System_JobObjects`) that no prior task added.
+**RESOLVED 2026-07-04 by a frontier-author AMENDMENT (ratified by the user), NOT a patch.** The H6
+block exposed that the whole "detached, job-breakaway-verified child service" mechanism was the wrong
+mechanism (Windows in-job breakaway is not reliably achievable, and H2's in-process-service election
+had welded the service's lifetime to the first client -- a latent orphan cascade). ADR-0030
+Decision 8 (and Decision 1's role topology) were AMENDED to the ALWAYS-READY-SERVICE model:
+
+- The service is a STANDALONE process started by argv (`ghostlight service`), launched by an OS
+  supervisor (new H9) or the user; it owns both endpoints + the extension link, multiplexes adapter
+  sessions, runs NO parent-death watchdog, and idle-grace-shuts-down. Every MCP invocation is a THIN
+  ADAPTER (connect + relay + supervisor self-heal if down; dies with its editor). Role is decided by
+  ARGV, not a claim race. NO promotion, NO in-process service, NO on-demand in-editor spawn, NO
+  breakaway -- that mechanism is DELETED, not built.
+- "The one sacred thing is user DELIGHT": `peer_death.rs`, `mcp_protocol.rs`, and the one spawning
+  `all_open_golden.rs` test are MOVABLE HARNESS -- H6 updates their spawn choreography to the
+  standalone-service topology, preserving every assertion. The trained schemas + the extension wire
+  stay frozen (they ARE the delight).
+
+Executed amendment (all committed with this LEDGER update): ADR-0030 Decision 8/1/Migration/
+Consequences/Provenance + the delight reframe of "Preserved invariants"; PINS.md SS5 REWRITTEN
+(SS5.1-SS5.6: argv dispatch, thin adapter + self-heal, anti-squat HMAC, idle-grace, label/doctor
+re-scope, deps) + SS8 seam corrected (`start_service`); H6 re-authored to the model; NEW H9
+(installer auto-start); BOOTSTRAP sequence (H0-H9) + never-touch reframed. Additive Cargo.toml deps
+are now `hmac`/`sha2`/`getrandom` ONLY (NO windows-sys job/crypto features -- breakaway is deleted).
+
+Cross-cutting note for H7/H8 (and stale phrasing in H3/H4/H5/SS9): after the amendment the SERVICE
+NO LONGER serves its own stdio session (it is a standalone `ghostlight service`; every session is an
+adapter or, at H8, a web session). Wherever an older task file says "the service's own lone stdio
+session," ignore that clause -- it no longer exists. The substantive point it supported (every
+session carries a REAL `SessionGuid`, there is no `None` branch; new shared cross-session state is a
+`ServiceContext` field) is UNCHANGED. H6 adds the `live_sessions` field the same way.
 
 ## Status
 
@@ -102,9 +107,10 @@ HMAC + job-breakaway need additive Cargo.toml deps (`hmac`/`rand` + windows-sys
 | H3 | Adapter-minted GUID identity + peer-cred binding | DONE | 81b3bea | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED attempt superseded, see Log |
 | H4 | Binary-authoritative cross-session tab isolation | DONE | 1490951 | |
 | H5 | Reconnect grace window + honest bounded queue | DONE | 33b361d | |
-| H6 | Detached non-admin lifecycle + anti-squat | BLOCKED | -- | conflicts with tests/peer_death.rs; see Log |
+| H6 | Always-ready service + thin adapters + anti-squat | pending | -- | RE-ISSUED under the Decision 8 amendment (was BLOCKED); reshapes H2's election; see Log + RESUME HERE |
 | H7 | Tab-group-per-session presentation | pending | -- | crosses the JS boundary |
 | H8 | Local web API = TCP; bind per policy | pending | -- | needs H2+H3+H4; the corrected D2/D5 |
+| H9 | Installer auto-start (register+start supervisor) | pending | -- | NEW; needs H6; mostly command/file builders + install wiring |
 
 Status values: `pending` | `in-progress` | `DONE` | `BLOCKED`.
 
