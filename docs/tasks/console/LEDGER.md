@@ -8,9 +8,9 @@ fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**K3 is NEXT (`K3-config-provenance-api.md`).** K1 and K2 are DONE and committed. Read
-`docs/tasks/console/BOOTSTRAP.md` in full, then `K3-config-provenance-api.md` and the PINS.md
-sections it cites (CS1, CS2). Follow the per-task procedure in BOOTSTRAP.md exactly.
+**K4 is NEXT (`K4-live-sessions-api.md`).** K1, K2, K3 are DONE and committed. Read
+`docs/tasks/console/BOOTSTRAP.md` in full, then `K4-live-sessions-api.md` and the PINS.md sections
+it cites (CS1, CS3, CS9). Follow the per-task procedure in BOOTSTRAP.md exactly.
 
 ## Status
 
@@ -18,7 +18,7 @@ sections it cites (CS1, CS2). Follow the per-task procedure in BOOTSTRAP.md exac
 | --- | --- | --- | --- | --- |
 | K1 | Config + session read accessors; shared config-write function | DONE | 908e1d9 | no HTTP, no UI; PINS.md CS6-CS9; see Log for D1 |
 | K2 | Console static GET routes in src/hub/webapi.rs | DONE | 7eea843 | needs K1; PINS.md CS1, CS10, CS11; see Log for D1 |
-| K3 | GET /api/v1/config + config table UI | pending | -- | needs K2; PINS.md CS2 |
+| K3 | GET /api/v1/config + config table UI | DONE | d8ada7b | needs K2; PINS.md CS2 |
 | K4 | GET /api/v1/sessions + sessions UI | pending | -- | needs K2; PINS.md CS3 |
 | K5 | POST /api/v1/config/webapi-enable-remote + UI control | pending | -- | needs K1+K2; PINS.md CS4, CS5 |
 
@@ -142,6 +142,44 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   No NEVER-touch fence moved.
 - Note: `CARGO_TARGET_DIR` was pointed at a scratch directory for build-artifact routing only, not
   a source or test change.
+
+### K3
+
+- Verified all as-of-authoring facts in `K3-config-provenance-api.md` and PINS.md CS1/CS2 against
+  the live tree: K1's `current_resolution()`/`Resolution::iter()`/`Source::as_str()` and K2's
+  router/`is_known_console_path` matched exactly; `key_def`/`KeyDef.description` were reachable
+  and public. No STOP precondition fired.
+- Implemented per PINS.md CS1/CS2: a new `("GET", "/api/v1/config")` match arm calls
+  `write_config_response`, which iterates `ctx.store.current_resolution()` in registry order and
+  builds the exact pinned JSON shape (`key`, `value`, `source`, `locked`, `description`); added
+  `/api/v1/config` to `is_known_console_path` so a wrong method on it correctly 405s once exercised.
+  `console.js` now fetches and renders the table (value / layer / locked badge); no specific
+  byte-for-byte markup was pinned, matching the task's own latitude.
+- D1 (author latitude used, not a correction): the task file's own test guidance warned against
+  hardcoding a guessed registry key count. Verified this concern is real -- `spawn_service` reads
+  this machine's own real, un-isolated user config path (`load::user_config_path()` has no test
+  override, confirmed again here) -- so `config_api_returns_every_registered_key_in_registry_order`
+  asserts STRUCTURAL shape only (key count/order from the live `ghostlight::governance::config::
+  KEYS` registry itself, valid `source` enum, boolean `locked`, non-empty `description`), never a
+  specific pre-existing key's exact default value or source. The org-mandatory test instead asserts
+  an exact `source`/`locked`/`value` for `audit.enabled`, which is safe regardless of this
+  machine's real user-layer state since org-mandatory always outranks user in the resolution
+  precedence. Added `spawn_service_with_program_data_and_webapi_port` to `tests/support/mod.rs`
+  (combines the two independent existing overrides; no existing helper's body changed). Impact on
+  later tasks: K4's own sessions test should follow the SAME "assert structure/known-safe facts,
+  never an arbitrary pre-existing machine's real config state" discipline if it ever touches
+  config data (it does not; K4 only reads session/tab state, which is process-local and does not
+  have this hazard).
+- Verification: all four commands passed for real. `cargo build --all-targets` clean. `cargo test`
+  green: 465 lib tests (unchanged -- no new lib-level unit tests this task) plus every integration
+  suite, 0 failed -- including the new `tests/console_config_api.rs` (3/3), `tests/
+  console_static_routes.rs` (5/5, unaffected), and H8's own `tests/webapi_auth.rs` (3/3)/
+  `tests/channels_policy.rs` (1/1) unmodified. `cargo clippy --all-targets -- -D warnings` clean.
+  `cargo fmt --all -- --check` clean (after one `cargo fmt --all` normalization pass, whitespace
+  only). Sacred tests green and byte-unmodified (`git diff --stat` confirms zero diff on all of
+  them). Only `src/hub/console/console.js`, `src/hub/webapi.rs`, `tests/support/mod.rs`, plus the
+  new `tests/console_config_api.rs` changed. No NEVER-touch fence moved.
+- Note: `CARGO_TARGET_DIR` was pointed at a scratch directory for build-artifact routing only.
 
 ## Deviation format
 
