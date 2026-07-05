@@ -40,7 +40,7 @@ use crate::hub::session::SessionGuid;
 use crate::hub::ServiceContext;
 use crate::transport::executor::Browser;
 use crate::transport::mcp::pipeline;
-use crate::transport::mcp::tools::TOOLS_JSON;
+use crate::transport::mcp::tools::{agent_guide_text, TOOLS_JSON};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::Result;
 use serde_json::{json, Value};
@@ -610,6 +610,11 @@ fn initialize_result() -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "ghostlight", "version": env!("CARGO_PKG_VERSION") },
+        // ADR-0031 Decision 1: the agent onboarding guide, rendered verbatim from the fixture's
+        // top-level agentGuide section. Served once at handshake so any model -- trained on this
+        // surface or not -- gets the workflow contract (every tab-touching tool requires a tabId;
+        // get one from tabs_context_mcp first) without deriving it from per-tool descriptions.
+        "instructions": agent_guide_text(),
     })
 }
 

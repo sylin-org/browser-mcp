@@ -12,7 +12,7 @@ from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**o03 (Emit initialize.instructions from agentGuide) is NEXT.** o01 and o02 landed.
+**o04 (Hard-fail schema validation with corrective errors) is NEXT.** o01, o02, o03 landed.
 
 ## o01 -- Reconcile ADR-0031
 
@@ -20,7 +20,27 @@ Status: DONE (0157fa1).
 
 ## o02 -- Add agentGuide + per-tool example to tools.json
 
+Status: DONE (8965581).
+
+## o03 -- Emit initialize.instructions from agentGuide
+
 Status: DONE (this commit).
+
+Files: `src/transport/mcp/tools.rs` (new `agent_guide_text()` helper + 2 inline unit tests; the
+module grew from a single const to a real helper module), `src/transport/mcp/server.rs`
+(`initialize_result` gains an `instructions` field; the import widens to bring in
+`agent_guide_text`).
+
+What landed: MCP `initialize` now carries the agent onboarding guide (ADR-0031 Decision 1). The
+helper parses the fixture's top-level `agentGuide` and concatenates the four fields (summary,
+workflow, flow, denials) into the single string MCP's `instructions` field expects. The service
+constructs nothing -- pure passthrough of the fixture's prose. The `instructions` field is
+additive, so the existing initialize-touching tests (mcp_protocol, all_open_golden) pass
+unchanged.
+
+Verification: 569 tests pass (was 567; +2 new inline unit tests on `agent_guide_text`), clippy
+`-D warnings` clean, fmt clean. The two new tests pin: all four agentGuide fields render verbatim
+in order, and the flow line is labeled ("Typical flow:") so a reader recognizes the spine.
 
 Files: `src/transport/mcp/schemas/tools.json` (additive only).
 
