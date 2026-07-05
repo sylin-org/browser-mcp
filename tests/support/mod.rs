@@ -81,6 +81,28 @@ pub fn spawn_service_with_program_data(endpoint: &str, program_data_dir: &Path) 
     child
 }
 
+/// Like [`spawn_service`], but with `GHOSTLIGHT_WEBAPI_PORT` forwarded (PINS.md CS11,
+/// `docs/tasks/console`: avoids a fixed-port collision between concurrently-spawned real services
+/// in `cargo test`'s default parallel test execution). Console-batch tests that fetch the real
+/// web API over TCP use this instead of [`spawn_service`].
+pub fn spawn_service_with_webapi_port(endpoint: &str, port: u16) -> Child {
+    let log_dir = log_dir_for(endpoint);
+    let _ = std::fs::remove_dir_all(&log_dir);
+    let child = Command::new(bin())
+        .arg("service")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_DEBUG", "1")
+        .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn ghostlight service");
+    wait_for_debug_state(&log_dir, Duration::from_secs(15));
+    child
+}
+
 /// Spawn a bare `ghostlight` invocation (the thin ADAPTER) with piped stdin/stdout, relaying to the
 /// SERVICE already running on `endpoint`. Because the service is spawned FIRST and awaited-ready
 /// ([`spawn_service`]), the adapter's first dial succeeds and the self-heal path is never taken --

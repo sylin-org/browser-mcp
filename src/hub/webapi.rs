@@ -11,10 +11,17 @@
 //! default policy fragment is `channels.webapi.from: [allow: "localhost"]` (the ADR-0019 builtin
 //! layer, contributed per-adapter), so with no overlay it binds `127.0.0.1` explicitly, never
 //! `0.0.0.0`; a remote bind happens ONLY because a user/org layer opened it
-//! ([`resolve_bind`] is a PURE function of the resolved allowlist -- no other input). This task
-//! does not yet wire a `ConfigStore`-resolved override for `channels.webapi.from`/`webapi.bind`
-//! (deferred -- see the H8 ledger entry); today the running service always resolves to the
-//! builtin default, which is the ONLY case any pinned test exercises.
+//! ([`resolve_bind`] is a PURE function of the resolved allowlist -- no other input). The bind
+//! address is resolved ONCE at startup from the live `ConfigStore` (`live_channels_webapi_from`,
+//! PINS.md CS8.2, `docs/tasks/console`); per-connection AUTHORIZATION re-reads it fresh on every
+//! accepted connection, so a policy edit takes effect without a service restart even though the
+//! TCP bind itself does not move until the next restart.
+//!
+//! The Console (PINS.md CS1/CS10, `docs/tasks/console`) is served from this SAME listener: a
+//! strictly additive router ahead of the WS-upgrade handshake below answers the Console's own
+//! non-sacred GET/POST routes (an embedded static page plus a small JSON API), gated by the SAME
+//! `channels.webapi.from` decision. A request that IS a WS-upgrade attempt is completely
+//! unaffected by this router.
 //!
 //! Authorization is the `channels.webapi.from` policy, decided by
 //! [`crate::governance::channels::ChannelsPdp`] on the connecting SOURCE (Origin, or the peer's
@@ -32,6 +39,7 @@
 
 use crate::governance::channels::ChannelsPdp;
 use crate::governance::ports::{Decision, PolicyDecisionPoint};
+use crate::hub::console_assets;
 use crate::hub::session::SessionGuid;
 use crate::hub::ServiceContext;
 use std::net::{IpAddr, SocketAddr};
@@ -56,6 +64,17 @@ pub const REMOTE_WEBAPI_BIND: &str = "0.0.0.0";
 
 /// PINNED default port, `docs/tasks/hub/PINS.md` SS7.
 pub const DEFAULT_WEBAPI_PORT: u16 = 4180;
+
+/// The web API TCP port: the `GHOSTLIGHT_WEBAPI_PORT` env override (PINS.md CS11,
+/// `docs/tasks/console` -- tests and advanced deployments that run more than one isolated
+/// instance on a host), else [`DEFAULT_WEBAPI_PORT`]. Mirrors
+/// `native::ipc::default_endpoint`'s exact override convention.
+pub fn resolve_webapi_port() -> u16 {
+    std::env::var("GHOSTLIGHT_WEBAPI_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_WEBAPI_PORT)
+}
 
 /// The pure "resolved allowlist -> bind address" function (ADR-0030 Decision 9, H8 Required
 /// behavior item 2; `tests/webapi_auth.rs`). Its ONLY input is the resolved
@@ -119,7 +138,8 @@ fn live_channels_webapi_from(
 pub async fn run(ctx: ServiceContext) {
     let allowlist = live_channels_webapi_from(&ctx.store);
     let bind = resolve_bind(&allowlist);
-    let addr = format!("{bind}:{DEFAULT_WEBAPI_PORT}");
+    let port = resolve_webapi_port();
+    let addr = format!("{bind}:{port}");
     let listener = match TcpListener::bind(&addr).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -181,15 +201,36 @@ async fn handle_connection(
         }
     };
 
+    // PINS.md CS1 (`docs/tasks/console`): the Console's own router runs BEFORE the
+    // Sec-WebSocket-Key-required check below, and claims a request only when it is NOT a
+    // WS-upgrade attempt (no `Upgrade: websocket` header) and either matches a known Console
+    // route or falls under `/` or `/api/v1/**` (the 404/405 fallback scope). Anything it does not
+    // claim -- a WS-upgrade attempt, or any other plain HTTP path -- falls through completely
+    // unchanged to the EXISTING logic below.
+    let is_ws_attempt = header(&request.headers, "Upgrade")
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    let stripped_path = strip_query(&request.path);
+    let in_console_scope = stripped_path == "/" || stripped_path.starts_with("/api/v1/");
+    if !is_ws_attempt && (in_console_scope || is_known_console_path(stripped_path)) {
+        return route_console_request(
+            &mut stream,
+            &request.method,
+            stripped_path,
+            &request.headers,
+            &ctx,
+            &allowlist,
+            peer_addr,
+        )
+        .await;
+    }
+
     let Some(client_key) = header(&request.headers, "Sec-WebSocket-Key") else {
         write_http_error(&mut stream, 400, "Bad Request").await?;
         return Ok(());
     };
     let client_key = client_key.to_string();
-    let is_upgrade = request.method.eq_ignore_ascii_case("GET")
-        && header(&request.headers, "Upgrade")
-            .map(|v| v.eq_ignore_ascii_case("websocket"))
-            .unwrap_or(false);
+    let is_upgrade = request.method.eq_ignore_ascii_case("GET") && is_ws_attempt;
     if !is_upgrade {
         write_http_error(&mut stream, 400, "Bad Request").await?;
         return Ok(());
@@ -209,20 +250,9 @@ async fn handle_connection(
     // 5); a non-browser caller with no Origin falls back to the classified peer source so the
     // channels decision still runs (Required behavior item 3: anonymous is a first-class
     // principal, never a hardcoded gate).
-    let peer_source = classify_source(peer_addr.ip());
-    let source = header(&request.headers, "Origin")
-        .and_then(origin_hostname)
-        .unwrap_or(peer_source);
-
-    let manifest_hash = ctx
-        .initial_policy
-        .manifest
-        .as_ref()
-        .map(|m| m.hash.clone())
-        .unwrap_or_default();
-    let pdp = ChannelsPdp::new(allowlist);
-    let decision_req = channel_decision_request(source.clone(), manifest_hash);
-    match pdp.decide(&decision_req) {
+    let (decision, source) =
+        channels_webapi_from_decide(&request.headers, peer_addr, &allowlist, &ctx);
+    match decision {
         Decision::Allow { .. } => {}
         other => {
             tracing::info!(source = %source, decision = ?other, "web API connection refused by channels.webapi.from");
@@ -246,6 +276,126 @@ async fn handle_connection(
     let guid = SessionGuid::mint();
     let ws = WsStream::new(stream, leftover);
     crate::transport::mcp::server::serve_session(ws, ctx, guid).await
+}
+
+/// The `channels.webapi.from` decision (ADR-0030 Decision 5), shared by the WS-upgrade handshake
+/// and the Console's own routes (PINS.md CS1, `docs/tasks/console`): the connecting source is the
+/// `Origin` header when present, else the classified peer address (anonymous is a first-class
+/// principal, never a hardcoded gate). Returns the full [`Decision`] (not just a bool) so a caller
+/// can log the SAME detail the original WS-upgrade path always has.
+fn channels_webapi_from_decide(
+    headers: &[(String, String)],
+    peer_addr: SocketAddr,
+    allowlist: &[String],
+    ctx: &ServiceContext,
+) -> (Decision, String) {
+    let peer_source = classify_source(peer_addr.ip());
+    let source = header(headers, "Origin")
+        .and_then(origin_hostname)
+        .unwrap_or(peer_source);
+    let manifest_hash = ctx
+        .initial_policy
+        .manifest
+        .as_ref()
+        .map(|m| m.hash.clone())
+        .unwrap_or_default();
+    let pdp = ChannelsPdp::new(allowlist.to_vec());
+    let decision_req = channel_decision_request(source.clone(), manifest_hash);
+    (pdp.decide(&decision_req), source)
+}
+
+/// The portion of `path` before an optional `?` query string (PINS.md CS1.4): every Console route
+/// match strips it exactly once, here, so a query string never affects routing.
+fn strip_query(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
+
+/// PINS.md CS1: every path THIS batch's Console router recognizes, regardless of method --
+/// distinguishes a 404 ("no such path") from a 405 ("wrong method on a path that exists"). Grows
+/// as later tasks (K3/K4/K5) add their own routes.
+fn is_known_console_path(stripped_path: &str) -> bool {
+    matches!(stripped_path, "/" | "/console.css" | "/console.js")
+}
+
+/// PINS.md CS1/CS10: the Console's own router. Authorizes the connecting source against
+/// `channels.webapi.from` (the SAME decision the WS-upgrade path uses, CS1.3's 403), then serves a
+/// known static asset, or answers 404/405 per CS1.1/CS1.2. Reached only for a request
+/// `handle_connection` determined is NOT a WS-upgrade attempt and IS in the Console's route scope.
+async fn route_console_request(
+    stream: &mut TcpStream,
+    method: &str,
+    stripped_path: &str,
+    headers: &[(String, String)],
+    ctx: &ServiceContext,
+    allowlist: &[String],
+    peer_addr: SocketAddr,
+) -> crate::Result<()> {
+    // CS1.3: identical shape to the existing WS-upgrade 403 -- the SAME `write_http_error` call,
+    // no JSON body.
+    let (decision, source) = channels_webapi_from_decide(headers, peer_addr, allowlist, ctx);
+    if !matches!(decision, Decision::Allow { .. }) {
+        tracing::info!(source = %source, decision = ?decision, "Console request refused by channels.webapi.from");
+        write_http_error(stream, 403, "Forbidden").await?;
+        return Ok(());
+    }
+
+    match (method, stripped_path) {
+        ("GET", "/") => {
+            write_asset(
+                stream,
+                "text/html; charset=utf-8",
+                console_assets::INDEX_HTML,
+            )
+            .await
+        }
+        ("GET", "/console.css") => {
+            write_asset(
+                stream,
+                "text/css; charset=utf-8",
+                console_assets::CONSOLE_CSS,
+            )
+            .await
+        }
+        ("GET", "/console.js") => {
+            write_asset(
+                stream,
+                "application/javascript; charset=utf-8",
+                console_assets::CONSOLE_JS,
+            )
+            .await
+        }
+        _ if is_known_console_path(stripped_path) => {
+            write_plain_error(stream, 405, "Method Not Allowed", "method not allowed").await
+        }
+        _ => write_plain_error(stream, 404, "Not Found", "not found").await,
+    }
+}
+
+/// Serve one embedded Console asset (PINS.md CS10) verbatim, with a `Content-Length` computed
+/// from its actual UTF-8 byte length.
+async fn write_asset(stream: &mut TcpStream, content_type: &str, body: &str) -> crate::Result<()> {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
+/// A plain-text error response for the Console's own routes (PINS.md CS1.1/CS1.2): the exact
+/// literal ASCII body, no trailing newline.
+async fn write_plain_error(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> crate::Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
 }
 
 /// Build the minimal [`crate::governance::ports::DecisionRequest`] a channels decision needs
@@ -300,6 +450,10 @@ fn origin_hostname(origin: &str) -> Option<String> {
 
 struct HttpRequest {
     method: String,
+    /// The request line's raw target (PINS.md CS1.4, `docs/tasks/console`), e.g.
+    /// `/api/v1/config` or `/api/v1/config?x=1`. NOT stripped of a query string here -- the
+    /// Console router (`route_console_request`) strips it once, consistently, for every route.
+    path: String,
     headers: Vec<(String, String)>,
 }
 
@@ -315,11 +469,19 @@ fn parse_http_request(buf: &[u8]) -> Option<(HttpRequest, usize)> {
     let request_line = lines.next()?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?.to_string();
+    let path = parts.next()?.to_string();
     let headers = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         .collect();
-    Some((HttpRequest { method, headers }, header_end + 4))
+    Some((
+        HttpRequest {
+            method,
+            path,
+            headers,
+        },
+        header_end + 4,
+    ))
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
