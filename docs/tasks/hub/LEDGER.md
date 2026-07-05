@@ -46,7 +46,7 @@ Follow the per-task procedure in `BOOTSTRAP.md`.
 | H1 | Transport-generic serve_session + ServiceContext | DONE | 4463b07 | |
 | H2 | Persistent service + thin adapter + multiplex | DONE | 96a54fb | landed on the RE-ISSUED, two-endpoint-amended task; prior BLOCKED attempt superseded, see Log |
 | H3 | Adapter-minted GUID identity + peer-cred binding | DONE | 81b3bea | RE-ISSUED after PINS.md SS9 fix; prior BLOCKED attempt superseded, see Log |
-| H4 | Binary-authoritative cross-session tab isolation | DONE | pending-hash | |
+| H4 | Binary-authoritative cross-session tab isolation | DONE | 1490951 | |
 | H5 | Reconnect grace window + honest bounded queue | pending | -- | orthogonal after H2 |
 | H6 | Detached non-admin lifecycle + anti-squat | pending | -- | job-breakaway is the acceptance gate |
 | H7 | Tab-group-per-session presentation | pending | -- | crosses the JS boundary |
