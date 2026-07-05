@@ -36,6 +36,9 @@ history live here.
 | [0026](0026-release-maturity-and-externalities.md) | Release maturity and externalities sequencing (license, CI, spec currency, syslog + managed://, extension JS coverage, live-verify) | Accepted |
 | [0027](0027-open-core-business-model-and-licensing.md) | Open-core business model and licensing (permissive engine, commercial source-available governance module) | Accepted (supersedes ADR-0021 whole-repo license stance) |
 | [0028](0028-tripwire-licensing-and-continuity-promise.md) | Tripwire licensing, tiers, and the Continuity Promise (purely observational license keys; never phone home) | Accepted |
+| [0029](0029-process-lifecycle-hygiene.md) | Process lifecycle hygiene: parent-death watchdog and doctor --fix reaper (re-scoped to the thin adapter by ADR-0030 Decision 8) | Accepted (amended by ADR-0030 D8) |
+| [0030](0030-ghostlight-hub-orchestrator.md) | Ghostlight Hub: the multi-client orchestrator service (persistent service, multiplexed adapter sessions, local web API + Console) | Accepted |
+| [0031](0031-agent-onboarding-contract.md) | Agent onboarding contract: tools.json as the single source of agent-facing truth (initialize.instructions workflow preamble, per-tool examples, corrective validation errors) | Accepted (amends ADR-0007) |
 
 ## Conventions
 
