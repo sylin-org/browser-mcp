@@ -35,6 +35,22 @@
     return el;
   }
 
+  // --- Subtree mutation counter (shared by wait_for's settle detector and the consequence-digest
+  // sampler): one permanent MutationObserver, lazily started, that only increments a counter -- no
+  // node retention, so a hostile page cannot bloat memory. wait_for reads this in 500ms windows;
+  // the observe pair reads the delta across a 300ms settle sample (ADR-0037 D2/D5). ---
+  let mutationCounter = 0;
+  let rootObserver = null;
+  function ensureRootObserver() {
+    if (rootObserver) return;
+    rootObserver = new MutationObserver(() => { mutationCounter += 1; });
+    rootObserver.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+  }
+  function readMutations() {
+    ensureRootObserver();
+    return mutationCounter;
+  }
+
   // --- Role / name / interactivity / visibility ---
   const TAG_ROLE = {
     a: "link", button: "button", input: "textbox", textarea: "textbox", select: "combobox",
@@ -496,19 +512,18 @@
     return new Promise((resolve) => {
       const startedAt = Date.now();
       const deadline = startedAt + spec.timeout_ms;
-      let mutationCount = 0; // subtree-wide counter incremented by the observer since the last poll.
+      let lastRead = readMutations(); // baseline mutation count at wait start
       let windowStart = startedAt;
       let windowCount = 0;
       let lastSettled = false; // the return of the detector's most recent push().
       const detector = (self.GhostlightSettle || GhostlightSettle).createSettleDetector();
-      const observer = new MutationObserver(() => { mutationCount += 1; });
-      observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
       const poll = () => {
         const now = Date.now();
         const elapsed = now - startedAt;
         // Fold this poll's mutations into the open 500ms window; close the window when it elapses.
-        windowCount += mutationCount;
-        mutationCount = 0;
+        const cur = readMutations();
+        windowCount += cur - lastRead;
+        lastRead = cur;
         if (now - windowStart >= 500) {
           lastSettled = detector.push(windowCount);
           windowStart = now;
@@ -518,7 +533,6 @@
         const settled = lastSettled;
         const minMet = elapsed >= spec.min_ms;
         if (cond.ok && (!spec.settle || settled) && minMet) {
-          observer.disconnect();
           resolve({
             found: cond.ok,
             settled: spec.settle ? settled : undefined,
@@ -530,7 +544,6 @@
           return;
         }
         if (now >= deadline) {
-          observer.disconnect();
           resolve({
             timeout: true,
             rate: detector.lastRate,
@@ -542,6 +555,77 @@
         setTimeout(poll, 250);
       };
       setTimeout(poll, 250);
+    });
+  }
+
+  // --- Consequence digest sampler (ADR-0037 D2, PINS.md SS10): the SW calls observeSnap before a
+  // mutating action and observeSample after. observeSample waits the 300ms settle window, then
+  // diffs url/title/focus and counts mutations since the snap; alert/status elements whose text
+  // was NOT present at snap time are "newly appeared" (first 200 chars of textContent); a
+  // role=dialog present at sample but not at snap is reported. formatObservation (lib/observation.js,
+  // a content-script global via the manifest) renders the digest; this function returns the finished
+  // string and its structured twin so the SW appends the string verbatim. ---
+  function roleTexts(roles) {
+    const out = {};
+    for (const el of collectAll(document)) {
+      const r = el.getAttribute && el.getAttribute("role");
+      if (r && roles.includes(r) && visible(el)) {
+        const t = (el.textContent || "").trim().slice(0, 200);
+        if (t) {
+          (out[r] = out[r] || []).push(t);
+        }
+      }
+    }
+    return out;
+  }
+
+  function focusedName() {
+    const ae = document.activeElement;
+    if (!ae || ae.tagName && ae.tagName.toLowerCase() === "body") return "";
+    return (accessibleName(ae) || "").trim();
+  }
+
+  function observeSnap() {
+    const rt = roleTexts(["alert", "status", "dialog"]);
+    return {
+      url: location.href,
+      title: document.title || "",
+      focus: focusedName(),
+      mutations: readMutations(),
+      alerts: rt.alert || [],
+      statuses: rt.status || [],
+      dialogPresent: !!(rt.dialog && rt.dialog.length),
+    };
+  }
+
+  function observeSample(before) {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const url = location.href;
+        const title = document.title || "";
+        const focus = focusedName();
+        const mutations = readMutations() - (before.mutations || 0);
+        const rt = roleTexts(["alert", "status", "dialog"]);
+        const newAlert = (rt.alert || []).find((t) => !(before.alerts || []).includes(t)) || "";
+        const newStatus = (rt.status || []).find((t) => !(before.statuses || []).includes(t)) || "";
+        const dialogNow = !!(rt.dialog && rt.dialog.length);
+        const dialogAppeared = dialogNow && !before.dialogPresent;
+        const fmt = (self.GhostlightObservation || GhostlightObservation).formatObservation;
+        const sig = { mutations };
+        if (url !== before.url) sig.url = url;
+        if (title !== before.title) sig.title = title;
+        if (focus && focus !== before.focus) sig.focus = focus;
+        if (newAlert) sig.alert = newAlert;
+        if (newStatus) sig.status = newStatus;
+        if (dialogAppeared) sig.dialog = true;
+        const structured = { mutations };
+        if (sig.url) structured.url_changed = sig.url;
+        if (sig.title) structured.title_changed = sig.title;
+        if (sig.focus) structured.focus = sig.focus;
+        if (sig.alert) structured.alert = sig.alert;
+        if (sig.dialog) structured.dialog_appeared = true;
+        resolve({ digest: fmt(sig), structured });
+      }, 300);
     });
   }
 
@@ -561,6 +645,11 @@
       }
       case "waitFor": {
         runWaitFor(msg.spec).then((result) => sendResponse({ result }));
+        return true;
+      }
+      case "observeSnap": sendResponse({ result: observeSnap() }); return true;
+      case "observeSample": {
+        observeSample(msg.before).then((result) => sendResponse({ result }));
         return true;
       }
       default:

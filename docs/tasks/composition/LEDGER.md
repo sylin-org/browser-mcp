@@ -5,8 +5,8 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C5 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C4. C1, C2, C3, C4 committed. C5 is
-SKIP-allowed; if it lands, C10's `observation` field carries the digest text, else C10 omits it.
+**C6 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C5. C1..C5 committed. C6 is
+SKIP-allowed; if it lands, read_page gains `diff` + stale-ref enrichment, else those stay deferred.
 
 ## Log
 
@@ -104,7 +104,7 @@ Template per task:
   whole per-tool JSON object (both index into specific keys), so the STOP precondition never
   applied and adding `outputSchema` required no test restructuring beyond the one new test.
 
-### C4: wait_for -- condition + adaptive settle detector -- DONE (<commit>)
+### C4: wait_for -- condition + adaptive settle detector -- DONE (532add5)
 - Baseline 592 -> 592 (cargo); node gate 17 -> 23 (settle.test.js adds 6).
 - `extension/lib/settle.js` (pure IIFE, exposes `self.GhostlightSettle`; `settleThreshold` +
   `createSettleDetector` per PINS SS9) loads as a content-script global and under node --test
@@ -151,3 +151,43 @@ Template per task:
   - D4: settle.js and settle.test.js were already present in the working tree as untracked files
     from a prior session; verified they match PINS SS9's oracles verbatim and pass (6/6) before
     building the rest of the task on top of them, rather than re-creating them.
+
+### C5: consequence digests on mutating actions -- DONE (<commit>)
+- Baseline 592 -> 592 (cargo); node gate 23 -> 27 (observation.test.js adds 4).
+- `extension/lib/observation.js` (pure IIFE, exposes `self.GhostlightObservation`; `formatObservation`
+  per PINS SS10 -- segment order url/title/mutations/focus/alert/status/dialog, `"; "` join,
+  `observation: ` prefix, `observation: no observable change` empty case, 400-char cap with `...`).
+  `extension/content.js`: lifted C4's per-wait `MutationObserver` into a shared module-scope counter
+  (`ensureRootObserver`/`readMutations`) so wait_for and the digest sampler share ONE observer (C5
+  STOP: do not add a second observer); `runWaitFor` now reads `readMutations()` deltas. Added the
+  `observeSnap`/`observeSample` message pair: snap captures url/title/focused-name/mutation-count
+  and the extant alert/status/dialog texts; sample waits 300ms, diffs, detects newly-appeared
+  role=alert/status text (first 200 chars) and role=dialog presence, runs `formatObservation` IN
+  content.js (per SS10's placement pin -- observation.js is a content-script global via the
+  manifest, NOT importScripts), and returns `{digest, structured}`.
+  `extension/service-worker.js`: `withObservation(tabId, run)` wraps a mutating action -- snap, run
+  the action, sample, append `"\n" + digest` to the existing confirmation text (untouched), merge
+  the structured twin into `structuredContent`. Wired the SS10 action set: computer left_click,
+  right_click, double_click, triple_click, hover, type, key, left_click_drag, scroll_to (each
+  guard clause stays a plain return -- no action, no observation -- only the real action body
+  wraps); form_input. Screenshot-returning actions (screenshot/zoom/scroll) and the `wait` sleep
+  are untouched. On-demand `content()` injection list grew to
+  `["lib/settle.js", "lib/observation.js", "content.js"]`. manifest.json content_scripts js =
+  `["lib/settle.js", "lib/observation.js", "content.js"]`; ci.yml node line appends
+  `observation.test.js` (PINS SS15 after-C5 values). No Rust changes (the digest twin is set on
+  results, not declared as outputSchema; ADR-0038 D2's vocabulary list does not require
+  computer/form_input outputSchema declarations in v1, so `output_schemas_present_exactly_where_declared`
+  stays unchanged).
+- Deviations:
+  - D1: the snap is taken by the SW calling `observeSnap` BEFORE the action and `observeSample`
+    AFTER (a two-message pair, with the before snapshot carried in the `observeSample` args), rather
+    than content.js owning the action boundary. PINS SS10 says "observe message pair around the
+    action from the SW side", which this matches; the SW is the natural owner of "when the action
+    happened". `withObservation` is the single chokepoint so no call site repeats the snap/sample
+    plumbing.
+  - D2: a content-script failure during snap or sample (e.g. the page navigated away mid-action)
+    degrades silently to the plain confirmation -- the observation is additive and never masks the
+    action's own result. This is the existing `content()` `hopError` discipline inverted for a
+    best-effort read; no test pins the degraded path (chrome.* is untestable from node).
+  - D3: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
+    reason as C1's D3). No source/test content changed by this.
