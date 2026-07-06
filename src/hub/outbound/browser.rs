@@ -47,7 +47,7 @@
 //! `id`, so no caller awaits a reply; [`Browser::route_reply`] drops an incoming `group_response`
 //! as an ordinary id-less event, same as any other frame nothing is waiting for.
 
-use crate::debug::DebugSink;
+use crate::observability::DebugSink;
 use crate::transport::native::host;
 use crate::ToolError;
 use serde_json::{json, Value};

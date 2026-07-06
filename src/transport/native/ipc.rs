@@ -72,7 +72,10 @@ fn adapter_endpoint_name(endpoint: &str) -> String {
 /// `debug` is env-gated (see `main::run_native_host_role`): Chrome inherits its own environment
 /// when it launches this process and never passes `--debug`, so a native-host debug snapshot only
 /// exists when Chrome itself was started with `GHOSTLIGHT_DEBUG=1`. Its absence is normal.
-pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
+pub async fn relay_native_host(
+    endpoint: &str,
+    debug: &crate::observability::DebugSink,
+) -> Result<()> {
     let stream = connect(endpoint).await?;
     debug.ipc_note("connected to mcp-server endpoint");
     let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
@@ -127,7 +130,7 @@ pub async fn relay_native_host(endpoint: &str, debug: &crate::debug::DebugSink) 
 /// hello is built. `relay_adapter` runs exactly once per adapter process (called once from
 /// `run_as_adapter`, never in a loop), so this already satisfies "same adapter process reuses its
 /// GUID; a new adapter process mints a new one" with no `OnceLock` or extra plumbing needed.
-pub async fn relay_adapter(endpoint: &str, debug: &crate::debug::DebugSink) -> Result<()> {
+pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSink) -> Result<()> {
     let adapter_endpoint = adapter_endpoint_name(endpoint);
     let mut stream = dial_with_self_heal(&adapter_endpoint).await?;
     debug.ipc_note("connected to the service's adapter/control endpoint");

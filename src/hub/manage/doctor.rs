@@ -381,10 +381,10 @@ fn parse_session(raw: &str) -> Option<Session> {
 /// the directory itself means "no log directory available on this platform" -- distinct from an
 /// empty (or absent) directory, which yields `Some(dir)` with an empty row list.
 fn gather_sessions() -> (Option<PathBuf>, Vec<SessionRow>) {
-    let Some(dir) = crate::debug::log_dir() else {
+    let Some(dir) = crate::observability::log_dir() else {
         return (None, Vec::new());
     };
-    let rows = crate::debug::session_state_files(&dir)
+    let rows = crate::observability::session_state_files(&dir)
         .into_iter()
         .map(|path| {
             let name = path
@@ -430,7 +430,7 @@ fn print_sessions(log_dir: &Option<PathBuf>, rows: &[SessionRow], verbose: bool)
     } else {
         rows.len().min(6)
     };
-    let now = crate::debug::now_ms();
+    let now = crate::observability::now_ms();
     let mut shown_parsed = 0usize;
     for row in rows.iter().take(cap) {
         match row {
@@ -468,7 +468,7 @@ fn print_sessions(log_dir: &Option<PathBuf>, rows: &[SessionRow], verbose: bool)
     }) {
         println!(
             "  extension last seen {} ago (native-host pid {})",
-            crate::debug::fmt_ms(now.saturating_sub(newest_host.updated_ms as u128)),
+            crate::observability::fmt_ms(now.saturating_sub(newest_host.updated_ms as u128)),
             newest_host.pid
         );
     }
@@ -477,8 +477,8 @@ fn print_sessions(log_dir: &Option<PathBuf>, rows: &[SessionRow], verbose: bool)
 /// One session row. mcp-server sessions additionally show the recorded client and extension link
 /// state; every other role (today only native-host) shows just pid + timing.
 fn session_row(s: &Session, now: u128) -> String {
-    let started_ago = crate::debug::fmt_ms(now.saturating_sub(s.started_ms as u128));
-    let active_ago = crate::debug::fmt_ms(now.saturating_sub(s.updated_ms as u128));
+    let started_ago = crate::observability::fmt_ms(now.saturating_sub(s.started_ms as u128));
+    let active_ago = crate::observability::fmt_ms(now.saturating_sub(s.updated_ms as u128));
     if s.role == "mcp-server" {
         format!(
             "  {:<12} pid {}  started {} ago  active {} ago  client {}  extension {}",

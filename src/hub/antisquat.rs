@@ -3,7 +3,7 @@
 //!
 //! Defeats a NAIVE or CROSS-USER process that squats the well-known adapter/control endpoint name
 //! without knowing the per-install secret: the genuine SERVICE proves possession of a 32-byte,
-//! per-user secret (`hub-key`, under `crate::debug::log_dir()`) to every connecting ADAPTER via an
+//! per-user secret (`hub-key`, under `crate::observability::log_dir()`) to every connecting ADAPTER via an
 //! HMAC-SHA256 proof over the adapter's own hello bytes, before the adapter relays a single byte
 //! of its stdio. This is defense-in-depth, not a same-user sandbox: a determined same-user process
 //! can read any same-user file (Decision 8).
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// The per-install secret's filename under `crate::debug::log_dir()` (PINS.md SS5.3): PER-USER,
+/// The per-install secret's filename under `crate::observability::log_dir()` (PINS.md SS5.3): PER-USER,
 /// never a machine-wide directory (that corrected an earlier `%ProgramData%` draft). Created
 /// lazily on the first `run_service` start if absent.
 const HUB_KEY_FILE: &str = "hub-key";
@@ -27,7 +27,7 @@ const HUB_KEY_FILE: &str = "hub-key";
 pub const REFUSAL_MESSAGE: &str = "refusing to connect: the Ghostlight service on this endpoint is not the one this user installed";
 
 fn hub_key_path() -> std::io::Result<PathBuf> {
-    let dir = crate::debug::log_dir().ok_or_else(|| {
+    let dir = crate::observability::log_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no per-user data directory available for the hub-key",

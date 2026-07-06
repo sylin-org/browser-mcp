@@ -27,13 +27,13 @@
 //! cross-reference from the ORIGINAL single-session decision this multiplexes past.
 
 use crate::browser::pattern;
-use crate::debug::DebugSink;
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::manifest::source;
 use crate::governance::manifest::source::LoadedPolicy;
 use crate::hub::outbound::browser::Browser;
 use crate::native::ipc;
+use crate::observability::DebugSink;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -144,7 +144,7 @@ pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     // orphaned predecessor ADAPTER whose editor exited but that did not terminate. The SERVICE has
     // no client parent and idle-graces instead (see `run_service_loop`), so it is never a reap
     // target. Best-effort and safe (only parent-dead orphans; see `doctor::reap`).
-    crate::doctor::sweep_orphans();
+    crate::hub::manage::doctor::sweep_orphans();
     // The MCP client that spawned us, captured before the runtime starts (ADR-0029). None (no
     // resolvable parent) simply skips the watchdog below and leaves stdin EOF as the sole exit
     // trigger.
@@ -371,7 +371,7 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
     if !debug {
         return DebugSink::disabled();
     }
-    let Some(dir) = crate::debug::log_dir() else {
+    let Some(dir) = crate::observability::log_dir() else {
         tracing::warn!("no log directory available; running without debug observability");
         return DebugSink::disabled();
     };
