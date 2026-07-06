@@ -1,45 +1,60 @@
 # 0035. The `script` tool: sequential multi-tool composition
 
 - Status: Accepted
-- Date: 2026-07-06
+- Date: 2026-07-06 (amended same day: pre-implementation correction pass against the live
+  pipeline -- reference resolution re-grounded on structured results, denial/hold visibility
+  fixed, parent audit flipped, dry-run + idempotency + budget added)
 
 ## Relationship to other decisions
 
 - BUILDS ON ADR-0034 (the capability & transport registry): `script` is a browser-capability tool
   that orchestrates the browser's own primitives. It is declared in the browser capability's
-  directory alongside `navigate`, `read_page`, etc. — it is a first-class tool the model
-  discovers in the capability manifest at handshake.
-- BUILDS ON ADR-0024 (the generic ingest pipeline): `script`'s per-step execution calls the
-  existing `pipeline::handle_tools_call` for each step — the SAME governance chokepoint every
-  individual tool call enters. Each step is independently authorized, audited, and
-  post-processed. `script` adds no parallel dispatch path.
+  directory alongside `navigate`, `read_page`, etc. -- a first-class tool the model discovers in
+  the capability manifest at handshake.
+- DEPENDS ON ADR-0038 (structured results): `$prev`/`$N` references resolve against a step's
+  `structuredContent`, never against rendered text. Without ADR-0038 there is nothing
+  machine-addressable to reference; ADR-0038 lands first.
+- DEPENDS ON ADR-0037 (`wait_for`): sequential scripts against dynamic pages need a condition
+  wait between navigate and read, or step 2 reads a skeleton. `wait_for` is an ordinary step.
+- BUILDS ON ADR-0024 (the generic ingest pipeline): each step is executed through the SAME
+  governance chokepoint every individual tool call enters. Each step is independently
+  authorized, audited, and post-processed. `script` adds no parallel dispatch path.
 - PRESERVES ADR-0030 Decision 3 (the honest singleton queue): each step enqueues an independent
   frame on the single extension port; the existing `write_chunked` + `TOOL_TIMEOUT` fairness
   guarantees are not bypassed. A 20-step script is 20 independent calls, each with its own 60s
-  timeout — not one 20-minute bulk primitive.
+  timeout -- not one bulk primitive.
 - AMENDS ADR-0007 (sacred tool surface, deprecated by ADR-0034): `script` is a new browser tool,
   additive to the directory. The 13 primitive tools + `explain` stay; `script` joins them.
+- FEEDS ADR-0039 (saved scripts, Proposed): the `batch_id` audit correlation pinned here is the
+  recording substrate for named, governed, replayable workflows.
 
 ## Context
 
-Browser automation is inherently multi-step: navigate → wait → read → find → interact → verify.
-Today each step is one MCP `tools/call`, which costs one full inference round-trip — the model
-generates a response, the client sends the request, the server executes, the client returns the
-result, the model generates the next response. A 10-step form-filling workflow costs 10
-inference passes, each adding latency, token consumption, and context-window bloat from
-intermediate results.
+Browser automation is inherently multi-step: navigate, wait, read, find, interact, verify.
+Today each step is one MCP `tools/call`, which costs one full inference round-trip. A 10-step
+workflow costs 10 inference passes, each adding latency, token consumption, and context-window
+bloat from intermediate results.
 
-Claude's reference implementation (and the broader MCP ecosystem) solves this at the model/client
-layer (parallel tool calling, programmatic tool calling / "code mode"). But these solutions are
-model-specific: Claude supports them; other models (GLM, Llama, Mistral) and other MCP clients
-(Cursor, ZCode, custom integrations) generally do not. Ghostlight's mandate is to make life
-easier for ANY model, not just Claude.
+Claude's ecosystem solves this at the model/client layer (parallel tool calling, programmatic
+tool calling). But those solutions are model-specific. Ghostlight's mandate is to make life
+easier for ANY model on ANY MCP client. The `script` tool is a server-side composition
+primitive: one `tools/call` carrying an ordered array of tool calls, executed sequentially, with
+data flow between steps and a compact result. No client changes, no model-specific features.
 
-The `script` tool is a server-side composition primitive that works with every MCP client: it
-takes an ordered array of tool calls, executes them sequentially (each step after the prior one
-completes), supports data flow between steps via a lightweight reference syntax, and returns a
-compact result array. One `tools/call` to `script` replaces N individual `tools/call`s. No client
-changes needed; no model-specific features required.
+The amendment pass corrected the original against the live tree:
+
+- The original `$prev.ref_1` flagship example referenced a field that exists in no result shape
+  (`read_page` renders prose; `ref_N` tokens are embedded text, not fields), and presumed the
+  model could know which ref is which without seeing the page -- the exact round trip `script`
+  claims to remove. References now resolve against ADR-0038 structured results, and the
+  read-then-fill workflow is explicitly `form_fill`'s job (ADR-0036), not `script`'s.
+- Governance denials, sacred denials, and take-the-wheel holds return as SUCCESSFUL text results
+  by design (pipeline.rs), so an orchestrator reading the MCP envelope cannot distinguish a
+  denied step from a completed one. The pipeline core now returns a structured outcome
+  (Decision 6) and the compact result carries an honest per-step status (Decision 4).
+- `Handler::Local` today is `Local(fn() -> String)`: synchronous, argument-less, answered in the
+  free-action arm. Both this tool and `form_fill` need async, argument-bearing, re-entrant local
+  handlers; the honest cost is stated in Decision 6, not discovered mid-implementation.
 
 ## Decision
 
@@ -47,26 +62,41 @@ changes needed; no model-specific features required.
 
 Declared in the browser capability's directory alongside `navigate`, `read_page`, `computer`,
 etc. It appears in `tools/list`, the capability manifest, and `explain` like any other tool.
-The model discovers it at handshake and uses it naturally.
 
-### Decision 2: sequential execution with data flow
+Its directory row: `requires: []` (the steps carry their own requirements; the wrapper itself
+touches nothing), no `action_key`, `Handler::Local`, no postprocess, no post-dispatch marker.
 
-Steps execute in order — step N+1 starts only after step N completes. This is the default and
-the common case: browser workflows are sequential chains with dependencies (navigate → wait →
-read → interact). Parallel execution is explicitly deferred (a future `mode: "parallel"` flag
-for the rare case of independent calls on different tabs).
+Step tool names may be any tool in the aggregated directory EXCEPT `script` itself -- no
+nesting, no recursion, enforced at schema-validation time with a corrective error. `form_fill`
+(ADR-0036) is a legal step: it is bounded and internally budgeted.
 
-Data flows between steps via a reference syntax in step arguments:
+### Decision 2: sequential execution with data flow over structured results
 
-- **`$prev.field`** — the common case: reference a field from the immediately preceding step's
-  result. The model doesn't count steps; it says "from the previous step, take `ref_1`."
-- **`$N.field`** — reach back to step N's result (1-indexed). The escape hatch for
-  non-adjacent dependencies: "from step 2's `read_page` result, take `ref_3`" (after a wait or
-  an intermediate step in between).
+Steps execute in order -- step N+1 starts only after step N completes. Parallel execution is
+explicitly deferred (a future `mode: "parallel"` flag for independent calls on different tabs).
 
-The resolver is JSONPath-lite: a string value starting with `$` in any step's `args` is
-substituted with the referenced field from the prior step's parsed JSON result before that step
-executes. Non-`$` values pass through unchanged.
+Data flows between steps via references in step arguments, resolved against the referenced
+step's STRUCTURED result (ADR-0038 `structuredContent`), never against rendered text:
+
+- **`$prev.path`** -- a field from the immediately preceding step's structured result.
+- **`$N.path`** -- reach back to step N's structured result (1-indexed).
+- **Path grammar:** dot-separated segments after the head; a numeric segment is an array index.
+  `$prev.results.0.ref` is "first match's ref from the previous `find`". A bare `$prev` / `$N`
+  (no path) substitutes the whole structured result.
+- **Escape:** a leading `$$` produces a literal `$` and ends reference processing
+  (`"$$1.50"` becomes the string `"$1.50"`). A `$`-string that does not match the reference
+  grammar (`$prev` or `$<digits>`, optionally followed by `.path`) passes through unchanged.
+  Note the sharp case this grammar creates: a literal money value like `"$1.50"` DOES parse as
+  step-1, path `50`; it will fail resolution with a corrective error that names the `$$` escape.
+- **Failure semantics:** an unresolvable reference (no such step, step not run, step failed,
+  step has no structured result, path miss) fails THAT step before any dispatch, with a
+  corrective error naming the reference, the available keys, and the `$$` escape hint. The
+  failure respects `onError` like any other step failure.
+
+The honest v1 showcase chains are `find` then act (`$prev.results.0.ref`), `tabs_create_mcp`
+then use the new tab (`$prev.tabId`), and `wait_for` then act on the matched element
+(`$prev.ref`). `read_page` deliberately exposes no structured reference surface in v1: if the
+workflow is "read the form, then fill it", the answer is `form_fill` (ADR-0036), not a script.
 
 ### Decision 3: the input shape
 
@@ -77,128 +107,201 @@ executes. Non-`$` values pass through unchanged.
     "tabId": 0,
     "steps": [
       { "tool": "navigate", "args": { "url": "https://example.com" } },
-      { "tool": "read_page", "args": { "filter": "interactive" } },
-      { "tool": "form_input", "args": { "ref": "$prev.ref_1", "value": "hello" } },
-      { "tool": "computer", "args": { "action": "left_click", "ref": "$prev.ref_3" } }
+      { "tool": "wait_for", "args": { "text": "Results", "state": "visible" } },
+      { "tool": "find", "args": { "query": "download report button" } },
+      { "tool": "computer", "args": { "action": "left_click", "ref": "$prev.results.0.ref" } }
     ],
-    "onError": "stop"
+    "onError": "stop",
+    "dry_run": false,
+    "idempotency_key": "dl-report-2026-07-06",
+    "budget_ms": 90000
   }
 }
 ```
 
-- `tabId` — the tab context (passed to each step that needs it; steps may omit it and inherit
-  the script-level value).
-- `steps` — the ordered array. Each step has a `tool` name and an `args` object.
-  - `minItems: 1`, `maxItems: 20` (prevents a runaway script from monopolizing the extension
-    port; the 60s per-step `TOOL_TIMEOUT` still applies).
-- `onError` — `"stop"` (default, halt on first error) or `"continue"` (run remaining steps).
-  Under `"stop"`, prior step results are still returned — the model sees what succeeded before
-  the failure.
+- `tabId` -- the script-level tab context. Steps may omit `tabId` and inherit it; a step may
+  override it (including with a reference, e.g. `"tabId": "$prev.tabId"` after `tabs_create_mcp`).
+- `steps` -- the ordered array; each step has `tool` and `args`. `minItems: 1`, `maxItems: 20`.
+- `onError` -- `"stop"` (default) or `"continue"`. Under `"stop"`, prior results are returned.
+- `dry_run` -- Decision 8. Default false.
+- `idempotency_key` -- Decision 9. Optional.
+- `budget_ms` -- total wall-clock budget for the whole script. Registered in the typed config
+  registry as `script.budget_ms` (default 120000; hard cap 480000; org-lockable like any key);
+  the argument may lower but never exceed the configured value. On exhaustion, the current step
+  finishes its own `TOOL_TIMEOUT` window, remaining steps report `not_run`, and the compact
+  result returns what completed. Rationale: 20 steps x 60s is a 20-minute single `tools/call`;
+  MCP clients time out far earlier, and a server still executing Write steps after the client
+  gave up invites a retry and a double-submit. The budget plus Decision 9 closes that hazard.
 
-### Decision 4: compact results
-
-The result is a structured array, not the raw concatenation of every step's full output:
+### Decision 4: compact results with honest per-step status
 
 ```json
 {
   "results": [
-    { "step": 1, "tool": "navigate", "ok": true },
-    { "step": 2, "tool": "read_page", "ok": true, "result": "ref_1: Search\nref_2: Button" },
-    { "step": 3, "tool": "form_input", "ok": true },
-    { "step": 4, "tool": "computer", "ok": false, "error": "[hop: page] ref_3 not found" }
+    { "step": 1, "tool": "navigate", "status": "ok" },
+    { "step": 2, "tool": "wait_for", "status": "ok", "result": "found after 640ms" },
+    { "step": 3, "tool": "find", "status": "ok",
+      "result": "Found 2 element(s): [ref_12] button \"Download report\" ..." },
+    { "step": 4, "tool": "computer", "status": "denied",
+      "result": "Write denied on example.com by grant g-14 (manifest acme.json)" }
   ],
-  "summary": "3/4 steps succeeded (step 4 failed)",
+  "summary": "3/4 steps completed; step 4 denied",
   "duration_ms": 3400
 }
 ```
 
-- **Text results are included inline** (truncated if very long). The model sees what it needs to
-  reason about the next step.
-- **Images are NOT inlined.** A screenshot step returns `{ "step": 3, "ok": true, "imageId":
-  "img_abc", "note": "screenshot captured; use computer(zoom) to inspect region" }`. The model
-  can then explicitly retrieve the image if it needs to see it. This prevents a single
-  screenshot from bloating the context with a 200KB base64 blob in the middle of a script
-  result.
+- **`status`** is one of `ok | error | denied | held | not_run`. This is the load-bearing fix:
+  denials and holds are successful TEXT envelopes on the wire (deliberately, so models read
+  them), so a boolean `ok` derived from `isError` would report a denied navigate as success.
+  Status comes from the pipeline's structured outcome (Decision 6), not from envelope sniffing.
+  The denial/hold text is always included verbatim -- it is the model's corrective guidance.
+- **Text results are included inline**, truncated at 2000 chars per step and 25000 chars for
+  the whole result (marked `(truncated)`); a step's structured result (ADR-0038) rides along
+  under `structured` when its declaration defines one.
+- **A hold stops the script unconditionally**, regardless of `onError`: the held step reports
+  `held`, every remaining step reports `not_run`, and the script returns immediately. The user
+  grabbed the wheel; burning through 16 more steps that each individually answer with hold text
+  would be technically correct and humanly wrong.
+- **Screenshots are not inlined and, in v1, not stored.** A screenshot-producing step returns
+  `{ "status": "ok", "note": "screenshot captured and discarded inside script; call
+  computer(screenshot) directly if you need to see it" }`. The original draft promised an
+  `imageId`, but no retrieval tool exists and none is sanctioned here; a dangling identifier is
+  worse than an honest note. An image store + retrieval is an open question.
 
 ### Decision 5: each step goes through the full pipeline
 
-`script` does not bypass governance. Each step's tool call enters the existing
-`pipeline::handle_tools_call` — the SAME chokepoint every individual tool call enters today:
-config snapshot, registry lookup, schema validation, governance `begin`/`authorize`, hold check,
-sacred check, dispatch, audit `complete`. Each step is independently:
+`script` does not bypass governance. Each step enters the existing pipeline chokepoint: config
+snapshot, registry lookup, schema validation, governance `begin`/`authorize`, hold check, sacred
+check, dispatch, audit `complete`. Each step is independently:
 
-- **Authorized** (a manifest can deny step 3 while allowing steps 1-2).
-- **Audited** (one audit record per step, carrying the step number and the `script` parent in
-  its shape — see Decision 7).
-- **Post-processed** (`read_page`'s secret redaction, `navigate`'s landing re-check — all
-  per-step, unchanged).
+- **Authorized** (a manifest can deny step 3 while allowing steps 1-2). Unlike `form_fill`'s
+  internals (ADR-0036 Decision 5), script steps are independent model-authored intents, so each
+  one gets its own full governance decision. That distinction is deliberate and pinned:
+  composition of arbitrary calls = per-step decisions; mechanism of a single semantic intent =
+  one decision at the parent.
+- **Audited** (one record per step; Decision 7).
+- **Post-processed** (`read_page` secret redaction, `navigate` landing re-check -- per-step,
+  unchanged).
+- **Snapshot-per-step:** each step takes its own config snapshot at entry, exactly as an
+  individual call would. A hot-reload mid-script applies from the next step. This is the honest
+  reading of "20 independent calls".
 
-A `script` of 5 steps produces 5 audit records, 5 governance decisions, and 5 extension frames.
-No shortcuts, no bulk primitives, no bypasses.
+### Decision 6: the structured-outcome refactor and the new `Handler::Local`
 
-### Decision 6: `script` is a `Handler::Local`
+Two pipeline changes this ADR owns and prices honestly:
 
-`script` is entirely service-side logic. It does not forward to the extension as a single frame;
-it calls the pipeline for each step (which in turn dispatches to the extension individually).
-Its `Handler` is `Handler::Local` with a function that:
+1. **`CallOutcome`.** The pipeline core splits into `run_tool_call(...) -> CallOutcome` and an
+   MCP-edge renderer. `CallOutcome` variants: `Success { result, structured }`,
+   `Failure { ToolError }`, `Denied { message, source: Policy | Sacred }`, `Held { message }`.
+   The edge renders each variant into today's envelopes BYTE-IDENTICALLY (denials and holds
+   stay successful text results on the wire; all-open output-identity holds). Orchestrators
+   (`script`, `form_fill`) consume `CallOutcome`, which is the only honest way to know what
+   actually happened to a step.
+2. **`Handler::Local` grows up.** From `Local(fn() -> String)` to an async handler receiving a
+   context (Browser, ConfigStore, Governance, the call's args, session identity) and returning
+   `CallOutcome`. Async recursion (pipeline -> local handler -> pipeline) is boxed
+   (`Box::pin`). `explain` migrates mechanically. Dispatch position: a Local tool with
+   `requires: []` answers in the free-action arm exactly where `explain` answers today
+   (`script` itself does); a Local tool with non-empty requires (`form_fill`) dispatches in the
+   ExtensionForward stage position, AFTER grant enforcement. Both positions are pinned so the
+   stage-order tests stay meaningful.
 
-1. Parses the steps array and the `onError` mode.
-2. Resolves `$prev`/`$N` references in each step's args before execution.
-3. Calls `pipeline::handle_tools_call` for each step, passing the shared `Browser`/`Governance`/
-   `ConfigStore` handles.
-4. Collects results, formats the compact output, returns.
+### Decision 7: audit shape -- the parent IS audited, steps carry correlation
 
-### Decision 7: audit shape
+The original draft suppressed the parent record ("the steps ARE the audit records"). Flipped,
+for two reasons: every pipeline entry produces a record today (including `Handler::Local`;
+`explain` is audited), so suppression would be a special case sitting oddly next to "no
+shortcuts, no bypasses"; and ADR-0034 Decision 8 argues audit exists to make `policy simulate`
+replay-faithful -- omitting the one `tools/call` the wire actually received makes replay LESS
+faithful.
 
-Each step's audit record carries the standard 14-key shape (plus the new `transport` and
-`capability_origin` fields from ADR-0034), with the tool name being the STEP's tool name (e.g.,
-`navigate`, `read_page`), not `script`. The parent `script` call itself is NOT audited as a
-separate tool call — its steps ARE the audit records. This keeps the audit stream honest: each
-record represents one actual tool execution, not the orchestration wrapper.
+- **The parent `script` call gets one record**: tool `script`, requirement-free allow, with a
+  fresh `batch_id` (GUID).
+- **Each step's record** carries the step's own tool name and the standard shape, plus three
+  additive keys after `capability_origin` (old-record byte-order preserved):
+  `orchestrator: "script"`, `batch_id` (the parent's GUID), `step` (1-indexed).
+- One script call is therefore fully reconstructable from the stream: one parent + N correlated
+  step records, each step record still representing one actual tool execution.
+
+### Decision 8: `dry_run` -- per-step governance verdicts without execution
+
+`dry_run: true` runs every step through the full decision machinery -- registry lookup, schema
+validation, reference-syntax validation (values cannot resolve, but grammar is checked),
+governance authorize, sacred check -- and dispatches NOTHING. The result mirrors the compact
+shape with `status: "would_allow" | "would_deny" | "indeterminate"` per step, plus the denial
+text a real run would produce.
+
+- Dry-run may probe tab URLs (read-only tab metadata, the same probe the sacred/grant checks
+  use) but never sends a tool frame to the page.
+- `indeterminate` covers verdicts that depend on execution-time facts (a `navigate` landing
+  after redirects, a reference whose value determines the touched resource).
+- Audit: the parent record is written with the additive key `dry_run: true`; no step records
+  (nothing executed -- the absence is the honest signal, and the parent's flag disambiguates
+  "dry run" from "script that ran nothing").
+
+The strategic point: the worst governance experience is not denial, it is denial at step 7 of
+10 with the world half-mutated. Dry-run turns denial from a landmine into a map, and it is
+`policy simulate` exposed to the model -- the governance pillar and the delight pillar in one
+feature. No competitor can copy it without first having the governance layer.
+
+### Decision 9: `idempotency_key` -- retry safety for orchestrated calls
+
+Optional string, scoped per session (`SessionGuid`, key). The service keeps a small LRU
+(64 entries, 10-minute TTL) mapping keys to final results:
+
+- A repeat of a key whose script is STILL RUNNING blocks until the original completes and
+  returns the original's result. This is the true double-fire protection: client times out,
+  client retries, the retry joins the in-flight run instead of re-submitting a form.
+- A repeat within the TTL after completion returns the stored result with `"replayed": true`
+  injected into the compact result. No audit records are written on replay (nothing executed).
+- `form_fill` (ADR-0036) accepts the same argument with the same semantics.
 
 ## Consequences
 
 ### Fixed
 
-- Any model on any MCP client can express multi-step workflows in one call. A 10-step
-  form-filling flow becomes 1 inference pass instead of 10. This is the single biggest
-  round-trip reducer for untrained models.
-- Data flow between steps (`$prev`, `$N`) eliminates the "call read_page, see the refs, call
-  form_input with the refs" two-phase pattern for find→interact workflows.
-- Compact results keep intermediate output out of the context window (images referenced, not
-  inlined; text truncated if very long).
+- Any model on any MCP client expresses multi-step workflows in one call; round-trips collapse.
+- Data flow works against real, addressable shapes (`find`, `tabs_create_mcp`, `wait_for`),
+  with escaping, and fails loudly and correctively instead of silently misfiring.
+- Denied/held steps are visible AS denied/held in the compact result; a script can never
+  report success for work governance stopped.
+- The client-timeout/retry double-submit hazard is closed (budget + idempotency).
+- Dry-run gives models a pre-flight map of what a script would be allowed to do.
 
 ### Cost
 
-- One new tool declaration in the browser capability's directory.
-- The `$prev`/`$N` resolver (~50 lines: recursive walk over args JSON, substitute `$`-prefixed
-  strings with referenced fields).
-- The script interpreter (~100 lines: iterate steps, call the pipeline per step, collect
-  results, format compact output).
-- The compact result formatter (image-id generation, text truncation).
-- Per-step `tabId` inheritance (steps may omit `tabId` and inherit the script-level value).
+- The `CallOutcome` split and the `Handler::Local` signature change (the real cost center of
+  this ADR: a pipeline refactor touching the edge renderer, the Local dispatch arms, and
+  `explain`'s migration -- priced here, not discovered later).
+- The reference resolver (grammar, path walk, array indexing, `$$` escape, corrective errors).
+- The script interpreter (iterate, resolve, call `run_tool_call`, collect, budget accounting).
+- The compact formatter (status mapping, truncation budgets, structured passthrough).
+- The idempotency LRU and the `script.budget_ms` config key.
+- Three additive audit keys plus `dry_run`, and their shared-format doc section.
 
 ### Preserved invariants
 
-- All-open output-identity: `script`'s per-step execution is byte-identical to calling the step
-  individually. The compact result is the only new output shape, and it's additive (the model
-  sees the same data it would from individual calls, just structured).
-- The dispatch stage order (pipeline.rs pins): each step enters the same pipeline stages.
-- The honest singleton queue (ADR-0030 D3): no bulk primitive, no bypass of the per-call timeout
-  or the chunked-write fairness.
-- No behavioral gating: `script` is available in all modes (all-open, safe, restricted). A
-  manifest can deny individual steps within a script, never the `script` tool itself on the basis
-  of its being a composition.
+- All-open output-identity for individual calls: the `CallOutcome` edge renders today's
+  envelopes byte-identically; `structuredContent` additions are sanctioned separately by
+  ADR-0038.
+- The dispatch stage order (pipeline.rs pins), with the two Local dispatch positions now pinned
+  explicitly.
+- The honest singleton queue (ADR-0030 D3): per-step frames, per-step `TOOL_TIMEOUT`, no bulk
+  primitive.
+- No behavioral gating: `script` is available in all modes. A manifest can deny individual
+  steps, never the `script` tool itself on the basis of its being a composition.
 
 ## Open questions (deferred)
 
-- **Parallel branches** (`mode: "parallel"`): for independent calls on different tabs. Deferred;
-  the sequential default covers 90%+ of real workflows.
-- **Named steps** (`{ "id": "page", "tool": "read_page", ... }` then `$page.ref_1`): nicer for
-  readability in long scripts. Deferred until real scripts hit 15+ steps and counting becomes
-  painful; `$prev` + `$N` covers 95% today.
-- **Conditional steps** (`{ "if": "$prev.ok", "tool": "computer", ... }`): branching within a
-  script. Deferred; if a workflow needs branching, it's complex enough to warrant its own
-  semantic helper (like `form_fill`, ADR-0036) rather than generic conditional logic in `script`.
-- **Saved scripts / macros** (name a script, call it by name later): the stepping stone to a
-  "shortcuts" feature. Deferred; `script` is the unnamed, ephemeral v1.
+- **Parallel branches** (`mode: "parallel"`): deferred; sequential covers 90%+ of workflows.
+- **Named steps** (`{ "id": "page", ... }` then `$page.ref`): deferred until real scripts hit
+  15+ steps; `$prev` + `$N` covers today.
+- **Conditional steps**: deferred; a workflow that needs branching warrants its own semantic
+  helper (the ADR-0036 pattern), not generic conditionals in `script`.
+- **Saved scripts / macros**: now ADR-0039 (Proposed) -- named, parameterized, governed,
+  advertisable workflow artifacts recorded via this ADR's `batch_id`.
+- **Screenshot store + retrieval** for mid-script captures (v1 discards with a note).
+- **Naming**: `batch` / `sequence` were considered against `script` (which sits one shelf away
+  from `javascript_tool` and may invite models to pass JS source). Kept `script` for v1; the
+  schema validator's corrective error ("steps is an array of tool calls, not source code")
+  mitigates. Revisit only if live traffic shows real confusion.

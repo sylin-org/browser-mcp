@@ -42,8 +42,11 @@ history live here.
 | [0032](0032-test-at-seams-and-inject-config-sources.md) | Test at pure seams; inject config sources at the composition root | Accepted |
 | [0033](0033-inbound-outbound-manage-zones.md) | Inbound/outbound/manage zones: the honest SoC split (renames `channels`→`inbound`, separates the management plane from the web ingestion adapter, policy-controlled listeners) | Accepted (amends ADR-0030 D5/D9) |
 | [0034](0034-capability-transport-registry.md) | The Capability & Transport Registry (ICapability/ITransport traits, tool declarations in code, capability manifest at handshake, deprecates ADR-0007's byte-frozen mandate) | Accepted (amends ADR-0007, ADR-0030) |
-| [0035](0035-script-tool.md) | The `script` tool: sequential multi-tool composition with `$prev`/`$N` data flow (reduces inference round-trips for any multi-step workflow) | Accepted |
-| [0036](0036-form-fill-tool.md) | The `form_fill` tool: semantic form interaction by label (fill a form in one call with zero refs) | Accepted |
+| [0035](0035-script-tool.md) | The `script` tool: sequential multi-tool composition with `$prev`/`$N` data flow over structured results, dry-run, idempotency, budget | Accepted (amended in place 2026-07-06, pre-implementation) |
+| [0036](0036-form-fill-tool.md) | The `form_fill` tool: semantic form interaction by label (one semantic Write decision, hardened matcher, dedicated form-structure read) | Accepted (amended in place 2026-07-06, pre-implementation) |
+| [0037](0037-page-state-awareness.md) | Page-state awareness: `wait_for`, consequence digests on mutating actions, `read_page` diff mode, stale-ref corrective errors | Accepted |
+| [0038](0038-structured-results.md) | Structured results (`structuredContent` + `outputSchema`, per-tool vocabulary) and cost-aware guidance; substrate for ADR-0035 references | Accepted |
+| [0039](0039-saved-scripts-governed-artifacts.md) | Saved scripts as governed artifacts: named, parameterized, hash-bound approved workflows | Proposed |
 
 ## Conventions
 
