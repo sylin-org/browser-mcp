@@ -84,8 +84,8 @@ fn anonymous_is_a_valid_principal_under_all_open() {
 
     // Additionally: a lone all-open MCP-stdio session's audit bytes are unchanged. The
     // subject representation chosen for Required behavior item 6 is the EXISTING `identity`
-    // field (PINS.md SS2) -- never a 15th key -- so this is byte-identical to
-    // `tests/audit_recorder.rs`'s own pinned 14-key assertion, reproduced here directly (no
+    // field (PINS.md SS2) -- never an extra key of its own -- so this is byte-identical to
+    // `tests/audit_recorder.rs`'s own pinned 18-key assertion, reproduced here directly (no
     // listener, no web session involved) to prove H8 introduced no drift.
     let path = temp_path("anonymous-all-open");
     let _ = std::fs::remove_file(&path);
@@ -125,9 +125,13 @@ fn anonymous_is_a_valid_principal_under_all_open() {
             "denial_id",
             "duration_ms",
             "manifest",
-            "held"
+            "held",
+            "orchestrator",
+            "batch_id",
+            "step",
+            "dry_run"
         ],
-        "the 14-key AuditRecord order is unchanged"
+        "the 18-key AuditRecord order is unchanged"
     );
     assert!(
         rec["identity"].is_null(),

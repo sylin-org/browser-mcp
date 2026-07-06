@@ -231,6 +231,16 @@ pub struct AuditRecord {
     /// executing (a user hold, g10); on a held record `decision` is `"allow"` and
     /// `duration_ms` is `0`. `false` on every other record; always present, never omitted.
     pub held: bool,
+    /// `"script"` | `"form_fill"` | `None`. Present only on orchestrated internal executions.
+    pub orchestrator: Option<&'static str>,
+    /// Correlates one parent call with its steps. Set on the parent AND each step/internal.
+    /// UUID v4, lowercase, hyphenated.
+    pub batch_id: Option<String>,
+    /// 1-indexed position within the parent. `None` on the parent record itself.
+    pub step: Option<u32>,
+    /// `true` only on a script dry-run parent record. `false` on every other record; always
+    /// present, never omitted, matching `held`'s always-present style.
+    pub dry_run: bool,
 }
 
 /// A session EVENT record (shared format doc section 6, g11): additive to the tool-call
@@ -478,6 +488,10 @@ mod tests {
             duration_ms: 0,
             manifest: None,
             held: false,
+            orchestrator: None,
+            batch_id: None,
+            step: None,
+            dry_run: false,
         }
     }
 
@@ -556,6 +570,10 @@ mod tests {
                 "duration_ms",
                 "manifest",
                 "held",
+                "orchestrator",
+                "batch_id",
+                "step",
+                "dry_run",
             ]
         );
     }

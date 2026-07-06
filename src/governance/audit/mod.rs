@@ -203,6 +203,10 @@ mod tests {
             duration_ms: 0,
             manifest: None,
             held: false,
+            orchestrator: None,
+            batch_id: None,
+            step: None,
+            dry_run: false,
         }
     }
 

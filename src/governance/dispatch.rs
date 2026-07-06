@@ -292,6 +292,10 @@ impl Governance {
             grant_id: None,
             shadow: None,
             duration_ms: None,
+            orchestrator: None,
+            batch_id: None,
+            step: None,
+            dry_run: false,
         }
     }
 
@@ -491,6 +495,10 @@ pub struct CallAudit {
     grant_id: Option<String>,
     shadow: Option<Denial>,
     duration_ms: Option<u64>,
+    orchestrator: Option<&'static str>,
+    batch_id: Option<String>,
+    step: Option<u32>,
+    dry_run: bool,
 }
 
 impl CallAudit {
@@ -534,6 +542,37 @@ impl CallAudit {
         if self.duration_ms.is_none() {
             self.duration_ms = Some(self.elapsed_ms());
         }
+    }
+
+    /// Stamp this call's record as an orchestrated internal execution (C7 script steps, C10
+    /// form_fill internals): correlates the record with its parent via `batch_id` and this
+    /// call's 1-indexed position within it.
+    pub fn orchestrated(&mut self, orchestrator: &'static str, batch_id: &str, step: Option<u32>) {
+        self.orchestrator = Some(orchestrator);
+        self.batch_id = Some(batch_id.to_string());
+        self.step = step;
+    }
+
+    /// Mark this call's record as a script dry-run parent (C8): no dispatch occurred; every
+    /// step was evaluated for its would-be verdict only.
+    pub fn mark_dry_run(&mut self) {
+        self.dry_run = true;
+    }
+
+    /// Attribute this call's audit record to a specific grant without going through
+    /// `Governance::authorize` (used by orchestrated internals that reuse the parent's already
+    /// resolved grant rather than re-resolving their own, e.g. `form_fill`'s internal
+    /// `form_input` calls, C10).
+    pub fn attribute_grant(&mut self, grant_id: Option<String>) {
+        self.grant_id = grant_id;
+    }
+
+    /// Stamp the parent record's `batch_id` after the fact (C7 SS7): a script/form_fill
+    /// parent's batch id is minted by its own `Handler::Local` deep inside dispatch, so it is
+    /// known only after the handler returns; the free-action dispatch arm calls this on the
+    /// parent's `CallAudit` before completing it.
+    pub fn set_batch_id(&mut self, batch_id: &str) {
+        self.batch_id = Some(batch_id.to_string());
     }
 
     /// Amend the scope's attribution after a successful navigate landing re-check (g13/g15,
@@ -668,6 +707,10 @@ impl CallAudit {
             duration_ms,
             manifest: None,
             held,
+            orchestrator: self.orchestrator,
+            batch_id: self.batch_id.clone(),
+            step: self.step,
+            dry_run: self.dry_run,
         }
     }
 }
@@ -781,7 +824,7 @@ mod tests {
     }
 
     /// Test 1: `begin` + `set_domain` + `complete` reproduces the pre-ADR-0024
-    /// `record_call_passes_the_resolved_domain_through` assertion PLUS the 14-key field order
+    /// `record_call_passes_the_resolved_domain_through` assertion PLUS the 18-key field order
     /// pin transcribed from `tests/audit_recorder.rs` (there is no single pinned JSON blob
     /// today; these two named sources are the oracle).
     #[test]
@@ -798,7 +841,7 @@ mod tests {
         assert_eq!(rec.grant_id, None);
         assert!(!rec.held);
 
-        // The 14-key field order pin, transcribed from tests/audit_recorder.rs.
+        // The 18-key field order pin, transcribed from tests/audit_recorder.rs.
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
         let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
@@ -819,6 +862,10 @@ mod tests {
                 "duration_ms",
                 "manifest",
                 "held",
+                "orchestrator",
+                "batch_id",
+                "step",
+                "dry_run",
             ],
             "field order matches the shared format"
         );
