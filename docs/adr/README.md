@@ -39,6 +39,8 @@ history live here.
 | [0029](0029-process-lifecycle-hygiene.md) | Process lifecycle hygiene: parent-death watchdog and doctor --fix reaper (re-scoped to the thin adapter by ADR-0030 Decision 8) | Accepted (amended by ADR-0030 D8) |
 | [0030](0030-ghostlight-hub-orchestrator.md) | Ghostlight Hub: the multi-client orchestrator service (persistent service, multiplexed adapter sessions, local web API + Console) | Accepted |
 | [0031](0031-agent-onboarding-contract.md) | Agent onboarding contract: tools.json as the single source of agent-facing truth (initialize.instructions workflow preamble, per-tool examples, corrective validation errors) | Accepted (amends ADR-0007) |
+| [0032](0032-test-at-seams-and-inject-config-sources.md) | Test at pure seams; inject config sources at the composition root | Accepted |
+| [0033](0033-inbound-outbound-manage-zones.md) | Inbound/outbound/manage zones: the honest SoC split (renames `channels`→`inbound`, separates the management plane from the web ingestion adapter, policy-controlled listeners) | Accepted (amends ADR-0030 D5/D9) |
 
 ## Conventions
 
