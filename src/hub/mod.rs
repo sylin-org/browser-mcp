@@ -41,7 +41,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 pub mod antisquat;
-pub mod console_assets;
 pub mod handshake;
 pub mod inbound;
 pub mod manage;

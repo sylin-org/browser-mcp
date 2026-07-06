@@ -875,11 +875,11 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn sacred_tool_names_in_order() -> Vec<String> {
+    fn declared_tool_names_in_order() -> Vec<String> {
         REGISTRY.iter().map(|d| d.tool.to_string()).collect()
     }
 
-    fn sacred_computer_actions_in_order() -> Vec<String> {
+    fn declared_computer_actions_in_order() -> Vec<String> {
         let computer = REGISTRY
             .iter()
             .find(|d| d.tool == "computer")
@@ -894,11 +894,11 @@ mod tests {
     }
 
     #[test]
-    fn registry_covers_the_sacred_surface_exactly() {
-        let sacred_names = sacred_tool_names_in_order();
+    fn registry_covers_the_declared_surface_exactly() {
+        let declared_names = declared_tool_names_in_order();
         let registry_names: Vec<String> = REGISTRY.iter().map(|row| row.tool.to_string()).collect();
         assert_eq!(
-            registry_names, sacred_names,
+            registry_names, declared_names,
             "registry tool order must match the fixture's advertised order exactly"
         );
 
@@ -914,7 +914,7 @@ mod tests {
         assert_eq!(with_action_key[0].tool, "computer");
         assert_eq!(with_action_key[0].action_key, Some("action"));
 
-        let sacred_actions = sacred_computer_actions_in_order();
+        let declared_actions = declared_computer_actions_in_order();
         let computer_actions: Vec<String> = with_action_key[0]
             .variants
             .iter()
@@ -925,7 +925,7 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(computer_actions, sacred_actions);
+        assert_eq!(computer_actions, declared_actions);
         assert_eq!(computer_actions.len(), 13);
 
         for row in REGISTRY.iter().filter(|row| row.tool != "computer") {

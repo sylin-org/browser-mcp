@@ -10,7 +10,7 @@
 //!
 //! Routes (PINS.md CS1/CS2/CS3/CS4/CS5/CS10, `docs/tasks/console`):
 //! - `GET /` -- the embedded HTML shell.
-//! - `GET /console.css`, `GET /console.js` -- the shell's static assets.
+//! - `GET /manage.css`, `GET /manage.js` -- the shell's static assets.
 //! - `GET /api/v1/config` -- the provenance-aware config view (read of `layers::Resolution`).
 //! - `GET /api/v1/sessions` -- the live-sessions/groups view.
 //! - `POST /api/v1/config/inbound-web-enable-remote` -- the ONE write action (writes the user-layer
@@ -20,8 +20,8 @@
 //! the full body drains cleanly to the client regardless of OS-specific socket-close timing.
 
 use crate::governance::ports::{AuditSink, Decision, SessionEventRecord};
-use crate::hub::console_assets;
 use crate::hub::inbound::web::{decide_inbound_web_from, write_http_error};
+use crate::hub::manage::assets;
 use crate::hub::ServiceContext;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
@@ -33,8 +33,8 @@ use tokio::net::TcpStream;
 pub(crate) fn is_known_path(stripped_path: &str) -> bool {
     matches!(
         stripped_path,
-        "/" | "/console.css"
-            | "/console.js"
+        "/" | "/manage.css"
+            | "/manage.js"
             | "/api/v1/config"
             | "/api/v1/sessions"
             | "/api/v1/config/inbound-web-enable-remote"
@@ -71,27 +71,15 @@ pub(crate) async fn route(
     }
 
     let result = match (method, stripped_path) {
-        ("GET", "/") => {
-            write_asset(
-                stream,
-                "text/html; charset=utf-8",
-                console_assets::INDEX_HTML,
-            )
-            .await
+        ("GET", "/") => write_asset(stream, "text/html; charset=utf-8", assets::INDEX_HTML).await,
+        ("GET", "/manage.css") => {
+            write_asset(stream, "text/css; charset=utf-8", assets::MANAGE_CSS).await
         }
-        ("GET", "/console.css") => {
-            write_asset(
-                stream,
-                "text/css; charset=utf-8",
-                console_assets::CONSOLE_CSS,
-            )
-            .await
-        }
-        ("GET", "/console.js") => {
+        ("GET", "/manage.js") => {
             write_asset(
                 stream,
                 "application/javascript; charset=utf-8",
-                console_assets::CONSOLE_JS,
+                assets::MANAGE_JS,
             )
             .await
         }

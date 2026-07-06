@@ -2,14 +2,14 @@
 //! Tool advertisement filtering (browser plugin; ADR-0022 Decision 8).
 //!
 //! `tools/list` membership is a domain-independent visibility optimization: with no manifest,
-//! the full sacred fixture is advertised verbatim (all-open stays byte-identical); with a
+//! the full surface is advertised verbatim (all-open stays byte-identical); with a
 //! manifest, a tool is kept only when at least one of its action-directory variants (ADR-0022
 //! Decision 2) could ever be permitted -- either its `requires` is empty (unconditionally
 //! allowed) or it is a subset of some single grant's `allowed` set. No tab exists at
 //! `tools/list` time, so this can never be a per-domain decision. Per-call enforcement
 //! (`governance::enforcement`) remains the sole authoritative check regardless of what this
 //! module returns; hiding a tool here is not denying it, and nothing in this module may claim
-//! otherwise. Schema TEXT is never altered -- a kept tool object is the fixture object, cloned
+//! otherwise. Schema TEXT is never altered -- a kept tool object is the advertisement object, cloned
 //! unchanged; only which tools appear in the array changes.
 //!
 //! Dynamic re-advertisement (emitting MCP `notifications/tools/list_changed` when a manifest
@@ -23,27 +23,27 @@ use crate::governance::manifest::document::Grant;
 use crate::governance::ports::capability_subset;
 use serde_json::Value;
 
-/// Compute the advertised `{ "tools": [...] }` object. `fixture` is the parsed sacred
-/// tool-schema fixture (the registry-rendered advertisement (`advertised_tools_json`), so this
+/// Compute the advertised `{ "tools": [...] }` object. `advertisement` is the parsed
+/// tool-schema advertisement (the registry-rendered advertisement (`advertised_tools_json`), so this
 /// browser-plugin module never depends on the transport layer). `grants` is `None` for no
-/// manifest (all-open): `fixture` is returned verbatim, byte-identical, no tool ever dropped,
+/// manifest (all-open): `advertisement` is returned verbatim, byte-identical, no tool ever dropped,
 /// reordered, or edited. `Some(grants)` (including an empty slice) filters to the tools with at
 /// least one directory variant a grant could ever permit (see [`tool_has_a_reachable_variant`]).
 /// An empty `grants` slice still advertises every tool with a `requires: []` variant (ADR-0022
 /// Decision 5 step 2: those actions need no grant at all).
-pub fn advertised_tools(fixture: &Value, grants: Option<&[Grant]>) -> Value {
+pub fn advertised_tools(advertisement: &Value, grants: Option<&[Grant]>) -> Value {
     let Some(grants) = grants else {
-        return fixture.clone();
+        return advertisement.clone();
     };
-    let tools = fixture["tools"]
+    let tools = advertisement["tools"]
         .as_array()
-        .expect("the fixture has a top-level 'tools' array");
+        .expect("the advertisement has a top-level 'tools' array");
     let kept: Vec<Value> = tools
         .iter()
         .filter(|tool| {
             let name = tool["name"]
                 .as_str()
-                .expect("every fixture tool object has a string 'name'");
+                .expect("every advertisement tool object has a string 'name'");
             tool_has_a_reachable_variant(name, grants)
         })
         .cloned()
@@ -74,7 +74,7 @@ mod tests {
     use crate::governance::ports::Capability;
     use crate::transport::mcp::tools::advertised_tools_json;
 
-    fn fixture() -> Value {
+    fn advertisement() -> Value {
         advertised_tools_json()
     }
 
@@ -101,8 +101,8 @@ mod tests {
     }
 
     #[test]
-    fn no_manifest_returns_the_fixture_verbatim() {
-        let fx = fixture();
+    fn no_manifest_returns_the_advertisement_verbatim() {
+        let fx = advertisement();
         assert_eq!(
             advertised_tools(&fx, None),
             fx,
@@ -115,7 +115,7 @@ mod tests {
     /// every requires-empty tool join the set.
     #[test]
     fn read_only_grant_advertises_everything_except_write_and_execute_tools() {
-        let fx = fixture();
+        let fx = advertisement();
         let grants = vec![grant(&[Capability::Read])];
         let result = advertised_tools(&fx, Some(&grants));
         assert_eq!(
@@ -139,10 +139,10 @@ mod tests {
 
     /// ADR-0022 Decision 8 consequence: an empty-grants manifest advertises exactly the
     /// requires-empty set (`tabs_create_mcp`, `resize_window`, `update_plan`, `explain`, and
-    /// `computer` via its `wait` row), in fixture order -- not an empty list.
+    /// `computer` via its `wait` row), in advertisement order -- not an empty list.
     #[test]
     fn empty_grants_manifest_advertises_exactly_the_requires_empty_set() {
-        let fx = fixture();
+        let fx = advertisement();
         let result = advertised_tools(&fx, Some(&[]));
         assert_eq!(
             names_of(&result),
@@ -158,14 +158,14 @@ mod tests {
 
     #[test]
     fn a_grant_permitting_write_advertises_form_input() {
-        let fx = fixture();
+        let fx = advertisement();
         let grants = vec![grant(&[Capability::Read, Capability::Write])];
         assert!(names_of(&advertised_tools(&fx, Some(&grants))).contains(&"form_input".to_string()));
     }
 
     #[test]
     fn a_grant_permitting_execute_advertises_javascript_tool() {
-        let fx = fixture();
+        let fx = advertisement();
         let grants = vec![grant(&[Capability::Execute])];
         assert!(names_of(&advertised_tools(&fx, Some(&grants)))
             .contains(&"javascript_tool".to_string()));
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn computer_is_advertised_under_every_nonempty_grant_since_wait_requires_nothing() {
-        let fx = fixture();
+        let fx = advertisement();
         for caps in [
             vec![Capability::Read],
             vec![Capability::Action],

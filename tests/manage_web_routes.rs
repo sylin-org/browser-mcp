@@ -75,12 +75,12 @@ fn console_index_page_is_served_over_a_real_http_get() {
     );
     let page = body(&response);
     assert!(
-        page.contains("/console.css"),
-        "index page must link console.css: {page}"
+        page.contains("/manage.css"),
+        "index page must link manage.css: {page}"
     );
     assert!(
-        page.contains("/console.js"),
-        "index page must link console.js: {page}"
+        page.contains("/manage.js"),
+        "index page must link manage.js: {page}"
     );
 
     let _ = service.kill();
@@ -97,14 +97,14 @@ fn console_css_and_js_are_served_with_correct_content_type() {
     let port = test_webapi_port(1);
     let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
 
-    let css = http_get(port, "/console.css");
+    let css = http_get(port, "/manage.css");
     assert_eq!(status_line(&css), "HTTP/1.1 200 OK");
     assert_eq!(
         header_value(&css, "Content-Type"),
         Some("text/css; charset=utf-8")
     );
 
-    let js = http_get(port, "/console.js");
+    let js = http_get(port, "/manage.js");
     assert_eq!(status_line(&js), "HTTP/1.1 200 OK");
     assert_eq!(
         header_value(&js, "Content-Type"),

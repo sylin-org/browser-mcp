@@ -12,5 +12,6 @@
 //! peer address. An org layer can disable the plane (`manage.web.enabled = false`); it can never
 //! widen it.
 
+pub mod assets;
 pub mod doctor;
 pub mod web;
