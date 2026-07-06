@@ -41,6 +41,7 @@ history live here.
 | [0031](0031-agent-onboarding-contract.md) | Agent onboarding contract: tools.json as the single source of agent-facing truth (initialize.instructions workflow preamble, per-tool examples, corrective validation errors) | Accepted (amends ADR-0007) |
 | [0032](0032-test-at-seams-and-inject-config-sources.md) | Test at pure seams; inject config sources at the composition root | Accepted |
 | [0033](0033-inbound-outbound-manage-zones.md) | Inbound/outbound/manage zones: the honest SoC split (renames `channels`→`inbound`, separates the management plane from the web ingestion adapter, policy-controlled listeners) | Accepted (amends ADR-0030 D5/D9) |
+| [0034](0034-capability-transport-registry.md) | The Capability & Transport Registry (ICapability/ITransport traits, tool declarations in code, capability manifest at handshake, deprecates ADR-0007's byte-frozen mandate) | Accepted (amends ADR-0007, ADR-0030) |
 
 ## Conventions
 
