@@ -275,27 +275,17 @@ async fn run_service_loop(
         }
     };
 
-    // The ADAPTER/CONTROL endpoint: accept sessions over the ALREADY-claimed listener (never
-    // re-claims the name -- PINS.md SS1 pin 1).
-    tokio::spawn({
-        let ctx = ctx.clone();
-        async move {
-            if let Err(e) = ipc::serve_adapters(ctx, adapter_listener).await {
-                tracing::error!(error = %e, "adapter/control endpoint failed");
-            }
-        }
-    });
+    // The inbound transports (ADR-0034): each transport is a blackbox that owns its listener
+    // lifecycle and feeds sessions into the pipeline. The pipe transport takes the
+    // already-claimed adapter listener; the web transport binds its own TCP listener.
+    let pipe = inbound::pipe::PipeTransport::new(adapter_listener);
+    tokio::spawn(pipe.run(ctx.clone()));
 
-    // The inbound.web adapter (ADR-0030 Decision 9; H8): a SECOND, optional session source,
-    // exposed only through the service. Policy-gated bind (Decision 5: "deny the web adapter"):
-    // `inbound.web.enabled = false` (set by an org-mandatory layer) means the listener never
-    // stands up, so there is no surface to connect to. A bind failure (e.g. the port is already
-    // in use) is logged and never fatal -- see `inbound::web::run`'s own doc comment.
     if inbound::web::enabled(&ctx.store) {
         tokio::spawn(inbound::web::run(ctx.clone()));
     } else {
         tracing::info!(
-            "inbound.web adapter disabled by policy (inbound.web.enabled = false); not binding"
+            "inbound.web transport disabled by policy (inbound.web.enabled = false); not binding"
         );
     }
 

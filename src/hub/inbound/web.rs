@@ -765,6 +765,28 @@ impl AsyncWrite for WsStream {
     }
 }
 
+/// The inbound.web transport instance. Constructed at the composition root; delegates to
+/// [`run`] for the listener lifecycle.
+pub struct WebTransport;
+
+impl WebTransport {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for WebTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl super::ITransport for WebTransport {
+    fn code(&self) -> &'static str {
+        "web"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
