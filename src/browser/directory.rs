@@ -40,6 +40,7 @@
 //! pointer signature (never constructed here).
 
 use crate::governance::ports::Capability;
+use crate::transport::mcp::outcome::{LocalCtx, LocalFuture};
 use serde_json::{json, Value};
 
 /// The resource-shape classification driving GRANT-PATH resource resolution only (ADR-0024
@@ -59,15 +60,21 @@ pub enum ResourceShape {
     TargetArg,
 }
 
-/// How a call is dispatched once authorized (ADR-0024 Decision 1).
+/// How a call is dispatched once authorized (ADR-0024 Decision 1, grown async by ADR-0035
+/// Decision 6).
 #[derive(Clone, Copy)]
 pub enum Handler {
-    /// The default: forward to the extension over native messaging via `Browser::call`. 13 of
-    /// the 14 registry rows use this.
+    /// The default: forward to the extension over native messaging via `Browser::call`. Most
+    /// registry rows use this.
     ExtensionForward,
-    /// Answered entirely inside the binary, with no extension frame: `explain`. The `fn`
-    /// returns the full response text; the pipeline wraps it in the MCP result envelope.
-    Local(fn() -> String),
+    /// Answered entirely inside the binary: `explain`, and (additively) `script`/`form_fill`.
+    /// An async, context-bearing handler (ADR-0035 Decision 6): receives a [`LocalCtx`] and
+    /// returns a [`crate::transport::mcp::outcome::CallOutcome`] behind a boxed, pinned future,
+    /// since Rust has no native `async fn` pointer type. Dispatch position depends on the
+    /// tool's `action: None` variant requirement set (PINS.md SS2): empty answers in the
+    /// free-action arm (where `explain`/`script` answer); non-empty falls through sacred +
+    /// grant enforcement first and answers at the post-grant position (`form_fill`).
+    Local(for<'a> fn(LocalCtx<'a>) -> LocalFuture<'a>),
 }
 
 /// A marker for post-dispatch behavior that needs the `Browser` handle or the governance core
@@ -742,7 +749,14 @@ pub const REGISTRY: &[ToolDescriptor] = &[
             directory_description: "Show every action available here and the capability each one requires.",
         }],
         resource: ResourceShape::DomainLess,
-        handler: Handler::Local(explain_text),
+        handler: Handler::Local(|ctx| {
+            Box::pin(async move {
+                let _ = ctx;
+                crate::transport::mcp::outcome::CallOutcome::Success {
+                    result: json!({ "content": [ { "type": "text", "text": explain_text() } ] }),
+                }
+            })
+        }),
         postprocess: None,
         post_dispatch: PostDispatch::None,
     },

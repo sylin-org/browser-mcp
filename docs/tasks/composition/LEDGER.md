@@ -5,7 +5,7 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C2 is NEXT.** Baseline: dev @ 6c5d351 (ADRs amended + this batch authored). C1 committed.
+**C3 is NEXT.** Baseline: dev @ 6c5d351 (ADRs amended + this batch authored). C1, C2 committed.
 
 ## Log
 
@@ -19,7 +19,7 @@ Template per task:
   including renames, moved code, extra tests, or clarified wording.
 ```
 
-### C1: audit orchestration keys -- DONE (pending commit)
+### C1: audit orchestration keys -- DONE (2c7a65c)
 - Baseline 587 -> 589.
 - Appended `orchestrator`/`batch_id`/`step`/`dry_run` to `AuditRecord`
   (`src/governance/ports.rs`) after `held`; added `CallAudit::orchestrated`/`mark_dry_run`/
@@ -44,3 +44,42 @@ Template per task:
     (a real, currently-connected `ghostlight.exe`, respawned by Chrome on kill) held
     `target/debug/ghostlight.exe` open for the whole session. No source or test content
     changed by this; noted here since it applies to every task's gate runs in this batch.
+
+### C2: CallOutcome split + async Handler::Local -- DONE (pending commit)
+- Baseline 589 -> 591.
+- New `src/transport/mcp/outcome.rs` (SPDX Apache-2.0 OR MIT) holds `CallOutcome`,
+  `DenialSource`, `LocalCtx`, `LocalFuture` (PINS SS2's sanctioned fallback placement, keeping
+  `browser::directory` free of Browser/Governance/ConfigStore/Config imports); registered in
+  `src/transport/mcp/mod.rs`. `directory.rs`'s `Handler::Local` grew from `fn() -> String` to
+  `for<'a> fn(LocalCtx<'a>) -> LocalFuture<'a>`; `explain`'s row migrated to a capture-free
+  closure coercing to that fn-pointer type. `pipeline.rs`'s `handle_tools_call` split into
+  `run_tool_call(..., orchestration) -> CallOutcome` (the full stage-1..12 chokepoint) plus a
+  thin `handle_tools_call` wrapper and `render_outcome` (the SS1 edge-render table); added
+  `take_batch_id` (SS7's `_batch_id` side channel) and `is_free_local_action` (SS2's free-action
+  guard: Local AND the `action:None` variant's requires is empty). Both Local dispatch
+  positions now exist (free-action arm; post-grant arm for a future non-empty-requires Local
+  tool, e.g. C10's `form_fill`) though nothing populates the second one yet. Added
+  `calloutcome_render_table` and `local_batch_id_side_channel` to `pipeline.rs`'s test module.
+- Deviations:
+  - D1: `CallOutcome`/`DenialSource` are `pub`, not PINS SS1's literal `pub(crate)`. Forced by
+    rustc's `private_interfaces` lint (promoted to a hard error by `-D warnings`):
+    `directory::Handler` (and `ToolDescriptor`/`REGISTRY`) are already fully `pub` and reachable
+    from `tests/*.rs` (separate crates), and `Handler::Local`'s fn-pointer variant names
+    `LocalCtx`/`LocalFuture`/`CallOutcome` directly, so a `pub(crate)` `CallOutcome` behind a
+    `pub enum Handler` cannot compile clean under this batch's gates. Confirmed no external
+    test references `Handler` at all before widening (`grep -rn "Handler::" tests/` = 0 hits),
+    so this is a safe, mechanically-forced widening, not a real API-surface expansion.
+  - D2: `CallOutcome::Failure { error: ToolError }` (PINS SS1's literal shape) has no slot for
+    the wait-note text that today's code appends to an ERROR result when the extension
+    connected within the handshake grace window but the dispatched call still failed. No test
+    pins this combination (`grep -rn "append_wait_note" tests/` = 0 hits); documented in a code
+    comment at the `Err(e) => CallOutcome::Failure { error: e }` arm in `pipeline.rs` rather
+    than silently dropped. The wait-note on a SUCCESS result is unaffected (still appended,
+    still byte-identical).
+  - D3: the `LocalFuture` import needed to live inside `pipeline.rs`'s `#[cfg(test)] mod tests`
+    block, not the file's top-level `use` list: the type is named only by the new tests'
+    explicit fn-pointer annotation, so a top-level import triggered `unused_imports` (also
+    promoted to a hard error) in the non-test compilation pass.
+  - D4: the `directory.rs` inline test at (pre-edit) line 1192 needed NO textual change --
+    `matches!(row.handler, Handler::Local(_))` doesn't depend on the variant's inner type, so it
+    compiles unchanged against the new fn-pointer shape.

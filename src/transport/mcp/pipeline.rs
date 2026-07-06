@@ -38,15 +38,18 @@ use crate::governance::config::reload::ConfigStore;
 use crate::governance::dispatch::{hold_message, Gate, Governance};
 use crate::governance::ports::{Capability, Decision, Denial, EffectiveMode, GoverningResource};
 use crate::hub::outbound::browser::Browser;
+use crate::transport::mcp::outcome::{CallOutcome, DenialSource, LocalCtx};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::ToolError;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The dispatch chokepoint (ADR-0024 Decision 2): every `tools/call` passes through here, in
-/// the pinned stage order documented at the top of this module. `pub(crate)` so
-/// `server::handle_line`'s `tools/call` arm can reach it.
+/// The dispatch chokepoint (ADR-0024 Decision 2; split by ADR-0035 Decision 6): every
+/// `tools/call` passes through [`run_tool_call`], in the pinned stage order documented at the
+/// top of this module; this thin wrapper parses `id`/`params` and renders the returned
+/// [`CallOutcome`] into today's JSON-RPC envelope. `pub(crate)` so `server::handle_line`'s
+/// `tools/call` arm can reach it.
 pub(crate) async fn handle_tools_call(
     browser: &Browser,
     store: &Arc<ConfigStore>,
@@ -54,10 +57,8 @@ pub(crate) async fn handle_tools_call(
     id: Option<Value>,
     params: Option<&Value>,
 ) -> JsonRpcResponse {
-    // One snapshot for the whole call, taken once at entry: a reload mid-call must not tear
-    // the snapshot the call already started with.
-    let config = store.current();
-
+    // The missing-`name` case is a JSON-RPC protocol error, not a tool outcome: it never reaches
+    // `run_tool_call` (PINS.md SS1).
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return JsonRpcResponse::error(id, -32602, "tools/call requires a string 'name'");
     };
@@ -65,6 +66,87 @@ pub(crate) async fn handle_tools_call(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or(Value::Null);
+
+    let outcome = run_tool_call(browser, store, governance, name, &args, None).await;
+    render_outcome(id, outcome)
+}
+
+/// Render a [`CallOutcome`] into today's MCP envelope, byte-identically (ADR-0035 Decision 6,
+/// PINS.md SS1's table): `Success`/`Failure` map to the ordinary/`isError` result shapes;
+/// `Denied`/`Held` are deliberately rendered as ORDINARY successful text results (never a
+/// transport-level error), so an agent reads the corrective message as ordinary tool output.
+fn render_outcome(id: Option<Value>, outcome: CallOutcome) -> JsonRpcResponse {
+    match outcome {
+        CallOutcome::Success { result } => JsonRpcResponse::success(id, result),
+        CallOutcome::Failure { error } => JsonRpcResponse::success(id, error_result(error)),
+        CallOutcome::Denied { message, .. } => JsonRpcResponse::success(id, text_content(message)),
+        CallOutcome::Held { message } => JsonRpcResponse::success(id, text_content(message)),
+    }
+}
+
+/// PINS.md SS7's `_batch_id` side channel: an orchestrator's own [`directory::Handler::Local`]
+/// handler (`script`, C7) embeds its freshly minted batch id at its `Success` result's top
+/// level under this key, because the handler has no way to reach the dispatching arm's own
+/// `CallAudit` (SS7's borrow-tangle note). Removes the key in place and returns it so the
+/// caller can stamp the PARENT record's `batch_id` before completing it; the client must never
+/// see this key on the wire.
+fn take_batch_id(outcome: &mut CallOutcome) -> Option<String> {
+    let CallOutcome::Success { result } = outcome else {
+        return None;
+    };
+    let obj = result.as_object_mut()?;
+    obj.remove("_batch_id")?.as_str().map(str::to_string)
+}
+
+/// SS2's free-action dispatch guard: true for a [`directory::Handler::Local`] tool whose
+/// `action: None` variant carries an EMPTY requirement set (today: `explain`; C7's `script`
+/// joins it). `form_fill` (C10) declares `Read + Write` on its `action: None` variant, so it is
+/// never free-local -- it always falls through to grant enforcement and dispatches at the
+/// post-grant Local position instead, exactly like an `ExtensionForward` tool.
+fn is_free_local_action(descriptor: &directory::ToolDescriptor) -> bool {
+    matches!(descriptor.handler, directory::Handler::Local(_))
+        && descriptor
+            .variants
+            .iter()
+            .find(|v| v.action.is_none())
+            .is_some_and(|v| v.requires.is_empty())
+}
+
+/// The dispatch chokepoint's core (ADR-0024 Decision 2, split out by ADR-0035 Decision 6):
+/// everything from the registry lookup through post-dispatch -- per-call config snapshot,
+/// schema validation, hold, sacred, free-action/grant enforcement, dispatch (extension or
+/// local), landing re-check, postprocess, wait-note -- returning a [`CallOutcome`] instead of
+/// rendering an envelope, so orchestrators (`script`, `form_fill`) can consume the real outcome
+/// of a step instead of sniffing rendered text. `orchestration` is `Some((tool, batch_id,
+/// step))` for an orchestrated internal execution (a script step, a form_fill internal): stamped
+/// onto the audit record immediately after `governance.begin` (PINS.md SS7); `None` for an
+/// ordinary top-level call, as `handle_tools_call` passes.
+///
+/// Stage order (unchanged from the pre-split `handle_tools_call`):
+/// 1. Registry lookup. Miss: `CallOutcome::Failure` (the "Unknown tool" message, byte-identical).
+/// 2. Schema validation. Failure: `CallOutcome::Failure`.
+/// 3. Action extraction via `descriptor.action_key`, the one directory lookup, and
+///    `governance.begin` (stamping `orchestration` immediately after).
+/// 4. Hold check: `CallOutcome::Held`.
+/// 5. Sacred check: `CallOutcome::Denied { source: Sacred }`.
+/// 6. Free-action `Handler::Local` dispatch ([`is_free_local_action`]), in the position pinned
+///    by ADR-0024 Decision 1 stage 3.
+/// 7. Grant enforcement: `CallOutcome::Denied { source: Policy }` on `Gate::Deny`.
+/// 8. Bounded first-call wait, then dispatch: `Handler::Local` (non-empty requires) at this
+///    post-grant position, else `Browser::call`.
+/// 9. `PostDispatch::NavigateLanding`: the landing re-check and park-on-real-deny.
+/// 10. `descriptor.postprocess`, the wait-note, and `audit.complete()`.
+pub(crate) async fn run_tool_call(
+    browser: &Browser,
+    store: &Arc<ConfigStore>,
+    governance: &Governance,
+    name: &str,
+    args: &Value,
+    orchestration: Option<(&'static str, &str, u32)>,
+) -> CallOutcome {
+    // One snapshot for the whole call, taken once at entry: a reload mid-call must not tear
+    // the snapshot the call already started with.
+    let config = store.current();
 
     // Unknown tool names are rejected before dispatch (and before waiting on the extension
     // channel at all): this is a client-request problem, not a browser/extension problem, and the
@@ -77,7 +159,7 @@ pub(crate) async fn handle_tools_call(
     let Some(descriptor) = directory::descriptor(name) else {
         let err = ToolError::invalid_request(format!("Unknown tool: {name}"))
             .next_step("call tools/list and use one of the advertised tool names");
-        return JsonRpcResponse::success(id, error_result(err));
+        return CallOutcome::Failure { error: err };
     };
 
     // ADR-0031 Decision 4: hard-fail inputSchema validation BEFORE dispatch, with a corrective
@@ -86,8 +168,8 @@ pub(crate) async fn handle_tools_call(
     // empty object) so the contract is uniform. The behavioral tightening: a missing `tabId`
     // (today: silent None -> extension error) is now an explicit corrective error.
     if let Some(schema) = crate::transport::mcp::validation::ToolSchema::for_tool(name) {
-        if let Err(err) = crate::transport::mcp::validation::validate_arguments(&schema, &args) {
-            return JsonRpcResponse::success(id, error_result(err));
+        if let Err(err) = crate::transport::mcp::validation::validate_arguments(&schema, args) {
+            return CallOutcome::Failure { error: err };
         }
     }
 
@@ -108,6 +190,11 @@ pub(crate) async fn handle_tools_call(
     // the whole call, feeding both the decision and the audit `capability` field.
     let lookup: Option<&'static [Capability]> = directory::requires(name, action);
     let mut audit = governance.begin(name, action, lookup);
+    // C1's orchestration stamping (PINS.md SS7): applied right after `begin`, so every audit
+    // path below (held, sacred, free-action, denied, complete) carries it.
+    if let Some((orchestrator, batch_id, step)) = orchestration {
+        audit.orchestrated(orchestrator, batch_id, Some(step));
+    }
 
     // Take-the-wheel hold (g10, ADR-0018 step 2): a user gesture, not a policy decision, so it
     // is checked before ANY dispatch machinery -- before governance.authorize, before the sacred
@@ -117,7 +204,9 @@ pub(crate) async fn handle_tools_call(
     // (`decision: "allow"`, `held: true`, `duration_ms: 0`).
     if let Some(held_for) = browser.held_for() {
         audit.held();
-        return JsonRpcResponse::success(id, text_content(hold_message(name, action, held_for)));
+        return CallOutcome::Held {
+            message: hold_message(name, action, held_for),
+        };
     }
 
     // ADR-0024 Decision 4: the sacred check and the grant path below share ONE lazily resolved,
@@ -141,11 +230,14 @@ pub(crate) async fn handle_tools_call(
             denial: None,
         }
     } else {
-        sacred_check(&mut tab_url, sacred_domains, descriptor.resource, &args).await
+        sacred_check(&mut tab_url, sacred_domains, descriptor.resource, args).await
     };
     if let Some(denial) = denial {
         audit.sacred_deny(&denial, tab_domain.as_deref());
-        return JsonRpcResponse::success(id, text_content(denial.message));
+        return CallOutcome::Denied {
+            message: denial.message,
+            source: DenialSource::Sacred,
+        };
     }
 
     // Seed the audit domain from the sacred check's own tab resolution (the pre-grant default
@@ -162,17 +254,32 @@ pub(crate) async fn handle_tools_call(
     // unconditionally -- no resource resolution and no grant scan. This runs AFTER the always-on
     // sacred check (step 1) and BEFORE grant enforcement, which the resource-resolution gate
     // below skips for these tools, so no `tab_url` probe ever fires for them (the sharp case is
-    // `computer` `wait`: requirement `[]`, yet it carries a `tabId`). `explain` (Decision 7,
-    // ADR-0024 Decision 1's `Handler::Local`) is the one free action with a server-side body and
-    // no extension action, so it is answered right here (no native-messaging frame is ever
-    // produced for it); every other free action (`tabs_create_mcp`, `resize_window`,
-    // `update_plan`, `computer` `wait`) falls through to an ordinary allowed dispatch below, and
-    // to `governance.authorize`'s own free-action arm. All are audited as an allow with no grant
-    // attribution and a real (not hardcoded) `duration_ms`.
-    if let directory::Handler::Local(f) = descriptor.handler {
-        let text = f();
+    // `computer` `wait`: requirement `[]`, yet it carries a `tabId`). A `Handler::Local` tool
+    // whose `action: None` variant requires nothing (`explain`; C7's `script`) is answered right
+    // here, with no extension frame ever produced; a `Handler::Local` tool that does NOT qualify
+    // ([`is_free_local_action`] false -- C10's `form_fill`) falls through to grant enforcement
+    // below and dispatches at the post-grant Local position instead. Every OTHER free action
+    // (`tabs_create_mcp`, `resize_window`, `update_plan`, `computer` `wait`) falls through to an
+    // ordinary allowed `ExtensionForward` dispatch below, and to `governance.authorize`'s own
+    // free-action arm. All are audited as an allow with no grant attribution and a real (not
+    // hardcoded) `duration_ms`.
+    if is_free_local_action(descriptor) {
+        let directory::Handler::Local(f) = descriptor.handler else {
+            unreachable!("is_free_local_action only returns true for Handler::Local");
+        };
+        let ctx = LocalCtx {
+            browser,
+            store,
+            governance,
+            config: &config,
+            args,
+        };
+        let mut outcome = f(ctx).await;
+        if let Some(batch_id) = take_batch_id(&mut outcome) {
+            audit.set_batch_id(&batch_id);
+        }
         audit.complete();
-        return JsonRpcResponse::success(id, text_content(text));
+        return outcome;
     }
 
     // Grant enforcement (g13, ADR-0018 step 3, ADR-0024 Decision 3): resolve the governing
@@ -187,7 +294,7 @@ pub(crate) async fn handle_tools_call(
     // `ResourceShape`) instead of a per-tool name match.
     let config_mode = config.governance_mode();
     let resolved = if governance.is_governed() && matches!(lookup, Some(r) if !r.is_empty()) {
-        resolve_governing_resource(&mut tab_url, descriptor, &args).await
+        resolve_governing_resource(&mut tab_url, descriptor, args).await
     } else {
         None
     };
@@ -201,14 +308,19 @@ pub(crate) async fn handle_tools_call(
         resolved.is_some() && descriptor.post_dispatch == directory::PostDispatch::NavigateLanding;
     let resource = resolved.map(|(r, _)| r);
     match governance.authorize(&mut audit, resource, config_mode) {
-        Gate::Deny { message } => return JsonRpcResponse::success(id, text_content(message)),
+        Gate::Deny { message } => {
+            return CallOutcome::Denied {
+                message,
+                source: DenialSource::Policy,
+            }
+        }
         Gate::Proceed => {}
     }
 
     // Bounded first-call wait: the first call of a session races the extension handshake.
     // Wait briefly for the channel instead of failing a healthy session (also covers calls
     // arriving during a mid-session reconnect). If the wait times out, `waited` stays `None` and
-    // control falls through to `Browser::call` below, which fails fast with the canonical
+    // control falls through to dispatch below, which fails fast with the canonical
     // "extension not connected" `ToolError` -- one hop-attributed message, not two to keep in sync.
     let mut waited: Option<Duration> = None;
     if !browser.is_connected() {
@@ -226,7 +338,38 @@ pub(crate) async fn handle_tools_call(
         }
     }
 
-    let outcome = browser.call(name, &args).await;
+    // Post-grant `Handler::Local` dispatch (ADR-0035 Decision 6, PINS.md SS2's second pinned
+    // position): reachable only for a Local tool whose `action: None` variant requires
+    // something ([`is_free_local_action`] already returned early for the empty-requires case
+    // above), so by construction this is the ONLY remaining way a Local tool reaches here --
+    // `form_fill` (C10) is the first user. Same audit/postprocess/wait-note flow as
+    // `ExtensionForward` below, minus the navigate-only landing re-check no Local tool declares.
+    if let directory::Handler::Local(f) = descriptor.handler {
+        let ctx = LocalCtx {
+            browser,
+            store,
+            governance,
+            config: &config,
+            args,
+        };
+        let mut outcome = f(ctx).await;
+        audit.dispatch_finished();
+        if let Some(batch_id) = take_batch_id(&mut outcome) {
+            audit.set_batch_id(&batch_id);
+        }
+        if let CallOutcome::Success { result } = &mut outcome {
+            if let Some(pp) = descriptor.postprocess {
+                pp(result, config.secrets_redact());
+            }
+            if let Some(waited) = waited {
+                append_wait_note(result, waited);
+            }
+        }
+        audit.complete();
+        return outcome;
+    }
+
+    let outcome = browser.call(name, args).await;
     audit.dispatch_finished();
 
     // Point 5 (g13/g15): after a dispatched `navigate` succeeds, re-check the FINAL
@@ -252,7 +395,10 @@ pub(crate) async fn handle_tools_call(
                 }
                 Decision::Deny(d) => {
                     audit.landing_deny(&d, landing_domain.as_deref());
-                    return JsonRpcResponse::success(id, text_content(d.message));
+                    return CallOutcome::Denied {
+                        message: d.message,
+                        source: DenialSource::Policy,
+                    };
                 }
                 Decision::ShadowDeny(d) => {
                     audit.landing_shadow_deny(d, landing_domain);
@@ -276,17 +422,16 @@ pub(crate) async fn handle_tools_call(
             if let Some(waited) = waited {
                 append_wait_note(&mut result, waited);
             }
-            JsonRpcResponse::success(id, result)
+            CallOutcome::Success { result }
         }
         // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
         // The rendered text is exactly the hop-attributed ToolError Display: no "Error: " prefix.
-        Err(e) => {
-            let mut result = error_result(e);
-            if let Some(waited) = waited {
-                append_wait_note(&mut result, waited);
-            }
-            JsonRpcResponse::success(id, result)
-        }
+        // NOTE (C2 deviation D-waitnote): today's code additionally appends the wait-note to an
+        // error result when `waited` is `Some`; `CallOutcome::Failure` (PINS.md SS1) carries only
+        // the bare `ToolError`, with no slot for a pre-rendered note. No test pins this exact
+        // combination (extension connects within the handshake grace window, then the dispatched
+        // call itself still errors); see LEDGER.md for the full note.
+        Err(e) => CallOutcome::Failure { error: e },
     }
 }
 
@@ -530,6 +675,7 @@ mod tests {
     use crate::governance::config::layers::{self, LayerInputs};
     use crate::governance::config::{Config, CONTENT_SECURITY_SACRED_DOMAINS};
     use crate::governance::ports::AuditSink;
+    use crate::transport::mcp::outcome::LocalFuture;
     use crate::transport::native::host;
     use std::sync::Mutex;
     use std::time::Duration as StdDuration;
@@ -1921,5 +2067,103 @@ mod tests {
             "back/forward resolves the union-rule resource pre-dispatch (allowed by g1's read \
              capability), and the point-5 landing re-check still probes the final tab url"
         );
+    }
+
+    // --- C2 (ADR-0035 Decision 6): CallOutcome + async ctx-bearing Handler::Local ---
+
+    /// C2 (PINS.md SS1): each `CallOutcome` variant renders into today's byte-identical
+    /// envelope shape.
+    #[test]
+    fn calloutcome_render_table() {
+        let success_value = json!({ "content": [ { "type": "text", "text": "ok" } ] });
+        let rendered = render_outcome(
+            Some(json!(1)),
+            CallOutcome::Success {
+                result: success_value.clone(),
+            },
+        );
+        assert_eq!(rendered.result, Some(success_value));
+
+        let rendered = render_outcome(
+            Some(json!(2)),
+            CallOutcome::Failure {
+                error: ToolError::invalid_request("bad request".to_string()),
+            },
+        );
+        let result = rendered.result.expect("result present");
+        assert_eq!(result["isError"], true);
+
+        let rendered = render_outcome(
+            Some(json!(3)),
+            CallOutcome::Denied {
+                message: "Denied (D-af6633ec): www.mybank.com".to_string(),
+                source: DenialSource::Sacred,
+            },
+        );
+        let result = rendered.result.expect("result present");
+        assert_eq!(
+            result["content"][0]["text"],
+            "Denied (D-af6633ec): www.mybank.com"
+        );
+        assert!(
+            result.get("isError").is_none(),
+            "a denial is never isError: {result:?}"
+        );
+
+        let rendered = render_outcome(
+            Some(json!(4)),
+            CallOutcome::Held {
+                message: "Paused: the user has taken control".to_string(),
+            },
+        );
+        let result = rendered.result.expect("result present");
+        assert_eq!(
+            result["content"][0]["text"],
+            "Paused: the user has taken control"
+        );
+        assert!(
+            result.get("isError").is_none(),
+            "a hold is never isError: {result:?}"
+        );
+    }
+
+    /// C2 (PINS.md SS7's `_batch_id` side channel): a synthetic Local handler returning
+    /// `Success` with a top-level `_batch_id` key never lets that key reach the client.
+    #[tokio::test]
+    async fn local_batch_id_side_channel() {
+        let synthetic: for<'a> fn(LocalCtx<'a>) -> LocalFuture<'a> = |ctx| {
+            Box::pin(async move {
+                let _ = ctx;
+                CallOutcome::Success {
+                    result: json!({
+                        "content": [ { "type": "text", "text": "ok" } ],
+                        "_batch_id": "b-1"
+                    }),
+                }
+            })
+        };
+
+        let browser = Browser::new();
+        let store =
+            crate::governance::config::reload::ConfigStore::for_test_with_config(Config::minimal());
+        let recorder = Arc::new(Recorder::disabled());
+        let governance = Governance::all_open(recorder as Arc<dyn AuditSink>);
+        let config = store.current();
+        let args = json!({});
+        let ctx = LocalCtx {
+            browser: &browser,
+            store: &store,
+            governance: &governance,
+            config: &config,
+            args: &args,
+        };
+
+        let mut outcome = synthetic(ctx).await;
+        let batch_id = take_batch_id(&mut outcome);
+        assert_eq!(batch_id.as_deref(), Some("b-1"));
+
+        let rendered = render_outcome(Some(json!(1)), outcome);
+        let text = serde_json::to_string(&rendered.result.expect("result present")).unwrap();
+        assert!(!text.contains("_batch_id"), "{text}");
     }
 }
