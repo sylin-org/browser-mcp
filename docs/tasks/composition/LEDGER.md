@@ -5,7 +5,8 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C3 is NEXT.** Baseline: dev @ 6c5d351 (ADRs amended + this batch authored). C1, C2 committed.
+**C4 is NEXT.** Baseline: dev @ 6c5d351 (ADRs amended + this batch authored). C1, C2, C3
+committed.
 
 ## Log
 
@@ -45,7 +46,7 @@ Template per task:
     `target/debug/ghostlight.exe` open for the whole session. No source or test content
     changed by this; noted here since it applies to every task's gate runs in this batch.
 
-### C2: CallOutcome split + async Handler::Local -- DONE (pending commit)
+### C2: CallOutcome split + async Handler::Local -- DONE (193d78f)
 - Baseline 589 -> 591.
 - New `src/transport/mcp/outcome.rs` (SPDX Apache-2.0 OR MIT) holds `CallOutcome`,
   `DenialSource`, `LocalCtx`, `LocalFuture` (PINS SS2's sanctioned fallback placement, keeping
@@ -83,3 +84,22 @@ Template per task:
   - D4: the `directory.rs` inline test at (pre-edit) line 1192 needed NO textual change --
     `matches!(row.handler, Handler::Local(_))` doesn't depend on the variant's inner type, so it
     compiles unchanged against the new fn-pointer shape.
+
+### C3: structured results + outputSchema -- DONE (pending commit)
+- Baseline 591 -> 592.
+- `ToolDescriptor` gained `output_schema: Option<fn() -> Value>` (`src/browser/directory.rs`);
+  all 14 rows updated (4 with a real minimal JSON-Schema: `tabs_context_mcp`, `tabs_create_mcp`,
+  `navigate`, `find`; 10 with `None`); `advertised_tools_json` emits `"outputSchema"` when Some.
+  Extension (`extension/service-worker.js`): `tabContext` now also sets
+  `structuredContent = {mcpGroupId, tabs}`; `tabs_create_mcp` overrides it to
+  `{tabId: <created tab>, tabs}` reusing the same `tabs` array; `navigate` sets
+  `structuredContent = {tabId, url, title}` off the `chrome.tabs.get` call the handler already
+  made; `find` builds `{results, more}` and attaches it on BOTH the empty and non-empty text
+  branches. No text-rendering line changed (confirmed by re-reading each diff: only new
+  `structuredContent`/`r.structuredContent` assignments added, no existing string literal
+  touched). Added `tests/tool_schema_fidelity.rs::output_schemas_present_exactly_where_declared`.
+- Verified the extension node gate (`constants`/`geometry`/`keys`.test.js, unaffected by this
+  task's files) still passes: 17/17.
+- Deviations: none. Neither `tool_schema_fidelity.rs` nor `all_open_golden.rs` byte-compares a
+  whole per-tool JSON object (both index into specific keys), so the STOP precondition never
+  applied and adding `outputSchema` required no test restructuring beyond the one new test.

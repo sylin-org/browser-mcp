@@ -313,3 +313,28 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
         });
     }
 }
+
+/// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
+/// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
+/// each is a JSON-Schema object.
+#[test]
+fn output_schemas_present_exactly_where_declared() {
+    let with_schema: Vec<String> = tools()
+        .iter()
+        .filter(|t| t.get("outputSchema").is_some())
+        .map(|t| t["name"].as_str().expect("name").to_string())
+        .collect();
+    assert_eq!(
+        with_schema,
+        vec!["tabs_context_mcp", "tabs_create_mcp", "navigate", "find"],
+        "outputSchema must be advertised for exactly these tools, in this order"
+    );
+    for name in &with_schema {
+        let schema = &tool(name)["outputSchema"];
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "{name}: outputSchema.type must be \"object\""
+        );
+    }
+}

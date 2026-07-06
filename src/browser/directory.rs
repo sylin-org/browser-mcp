@@ -128,6 +128,10 @@ pub struct ToolDescriptor {
     /// secret redaction is the only user today.
     pub postprocess: Option<fn(&mut serde_json::Value, bool)>,
     pub post_dispatch: PostDispatch,
+    /// The declared `outputSchema` for this tool's `structuredContent` (ADR-0038 Decision 3),
+    /// when this tool has a declared result vocabulary; `None` on every other row. Emitted in
+    /// `tools/list` alongside `inputSchema` when present.
+    pub output_schema: Option<fn() -> Value>,
 }
 
 /// The agent-facing example for a tool (ADR-0031 Decision 2): a sample `call` (as a JSON string
@@ -172,6 +176,27 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "mcpGroupId": { "type": "number" },
+                    "tabs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tabId": { "type": "number" },
+                                "title": { "type": "string" },
+                                "url": { "type": "string" }
+                            },
+                            "required": ["tabId", "title", "url"]
+                        }
+                    }
+                },
+                "required": ["mcpGroupId", "tabs"]
+            })
+        }),
     },
     ToolDescriptor {
         tool: "tabs_create_mcp",
@@ -196,6 +221,27 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "tabs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tabId": { "type": "number" },
+                                "title": { "type": "string" },
+                                "url": { "type": "string" }
+                            },
+                            "required": ["tabId", "title", "url"]
+                        }
+                    }
+                },
+                "required": ["tabId", "tabs"]
+            })
+        }),
     },
     ToolDescriptor {
         tool: "navigate",
@@ -233,6 +279,17 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::NavigateLanding,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "url": { "type": "string" },
+                    "title": { "type": "string" }
+                },
+                "required": ["tabId", "url", "title"]
+            })
+        }),
     },
     ToolDescriptor {
         tool: "computer",
@@ -386,6 +443,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "find",
@@ -419,6 +477,29 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "ref": { "type": "string" },
+                                "role": { "type": "string" },
+                                "name": { "type": "string" },
+                                "x": { "type": "number" },
+                                "y": { "type": "number" }
+                            },
+                            "required": ["ref", "role", "name", "x", "y"]
+                        }
+                    },
+                    "more": { "type": "boolean" }
+                },
+                "required": ["results", "more"]
+            })
+        }),
     },
     ToolDescriptor {
         tool: "form_input",
@@ -456,6 +537,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "get_page_text",
@@ -489,6 +571,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "javascript_tool",
@@ -527,6 +610,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "read_console_messages",
@@ -572,6 +656,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "read_network_requests",
@@ -613,6 +698,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "read_page",
@@ -659,6 +745,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "resize_window",
@@ -696,6 +783,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "update_plan",
@@ -731,6 +819,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
     ToolDescriptor {
         tool: "explain",
@@ -759,6 +848,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
         postprocess: None,
         post_dispatch: PostDispatch::None,
+        output_schema: None,
     },
 ];
 
@@ -812,6 +902,9 @@ pub fn advertised_tools_json() -> Value {
                 } else {
                     json!({ "call": call })
                 };
+            }
+            if let Some(schema) = d.output_schema {
+                entry["outputSchema"] = schema();
             }
             entry
         })

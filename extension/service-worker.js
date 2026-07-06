@@ -631,7 +631,9 @@ async function effectiveTabId(rawTabId) {
 }
 function tabContext(tabs) {
   const available = tabs.map((t) => ({ tabId: t.id, title: t.title || "", url: t.url || "" }));
-  return text(JSON.stringify({ mcpGroupId: groupId, tabs: available }, null, 2));
+  const r = text(JSON.stringify({ mcpGroupId: groupId, tabs: available }, null, 2));
+  r.structuredContent = { mcpGroupId: groupId, tabs: available };
+  return r;
 }
 
 // --- Content-script bridge (inject on demand) ---
@@ -1112,6 +1114,7 @@ const handlers = {
     await persistSessionState();
     const r = tabContext(await groupTabs());
     r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
+    r.structuredContent = { tabId: tab.id, tabs: r.structuredContent.tabs };
     return r;
   },
   async navigate(a) {
@@ -1131,7 +1134,9 @@ const handlers = {
     await waitForLoad(tabId);
     const tab = await chrome.tabs.get(tabId);
     navigatePill(tabId, tab.url); // destination pill on the freshly loaded page
-    return text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
+    const r = text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
+    r.structuredContent = { tabId, url: tab.url, title: tab.title || "" };
+    return r;
   },
   computer,
   async read_page(a) {
@@ -1152,10 +1157,17 @@ const handlers = {
     const r = await content(tabId, { type: "find", query: a.query });
     const data = (r && r.result) || { results: [] };
     const results = data.results || [];
-    if (!results.length) return text(`No elements matching "${a.query}".`);
-    let out = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
-    if (data.more) out += "\n(more than 20 matches; refine your query for the rest)";
-    return text(out);
+    const more = !!data.more;
+    let out;
+    if (!results.length) {
+      out = text(`No elements matching "${a.query}".`);
+    } else {
+      let s = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
+      if (more) s += "\n(more than 20 matches; refine your query for the rest)";
+      out = text(s);
+    }
+    out.structuredContent = { results, more };
+    return out;
   },
   async form_input(a) {
     const tabId = await effectiveTabId(a.tabId);
