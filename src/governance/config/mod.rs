@@ -194,6 +194,10 @@ pub enum KeyConstraint {
     /// [`KeyDef::parse_value`]. The concrete grammar lives in the browser plugin, kept out of
     /// this core module per the a7 arch-test boundary (RECONCILIATION.md section 2).
     DomainPatternList,
+    /// StrList keys constrained to the single literal `["localhost"]`: the management plane is
+    /// permanently loopback. Any other member (including `"*"`) is rejected at load time, so an
+    /// org layer can disable the plane (via the paired `*.enabled = false`) but cannot widen it.
+    LocalhostOnly,
 }
 
 /// A value failed validation against a [`KeyDef`]. Display strings are user-facing: they
@@ -216,6 +220,8 @@ pub enum ConfigValueError {
     DuplicateEntry(String),
     #[error("invalid domain pattern: {0}")]
     InvalidDomainPattern(String),
+    #[error("only \"localhost\" is permitted on this key; got {0}")]
+    NotLocalhost(String),
 }
 
 /// A governance configuration key: a stable dotted name, a human description, its validation
@@ -325,6 +331,9 @@ impl KeyDef {
                     {
                         return Err(ConfigValueError::InvalidDomainPattern(s.to_string()));
                     }
+                    if matches!(self.constraint, KeyConstraint::LocalhostOnly) && s != "localhost" {
+                        return Err(ConfigValueError::NotLocalhost(s.to_string()));
+                    }
                     items.push(s.to_string());
                 }
                 Ok(ConfigValue::StrList(items))
@@ -381,6 +390,31 @@ pub const GOVERNANCE_MODE: &str = "governance.mode";
 /// connect, never which tools exist (ADR-0030 Decision 6 is preserved: this key has no bearing
 /// on the tool/resource axes).
 pub const INBOUND_WEB_FROM: &str = "inbound.web.from";
+
+/// `inbound.web.enabled` -- whether the inbound.web adapter's TCP listener binds at all. An
+/// org-mandatory `false` is the "deny the web adapter" decision (ADR-0030 Decision 5): the
+/// listener never stands up, so there is no surface to connect to. Bind-time only: a change
+/// takes effect on the next service restart, like the bind address itself.
+pub const INBOUND_WEB_ENABLED: &str = "inbound.web.enabled";
+
+/// `inbound.pipe.enabled` -- whether the inbound.pipe adapter (the named-pipe/UDS listener
+/// thin MCP adapters dial into) binds. Pipe admission is OS same-user by construction; this key
+/// exists for a deployment that wants the pipe path closed too.
+pub const INBOUND_PIPE_ENABLED: &str = "inbound.pipe.enabled";
+
+/// `outbound.browser.enabled` -- whether the outbound.browser executor participates. Reserved
+/// for symmetry and future deployments that disable the browser capability entirely.
+pub const OUTBOUND_BROWSER_ENABLED: &str = "outbound.browser.enabled";
+
+/// `manage.web.enabled` -- whether the management-plane HTTP UI binds. An org-mandatory `false`
+/// takes the management UI off-line without affecting tool ingestion.
+pub const MANAGE_WEB_ENABLED: &str = "manage.web.enabled";
+
+/// `manage.web.from` -- sources allowed to reach the management-plane HTTP UI. The management
+/// plane is PERMANENTLY loopback: the validator rejects any member other than `"localhost"`,
+/// and the router additionally hard-codes a loopback check. There is no remote posture for
+/// administering the service.
+pub const MANAGE_WEB_FROM: &str = "manage.web.from";
 
 /// The static registry of every governance key: the single source of truth for names,
 /// descriptions, constraints, and per-preset defaults (shared format doc section 3.4). The
@@ -458,6 +492,46 @@ pub const KEYS: &[KeyDef] = &[
         key: INBOUND_WEB_FROM,
         description: "Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). \"localhost\" only, unless opened to \"*\" or specific hosts.",
         constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::StrList(&["localhost"]),
+        default_safe: KeyValue::StrList(&["localhost"]),
+        default_restricted: KeyValue::StrList(&["localhost"]),
+    },
+    KeyDef {
+        key: INBOUND_WEB_ENABLED,
+        description: "Whether the inbound.web adapter's TCP listener binds. An org-mandatory false denies the web adapter: no listener, no surface.",
+        constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::Bool(true),
+        default_safe: KeyValue::Bool(true),
+        default_restricted: KeyValue::Bool(true),
+    },
+    KeyDef {
+        key: INBOUND_PIPE_ENABLED,
+        description: "Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.",
+        constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::Bool(true),
+        default_safe: KeyValue::Bool(true),
+        default_restricted: KeyValue::Bool(true),
+    },
+    KeyDef {
+        key: OUTBOUND_BROWSER_ENABLED,
+        description: "Whether the outbound.browser executor participates.",
+        constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::Bool(true),
+        default_safe: KeyValue::Bool(true),
+        default_restricted: KeyValue::Bool(true),
+    },
+    KeyDef {
+        key: MANAGE_WEB_ENABLED,
+        description: "Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.",
+        constraint: KeyConstraint::None,
+        default_fully_open: KeyValue::Bool(true),
+        default_safe: KeyValue::Bool(true),
+        default_restricted: KeyValue::Bool(true),
+    },
+    KeyDef {
+        key: MANAGE_WEB_FROM,
+        description: "Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.",
+        constraint: KeyConstraint::LocalhostOnly,
         default_fully_open: KeyValue::StrList(&["localhost"]),
         default_safe: KeyValue::StrList(&["localhost"]),
         default_restricted: KeyValue::StrList(&["localhost"]),
@@ -1036,6 +1110,62 @@ mod tests {
             k.parse_value(&json!(["evil*.com"]), test_domain_pattern_valid),
             Err(ConfigValueError::InvalidDomainPattern("evil*.com".into()))
         );
+    }
+
+    #[test]
+    fn localhost_only_key_accepts_only_localhost() {
+        // The management plane is permanently loopback: the validator rejects any member other
+        // than "localhost" -- including "*", specific hosts, and IP literals -- so an org layer
+        // can disable the plane (via manage.web.enabled = false) but cannot widen it.
+        let k = key_def(MANAGE_WEB_FROM).unwrap();
+        assert_eq!(
+            k.parse_value(&json!(["localhost"]), unused_pattern_valid),
+            Ok(ConfigValue::StrList(vec!["localhost".into()]))
+        );
+        assert_eq!(
+            k.parse_value(&json!(["*"]), unused_pattern_valid),
+            Err(ConfigValueError::NotLocalhost("*".into()))
+        );
+        assert_eq!(
+            k.parse_value(&json!(["example.com"]), unused_pattern_valid),
+            Err(ConfigValueError::NotLocalhost("example.com".into()))
+        );
+        assert_eq!(
+            k.parse_value(&json!(["127.0.0.1"]), unused_pattern_valid),
+            Err(ConfigValueError::NotLocalhost("127.0.0.1".into()))
+        );
+        assert_eq!(
+            k.parse_value(&json!(["localhost", "localhost"]), unused_pattern_valid),
+            Err(ConfigValueError::DuplicateEntry("localhost".into()))
+        );
+        assert_eq!(
+            ConfigValueError::NotLocalhost("*".into()).to_string(),
+            "only \"localhost\" is permitted on this key; got *"
+        );
+    }
+
+    #[test]
+    fn enabled_keys_default_true_in_every_preset() {
+        // ADR-0030 Decision 5: "OPEN MEANS OPEN" -- the channel axis resolves to the adapter's
+        // builtin default, never to a code gate. Every adapter is enabled by default in every
+        // preset; an org-mandatory layer is what denies one.
+        for key in [
+            INBOUND_WEB_ENABLED,
+            INBOUND_PIPE_ENABLED,
+            OUTBOUND_BROWSER_ENABLED,
+            MANAGE_WEB_ENABLED,
+        ] {
+            for preset in [Preset::FullyOpen, Preset::Safe, Preset::Restricted] {
+                let k = key_def(key).expect("registered key");
+                match k.default_for(preset) {
+                    KeyValue::Bool(true) => {}
+                    other => panic!(
+                        "{key} ({:?}): default must be Bool(true), got {other:?}",
+                        preset
+                    ),
+                }
+            }
+        }
     }
 
     #[test]

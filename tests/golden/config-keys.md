@@ -95,3 +95,53 @@ Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingesti
 - Default (fully_open): ["localhost"]
 - Default (safe, = built-in Minimal): ["localhost"]
 - Default (restricted): ["localhost"]
+
+## `inbound.web.enabled`
+
+Whether the inbound.web adapter's TCP listener binds. An org-mandatory false denies the web adapter: no listener, no surface.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `inbound.pipe.enabled`
+
+Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `outbound.browser.enabled`
+
+Whether the outbound.browser executor participates.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `manage.web.enabled`
+
+Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `manage.web.from`
+
+Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.
+
+- Type: string list
+- Constraints: unique string elements
+- Default (fully_open): ["localhost"]
+- Default (safe, = built-in Minimal): ["localhost"]
+- Default (restricted): ["localhost"]

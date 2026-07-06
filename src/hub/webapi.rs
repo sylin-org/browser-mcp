@@ -127,6 +127,17 @@ fn live_inbound_web_from(store: &crate::governance::config::reload::ConfigStore)
         .unwrap_or_else(builtin_inbound_web_from)
 }
 
+/// The live `inbound.web.enabled` resolution: `false` means the adapter is denied by policy and
+/// MUST NOT bind (the "deny the web adapter" decision, ADR-0030 Decision 5). Bind-time only: a
+/// change takes effect on the next service restart, like the bind address itself.
+pub fn inbound_web_enabled(store: &crate::governance::config::reload::ConfigStore) -> bool {
+    let resolution = store.current_resolution();
+    let resolved = resolution
+        .get(crate::governance::config::INBOUND_WEB_ENABLED)
+        .expect("registered key resolves");
+    resolved.value.as_bool().unwrap_or(true)
+}
+
 /// Run the local web API listener for the life of the service (ADR-0030 Decision 9). Binds per
 /// [`resolve_bind`] over the STARTUP-resolved live allowlist (PINS.md CS8.2): the bind address is
 /// decided ONCE, at process start (a live policy edit takes effect on the next service restart,

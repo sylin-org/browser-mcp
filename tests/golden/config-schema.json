@@ -85,6 +85,37 @@
           "default": [
             "localhost"
           ]
+        },
+        "inbound.web.enabled": {
+          "description": "Whether the inbound.web adapter's TCP listener binds. An org-mandatory false denies the web adapter: no listener, no surface.",
+          "type": "boolean",
+          "default": true
+        },
+        "inbound.pipe.enabled": {
+          "description": "Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.",
+          "type": "boolean",
+          "default": true
+        },
+        "outbound.browser.enabled": {
+          "description": "Whether the outbound.browser executor participates.",
+          "type": "boolean",
+          "default": true
+        },
+        "manage.web.enabled": {
+          "description": "Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.",
+          "type": "boolean",
+          "default": true
+        },
+        "manage.web.from": {
+          "description": "Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "default": [
+            "localhost"
+          ]
         }
       }
     }

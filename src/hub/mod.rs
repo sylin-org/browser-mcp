@@ -284,10 +284,18 @@ async fn run_service_loop(
         }
     });
 
-    // The local web API (ADR-0030 Decision 9; H8): a SECOND, optional session source, exposed
-    // only through the service. A bind failure (e.g. the port is already in use) is logged and
-    // never fatal -- see `webapi::run`'s own doc comment.
-    tokio::spawn(webapi::run(ctx.clone()));
+    // The local inbound.web adapter (ADR-0030 Decision 9; H8): a SECOND, optional session
+    // source, exposed only through the service. Policy-gated bind (Decision 5: "deny the web
+    // adapter"): `inbound.web.enabled = false` (set by an org-mandatory layer) means the listener
+    // never stands up, so there is no surface to connect to. A bind failure (e.g. the port is
+    // already in use) is logged and never fatal -- see `webapi::run`'s own doc comment.
+    if webapi::inbound_web_enabled(&ctx.store) {
+        tokio::spawn(webapi::run(ctx.clone()));
+    } else {
+        tracing::info!(
+            "inbound.web adapter disabled by policy (inbound.web.enabled = false); not binding"
+        );
+    }
 
     // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): the ONLY shutdown trigger. Never
     // parent-death -- this process has no client parent to watch.
