@@ -132,6 +132,7 @@ mod tests {
                 "read_page",
                 "resize_window",
                 "update_plan",
+                "wait_for",
                 "explain",
             ]
         );

@@ -128,6 +128,7 @@ fn read_only_manifest_advertises_everything_except_write_and_execute_tools() {
             "read_page",
             "resize_window",
             "update_plan",
+            "wait_for",
             "explain",
         ]
     );

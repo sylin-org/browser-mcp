@@ -452,6 +452,99 @@
     return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
   }
 
+  // --- wait_for (ADR-0037): poll a condition at 250ms while a MutationObserver counter, binned
+  // into 500ms windows, feeds the adaptive settle detector (lib/settle.js). Resolves when the
+  // condition (if any) holds AND the settle gate (unless settle:false) has passed AND the minimum
+  // elapsed time has run; times out after timeout_ms. This is the content script's first
+  // long-running handler, so it owns sendResponse itself and returns true to hold the channel open. ---
+  function evaluateCondition(spec) {
+    // Returns the matched element's ref when the condition is satisfied, else null. A bare settle
+    // wait (no selector/text) reports a found:null condition as satisfied -- the settle gate alone
+    // decides -- and never mints a ref.
+    if (spec.state === "settled") return { ok: true, ref: null };
+    const wantPresent = spec.state === "visible" || spec.state === "present";
+    const wantGone = spec.state === "gone";
+    let matched = null;
+    if (spec.selector) {
+      // CSS selector path: query the whole document (shadow roots are opaque to querySelector, so a
+      // selector miss is a real miss -- the text path below walks shadow roots and is the fallback).
+      try {
+        const el = document.querySelector(spec.selector);
+        matched = el || null;
+      } catch {
+        matched = null; // invalid selector string -- treated as no match this poll.
+      }
+    } else if (spec.text) {
+      const q = spec.text.toLowerCase();
+      for (const el of collectAll(document)) {
+        if (!visible(el)) continue;
+        const tag = el.tagName.toLowerCase();
+        if (["script", "style", "noscript", "template"].includes(tag)) continue;
+        const hay = `${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)}`.toLowerCase();
+        if (hay.includes(q)) { matched = el; break; }
+      }
+    }
+    if (matched && wantPresent) {
+      const present = spec.state === "present" || visible(matched);
+      return present ? { ok: true, ref: refFor(matched) } : { ok: false, ref: null };
+    }
+    if (!matched && wantGone) return { ok: true, ref: null };
+    return { ok: false, ref: null };
+  }
+
+  function runWaitFor(spec) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const deadline = startedAt + spec.timeout_ms;
+      let mutationCount = 0; // subtree-wide counter incremented by the observer since the last poll.
+      let windowStart = startedAt;
+      let windowCount = 0;
+      let lastSettled = false; // the return of the detector's most recent push().
+      const detector = (self.GhostlightSettle || GhostlightSettle).createSettleDetector();
+      const observer = new MutationObserver(() => { mutationCount += 1; });
+      observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+      const poll = () => {
+        const now = Date.now();
+        const elapsed = now - startedAt;
+        // Fold this poll's mutations into the open 500ms window; close the window when it elapses.
+        windowCount += mutationCount;
+        mutationCount = 0;
+        if (now - windowStart >= 500) {
+          lastSettled = detector.push(windowCount);
+          windowStart = now;
+          windowCount = 0;
+        }
+        const cond = evaluateCondition(spec);
+        const settled = lastSettled;
+        const minMet = elapsed >= spec.min_ms;
+        if (cond.ok && (!spec.settle || settled) && minMet) {
+          observer.disconnect();
+          resolve({
+            found: cond.ok,
+            settled: spec.settle ? settled : undefined,
+            elapsedMs: elapsed,
+            ref: cond.ref,
+            peakMutations: spec.settle ? detector.peak : undefined,
+            finalRate: spec.settle ? detector.lastRate : undefined,
+          });
+          return;
+        }
+        if (now >= deadline) {
+          observer.disconnect();
+          resolve({
+            timeout: true,
+            rate: detector.lastRate,
+            title: document.title || "",
+            excerpt: cond.ref || "",
+          });
+          return;
+        }
+        setTimeout(poll, 250);
+      };
+      setTimeout(poll, 250);
+    });
+  }
+
   // --- Message handler ---
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
@@ -464,6 +557,10 @@
         const el = deref(msg.ref);
         if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
         sendResponse({ result: Boolean(el) });
+        return true;
+      }
+      case "waitFor": {
+        runWaitFor(msg.spec).then((result) => sendResponse({ result }));
         return true;
       }
       default:

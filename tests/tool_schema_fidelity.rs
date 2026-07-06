@@ -53,8 +53,8 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         .collect();
     assert_eq!(
         names.len(),
-        14,
-        "13 trained tools plus exactly one addition"
+        15,
+        "13 trained tools plus wait_for and explain"
     );
     assert_eq!(
         names[..13],
@@ -62,9 +62,10 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         "the 13 trained tools must stay byte-identical and in order"
     );
     assert_eq!(
-        names[13], "explain",
-        "the 14th (and only sanctioned addition) must be named explain, positioned last"
+        names[13], "wait_for",
+        "the 14th tool is wait_for, immediately before explain"
     );
+    assert_eq!(names[14], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -102,8 +103,8 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        14,
-        "no tool other than explain was added to the sacred fixture"
+        15,
+        "no tool other than wait_for and explain was added to the sacred fixture"
     );
 }
 
@@ -316,7 +317,7 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
 
 /// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
 /// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
-/// each is a JSON-Schema object.
+/// each is a JSON-Schema object. C4 adds `wait_for`.
 #[test]
 fn output_schemas_present_exactly_where_declared() {
     let with_schema: Vec<String> = tools()
@@ -326,7 +327,13 @@ fn output_schemas_present_exactly_where_declared() {
         .collect();
     assert_eq!(
         with_schema,
-        vec!["tabs_context_mcp", "tabs_create_mcp", "navigate", "find"],
+        vec![
+            "tabs_context_mcp",
+            "tabs_create_mcp",
+            "navigate",
+            "find",
+            "wait_for"
+        ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );
     for name in &with_schema {

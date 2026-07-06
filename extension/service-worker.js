@@ -642,7 +642,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1178,6 +1178,57 @@ const handlers = {
       throw hopError("page", msg);
     }
     return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
+  },
+  async wait_for(a) {
+    // Defaults (ADR-0037 D1/D6): settle ON, state visible, timeout 10s, min 0.
+    const state = a.state || "visible";
+    const timeout_ms = a.timeout_ms === undefined ? 10000 : a.timeout_ms;
+    const min_ms = a.min_ms === undefined ? 0 : a.min_ms;
+    const settle = a.settle === undefined ? true : a.settle;
+    const tabId = await effectiveTabId(a.tabId);
+    // Corrective validation (ADR-0031): the wait shape is taught, not guessed.
+    if (a.selector && a.text) {
+      throw hopError("page", "provide at most one of selector or text, not both");
+    }
+    if (state === "settled" && (a.selector || a.text)) {
+      throw hopError("page", 'state "settled" waits for the page to go quiet; do not also pass selector or text');
+    }
+    if (min_ms > timeout_ms) {
+      throw hopError("page", `min_ms (${min_ms}) must not exceed timeout_ms (${timeout_ms})`);
+    }
+    if (timeout_ms > 30000) {
+      throw hopError("page", `timeout_ms ${timeout_ms} exceeds the 30000ms cap`);
+    }
+    const spec = { selector: a.selector || null, text: a.text || null, state, timeout_ms, min_ms, settle };
+    const r = await content(tabId, { type: "waitFor", spec });
+    const res = (r && r.result) || {};
+    if (res.timeout) {
+      // A bare settle wait that never quiets reports the sustained rate; a condition wait names
+      // what WAS on the page (title + the closest matched ref, if any) so the model can adjust.
+      if (a.selector || a.text) {
+        throw hopError("page", `"${a.selector || a.text}" not visible within ${timeout_ms}ms. Page title: "${res.title}".`);
+      }
+      throw hopError("page", `did not settle within ${timeout_ms}ms (still changing at ~${res.rate} mutations/500ms)`);
+    }
+    waitPulse(tabId);
+    const elapsed = res.elapsedMs;
+    const peak = res.peakMutations;
+    let s;
+    if (a.selector || a.text) {
+      s = `Condition met after ${elapsed}ms (settled; peak ${peak} mutations/window).`;
+    } else {
+      s = `Page settled after ${elapsed}ms (peak ${peak} mutations/window).`;
+    }
+    const out = text(s);
+    const structured = { found: res.found, elapsed_ms: elapsed };
+    if (res.ref) structured.ref = res.ref;
+    if (settle) {
+      structured.settled = res.settled;
+      structured.peak_mutations = peak;
+      structured.final_rate = res.finalRate;
+    }
+    out.structuredContent = structured;
+    return out;
   },
   async javascript_tool(a) {
     const tabId = await effectiveTabId(a.tabId);

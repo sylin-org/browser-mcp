@@ -143,9 +143,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 14 descriptors (the 13 browser tools plus `explain`), in the order they
-/// appear in `tools/list`. `computer`'s 13 variants are in the schema's `action` enum order,
-/// byte-for-byte, as `variants`.
+/// The tool registry: 15 descriptors (the 13 browser tools plus `wait_for` and `explain`), in
+/// the order they appear in `tools/list`. `computer`'s 13 variants are in the schema's `action`
+/// enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
         tool: "tabs_context_mcp",
@@ -822,6 +822,75 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         output_schema: None,
     },
     ToolDescriptor {
+        tool: "wait_for",
+        advertised_description: "Wait until the page is ready. By default waits for BOTH your condition and page settlement (DOM mutation rate decayed). Provide selector (CSS) or text (visible substring) with state visible|present|gone, or call with neither to wait for settlement alone. min_ms sets a minimum elapsed time; settle:false gates on the condition only. Returns elapsed_ms, settle diagnostics, and the matched element's ref for follow-up clicks. Times out with an error naming what WAS on the page.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to wait on. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "A CSS selector to wait for. Provide at most one of selector or text. With state visible (default) the element must be present AND rendered; present only requires it be in the DOM; gone waits for its absence."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "A visible-text substring to wait for (matched against accessible names and nearby text). Provide at most one of selector or text."
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["visible", "present", "gone", "settled"],
+                    "description": "visible (default): the selector/text is present and rendered. present: in the DOM. gone: absent or hidden. settled: wait for the page to stop churning; valid only with no selector/text."
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "Maximum wait in milliseconds. Default 10000, hard cap 30000."
+                },
+                "min_ms": {
+                    "type": "number",
+                    "description": "Minimum elapsed time before returning, even if the condition and settlement are already satisfied. Default 0."
+                },
+                "settle": {
+                    "type": "boolean",
+                    "description": "Whether to also wait for page settlement (DOM mutation rate decay). Default true; set false to gate on the condition alone."
+                }
+            },
+            "required": ["tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"text":"Results"}"#,
+            returns: Some("Waits for the text AND page settlement; returns elapsed_ms, settle diagnostics, and the matched element's ref."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[Capability::Read],
+            directory_description:
+                "Wait for a condition and page settlement; observes the DOM, touches nothing.",
+        }],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::ExtensionForward,
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "found": { "type": "boolean" },
+                    "elapsed_ms": { "type": "number" },
+                    "ref": { "type": "string" },
+                    "settled": { "type": "boolean" },
+                    "peak_mutations": { "type": "number" },
+                    "final_rate": { "type": "number" }
+                },
+                "required": ["found", "elapsed_ms"]
+            })
+        }),
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -912,7 +981,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 14 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 15 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1050,7 +1119,7 @@ mod tests {
         }
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 26);
+        assert_eq!(total_variants, 27);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1093,6 +1162,7 @@ mod tests {
             ("read_page", None, &[Capability::Read]),
             ("resize_window", None, &[]),
             ("update_plan", None, &[]),
+            ("wait_for", None, &[Capability::Read]),
             ("explain", None, &[]),
         ];
 
@@ -1275,6 +1345,14 @@ mod tests {
                 "update_plan",
                 None,
                 ResourceShape::DomainLess,
+                false,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "wait_for",
+                None,
+                ResourceShape::TabScoped,
                 false,
                 false,
                 PostDispatch::None,

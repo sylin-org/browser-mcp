@@ -122,8 +122,8 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     let tools = list["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        14,
-        "13 trained tools plus the ADR-0022 Decision 7 explain addition"
+        15,
+        "13 trained tools plus wait_for and the explain addition"
     );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.

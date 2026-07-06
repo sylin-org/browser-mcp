@@ -5,8 +5,8 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C4 is NEXT.** Baseline: dev @ 6c5d351 (ADRs amended + this batch authored). C1, C2, C3
-committed.
+**C5 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C4. C1, C2, C3, C4 committed. C5 is
+SKIP-allowed; if it lands, C10's `observation` field carries the digest text, else C10 omits it.
 
 ## Log
 
@@ -85,7 +85,7 @@ Template per task:
     `matches!(row.handler, Handler::Local(_))` doesn't depend on the variant's inner type, so it
     compiles unchanged against the new fn-pointer shape.
 
-### C3: structured results + outputSchema -- DONE (pending commit)
+### C3: structured results + outputSchema -- DONE (2c527c5)
 - Baseline 591 -> 592.
 - `ToolDescriptor` gained `output_schema: Option<fn() -> Value>` (`src/browser/directory.rs`);
   all 14 rows updated (4 with a real minimal JSON-Schema: `tabs_context_mcp`, `tabs_create_mcp`,
@@ -103,3 +103,51 @@ Template per task:
 - Deviations: none. Neither `tool_schema_fidelity.rs` nor `all_open_golden.rs` byte-compares a
   whole per-tool JSON object (both index into specific keys), so the STOP precondition never
   applied and adding `outputSchema` required no test restructuring beyond the one new test.
+
+### C4: wait_for -- condition + adaptive settle detector -- DONE (<commit>)
+- Baseline 592 -> 592 (cargo); node gate 17 -> 23 (settle.test.js adds 6).
+- `extension/lib/settle.js` (pure IIFE, exposes `self.GhostlightSettle`; `settleThreshold` +
+  `createSettleDetector` per PINS SS9) loads as a content-script global and under node --test
+  (lib/constants.js export pattern). `extension/content.js` gained the file's first long-running
+  handler: a `waitFor` message case that polls the condition every 250ms while a subtree
+  `MutationObserver` counter, binned into 500ms windows, feeds the detector; resolves on
+  (condition AND settle-gate AND min_ms) or timeout, returning `{found, settled?, elapsedMs, ref?,
+  peakMutations?, finalRate?}` / `{timeout, rate, title, excerpt}`. `extension/service-worker.js`
+  gained `async wait_for(a)` (defaults + the four corrective validations per SS9; success text
+  `Condition met after {elapsed}ms (settled; peak {peak} mutations/window).` / bare
+  `Page settled after ...`; timeout `hopError("page", ...)` per SS9; `structuredContent`
+  `{found, elapsed_ms, ref?, settled?, peak_mutations?, final_rate?}`); the on-demand
+  `content()` injection list grew to `["lib/settle.js", "content.js"]` so a freshly-injected page
+  has the detector before content.js runs. New `wait_for` directory row before `explain`
+  (requires [Read], TabScoped, ExtensionForward, output_schema per ADR-0038 wait_for row).
+  manifest.json content_scripts js = `["lib/settle.js", "content.js"]`; ci.yml node line appends
+  `settle.test.js` (PINS SS15 after-C4 values). `tests/tool_schema_fidelity.rs` and
+  `tests/all_open_golden.rs` extended to 15 tools with wait_for before explain; the
+  `output_schemas_present_exactly_where_declared` list gained `wait_for`.
+- Deviations:
+  - D1: like C1's D2, the tree-facts named only `tool_schema_fidelity.rs`,
+    `all_open_golden.rs`, and directory.rs's inline name-order test, but FIVE more sites pinned
+    the tool count or a derived tool list verbatim and only surfaced under the `cargo test` gate:
+    `src/browser/advertise.rs` (read-only grant expected list), `src/transport/mcp/pipeline.rs`
+    (`pinned_explain_text` helper, used by two tests -- added the wait_for line + bumped the
+    "26 variants" doc comment to 27), `src/hub/outbound/mod.rs` (two `len() == 14` -> 15),
+    `tests/tool_enforcement.rs` (`tools.len() == 14` -> 15 + doc comment), `tests/mcp_protocol.rs`
+    (`tools.len() == 14` -> 15), and the read-only-grant expected lists in `tests/hot_reload.rs`
+    (three lists: governed_read_only, expanded, full_set -- wait_for joins all three since it
+    requires Read; also the "back to all-open (14 tools)" comment -> 15),
+    `tests/manifest_validation.rs`, and `tests/tool_advertisement.rs`
+    (`read_only_manifest_...` list only; the empty-grants list is untouched because wait_for
+    requires Read and does not join the requires-empty set). directory.rs's
+    `total_variants == 26` -> 27 and the two doc comments ("14 descriptors"/"14 rows" -> 15).
+    All updates are the mechanically-forced consequence of one additive Read tool and its
+    explain-rendered line; no assertion semantics changed.
+  - D2: the `directory_description` text for wait_for ("Wait for a condition and page settlement;
+    observes the DOM, touches nothing.") is not pinned by PINS SS9 (SS9 pins only the advertised
+    description); authored to match the existing terse-label style and the <= 90-char ASCII
+    invariant the inline test enforces (76 chars).
+  - D3: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory, same
+    reason as C1's D3 (Chrome's live native-messaging host holds `target/debug/ghostlight.exe`
+    open). No source/test content changed by this.
+  - D4: settle.js and settle.test.js were already present in the working tree as untracked files
+    from a prior session; verified they match PINS SS9's oracles verbatim and pass (6/6) before
+    building the rest of the task on top of them, rather than re-creating them.
