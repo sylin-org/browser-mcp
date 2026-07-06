@@ -636,6 +636,45 @@ impl Default for Browser {
     }
 }
 
+/// The browser capability (ADR-0034): the outbound executor for the user's own authenticated
+/// Chromium session. Implements [`super::ICapability`] by exposing the browser's tool directory
+/// and agent guide; holds the [`Browser`] handle that the pipeline dispatches tool-calls through.
+///
+/// Constructed once at startup and registered in the composition root's [`super::Registry`].
+#[derive(Clone)]
+pub struct BrowserCapability {
+    browser: Browser,
+}
+
+impl BrowserCapability {
+    pub fn new(browser: Browser) -> Self {
+        Self { browser }
+    }
+
+    /// The underlying [`Browser`] handle (the pipeline dispatches tool-calls through this).
+    pub fn browser(&self) -> &Browser {
+        &self.browser
+    }
+}
+
+impl super::ICapability for BrowserCapability {
+    fn code(&self) -> &'static str {
+        "browser"
+    }
+
+    fn descriptor(&self) -> &'static str {
+        "Drives the user's own authenticated Chromium session over the extension link."
+    }
+
+    fn directory(&self) -> &'static [crate::browser::directory::ToolDescriptor] {
+        crate::browser::directory::REGISTRY
+    }
+
+    fn agent_guide(&self) -> crate::browser::directory::AgentGuide {
+        crate::browser::directory::AGENT_GUIDE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

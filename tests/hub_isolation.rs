@@ -130,6 +130,9 @@ fn build_ctx(browser: Browser) -> ServiceContext {
     let store = ConfigStore::load_initial(ghostlight::browser::pattern::is_valid_pattern)
         .expect("load_initial resolves to all-open with no manifest present");
     ServiceContext {
+        capabilities: ghostlight::hub::outbound::Registry::new(vec![std::sync::Arc::new(
+            ghostlight::hub::outbound::browser::BrowserCapability::new(browser.clone()),
+        )]),
         browser,
         store,
         recorder: Arc::new(Recorder::disabled()),

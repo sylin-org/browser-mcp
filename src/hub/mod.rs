@@ -402,29 +402,18 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
 #[derive(Clone)]
 pub struct ServiceContext {
     pub browser: Browser,
+    /// The capability registry (ADR-0034): the composition root's ordered list of outbound
+    /// capability executors. Aggregates each capability's tool directory + agent guide into the
+    /// single source consumed by `tools/list`, `explain`, enforcement, and the validator. Today
+    /// only the browser capability is registered; the `browser` field above stays for the
+    /// browser-specific dispatch paths (`call`, `tab_url`) the pipeline uses directly.
+    pub capabilities: outbound::Registry,
     pub store: Arc<ConfigStore>,
     pub recorder: Arc<Recorder>,
     pub initial_policy: LoadedPolicy,
-    /// H3 (PINS.md SS9): the GUID -> bound-peer admission table, shared by every session so a
-    /// re-presented GUID is checked against the SAME registry regardless of which adapter
-    /// connection presents it.
     pub session_registry: Arc<std::sync::Mutex<session::SessionRegistry>>,
-    /// H4 (ADR-0030 Decision 6; PINS.md SS9 forward guidance): the shared, opaque-keyed
-    /// owned-tab map (tabId -> owning [`session::SessionGuid`]), shared by every session so
-    /// `transport::mcp::server::serve_session`'s pre-dispatch ownership gate answers "do I own
-    /// it" / "can I adopt it" from the SAME map regardless of which session asks. Owned-handle
-    /// state lives here, in `src/hub`, NEVER in `src/governance` (a7: the core stays
-    /// handle-agnostic).
     pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
-    /// H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): the per-peer (never global) mint-quota
-    /// table, shared by every adapter/control connection so `ipc::handle_adapter_connection`
-    /// checks/increments the SAME counter regardless of which connection presents a peer's
-    /// credential. See [`try_mint`].
     pub mint_quota: MintQuota,
-    /// H6 (ADR-0030 Decision 8; PINS.md SS5.4): the number of currently-live sessions, incremented
-    /// and decremented at the ONE governance chokepoint (`transport::mcp::server::serve_session`'s
-    /// RAII guard) so the idle-grace watcher (`idle_grace_watch`) can tell whether any session --
-    /// adapter today, web at H8 -- is live, with no per-transport bookkeeping duplicated.
     pub live_sessions: Arc<AtomicUsize>,
 }
 
@@ -467,8 +456,13 @@ impl ServiceContext {
             }
         });
 
+        let capabilities = outbound::Registry::new(vec![Arc::new(
+            outbound::browser::BrowserCapability::new(browser.clone()),
+        )]);
+
         Ok(Self {
             browser,
+            capabilities,
             store,
             recorder,
             initial_policy: loaded_policy.clone(),

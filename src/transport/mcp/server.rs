@@ -194,6 +194,7 @@ where
 
     let ServiceContext {
         browser,
+        capabilities: _,
         store,
         recorder,
         initial_policy: loaded_policy,
