@@ -194,7 +194,7 @@ where
 
     let ServiceContext {
         browser,
-        capabilities: _,
+        capabilities,
         store,
         recorder,
         initial_policy: loaded_policy,
@@ -373,7 +373,9 @@ where
             let _ = tx.send(Outbound::Response(resp));
             continue;
         }
-        if let Some(resp) = handle_line(&browser, &store, &governance, line, &tx).await {
+        if let Some(resp) =
+            handle_line(&browser, &capabilities, &store, &governance, line, &tx).await
+        {
             let _ = tx.send(Outbound::Response(resp));
         }
     }
@@ -489,6 +491,7 @@ fn record_unowned_tab_denial(governance: &Governance, name: &str, args: Option<&
 /// private fn, since the two functions now live in sibling modules.
 pub(super) async fn handle_line(
     browser: &Browser,
+    capabilities: &crate::hub::outbound::Registry,
     store: &Arc<ConfigStore>,
     governance: &Arc<Governance>,
     line: &str,
@@ -563,7 +566,10 @@ pub(super) async fn handle_line(
                     }
                 }
             });
-            Some(JsonRpcResponse::success(id, initialize_result()))
+            Some(JsonRpcResponse::success(
+                id,
+                initialize_result(capabilities),
+            ))
         }
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result(governance))),
         "tools/call" => {
@@ -605,16 +611,42 @@ fn capture_client_info(governance: &Governance, params: Option<&Value>) {
     }
 }
 
-fn initialize_result() -> Value {
+fn initialize_result(capabilities: &crate::hub::outbound::Registry) -> Value {
+    // The capability manifest (ADR-0034 Decision 6): a per-capability section so the model
+    // learns the landscape at handshake -- what capabilities exist, what each is for, which
+    // tools each owns, and the per-capability guidance. Additive alongside the existing
+    // `instructions`; MCP clients that ignore unknown fields still see the flat `tools/list`
+    // array and work perfectly.
+    let manifest: Vec<Value> = capabilities
+        .capabilities()
+        .iter()
+        .map(|cap| {
+            let tools: Vec<&str> = cap.directory().iter().map(|d| d.tool).collect();
+            let guide = cap.agent_guide();
+            json!({
+                "code": cap.code(),
+                "descriptor": cap.descriptor(),
+                "tools": tools,
+                "guidance": {
+                    "summary": guide.summary,
+                    "workflow": guide.workflow,
+                    "flow": guide.flow,
+                    "denials": guide.denials,
+                },
+            })
+        })
+        .collect();
+
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "ghostlight", "version": env!("CARGO_PKG_VERSION") },
-        // ADR-0031 Decision 1: the agent onboarding guide, rendered verbatim from the fixture's
-        // top-level agentGuide section. Served once at handshake so any model -- trained on this
-        // surface or not -- gets the workflow contract (every tab-touching tool requires a tabId;
-        // get one from tabs_context_mcp first) without deriving it from per-tool descriptions.
+        // The agent onboarding guide (ADR-0031 Decision 1), composed from each capability's
+        // guide (ADR-0034 Decision 6). Today only the browser capability contributes; future
+        // capabilities enrich this additively.
         "instructions": agent_guide_text(),
+        // The capability manifest (ADR-0034 Decision 6): per-capability metadata.
+        "ghostlight:capabilities": manifest,
     })
 }
 

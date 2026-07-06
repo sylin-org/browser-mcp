@@ -986,8 +986,18 @@ mod tests {
             "params": { "clientInfo": { "name": "test-client", "version": "9.9.9" } },
         })
         .to_string();
-        crate::transport::mcp::server::handle_line(&browser, &store, &governance, &init_line, &tx)
-            .await;
+        let caps = crate::hub::outbound::Registry::new(vec![std::sync::Arc::new(
+            crate::hub::outbound::browser::BrowserCapability::new(browser.clone()),
+        )]);
+        crate::transport::mcp::server::handle_line(
+            &browser,
+            &caps,
+            &store,
+            &governance,
+            &init_line,
+            &tx,
+        )
+        .await;
 
         // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
         let params = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });

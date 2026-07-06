@@ -122,10 +122,15 @@ pub enum ToolError {
     /// The page itself was the problem (stale reference, blocked script injection, unusable
     /// content).
     #[error("[hop: page] {message}. Next step: {next_step}.")]
-    Page {
-        /// One-sentence, specific description of what went wrong on the page.
+    Page { message: String, next_step: String },
+    /// A capability's backend is not connected (the browser extension hasn't attached, or lost
+    /// its connection mid-session). Not a failure of the call itself -- the capability is
+    /// temporarily unavailable. Covers both the initial-attach race and the
+    /// lost-connection-mid-session case with one consistent signal.
+    #[error("[hop: {capability}] {message}. Next step: {next_step}.")]
+    CapabilityNotReady {
+        capability: String,
         message: String,
-        /// One imperative clause describing what the caller should try next.
         next_step: String,
     },
 }
@@ -183,6 +188,19 @@ impl ToolError {
         }
     }
 
+    /// Build a `CapabilityNotReady` error for the browser capability (the common case: the
+    /// extension hasn't connected yet, or lost its connection).
+    pub fn browser_not_connected() -> Self {
+        Self::CapabilityNotReady {
+            capability: "browser".into(),
+            message: "the browser capability is not connected".into(),
+            next_step:
+                "ensure Chrome is running with the Ghostlight extension loaded, then retry; \
+                       run `ghostlight doctor` if it persists"
+                    .into(),
+        }
+    }
+
     /// Return a copy of this error with the next step replaced (immutable builder; does not
     /// mutate `self` in place).
     pub fn next_step(self, step: impl Into<String>) -> Self {
@@ -209,6 +227,15 @@ impl ToolError {
                 next_step: step,
             },
             Self::Page { message, .. } => Self::Page {
+                message,
+                next_step: step,
+            },
+            Self::CapabilityNotReady {
+                capability,
+                message,
+                ..
+            } => Self::CapabilityNotReady {
+                capability,
                 message,
                 next_step: step,
             },
@@ -317,6 +344,24 @@ mod tool_error_tests {
         assert_eq!(
             err.to_string(),
             "[hop: extension] Browser extension disconnected before responding. Next step: retry the call; the extension reconnects automatically."
+        );
+    }
+
+    #[test]
+    fn browser_not_connected_renders_the_capability_hop() {
+        let err = ToolError::browser_not_connected();
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("[hop: browser]"),
+            "the capability hop is named: {msg}"
+        );
+        assert!(
+            msg.contains("the browser capability is not connected"),
+            "the message names the capability: {msg}"
+        );
+        assert!(
+            msg.contains("Next step:"),
+            "a corrective next step is present: {msg}"
         );
     }
 }
