@@ -17,7 +17,7 @@ fn test_webapi_port(seq: u32) -> u16 {
 }
 
 /// One raw HTTP/1.1 GET over a plain TCP connection, with an optional `Origin` header (used to
-/// exercise the `channels.webapi.from` decision without needing a genuinely remote peer).
+/// exercise the `inbound.web.from` decision without needing a genuinely remote peer).
 fn http_get(port: u16, path: &str, origin: Option<&str>) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the web API");
     stream
@@ -100,11 +100,11 @@ fn config_api_returns_every_registered_key_in_registry_order() {
 // Linux/macOS release gate. It now lives as a pure, platform-independent unit test:
 // `src/hub/webapi.rs::tests::config_payload_reflects_an_org_mandatory_key_as_locked`.
 
-/// PINS.md CS1.3: `/api/v1/config` is gated by the SAME `channels.webapi.from` decision every
+/// PINS.md CS1.3: `/api/v1/config` is gated by the SAME `inbound.web.from` decision every
 /// other Console route uses -- a source outside the default `["localhost"]` allowlist (forced via
 /// an `Origin` header naming a non-loopback host) is refused with the SAME 403 shape.
 #[test]
-fn config_api_is_refused_when_channels_webapi_from_denies_the_source() {
+fn config_api_is_refused_when_inbound_web_from_denies_the_source() {
     let endpoint = format!(
         "ghostlight-console-config-403-{}-{}",
         std::process::id(),

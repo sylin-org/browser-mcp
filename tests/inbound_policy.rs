@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! H8 (`docs/tasks/hub/H8-web-api-loopback-policy.md`, ADR-0030 Decision 5/9): the
-//! `channels.webapi.from` decision is produced by `PolicyDecisionPoint::decide` (the PDP), never
+//! `inbound.web.from` decision is produced by `PolicyDecisionPoint::decide` (the PDP), never
 //! by any transport-layer check. Drives the pure decision directly, no listener involved.
 
-use ghostlight::governance::channels::ChannelsPdp;
+use ghostlight::governance::inbound::InboundPdp;
 use ghostlight::governance::ports::{
     Decision, DecisionRequest, EffectiveMode, GoverningResource, PolicyDecisionPoint,
 };
 
-fn request(channel_source: &str) -> DecisionRequest {
+fn request(inbound_source: &str) -> DecisionRequest {
     DecisionRequest {
         grants: Vec::new(),
         tool: String::new(),
@@ -18,13 +18,13 @@ fn request(channel_source: &str) -> DecisionRequest {
         manifest_mode: None,
         config_mode: EffectiveMode::Enforce,
         manifest_hash: String::new(),
-        channel_source: Some(channel_source.to_string()),
+        inbound_source: Some(inbound_source.to_string()),
     }
 }
 
 #[test]
-fn webapi_from_is_decided_in_the_pdp_on_the_subject() {
-    let pdp = ChannelsPdp::new(vec!["localhost".to_string()]);
+fn inbound_web_from_is_decided_in_the_pdp_on_the_subject() {
+    let pdp = InboundPdp::new(vec!["localhost".to_string()]);
 
     // A member of the allowlist is allowed.
     assert_eq!(
@@ -36,7 +36,7 @@ fn webapi_from_is_decided_in_the_pdp_on_the_subject() {
     // denial_id shape (docs/tasks/hub/PINS.md SS7).
     match pdp.decide(&request("203.0.113.7")) {
         Decision::Deny(denial) => {
-            assert_eq!(denial.rule, "channel/webapi_from");
+            assert_eq!(denial.rule, "inbound/web_from");
             assert!(
                 denial.denial_id.starts_with("D-"),
                 "denial_id: {}",

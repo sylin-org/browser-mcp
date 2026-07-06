@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! H8 (`docs/tasks/hub/H8-web-api-loopback-policy.md`, ADR-0030 Decision 5/9): the web adapter's
-//! builtin bind default, the policy-driven (never code-gated) remote-open path, and the
-//! anonymous-loopback principal under all-open.
+//! H8 (`docs/tasks/hub/H8-web-api-loopback-policy.md`, ADR-0030 Decision 5/9): the inbound.web
+//! adapter's builtin bind default, the policy-driven (never code-gated) remote-open path, and
+//! the anonymous-loopback principal under all-open.
 
-use ghostlight::governance::channels::ChannelsPdp;
 use ghostlight::governance::dispatch::Governance;
+use ghostlight::governance::inbound::InboundPdp;
 use ghostlight::governance::ports::{
     AuditSink, Decision, DecisionRequest, EffectiveMode, GoverningResource, PolicyDecisionPoint,
 };
 use ghostlight::hub::webapi::{
-    builtin_webapi_from, resolve_bind, DEFAULT_WEBAPI_BIND, REMOTE_WEBAPI_BIND,
+    builtin_inbound_web_from, resolve_bind, DEFAULT_WEBAPI_BIND, REMOTE_WEBAPI_BIND,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -23,9 +23,9 @@ fn temp_path(tag: &str) -> std::path::PathBuf {
 
 #[test]
 fn webapi_builtin_default_is_loopback_only_with_no_overlay() {
-    // With NO user/org overlay, the resolved channels.webapi.from equals the web adapter's
+    // With NO user/org overlay, the resolved inbound.web.from equals the inbound.web adapter's
     // builtin fragment (PINS.md SS7: `[allow: "localhost"]`).
-    let resolved = builtin_webapi_from();
+    let resolved = builtin_inbound_web_from();
     assert_eq!(resolved, vec!["localhost".to_string()]);
 
     // ADR-0030 Decision 9 (verbatim, transcribed): "the web adapter's builtin default is
@@ -54,17 +54,20 @@ fn enabling_remote_is_a_user_policy_change_not_a_code_gate() {
 
     // The builtin default, unaffected by this overlay's own resolved value, is still loopback --
     // proving the two are decided independently by the same one-argument function.
-    assert_eq!(resolve_bind(&builtin_webapi_from()), DEFAULT_WEBAPI_BIND);
+    assert_eq!(
+        resolve_bind(&builtin_inbound_web_from()),
+        DEFAULT_WEBAPI_BIND
+    );
 }
 
 #[test]
 fn anonymous_is_a_valid_principal_under_all_open() {
     // Under a lone all-open session (no manifest) with the builtin loopback fragment, an
-    // anonymous (no-token) loopback connection is AUTHORIZED: the channels decision returns
+    // anonymous (no-token) loopback connection is AUTHORIZED: the inbound decision returns
     // Decision::Allow for the anonymous subject on a loopback source, with no authentication step
     // invoked (ADR-0030 Decision 5: "Anonymous is a first-class principal. Loopback + anonymous
     // is zero-friction, no token.").
-    let pdp = ChannelsPdp::new(builtin_webapi_from());
+    let pdp = InboundPdp::new(builtin_inbound_web_from());
     let req = DecisionRequest {
         grants: Vec::new(),
         tool: String::new(),
@@ -74,7 +77,7 @@ fn anonymous_is_a_valid_principal_under_all_open() {
         manifest_mode: None,
         config_mode: EffectiveMode::Enforce,
         manifest_hash: String::new(),
-        channel_source: Some("localhost".to_string()),
+        inbound_source: Some("localhost".to_string()),
     };
     assert_eq!(pdp.decide(&req), Decision::Allow { grant_id: None });
     assert!(

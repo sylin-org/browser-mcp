@@ -47,7 +47,7 @@ const ROUTE: &str = "/api/v1/config/webapi-enable-remote";
 
 /// PINS.md CS5: a successful write returns the pinned `key`/`value`/`note` literals, and the
 /// isolated user config file (never the real machine path) actually contains
-/// `channels.webapi.from: ["*"]` afterward.
+/// `inbound.web.from: ["*"]` afterward.
 #[test]
 fn enable_remote_writes_the_pinned_value() {
     let pid = std::process::id();
@@ -67,7 +67,7 @@ fn enable_remote_writes_the_pinned_value() {
     let response = http_post(port, ROUTE, "");
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
     let parsed: serde_json::Value = serde_json::from_str(body(&response)).expect("valid JSON");
-    assert_eq!(parsed["key"], "channels.webapi.from");
+    assert_eq!(parsed["key"], "inbound.web.from");
     assert_eq!(parsed["value"], serde_json::json!(["*"]));
     assert_eq!(
         parsed["note"],
@@ -79,7 +79,7 @@ fn enable_remote_writes_the_pinned_value() {
         .expect("the isolated user config file was written");
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(
-        written["config"]["channels.webapi.from"],
+        written["config"]["inbound.web.from"],
         serde_json::json!(["*"])
     );
 
@@ -163,7 +163,7 @@ fn enable_remote_records_one_config_changed_event() {
     std::fs::remove_file(&audit_path).ok();
 }
 
-/// PINS.md CS5: an org-mandatory lock on `channels.webapi.from` refuses the write with a `409`
+/// PINS.md CS5: an org-mandatory lock on `inbound.web.from` refuses the write with a `409`
 /// and the exact transcribed lock-refusal message; the isolated user config file is never
 /// created, and no audit event is recorded.
 #[test]
@@ -187,7 +187,7 @@ fn enable_remote_refuses_cleanly_under_an_org_mandatory_lock() {
         "version": "1",
         "grants": [],
         "config": [
-            { "key": "channels.webapi.from", "value": ["localhost"], "level": "mandatory" },
+            { "key": "inbound.web.from", "value": ["localhost"], "level": "mandatory" },
         ],
     });
     std::fs::write(&policy_path, serde_json::to_vec(&manifest).unwrap())
@@ -207,7 +207,7 @@ fn enable_remote_refuses_cleanly_under_an_org_mandatory_lock() {
     let parsed: serde_json::Value = serde_json::from_str(body(&response)).expect("valid JSON");
     assert_eq!(
         parsed["error"],
-        "channels.webapi.from is managed by your organization (source: org_mandatory); \
+        "inbound.web.from is managed by your organization (source: org_mandatory); \
          'config set' cannot override it"
     );
 
@@ -247,7 +247,7 @@ fn enable_remote_ignores_the_request_body() {
     let response = http_post(
         port,
         ROUTE,
-        r#"{"key":"channels.webapi.from","value":["evil.example.com"]}"#,
+        r#"{"key":"inbound.web.from","value":["evil.example.com"]}"#,
     );
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
     let parsed: serde_json::Value = serde_json::from_str(body(&response)).expect("valid JSON");

@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! The local web API (ADR-0030 Decision 9): HTTP/1.1 + WebSocket over TCP, a SECOND session
-//! SOURCE into the same Hub a local app (the ADR's ".NET Automate") drives the browser through.
-//! It reuses the UNCHANGED multiplex (Decision 2), identity (Decision 4), and isolation
-//! (Decision 6) by calling the SAME `transport::mcp::server::serve_session` every MCP adapter
-//! session calls -- it invents no parallel dispatch path. It has its OWN non-sacred, versioned
-//! REST/WS vocabulary and NEVER re-serializes the 13 trained schemas
-//! (`transport::mcp::tools::TOOLS_JSON`).
+//! The local inbound.web adapter (ADR-0030 Decision 9): HTTP/1.1 + WebSocket over TCP, a SECOND
+//! session SOURCE into the same Hub a local app drives the browser through. It reuses the
+//! UNCHANGED multiplex (Decision 2), identity (Decision 4), and isolation (Decision 6) by
+//! calling the SAME `transport::mcp::server::serve_session` every MCP adapter session calls --
+//! it invents no parallel dispatch path. It has its OWN non-sacred, versioned REST/WS vocabulary
+//! and NEVER re-serializes the 13 trained schemas (`transport::mcp::tools::TOOLS_JSON`).
 //!
-//! The listener BINDS PER RESOLVED POLICY (Decision 9 + Decision 5): the web adapter's builtin
-//! default policy fragment is `channels.webapi.from: [allow: "localhost"]` (the ADR-0019 builtin
-//! layer, contributed per-adapter), so with no overlay it binds `127.0.0.1` explicitly, never
-//! `0.0.0.0`; a remote bind happens ONLY because a user/org layer opened it
+//! NOTE: this single module currently fuses two bounded contexts -- the WS/JSON-RPC
+//! tool-ingestion data plane (this module's WS path) and the management-UI routes (the Console's
+//! static + JSON API). The inbound/outbound/manage split separates these into `inbound/web.rs`
+//! and `manage/web.rs`; until then, both halves live here.
+//!
+//! The listener BINDS PER RESOLVED POLICY (Decision 9 + Decision 5): the inbound.web adapter's
+//! builtin default policy fragment is `inbound.web.from: [allow: "localhost"]` (the ADR-0019
+//! builtin layer, contributed per-adapter), so with no overlay it binds `127.0.0.1` explicitly,
+//! never `0.0.0.0`; a remote bind happens ONLY because a user/org layer opened it
 //! ([`resolve_bind`] is a PURE function of the resolved allowlist -- no other input). The bind
-//! address is resolved ONCE at startup from the live `ConfigStore` (`live_channels_webapi_from`,
+//! address is resolved ONCE at startup from the live `ConfigStore` (`live_inbound_web_from`,
 //! PINS.md CS8.2, `docs/tasks/console`); per-connection AUTHORIZATION re-reads it fresh on every
 //! accepted connection, so a policy edit takes effect without a service restart even though the
 //! TCP bind itself does not move until the next restart.
@@ -20,11 +24,11 @@
 //! The Console (PINS.md CS1/CS10, `docs/tasks/console`) is served from this SAME listener: a
 //! strictly additive router ahead of the WS-upgrade handshake below answers the Console's own
 //! non-sacred GET/POST routes (an embedded static page plus a small JSON API), gated by the SAME
-//! `channels.webapi.from` decision. A request that IS a WS-upgrade attempt is completely
+//! `inbound.web.from` decision. A request that IS a WS-upgrade attempt is completely
 //! unaffected by this router.
 //!
-//! Authorization is the `channels.webapi.from` policy, decided by
-//! [`crate::governance::channels::ChannelsPdp`] on the connecting SOURCE (Origin, or the peer's
+//! Authorization is the `inbound.web.from` policy, decided by
+//! [`crate::governance::inbound::InboundPdp`] on the connecting SOURCE (Origin, or the peer's
 //! classified address when no Origin is presented); authentication is optional and anonymous is
 //! a first-class principal (Decision 5). The WS upgrade also rejects an unexpected `Host` header
 //! (DNS-rebind defense, Decision 9).
@@ -37,7 +41,7 @@
 //! exercises the wire beyond the handshake, so this scope is a deliberate, documented
 //! limitation, not a gap discovered later.
 
-use crate::governance::channels::ChannelsPdp;
+use crate::governance::inbound::InboundPdp;
 use crate::governance::ports::{AuditSink, Decision, PolicyDecisionPoint, SessionEventRecord};
 use crate::hub::console_assets;
 use crate::hub::session::SessionGuid;
@@ -48,10 +52,10 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 
-/// The web adapter's BUILTIN default policy fragment (ADR-0030 Decision 5; PINS.md SS7):
-/// `channels.webapi.from: { allow: ["localhost"] }`. Contributed by this adapter, exactly as
+/// The inbound.web adapter's BUILTIN default policy fragment (ADR-0030 Decision 5; PINS.md SS7):
+/// `inbound.web.from: { allow: ["localhost"] }`. Contributed by this adapter, exactly as
 /// Decision 5 describes ("each adapter ships a default policy fragment").
-pub fn builtin_webapi_from() -> Vec<String> {
+pub fn builtin_inbound_web_from() -> Vec<String> {
     vec!["localhost".to_string()]
 }
 
@@ -77,9 +81,9 @@ pub fn resolve_webapi_port() -> u16 {
 }
 
 /// The pure "resolved allowlist -> bind address" function (ADR-0030 Decision 9, H8 Required
-/// behavior item 2; `tests/webapi_auth.rs`). Its ONLY input is the resolved
-/// `channels.webapi.from` allowlist -- there is no separate boolean/flag/env gate: a remote bind
-/// happens only because the policy layer changed (Decision 5).
+/// behavior item 2; `tests/webapi_auth.rs`). Its ONLY input is the resolved `inbound.web.from`
+/// allowlist -- there is no separate boolean/flag/env gate: a remote bind happens only because
+/// the policy layer changed (Decision 5).
 pub fn resolve_bind(allowlist: &[String]) -> &'static str {
     let opens_remote = allowlist.iter().any(|pattern| pattern != "localhost");
     if opens_remote {
@@ -89,9 +93,9 @@ pub fn resolve_bind(allowlist: &[String]) -> &'static str {
     }
 }
 
-/// Classify a connecting peer's address into the `channels.webapi.from` source vocabulary
+/// Classify a connecting peer's address into the `inbound.web.from` source vocabulary
 /// (`"localhost"` for a loopback peer, else its literal address) -- the same vocabulary
-/// `builtin_webapi_from`'s `"localhost"` member matches against.
+/// `builtin_inbound_web_from`'s `"localhost"` member matches against.
 pub fn classify_source(addr: IpAddr) -> String {
     if addr.is_loopback() {
         "localhost".to_string()
@@ -102,17 +106,15 @@ pub fn classify_source(addr: IpAddr) -> String {
 
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 
-/// The live `channels.webapi.from` allowlist (PINS.md CS8, `docs/tasks/console`), read from the
+/// The live `inbound.web.from` allowlist (PINS.md CS8, `docs/tasks/console`), read from the
 /// store's current resolution (CS6). Every registered key always resolves (`layers::resolve` is
-/// infallible), so this never falls back to [`builtin_webapi_from`] in practice; `expect` matches
-/// the existing idiom in `governance::config::mod` (`resolution.get(key).expect("registered
-/// key")`).
-fn live_channels_webapi_from(
-    store: &crate::governance::config::reload::ConfigStore,
-) -> Vec<String> {
+/// infallible), so this never falls back to [`builtin_inbound_web_from`] in practice; `expect`
+/// matches the existing idiom in `governance::config::mod` (`resolution.get(key).expect
+/// ("registered key")`).
+fn live_inbound_web_from(store: &crate::governance::config::reload::ConfigStore) -> Vec<String> {
     let resolution = store.current_resolution();
     let resolved = resolution
-        .get(crate::governance::config::CHANNELS_WEBAPI_FROM)
+        .get(crate::governance::config::INBOUND_WEB_FROM)
         .expect("registered key resolves");
     resolved
         .value
@@ -122,7 +124,7 @@ fn live_channels_webapi_from(
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_else(builtin_webapi_from)
+        .unwrap_or_else(builtin_inbound_web_from)
 }
 
 /// Run the local web API listener for the life of the service (ADR-0030 Decision 9). Binds per
@@ -136,7 +138,7 @@ fn live_channels_webapi_from(
 /// `SessionBusy` handling in `run_service_loop` -- MCP/adapter multiplexing must never be affected
 /// by this second, optional session source.
 pub async fn run(ctx: ServiceContext) {
-    let allowlist = live_channels_webapi_from(&ctx.store);
+    let allowlist = live_inbound_web_from(&ctx.store);
     let bind = resolve_bind(&allowlist);
     let port = resolve_webapi_port();
     let addr = format!("{bind}:{port}");
@@ -164,7 +166,7 @@ pub async fn run(ctx: ServiceContext) {
         let ctx = ctx.clone();
         // PINS.md CS8.2: re-read the live allowlist per accepted connection (never the
         // loop-hoisted startup value) so a policy edit is honored without a service restart.
-        let allowlist = live_channels_webapi_from(&ctx.store);
+        let allowlist = live_inbound_web_from(&ctx.store);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, peer_addr, ctx, allowlist, bind).await {
                 tracing::debug!(error = %e, "local web API connection ended with an error");
@@ -174,7 +176,7 @@ pub async fn run(ctx: ServiceContext) {
 }
 
 /// One accepted TCP connection: read and validate the HTTP/1.1 WebSocket upgrade request,
-/// authorize its connecting source against `channels.webapi.from` (Decision 5), validate `Host`
+/// authorize its connecting source against `inbound.web.from` (Decision 5), validate `Host`
 /// (DNS-rebind defense, Decision 9), complete the handshake, then hand off to the UNCHANGED
 /// `serve_session` -- the SAME governance chokepoint every MCP adapter session enters (Decision
 /// 2/4/6; H8 Required behavior item 1).
@@ -246,16 +248,15 @@ async fn handle_connection(
         return Ok(());
     }
 
-    // Origin validated against the resolved channels.webapi.from policy (Required behavior item
+    // Origin validated against the resolved inbound.web.from policy (Required behavior item
     // 5); a non-browser caller with no Origin falls back to the classified peer source so the
-    // channels decision still runs (Required behavior item 3: anonymous is a first-class
+    // inbound decision still runs (Required behavior item 3: anonymous is a first-class
     // principal, never a hardcoded gate).
-    let (decision, source) =
-        channels_webapi_from_decide(&request.headers, peer_addr, &allowlist, &ctx);
+    let (decision, source) = inbound_web_from_decide(&request.headers, peer_addr, &allowlist, &ctx);
     match decision {
         Decision::Allow { .. } => {}
         other => {
-            tracing::info!(source = %source, decision = ?other, "web API connection refused by channels.webapi.from");
+            tracing::info!(source = %source, decision = ?other, "inbound.web connection refused by inbound.web.from");
             write_http_error(&mut stream, 403, "Forbidden").await?;
             return Ok(());
         }
@@ -278,12 +279,12 @@ async fn handle_connection(
     crate::transport::mcp::server::serve_session(ws, ctx, guid).await
 }
 
-/// The `channels.webapi.from` decision (ADR-0030 Decision 5), shared by the WS-upgrade handshake
-/// and the Console's own routes (PINS.md CS1, `docs/tasks/console`): the connecting source is the
-/// `Origin` header when present, else the classified peer address (anonymous is a first-class
-/// principal, never a hardcoded gate). Returns the full [`Decision`] (not just a bool) so a caller
-/// can log the SAME detail the original WS-upgrade path always has.
-fn channels_webapi_from_decide(
+/// The `inbound.web.from` decision (ADR-0030 Decision 5), shared by the
+/// WS-upgrade handshake and the Console's own routes (PINS.md CS1, `docs/tasks/console`): the
+/// connecting source is the `Origin` header when present, else the classified peer address
+/// (anonymous is a first-class principal, never a hardcoded gate). Returns the full [`Decision`]
+/// (not just a bool) so a caller can log the SAME detail the original WS-upgrade path always has.
+fn inbound_web_from_decide(
     headers: &[(String, String)],
     peer_addr: SocketAddr,
     allowlist: &[String],
@@ -299,8 +300,8 @@ fn channels_webapi_from_decide(
         .as_ref()
         .map(|m| m.hash.clone())
         .unwrap_or_default();
-    let pdp = ChannelsPdp::new(allowlist.to_vec());
-    let decision_req = channel_decision_request(source.clone(), manifest_hash);
+    let pdp = InboundPdp::new(allowlist.to_vec());
+    let decision_req = inbound_decision_request(source.clone(), manifest_hash);
     (pdp.decide(&decision_req), source)
 }
 
@@ -325,7 +326,7 @@ fn is_known_console_path(stripped_path: &str) -> bool {
 }
 
 /// PINS.md CS1/CS10: the Console's own router. Authorizes the connecting source against
-/// `channels.webapi.from` (the SAME decision the WS-upgrade path uses, CS1.3's 403), then serves a
+/// `inbound.web.from` (the SAME decision the WS-upgrade path uses, CS1.3's 403), then serves a
 /// known static asset, or answers 404/405 per CS1.1/CS1.2. Reached only for a request
 /// `handle_connection` determined is NOT a WS-upgrade attempt and IS in the Console's route scope.
 async fn route_console_request(
@@ -339,9 +340,9 @@ async fn route_console_request(
 ) -> crate::Result<()> {
     // CS1.3: identical shape to the existing WS-upgrade 403 -- the SAME `write_http_error` call,
     // no JSON body.
-    let (decision, source) = channels_webapi_from_decide(headers, peer_addr, allowlist, ctx);
+    let (decision, source) = inbound_web_from_decide(headers, peer_addr, allowlist, ctx);
     if !matches!(decision, Decision::Allow { .. }) {
-        tracing::info!(source = %source, decision = ?decision, "Console request refused by channels.webapi.from");
+        tracing::info!(source = %source, decision = ?decision, "Console request refused by inbound.web.from");
         write_http_error(stream, 403, "Forbidden").await?;
         return Ok(());
     }
@@ -473,14 +474,14 @@ fn sessions_payload(
 /// `POST /api/v1/config/webapi-enable-remote` (PINS.md CS4/CS5, `docs/tasks/console`): the
 /// Console's ONE write action. The request body is NEVER read -- the written value is the ONE
 /// pinned literal below, never caller-supplied. Writes the single user-layer
-/// `channels.webapi.from` key via K1's `set_user_value` (the SAME path `ghostlight config set`
+/// `inbound.web.from` key via K1's `set_user_value` (the SAME path `ghostlight config set`
 /// uses), refusing cleanly under an org-mandatory lock (or any other failure) with a uniform 409,
 /// and records exactly one `config_changed` session-event audit record on success.
 async fn write_enable_remote_response(
     stream: &mut TcpStream,
     ctx: &ServiceContext,
 ) -> crate::Result<()> {
-    let key = crate::governance::config::CHANNELS_WEBAPI_FROM;
+    let key = crate::governance::config::INBOUND_WEB_FROM;
     let value = serde_json::json!(["*"]);
     let outcome = crate::governance::config::cli::set_user_value(
         key,
@@ -561,10 +562,10 @@ async fn write_plain_error(
     Ok(())
 }
 
-/// Build the minimal [`crate::governance::ports::DecisionRequest`] a channels decision needs
-/// (every OTHER field is irrelevant to [`ChannelsPdp::decide`], which reads only
-/// `channel_source`/`manifest_hash`).
-fn channel_decision_request(
+/// Build the minimal [`crate::governance::ports::DecisionRequest`] an inbound decision needs
+/// (every OTHER field is irrelevant to [`InboundPdp::decide`], which reads only
+/// `inbound_source`/`manifest_hash`).
+fn inbound_decision_request(
     source: String,
     manifest_hash: String,
 ) -> crate::governance::ports::DecisionRequest {
@@ -578,7 +579,7 @@ fn channel_decision_request(
         manifest_mode: None,
         config_mode: EffectiveMode::Enforce,
         manifest_hash,
-        channel_source: Some(source),
+        inbound_source: Some(source),
     }
 }
 
@@ -1019,7 +1020,7 @@ mod tests {
 
     #[test]
     fn builtin_default_is_loopback_only() {
-        let allowlist = builtin_webapi_from();
+        let allowlist = builtin_inbound_web_from();
         assert_eq!(allowlist, vec!["localhost".to_string()]);
         assert_eq!(resolve_bind(&allowlist), DEFAULT_WEBAPI_BIND);
         assert_ne!(resolve_bind(&allowlist), REMOTE_WEBAPI_BIND);

@@ -257,10 +257,11 @@ impl Governance {
                     config_mode,
                     manifest_hash: state.manifest_hash.clone(),
                     // H8 (ADR-0030 Decision 9): the tool-call chokepoint never carries a
-                    // connecting-source axis -- that is decided separately, only for a web
-                    // session's connection admission (`crate::governance::channels::ChannelsPdp`),
-                    // never here. Byte-identical to today for every existing caller.
-                    channel_source: None,
+                    // connecting-source axis -- that is decided separately, only for an
+                    // inbound.web session's connection admission
+                    // (`crate::governance::inbound::InboundPdp`), never here. Byte-identical to
+                    // today for every existing caller.
+                    inbound_source: None,
                 };
                 state.pdp.decide(&req)
             }

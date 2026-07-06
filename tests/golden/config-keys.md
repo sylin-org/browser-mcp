@@ -86,9 +86,9 @@ Default enforcement mode when the active manifest does not set one: observe reco
 - Default (safe, = built-in Minimal): "enforce"
 - Default (restricted): "enforce"
 
-## `channels.webapi.from`
+## `inbound.web.from`
 
-Sources allowed to connect to the local web API (Console/HTTP). "localhost" only, unless opened to "*" or specific hosts.
+Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). "localhost" only, unless opened to "*" or specific hosts.
 
 - Type: string list
 - Constraints: unique string elements

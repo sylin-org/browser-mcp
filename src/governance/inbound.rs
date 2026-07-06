@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-Ghostlight-Commercial
-//! `channels.webapi.from` -- the minimal flat channel-source allowlist (ADR-0030 "Governance
-//! schema section (normative)"; Decision 5; Decision 9). This is the SINGLE sanctioned
+//! `inbound.web.from` -- the minimal flat inbound-source allowlist (ADR-0030 "Governance schema
+//! section (normative)"; Decision 5; Decision 9). This is the SINGLE sanctioned
 //! `src/governance/**` addition in the Hub batch (H8; `tests/architecture.rs` a7 exception,
 //! `docs/tasks/hub/H8-web-api-loopback-policy.md`).
 //!
-//! `channels.webapi.from` governs authenticated SOURCES connecting to the web API adapter; it
+//! `inbound.web.from` governs authenticated SOURCES connecting to the inbound.web adapter; it
 //! NEVER gates which tools exist (ADR-0030 Decision 6: "all tools free for everyone" is
-//! preserved). The full recursive `grant := { id, channels, tools }` grammar (ADR-0030
-//! "Governance schema section") is DEFERRED to its own core-only ADR; this batch realizes only
+//! preserved). The full recursive `grant := { id, inbound, tools }` grammar (ADR-0030
+//! "Governance schema section") is DEFERRED to its own core-only ADR; this module realizes only
 //! the minimal flat allowlist selector described there.
 //!
 //! This module stays inside the a7 boundary: it names none of the forbidden crate edges the
@@ -17,10 +17,10 @@
 use crate::governance::denial;
 use crate::governance::ports::{Decision, DecisionRequest, Denial, PolicyDecisionPoint};
 
-/// Rule label for a `channels.webapi.from` denial (PINNED, `docs/tasks/hub/PINS.md` SS7).
-pub const RULE_WEBAPI_FROM: &str = "channel/webapi_from";
+/// Rule label for an `inbound.web.from` denial (PINNED, `docs/tasks/hub/PINS.md` SS7).
+pub const RULE_INBOUND_WEB_FROM: &str = "inbound/web_from";
 
-/// Membership matcher (ADR-0030 "Governance schema section": "exact matcher ... for channels").
+/// Membership matcher (ADR-0030 "Governance schema section": "exact matcher ... for inbound").
 /// `"*"` matches any source; otherwise a pattern must equal `source` exactly (a bare host,
 /// `"localhost"`, or a named principal -- the axis has no glob/wildcard grammar beyond the
 /// literal `"*"` member, unlike the `hosts` axis).
@@ -30,34 +30,34 @@ pub fn is_member(allowlist: &[String], source: &str) -> bool {
         .any(|pattern| pattern == "*" || pattern == source)
 }
 
-/// Fail-closed load-time validation of a raw `channels.webapi.from` value (ADR-0030 "Governance
+/// Fail-closed load-time validation of a raw `inbound.web.from` value (ADR-0030 "Governance
 /// schema section": "each adapter validates its own refinement slice; fail-closed on an unknown
 /// selector"). Accepts ONLY a flat JSON array of non-empty source-pattern strings; any other
 /// shape (not an array, a non-string member, an empty-string member) is rejected rather than
 /// silently defaulted or partially accepted.
-pub fn validate_webapi_from(value: &serde_json::Value) -> Result<Vec<String>, String> {
+pub fn validate_inbound_web_from(value: &serde_json::Value) -> Result<Vec<String>, String> {
     let arr = value
         .as_array()
-        .ok_or_else(|| "channels.webapi.from must be an array of source patterns".to_string())?;
+        .ok_or_else(|| "inbound.web.from must be an array of source patterns".to_string())?;
     arr.iter()
         .map(|v| {
             v.as_str()
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .ok_or_else(|| "channels.webapi.from entries must be non-empty strings".to_string())
+                .ok_or_else(|| "inbound.web.from entries must be non-empty strings".to_string())
         })
         .collect()
 }
 
-/// The channels denial (rule [`RULE_WEBAPI_FROM`]; `denial_id` via the existing
+/// The inbound denial (rule [`RULE_INBOUND_WEB_FROM`]; `denial_id` via the existing
 /// [`denial::denial_id`] scheme, PINS.md SS7). `domain` carries the refused source (mirroring
 /// the existing denial shape's use of `domain` for "the thing that was checked and refused").
-fn channel_denial(source: &str, manifest_hash: &str) -> Denial {
-    let rule = RULE_WEBAPI_FROM.to_string();
+fn inbound_denial(source: &str, manifest_hash: &str) -> Denial {
+    let rule = RULE_INBOUND_WEB_FROM.to_string();
     let denial_id = denial::denial_id(manifest_hash, "", &rule);
     let message = format!(
-        "Denied ({denial_id}): '{source}' is not permitted to connect to the local web API. \
-         Only sources named in the channels.webapi.from policy may connect."
+        "Denied ({denial_id}): '{source}' is not permitted to connect to the local inbound.web \
+         adapter. Only sources named in the inbound.web.from policy may connect."
     );
     Denial {
         rule,
@@ -68,34 +68,38 @@ fn channel_denial(source: &str, manifest_hash: &str) -> Denial {
     }
 }
 
-/// The pure `channels.webapi.from` PDP-side decision (ADR-0030 Decision 5/9, H8 Required
-/// behavior item 4): `Allow` when `source` is a member of `allowlist`, `Deny` (rule
-/// [`RULE_WEBAPI_FROM`]) otherwise. `manifest_hash` feeds the existing `denial::denial_id`
+/// The pure `inbound.web.from` PDP-side decision (ADR-0030 Decision 5/9, H8
+/// Required behavior item 4): `Allow` when `source` is a member of `allowlist`, `Deny` (rule
+/// [`RULE_INBOUND_WEB_FROM`]) otherwise. `manifest_hash` feeds the existing `denial::denial_id`
 /// scheme so the id is fully reproducible from the inputs alone, exactly like every other
 /// denial in the governance core.
-pub fn decide_webapi_from(allowlist: &[String], source: &str, manifest_hash: &str) -> Decision {
+pub fn decide_inbound_web_from(
+    allowlist: &[String],
+    source: &str,
+    manifest_hash: &str,
+) -> Decision {
     if is_member(allowlist, source) {
         Decision::Allow { grant_id: None }
     } else {
-        Decision::Deny(channel_denial(source, manifest_hash))
+        Decision::Deny(inbound_denial(source, manifest_hash))
     }
 }
 
 /// A [`PolicyDecisionPoint`] deciding ONLY the resolved connecting-source axis
-/// (`DecisionRequest::channel_source`), constructed with the resolved `channels.webapi.from`
+/// (`DecisionRequest::inbound_source`), constructed with the resolved `inbound.web.from`
 /// allowlist for the connection being decided. It never touches the tool/resource axes (those
 /// remain `LocalPdp`/`NoopPdp`'s job elsewhere) -- so it cannot gate which tools exist (ADR-0030
 /// Decision 6 is preserved by construction: this type has no notion of a tool at all).
 ///
-/// Driven directly (no listener involved) by `tests/channels_policy.rs`, exactly as the task's
+/// Driven directly (no listener involved) by `tests/inbound_policy.rs`, exactly as the task's
 /// pinned assertion describes: "the decision is produced by `PolicyDecisionPoint::decide` (the
 /// PDP), NOT by any transport-layer check."
-pub struct ChannelsPdp {
+pub struct InboundPdp {
     allowlist: Vec<String>,
 }
 
-impl ChannelsPdp {
-    /// `allowlist` is the resolved `channels.webapi.from` value for this connection (the web
+impl InboundPdp {
+    /// `allowlist` is the resolved `inbound.web.from` value for this connection (the inbound.web
     /// adapter's builtin default, `[allow: "localhost"]`, absent any overlay -- ADR-0030
     /// Decision 5).
     pub fn new(allowlist: Vec<String>) -> Self {
@@ -103,10 +107,10 @@ impl ChannelsPdp {
     }
 }
 
-impl PolicyDecisionPoint for ChannelsPdp {
+impl PolicyDecisionPoint for InboundPdp {
     fn decide(&self, req: &DecisionRequest) -> Decision {
-        let source = req.channel_source.as_deref().unwrap_or("");
-        decide_webapi_from(&self.allowlist, source, &req.manifest_hash)
+        let source = req.inbound_source.as_deref().unwrap_or("");
+        decide_inbound_web_from(&self.allowlist, source, &req.manifest_hash)
     }
 }
 
@@ -133,12 +137,12 @@ mod tests {
     fn decide_allows_a_member_and_denies_a_non_member() {
         let allowlist = vec!["localhost".to_string()];
         assert_eq!(
-            decide_webapi_from(&allowlist, "localhost", ""),
+            decide_inbound_web_from(&allowlist, "localhost", ""),
             Decision::Allow { grant_id: None }
         );
-        match decide_webapi_from(&allowlist, "203.0.113.7", "") {
+        match decide_inbound_web_from(&allowlist, "203.0.113.7", "") {
             Decision::Deny(denial) => {
-                assert_eq!(denial.rule, RULE_WEBAPI_FROM);
+                assert_eq!(denial.rule, RULE_INBOUND_WEB_FROM);
                 assert!(denial.denial_id.starts_with("D-"));
                 assert_eq!(denial.denial_id.len(), 10);
             }
@@ -149,11 +153,11 @@ mod tests {
     #[test]
     fn validate_accepts_a_flat_string_array_and_rejects_other_shapes() {
         assert_eq!(
-            validate_webapi_from(&serde_json::json!(["localhost", "*"])).unwrap(),
+            validate_inbound_web_from(&serde_json::json!(["localhost", "*"])).unwrap(),
             vec!["localhost".to_string(), "*".to_string()]
         );
-        assert!(validate_webapi_from(&serde_json::json!("localhost")).is_err());
-        assert!(validate_webapi_from(&serde_json::json!(["localhost", ""])).is_err());
-        assert!(validate_webapi_from(&serde_json::json!([1, 2])).is_err());
+        assert!(validate_inbound_web_from(&serde_json::json!("localhost")).is_err());
+        assert!(validate_inbound_web_from(&serde_json::json!(["localhost", ""])).is_err());
+        assert!(validate_inbound_web_from(&serde_json::json!([1, 2])).is_err());
     }
 }

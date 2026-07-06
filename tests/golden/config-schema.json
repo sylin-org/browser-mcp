@@ -75,8 +75,8 @@
           ],
           "default": "enforce"
         },
-        "channels.webapi.from": {
-          "description": "Sources allowed to connect to the local web API (Console/HTTP). \"localhost\" only, unless opened to \"*\" or specific hosts.",
+        "inbound.web.from": {
+          "description": "Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). \"localhost\" only, unless opened to \"*\" or specific hosts.",
           "type": "array",
           "items": {
             "type": "string"

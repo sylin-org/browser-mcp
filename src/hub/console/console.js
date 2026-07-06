@@ -64,7 +64,7 @@ function wireEnableRemote() {
       const res = await fetch("/api/v1/config/webapi-enable-remote", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
-        status.textContent = "Enabled: channels.webapi.from = " + JSON.stringify(data.value) +
+        status.textContent = "Enabled: inbound.web.from = " + JSON.stringify(data.value) +
           ". " + data.note;
         loadConfig();
       } else {

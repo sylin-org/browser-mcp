@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! K2 (`docs/tasks/console/K2-console-static-routes.md`; PINS.md CS1, CS1.1, CS1.2, CS1.3, CS10,
 //! CS11): the Console's own static GET routes, served from the SAME TCP listener H8's web API
-//! runs, gated by the SAME `channels.webapi.from` decision the WS-upgrade path already uses.
+//! runs, gated by the SAME `inbound.web.from` decision the WS-upgrade path already uses.
 
 mod support;
 
