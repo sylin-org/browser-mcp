@@ -127,7 +127,7 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.
-    let fixture: Value = serde_json::from_str(ghostlight::mcp::tools::TOOLS_JSON).unwrap();
+    let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(
         list["result"], fixture,
         "tools/list must equal the sacred fixture"

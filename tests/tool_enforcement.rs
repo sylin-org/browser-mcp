@@ -411,7 +411,7 @@ fn all_open_invariant_no_manifest_means_no_denials() {
         .as_array()
         .expect("tools array");
     assert_eq!(tools.len(), 14, "13 trained tools plus explain");
-    let fixture: Value = serde_json::from_str(ghostlight::mcp::tools::TOOLS_JSON).unwrap();
+    let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");
 
     let call_text = text_of(&responses[2]);

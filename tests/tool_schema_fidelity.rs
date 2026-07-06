@@ -1,16 +1,11 @@
-//! Fidelity guard for the sacred `tools/list` surface (`src/mcp/schemas/tools.json`).
+//! Regression snapshot for the `tools/list` surface, now code-declared in
+//! `browser::directory::REGISTRY` (ADR-0034 Decision 4: tool declarations in code, not JSON).
 //!
-//! Ensures the embedded schema fixture stays intact: exactly the 13 trained tools, byte-identical
-//! and in order, each with a non-empty description and an object inputSchema, PLUS exactly one
-//! sanctioned addition: `explain` (ADR-0022 Decision 7), positioned last. This file was amended
-//! ONCE, in stage-3 task s07, to pin that 13-plus-1 invariant; ADR-0022 Decision 7 explicitly
-//! relaxes ADR-0007's byte-parity story from "byte-identical to the official extension" to "the
-//! 13 trained tool schemas are byte-identical; exactly one additive, argument-less governance
-//! tool is sanctioned on top." Any further change to this file, or to
-//! `src/transport/mcp/schemas/tools.json`, is UNSANCTIONED -- s07 is the only task ever
-//! authorized to touch either.
+//! Pins the structural invariants: exactly the 13 trained tools + `explain`, in order, each with
+//! a non-empty description and an object inputSchema. The computer tool carries all 13 actions.
+//! This is a regression snapshot (visibility), not a drift-prevention contract between two files.
 
-use ghostlight::mcp::tools::TOOLS_JSON;
+use ghostlight::mcp::tools::advertised_tools_json;
 use serde_json::{json, Value};
 
 /// The 13 trained tools, in order. Changing this array is changing the sacred contract.
@@ -38,7 +33,7 @@ learn what you are allowed to do in this session. It does not read, summarize, o
 pages.";
 
 fn tools() -> Vec<Value> {
-    let v: Value = serde_json::from_str(TOOLS_JSON).expect("tools.json must be valid JSON");
+    let v = advertised_tools_json();
     v["tools"]
         .as_array()
         .expect("`tools` must be an array")
@@ -270,23 +265,19 @@ fn descriptions_reference_bare_tab_tool_names() {
 /// the agent's workflow contract at handshake; a missing/empty one breaks the onboarding payload.
 #[test]
 fn agent_guide_is_present_with_all_four_non_empty_fields() {
-    let v: Value = serde_json::from_str(TOOLS_JSON).expect("tools.json is valid JSON");
-    let guide = v
-        .get("agentGuide")
-        .and_then(Value::as_object)
-        .expect("tools.json carries a top-level agentGuide object");
-    for key in &["summary", "workflow", "flow", "denials"] {
-        let val = guide
-            .get(*key)
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("agentGuide.{key} must be a non-empty string"));
+    let guide = ghostlight::browser::directory::AGENT_GUIDE;
+    for (key, val) in [
+        ("summary", guide.summary),
+        ("workflow", guide.workflow),
+        ("flow", guide.flow),
+        ("denials", guide.denials),
+    ] {
         assert!(!val.is_empty(), "agentGuide.{key} must be non-empty");
     }
     // The load-bearing workflow rule must be present (this is the fact that, when missing, an
     // untrained model gets wrong on the first call).
-    let workflow = guide["workflow"].as_str().unwrap();
     assert!(
-        workflow.contains("tabId"),
+        guide.workflow.contains("tabId"),
         "agentGuide.workflow must state the tabId-first rule"
     );
 }

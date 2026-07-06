@@ -40,7 +40,7 @@ use crate::hub::outbound::browser::Browser;
 use crate::hub::session::SessionGuid;
 use crate::hub::ServiceContext;
 use crate::transport::mcp::pipeline;
-use crate::transport::mcp::tools::{agent_guide_text, TOOLS_JSON};
+use crate::transport::mcp::tools::{advertised_tools_json, agent_guide_text};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::Result;
 use serde_json::{json, Value};
@@ -311,8 +311,7 @@ where
         let recorder = recorder.clone() as Arc<dyn AuditSink>;
         let mut policy_changes = store.policy();
         let tx = tx.clone();
-        let fixture: Value =
-            serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid");
+        let fixture = advertised_tools_json();
         async move {
             let mut ignored_in_force = policy_changes.borrow().user_manifest_ignored;
             while policy_changes.changed().await.is_ok() {
@@ -623,7 +622,7 @@ fn initialize_result() -> Value {
 /// once one is active. Schema text is never altered; only which tools appear in the array
 /// changes.
 fn tools_list_result(governance: &Governance) -> Value {
-    let fixture: Value = serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid");
+    let fixture = advertised_tools_json();
     advertise::advertised_tools(&fixture, governance.grants())
 }
 
@@ -654,7 +653,7 @@ mod tests {
     /// the same capability union" no-op case.
     #[test]
     fn advertised_set_diff_gates_the_notification() {
-        let fixture: Value = serde_json::from_str(TOOLS_JSON).expect("fixture parses");
+        let fixture = advertised_tools_json();
 
         let none: Vec<Grant> = Vec::new();
         let read_only = vec![grant(&[Capability::Read])];

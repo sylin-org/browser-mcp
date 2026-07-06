@@ -31,16 +31,16 @@
 //! are never to be conflated: `None` and `Some(&[])` are distinct outcomes with opposite
 //! consequences.
 //!
-//! The registry is validated against the tools.json fixture, never the reverse (ADR-0024
-//! Decision 1): fixture-mirror tests assert the registry covers exactly the fixture's
-//! advertised names, in order, and the `computer` action enum, with no gaps, no stale
-//! entries, no duplicates.
+//! The registry IS the single source (ADR-0034 Decision 4): regression snapshot tests pin
+//! the declared surface's structural invariants (names in order, the `computer` action enum,
+//! no gaps, no duplicates).
 //!
 //! The module is pure: no I/O, no allocation beyond what slice iteration needs, no
 //! dependencies beyond `core`/`std` plus the `serde_json::Value` type named in one function
 //! pointer signature (never constructed here).
 
 use crate::governance::ports::Capability;
+use serde_json::{json, Value};
 
 /// The resource-shape classification driving GRANT-PATH resource resolution only (ADR-0024
 /// Decision 1), mirroring today's `resolve_governing_resource` name match exactly. This is NOT
@@ -82,23 +82,33 @@ pub enum PostDispatch {
 }
 
 /// One action variant of a [`ToolDescriptor`]: its bound capability requirement set and its
-/// agent-targeted description (ADR-0022 Decision 2 row, unchanged). A tool with no
-/// sub-actions carries exactly one variant with `action: None`; `computer` carries 13, one per
-/// `action_key` value.
+/// directory-facing description (the text `explain` renders -- distinct from the advertised
+/// description the model sees in `tools/list`). A tool with no sub-actions carries exactly one
+/// variant with `action: None`; `computer` carries 13, one per `action_key` value.
 #[derive(Debug, Clone, Copy)]
 pub struct ActionVariant {
     pub action: Option<&'static str>,
     pub requires: &'static [Capability],
-    pub description: &'static str,
+    pub directory_description: &'static str,
 }
 
-/// One row of the tool registry (ADR-0024 Decision 1): the single per-tool authority for
-/// validity, classification, advertisement, explain, resource shape, dispatch kind, and result
-/// post-processing. Descriptors are DATA; the pipeline owns BEHAVIOR (see the module doc
-/// comment).
+/// One row of the tool registry (ADR-0024 Decision 1, extended by ADR-0034 Decision 4): the
+/// single per-tool authority for validity, classification, advertisement, validation, explain,
+/// resource shape, dispatch kind, and result post-processing. Descriptors are DATA; the pipeline
+/// owns BEHAVIOR (see the module doc comment).
 #[derive(Clone, Copy)]
 pub struct ToolDescriptor {
     pub tool: &'static str,
+    /// The model-facing description advertised in `tools/list`. Distinct from each variant's
+    /// `directory_description` (which `explain` renders): the advertised description is rich,
+    /// often multi-line, instructional prose; the directory description is a terse capability
+    /// label.
+    pub advertised_description: &'static str,
+    /// The JSON-Schema for this tool's arguments, as an inline JSON literal. The wire target
+    /// format -- no DSL, no escape hatch (ADR-0034 Decision 4).
+    pub input_schema: fn() -> serde_json::Value,
+    /// The agent-facing example (ADR-0031 Decision 2). `None` only on `explain`.
+    pub example: Option<ToolExample>,
     /// `Some("action")` on `computer` only: this tool has sub-actions, keyed by this argument
     /// name. `None` for every other tool (any action-like argument is ignored).
     pub action_key: Option<&'static str>,
@@ -113,18 +123,42 @@ pub struct ToolDescriptor {
     pub post_dispatch: PostDispatch,
 }
 
-/// The tool registry (ADR-0024 Decision 1): 14 descriptors (the 13 trained tools plus
-/// `explain`), in tools.json advertised order. `computer`'s 13 variants are in tools.json
-/// `action` enum order, absorbing the former 26-row `ActionDescriptor` directory unchanged,
+/// The agent-facing example for a tool (ADR-0031 Decision 2): a sample `call` (as a JSON string
+/// literal, parsed lazily) and a one-line `returns` note. Used to generate corrective validation
+/// errors ("example call shape: ...") and pinned by the regression snapshot. `None` on `explain`.
+#[derive(Clone, Copy)]
+pub struct ToolExample {
+    pub call: &'static str,
+    pub returns: Option<&'static str>,
+}
+
+/// The tool registry: 14 descriptors (the 13 browser tools plus `explain`), in the order they
+/// appear in `tools/list`. `computer`'s 13 variants are in the schema's `action` enum order,
 /// byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
         tool: "tabs_context_mcp",
+        advertised_description: "Get context information about the current MCP tab group. Returns all tab IDs inside the group if it exists. CRITICAL: You must get the context at least once before using other browser automation tools so you know what tabs exist. Each new conversation should create its own new tab (using tabs_create) rather than reusing existing tabs, unless the user explicitly asks to use an existing tab.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "createIfEmpty": {
+                    "type": "boolean",
+                    "description": "Creates a new MCP tab group if none exists, creates a new Window with a new tab group containing an empty tab (which can be used for this conversation). If a MCP tab group already exists, this parameter has no effect."
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"createIfEmpty":true}"#,
+            returns: Some("Returns the tab group id and the tabs it contains (tabId, title, url for each). Call this first to get the tabId every other tool needs."),
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description:
+            directory_description:
                 "List the MCP tab group: the ids, URLs, and titles of the tabs this server controls.",
         }],
         resource: ResourceShape::DomainLess,
@@ -134,11 +168,22 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "tabs_create_mcp",
+        advertised_description: "Creates a new empty tab in the MCP tab group.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{}"#,
+            returns: Some("Returns the new tab's tabId and the group id; use the tabId with navigate to go to a URL."),
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[],
-            description: "Open a new empty tab in the MCP tab group; touches no page and no server.",
+            directory_description: "Open a new empty tab in the MCP tab group; touches no page and no server.",
         }],
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
@@ -147,11 +192,35 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "navigate",
+        advertised_description: "Navigate to a URL, or go forward/back in browser history. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to navigate to. Can be provided with or without protocol (defaults to https://). Use \"forward\" to go forward in history or \"back\" to go back in history."
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to navigate. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "If the page shows a \"Leave site?\" dialog because of unsaved changes, discard those changes and navigate anyway. Defaults to false: navigation is blocked and an error is returned so you can decide first."
+                }
+            },
+            "required": ["url", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"url":"https://example.com"}"#,
+            returns: Some("Returns a short confirmation that the tab navigated to the URL."),
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Load a URL in a tab, or go back or forward in its history; a top-level GET.",
+            directory_description: "Load a URL in a tab, or go back or forward in its history; a top-level GET.",
         }],
         resource: ResourceShape::TargetArg,
         handler: Handler::ExtensionForward,
@@ -160,73 +229,150 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "computer",
+        advertised_description: "Use a mouse and keyboard to interact with a web browser, and take screenshots. If you don't have a valid tab ID, use tabs_context first to get available tabs.\n* Whenever you intend to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.\n* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your click location so that the tip of the cursor visually falls on the element that you want to click.\n* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges unless asked.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["left_click", "right_click", "type", "screenshot", "wait", "scroll", "key", "left_click_drag", "double_click", "triple_click", "zoom", "scroll_to", "hover"],
+                    "description": "The action to perform:\n* `left_click`: Click the left mouse button at the specified coordinates.\n* `right_click`: Click the right mouse button at the specified coordinates to open context menus.\n* `double_click`: Double-click the left mouse button at the specified coordinates.\n* `triple_click`: Triple-click the left mouse button at the specified coordinates.\n* `type`: Type a string of text.\n* `screenshot`: Take a screenshot of the screen.\n* `wait`: Wait for a specified number of seconds.\n* `scroll`: Scroll up, down, left, or right at the specified coordinates.\n* `key`: Press a specific keyboard key.\n* `left_click_drag`: Drag from start_coordinate to coordinate.\n* `zoom`: Take a screenshot of a specific region for closer inspection.\n* `scroll_to`: Scroll an element into view using its element reference ID from read_page or find tools.\n* `hover`: Move the mouse cursor to the specified coordinates or element without clicking. Useful for revealing tooltips, dropdown menus, or triggering hover states."
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to execute the action on. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "coordinate": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates. Required for `left_click`, `right_click`, `double_click`, `triple_click`, and `scroll`. For `left_click_drag`, this is the end position."
+                },
+                "duration": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "The number of seconds to wait. Required for `wait`. Maximum 10 seconds."
+                },
+                "modifiers": {
+                    "type": "string",
+                    "description": "Modifier keys for click actions. Supports: \"ctrl\", \"shift\", \"alt\", \"cmd\" (or \"meta\"), \"win\" (or \"windows\"). Can be combined with \"+\" (e.g., \"ctrl+shift\", \"cmd+alt\"). Optional."
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Element reference ID from read_page or find tools (e.g., \"ref_1\", \"ref_2\"). Required for `scroll_to` action. Can be used as alternative to `coordinate` for click actions."
+                },
+                "region": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "(x0, y0, x1, y1): The rectangular region to capture for `zoom`. Coordinates define a rectangle from top-left (x0, y0) to bottom-right (x1, y1) in pixels from the viewport origin. Required for `zoom` action. Useful for inspecting small UI elements like icons, buttons, or text."
+                },
+                "repeat": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Number of times to repeat the key sequence. Only applicable for `key` action. Must be a positive integer between 1 and 100. Default is 1. Useful for navigation tasks like pressing arrow keys multiple times."
+                },
+                "scroll_direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "The direction to scroll. Required for `scroll`."
+                },
+                "scroll_amount": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "The number of scroll wheel ticks. Optional for `scroll`, defaults to 3."
+                },
+                "start_coordinate": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "(x, y): The starting coordinates for `left_click_drag`."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The text to type (for `type` action) or the key(s) to press (for `key` action). For `key` action: Provide space-separated keys (e.g., \"Backspace Backspace Delete\"). Supports keyboard shortcuts using the platform's modifier key (use \"cmd\" on Mac, \"ctrl\" on Windows/Linux, e.g., \"cmd+a\" or \"ctrl+a\" for select all)."
+                }
+            },
+            "required": ["action", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"action":"screenshot"}"#,
+            returns: Some("Returns depend on action: screenshot/zoom return an image (large; prefer read_page/get_page_text when you only need structure or text); clicks/typing/scroll/hover return a short text confirmation."),
+        }),
         action_key: Some("action"),
         variants: &[
             ActionVariant {
                 action: Some("left_click"),
                 requires: &[Capability::Action],
-                description:
+                directory_description:
                     "Left-click at coordinates; commits an activation whose effect the page decides.",
             },
             ActionVariant {
                 action: Some("right_click"),
                 requires: &[Capability::Action],
-                description: "Right-click at coordinates; commits an activation.",
+                directory_description: "Right-click at coordinates; commits an activation.",
             },
             ActionVariant {
                 action: Some("type"),
                 requires: &[Capability::Action],
-                description: "Type text into the focused element; commits data to page handlers.",
+                directory_description: "Type text into the focused element; commits data to page handlers.",
             },
             ActionVariant {
                 action: Some("screenshot"),
                 requires: &[Capability::Read],
-                description: "Capture a screenshot of the visible viewport.",
+                directory_description: "Capture a screenshot of the visible viewport.",
             },
             ActionVariant {
                 action: Some("wait"),
                 requires: &[],
-                description: "Pause for a duration; touches no page and no server.",
+                directory_description: "Pause for a duration; touches no page and no server.",
             },
             ActionVariant {
                 action: Some("scroll"),
                 requires: &[Capability::Read],
-                description: "Scroll the viewport; moves the view without committing input to the page.",
+                directory_description: "Scroll the viewport; moves the view without committing input to the page.",
             },
             ActionVariant {
                 action: Some("key"),
                 requires: &[Capability::Action],
-                description: "Press a key or key combination; commits input to page handlers.",
+                directory_description: "Press a key or key combination; commits input to page handlers.",
             },
             ActionVariant {
                 action: Some("left_click_drag"),
                 requires: &[Capability::Action],
-                description: "Click and drag between two points; commits pointer input to the page.",
+                directory_description: "Click and drag between two points; commits pointer input to the page.",
             },
             ActionVariant {
                 action: Some("double_click"),
                 requires: &[Capability::Action],
-                description: "Double-click at coordinates; commits an activation.",
+                directory_description: "Double-click at coordinates; commits an activation.",
             },
             ActionVariant {
                 action: Some("triple_click"),
                 requires: &[Capability::Action],
-                description: "Triple-click at coordinates; commits an activation.",
+                directory_description: "Triple-click at coordinates; commits an activation.",
             },
             ActionVariant {
                 action: Some("zoom"),
                 requires: &[Capability::Read],
-                description: "Capture a zoomed screenshot of a page region.",
+                directory_description: "Capture a zoomed screenshot of a page region.",
             },
             ActionVariant {
                 action: Some("scroll_to"),
                 requires: &[Capability::Read],
-                description: "Scroll an element into view; moves the viewport without committing input.",
+                directory_description: "Scroll an element into view; moves the viewport without committing input.",
             },
             ActionVariant {
                 action: Some("hover"),
                 requires: &[Capability::Read],
-                description: "Move the pointer over a point; commits no activation and no data.",
+                directory_description: "Move the pointer over a point; commits no activation and no data.",
             },
         ],
         resource: ResourceShape::TabScoped,
@@ -236,11 +382,31 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "find",
+        advertised_description: "Find elements on the page using natural language. Can search for elements by their purpose (e.g., \"search bar\", \"login button\") or by text content (e.g., \"organic mango product\"). Returns up to 20 matching elements with references that can be used with other tools. If more than 20 matches exist, you'll be notified to use a more specific query. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language description of what to find (e.g., \"search bar\", \"add to cart button\", \"product title containing organic\")"
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to search in. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["query", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"query":"search bar"}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Search the page for elements matching a natural-language description.",
+            directory_description: "Search the page for elements matching a natural-language description.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -249,11 +415,35 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "form_input",
+        advertised_description: "Set values in form elements using element reference ID from the read_page tool. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "Element reference ID from the read_page tool (e.g., \"ref_1\", \"ref_2\")"
+                },
+                "value": {
+                    "type": ["string", "boolean", "number"],
+                    "description": "The value to set. For checkboxes use boolean, for selects use option value or text, for other inputs use appropriate string/number"
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to set form value in. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["ref", "value", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"ref":"ref_1","value":"hello"}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Write],
-            description: "Fill or set values in form fields; a declared, state-changing write.",
+            directory_description: "Fill or set values in form fields; a declared, state-changing write.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -262,11 +452,31 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "get_page_text",
+        advertised_description: "Extract raw text content from the page, prioritizing article content. Ideal for reading articles, blog posts, or other text-heavy pages. Returns plain text without HTML formatting. If you don't have a valid tab ID, use tabs_context first to get available tabs. Output is limited to 50000 characters by default. If the output exceeds this limit, you will receive an error suggesting alternatives.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to extract text from. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "max_chars": {
+                    "type": "number",
+                    "description": "Maximum characters for output (default: 50000). Set to a higher value if your client can handle large outputs."
+                }
+            },
+            "required": ["tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Extract the page's readable text content, article-first, without HTML.",
+            directory_description: "Extract the page's readable text content, article-first, without HTML.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -275,11 +485,35 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "javascript_tool",
+        advertised_description: "Execute JavaScript code in the context of the current page. The code runs in the page's context and can interact with the DOM, window object, and page variables. Returns the result of the last expression or any thrown errors. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Must be set to 'javascript_exec'"
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The JavaScript code to execute. Evaluated in the page context with REPL semantics: top-level `await` works, and the result of the last expression is returned automatically -- write the expression you want (e.g. `window.myData.value`, or `await fetch(url).then(r=>r.json())`) rather than `return ...`. You can access and modify the DOM, call page functions, and interact with page variables."
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to execute the code in. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["action", "text", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"action":"javascript_exec","text":"document.title"}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Execute],
-            description:
+            directory_description:
                 "Run arbitrary JavaScript in the page; unbounded, and can bypass the UI entirely.",
         }],
         resource: ResourceShape::TabScoped,
@@ -289,11 +523,43 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "read_console_messages",
+        advertised_description: "Read browser console messages (console.log, console.error, console.warn, etc.) from a specific tab. Useful for debugging JavaScript errors, viewing application logs, or understanding what's happening in the browser console. Returns console messages from the current domain only. If you don't have a valid tab ID, use tabs_context first to get available tabs. IMPORTANT: Always provide a pattern to filter messages - without a pattern, you may get too many irrelevant messages.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to read console messages from. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to filter console messages. Only messages matching this pattern will be returned (e.g., 'error|warning' to find errors and warnings, 'MyApp' to filter app-specific logs). You should always provide a pattern to avoid getting too many irrelevant messages."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of messages to return. Defaults to 100. Increase only if you need more results."
+                },
+                "onlyErrors": {
+                    "type": "boolean",
+                    "description": "If true, only return error and exception messages. Default is false (return all message types)."
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "If true, clear the console messages after reading to avoid duplicates on subsequent calls. Default is false."
+                }
+            },
+            "required": ["tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"pattern":"error|warning"}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Read buffered browser console messages from a tab.",
+            directory_description: "Read buffered browser console messages from a tab.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -302,11 +568,39 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "read_network_requests",
+        advertised_description: "Read HTTP network requests (XHR, Fetch, documents, images, etc.) from a specific tab. Useful for debugging API calls, monitoring network activity, or understanding what requests a page is making. Returns all network requests made by the current page, including cross-origin requests. Requests are automatically cleared when the page navigates to a different domain. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to read network requests from. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "urlPattern": {
+                    "type": "string",
+                    "description": "Optional URL pattern to filter requests. Only requests whose URL contains this string will be returned (e.g., '/api/' to filter API calls, 'example.com' to filter by domain)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of requests to return. Defaults to 100. Increase only if you need more results."
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "If true, clear the network requests after reading to avoid duplicates on subsequent calls. Default is false."
+                }
+            },
+            "required": ["tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"urlPattern":"/api/"}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Read buffered HTTP network requests observed in a tab.",
+            directory_description: "Read buffered HTTP network requests observed in a tab.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -315,11 +609,44 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "read_page",
+        advertised_description: "Get an accessibility tree representation of elements on the page. By default returns all elements including non-visible ones. Output is limited to 50000 characters. If the output exceeds this limit, you will receive an error asking you to specify a smaller depth or focus on a specific element using ref_id. Optionally filter for only interactive elements. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to read from. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "filter": {
+                    "type": "string",
+                    "enum": ["interactive", "all"],
+                    "description": "Filter elements: \"interactive\" for buttons/links/inputs only, \"all\" for all elements including non-visible ones (default: all elements)"
+                },
+                "depth": {
+                    "type": "number",
+                    "description": "Maximum depth of the tree to traverse (default: 15). Use a smaller depth if output is too large."
+                },
+                "ref_id": {
+                    "type": "string",
+                    "description": "Reference ID of a parent element to read. Will return the specified element and all its children. Use this to focus on a specific part of the page when output is too large."
+                },
+                "max_chars": {
+                    "type": "number",
+                    "description": "Maximum characters for output (default: 50000). Set to a higher value if your client can handle large outputs."
+                }
+            },
+            "required": ["tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"filter":"interactive"}"#,
+            returns: Some("Returns an accessibility tree; each interactive element carries a reference id of the form `ref_N`. Pass that id to form_input.ref, or use it as computer.ref for click/scroll_to actions."),
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[Capability::Read],
-            description: "Read the page as an accessibility tree of elements with reference ids.",
+            directory_description: "Read the page as an accessibility tree of elements with reference ids.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -328,11 +655,35 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "resize_window",
+        advertised_description: "Resize the current browser window to specified dimensions. Useful for testing responsive designs or setting up specific screen sizes. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "width": {
+                    "type": "number",
+                    "description": "Target window width in pixels"
+                },
+                "height": {
+                    "type": "number",
+                    "description": "Target window height in pixels"
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to get the window for. Must be a tab in the current group. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["width", "height", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"width":1280,"height":800}"#,
+            returns: None,
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[],
-            description: "Resize the browser window; browser state only, touches no page content.",
+            directory_description: "Resize the browser window; browser state only, touches no page content.",
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
@@ -341,11 +692,33 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "update_plan",
+        advertised_description: "Present a plan to the user for approval before taking actions. The user will see the domains you intend to visit and your approach. Once approved, you can proceed with actions on the approved domains without additional permission prompts.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "domains": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "List of domains you will visit (e.g., ['github.com', 'stackoverflow.com']). These domains will be approved for the session when the user accepts the plan."
+                },
+                "approach": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "High-level description of what you will do. Focus on outcomes and key actions, not implementation details. Be concise - aim for 3-7 items."
+                }
+            },
+            "required": ["domains", "approach"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"domains":["example.com"],"approach":["read the page","report the main heading"]}"#,
+            returns: Some("Returns the plan echoed back; auto-approved by the engine. The user sees it in their client."),
+        }),
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[],
-            description: "Present a plan of intended actions to the user; informational only.",
+            directory_description: "Present a plan of intended actions to the user; informational only.",
         }],
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
@@ -354,11 +727,19 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "explain",
+        advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }),
+        example: None,
         action_key: None,
         variants: &[ActionVariant {
             action: None,
             requires: &[],
-            description: "Show every action available here and the capability each one requires.",
+            directory_description: "Show every action available here and the capability each one requires.",
         }],
         resource: ResourceShape::DomainLess,
         handler: Handler::Local(explain_text),
@@ -367,8 +748,65 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
 ];
 
+/// The agent onboarding guide (ADR-0031 Decision 1, ADR-0034 Decision 6): the four prose fields
+/// served at handshake in `initialize.instructions`. Each capability contributes its own guide;
+/// the registry composes them. Today only the browser capability exists.
+pub const AGENT_GUIDE: AgentGuide = AgentGuide {
+    summary: "Ghostlight drives the user's own authenticated browser. You observe and act on the web pages they're already logged into, in an isolated Ghostlight tab group separate from their own tabs. Default (no policy) is unrestricted; a policy can scope what's allowed.",
+    workflow: "BEFORE ANYTHING ELSE: GET A tabId. Every tool below that touches a page requires a `tabId` (a number) -- it is required, not optional. Get one with tabs_context_mcp (pass createIfEmpty: true to create the group if none exists; usually your first call) or tabs_create_mcp (open a new tab). Then navigate (tabId + url) to go somewhere. COST DISCIPLINE: computer screenshot and zoom return large images costing many tokens; prefer read_page (structured tree) or get_page_text (plain text) when you only need structure or text, and screenshot only when you need to see layout.",
+    flow: "tabs_context_mcp -> navigate -> read (read_page or get_page_text or computer screenshot) -> act (computer or form_input) -> re-read.",
+    denials: "If a call is denied you'll see `Denied (D-xxxxxxxx): ...`. Call `explain` (no arguments) to see what's permitted in this session; hand the denial id to the policy administrator.",
+};
+
+/// The agent onboarding guide's four prose fields (ADR-0031 Decision 1).
+#[derive(Clone, Copy)]
+pub struct AgentGuide {
+    pub summary: &'static str,
+    pub workflow: &'static str,
+    pub flow: &'static str,
+    pub denials: &'static str,
+}
+
+/// Render the agent onboarding guide into the single string MCP's `initialize.instructions`
+/// field expects (ADR-0031 Decision 1). The four fields are concatenated with clear separators.
+/// Served once at handshake, before any tool call, so any model gets the workflow contract
+/// without having to derive it from per-tool descriptions.
+pub fn agent_guide_text() -> String {
+    format!(
+        "{}\n\n{}\n\nTypical flow: {}\n\n{}",
+        AGENT_GUIDE.summary, AGENT_GUIDE.workflow, AGENT_GUIDE.flow, AGENT_GUIDE.denials
+    )
+}
+
+/// Render the `tools/list` advertisement JSON from the registry (ADR-0034 Decision 5): the
+/// complete `tools` array with each tool's `name`, `description`, `inputSchema`, and `example`
+/// (when present), in registry order. This is the single source of the advertised surface --
+/// no separate fixture file.
+pub fn advertised_tools_json() -> Value {
+    let tools: Vec<Value> = REGISTRY
+        .iter()
+        .map(|d| {
+            let mut entry = json!({
+                "name": d.tool,
+                "description": d.advertised_description,
+                "inputSchema": (d.input_schema)(),
+            });
+            if let Some(ex) = d.example {
+                let call: Value = serde_json::from_str(ex.call).unwrap_or(json!({}));
+                entry["example"] = if let Some(returns) = ex.returns {
+                    json!({ "call": call, "returns": returns })
+                } else {
+                    json!({ "call": call })
+                };
+            }
+            entry
+        })
+        .collect();
+    json!({ "tools": tools })
+}
+
 /// Look up a tool's registry row by name. Linear scan over 14 rows; the validity check the
-/// pipeline uses (replacing the transport layer's former per-call fixture re-parse).
+/// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
 }
@@ -425,7 +863,7 @@ pub fn explain_text() -> String {
             };
             lines.push(format!(
                 "{label}: requires {requirement}. {}",
-                variant.description
+                variant.directory_description
             ));
         }
     }
@@ -435,28 +873,19 @@ pub fn explain_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::mcp::tools::TOOLS_JSON;
     use std::collections::HashSet;
 
     fn sacred_tool_names_in_order() -> Vec<String> {
-        let v: serde_json::Value = serde_json::from_str(TOOLS_JSON).unwrap();
-        v["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect()
+        REGISTRY.iter().map(|d| d.tool.to_string()).collect()
     }
 
     fn sacred_computer_actions_in_order() -> Vec<String> {
-        let v: serde_json::Value = serde_json::from_str(TOOLS_JSON).unwrap();
-        let computer = v["tools"]
-            .as_array()
-            .unwrap()
+        let computer = REGISTRY
             .iter()
-            .find(|t| t["name"] == "computer")
+            .find(|d| d.tool == "computer")
             .expect("computer tool present");
-        computer["inputSchema"]["properties"]["action"]["enum"]
+        let schema = (computer.input_schema)();
+        schema["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
             .iter()
@@ -606,27 +1035,27 @@ mod tests {
         for row in REGISTRY {
             for variant in row.variants {
                 assert!(
-                    !variant.description.is_empty(),
+                    !variant.directory_description.is_empty(),
                     "empty description: {} {:?}",
                     row.tool,
                     variant.action
                 );
                 assert!(
-                    variant.description.is_ascii(),
+                    variant.directory_description.is_ascii(),
                     "non-ascii description: {} {:?}",
                     row.tool,
                     variant.action
                 );
                 assert!(
-                    variant.description.len() <= 90,
+                    variant.directory_description.len() <= 90,
                     "description too long ({} chars): {} {:?}",
-                    variant.description.len(),
+                    variant.directory_description.len(),
                     row.tool,
                     variant.action
                 );
                 assert_eq!(
-                    variant.description,
-                    variant.description.trim(),
+                    variant.directory_description,
+                    variant.directory_description.trim(),
                     "description has leading/trailing whitespace: {} {:?}",
                     row.tool,
                     variant.action

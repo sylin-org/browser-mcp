@@ -4,7 +4,7 @@
 //! 2), identity (Decision 4), and isolation (Decision 6) by calling the SAME
 //! `transport::mcp::server::serve_session` every MCP adapter session calls -- it invents no
 //! parallel dispatch path. It has its OWN non-sacred, versioned REST/WS vocabulary and NEVER
-//! re-serializes the 13 trained schemas (`transport::mcp::tools::TOOLS_JSON`).
+//! never re-serializes the tool schemas (they are code-declared in `browser::directory`).
 //!
 //! The listener BINDS PER RESOLVED POLICY (Decision 9 + Decision 5): the inbound.web adapter's
 //! builtin default policy fragment is `inbound.web.from: [allow: "localhost"]` (the ADR-0019

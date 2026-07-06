@@ -19,7 +19,7 @@ use ghostlight::governance::dispatch::Governance;
 use ghostlight::governance::ports::{
     AuditRecord, AuditSink, Decision, EffectiveMode, GoverningResource,
 };
-use ghostlight::transport::mcp::tools::TOOLS_JSON;
+use ghostlight::transport::mcp::tools::advertised_tools_json;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,7 +28,7 @@ static SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// The 14 tool names in advertised order (the 13 trained tools plus ADR-0022 Decision 7's
 /// sanctioned `explain` addition, positioned last, landed in stage-3 task s07), copied from the
-/// parsed `TOOLS_JSON` fixture (the sacred fixture is the source of truth for the exact order).
+/// the code-declared registry (`browser::directory::REGISTRY`), in declared order.
 const GOLDEN_TOOL_NAMES: [&str; 14] = [
     "tabs_context_mcp",
     "tabs_create_mcp",
@@ -48,7 +48,7 @@ const GOLDEN_TOOL_NAMES: [&str; 14] = [
 
 #[test]
 fn tools_list_is_byte_stable_through_the_move() {
-    let v: Value = serde_json::from_str(TOOLS_JSON).expect("TOOLS_JSON parses");
+    let v = advertised_tools_json();
     let tools = v["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),

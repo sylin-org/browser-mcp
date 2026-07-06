@@ -38,18 +38,15 @@ pub struct ToolSchema {
 }
 
 impl ToolSchema {
-    /// Look up one tool's schema + example from the embedded fixture by tool name. Returns
-    /// `None` for an unknown tool name (the pipeline's pre-existing registry lookup already
-    /// rejects unknown names before this module runs, so this is defense in depth).
+    /// Look up one tool's schema + example from the code-declared registry by tool name.
+    /// Returns `None` for an unknown tool name (the pipeline's pre-existing registry lookup
+    /// already rejects unknown names before this module runs, so this is defense in depth).
     pub fn for_tool(name: &str) -> Option<Self> {
-        let v: Value = serde_json::from_str(crate::transport::mcp::tools::TOOLS_JSON)
-            .expect("TOOLS_JSON is valid JSON");
-        let tools = v.get("tools")?.as_array()?;
-        let tool = tools
-            .iter()
-            .find(|t| t.get("name").and_then(Value::as_str) == Some(name))?;
-        let input_schema = tool.get("inputSchema")?.clone();
-        let example_call = tool.get("example").and_then(|e| e.get("call")).cloned();
+        let desc = crate::browser::directory::descriptor(name)?;
+        let input_schema = (desc.input_schema)();
+        let example_call = desc
+            .example
+            .and_then(|ex| serde_json::from_str(ex.call).ok());
         Some(Self {
             input_schema,
             example_call,

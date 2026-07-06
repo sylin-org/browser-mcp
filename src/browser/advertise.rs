@@ -24,7 +24,7 @@ use crate::governance::ports::capability_subset;
 use serde_json::Value;
 
 /// Compute the advertised `{ "tools": [...] }` object. `fixture` is the parsed sacred
-/// tool-schema fixture (`transport::mcp::tools::TOOLS_JSON`, parsed by the caller so this
+/// tool-schema fixture (the registry-rendered advertisement (`advertised_tools_json`), so this
 /// browser-plugin module never depends on the transport layer). `grants` is `None` for no
 /// manifest (all-open): `fixture` is returned verbatim, byte-identical, no tool ever dropped,
 /// reordered, or edited. `Some(grants)` (including an empty slice) filters to the tools with at
@@ -72,10 +72,10 @@ mod tests {
     use super::*;
     use crate::governance::manifest::document::HostRules;
     use crate::governance::ports::Capability;
-    use crate::transport::mcp::tools::TOOLS_JSON;
+    use crate::transport::mcp::tools::advertised_tools_json;
 
     fn fixture() -> Value {
-        serde_json::from_str(TOOLS_JSON).expect("TOOLS_JSON parses")
+        advertised_tools_json()
     }
 
     fn names_of(result: &Value) -> Vec<String> {
