@@ -7,6 +7,8 @@
 
 pub mod outcome;
 pub mod pipeline;
+pub mod refs;
+pub mod script;
 pub mod server;
 pub mod tools;
 pub mod types;

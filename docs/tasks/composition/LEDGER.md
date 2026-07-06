@@ -5,8 +5,8 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C7 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C6. C1..C6 committed. C7 is HALT (the
-script tool: resolver + interpreter + budget). C8/C9/C10 depend on it.
+**C8 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C7. C1..C7 committed. C8 is HALT
+(script dry_run + idempotency cache; replaces C7's corrective stub). C9/C10 depend on C7+C8.
 
 ## Log
 
@@ -192,7 +192,7 @@ Template per task:
   - D3: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
     reason as C1's D3). No source/test content changed by this.
 
-### C6: read_page diff mode + stale-ref render-serial errors -- DONE (<commit>)
+### C6: read_page diff mode + stale-ref render-serial errors -- DONE (c540219)
 - Baseline 592 -> 592 (cargo); node gate 27 -> 30 (treediff.test.js adds 3).
 - `extension/lib/treediff.js` (pure IIFE, exposes `self.GhostlightTreeDiff`; `diffLines(old, new)`
   per PINS SS11 -- `ref_\d+` token keying else whole-line, changed/removed/added, render order
@@ -232,4 +232,71 @@ Template per task:
     path. chrome.* timers are untestable from node; the logic is straightforward and the
     treediff/settle oracles cover the derivable parts.
   - D5: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
+    reason as C1's D3). No source/test content changed by this.
+
+### C7: the script tool -- DONE (pending commit)
+- Baseline 592 -> 615 (cargo); node gate unchanged at 30.
+- `src/transport/mcp/refs.rs` (SPDX Apache-2.0 OR MIT): `resolve_refs(args, structured)` per SS6 --
+  `$$` escape, the `^\$(prev|[1-9][0-9]*)(\.[^.]+)*$` grammar (so `$0.x` passes through, `$$1.50` ->
+  `$1.50`), dot-path walk (numeric=array index, else object key), bare `$prev`/`$N` whole-value
+  substitution, and the corrective error strings verbatim. 9 inline unit tests (the 7 SS6 oracles +
+  bare-prev-substitutes-whole + non-string-leaves-recurse).
+- `src/transport/mcp/script.rs` (SPDX Apache-2.0 OR MIT): the interpreter, generic over a
+  `StepRunner` testability seam (production impl re-enters `run_tool_call` via
+  `tokio::task::block_in_place` + `Handle::block_on`). Per step: tabId inheritance; no-nesting reject
+  (`script steps may not include script itself`); ref resolution (resolution error = step "error", no
+  dispatch); `run_tool_call(..., Some(("script", &batch_id, step_no)))`; CallOutcome->status map
+  (Success->ok, Failure->error, Denied->denied, Held->held); held STOPS unconditionally (ignores
+  onError); onError "stop" halts on any non-ok; budget (`config.script_budget_ms()` lowered by arg
+  `budget_ms`, first step always runs, exhaustion marks remaining "not_run"); per-step text truncated
+  at 2000 chars + `(truncated)`; whole compact capped at 25000 chars. Summary strings verbatim per
+  SS7. `script_handler` (the `Handler::Local` entry point) builds the compact result (text rendering +
+  identical structuredContent), places `_batch_id` at the result TOP LEVEL (not inside
+  structuredContent) for the free-action arm's `take_batch_id` to strip and stamp the parent record.
+  `dry_run`/`idempotency_key` accepted by schema but answered with the corrective stub note until C8.
+  13 inline unit tests via a stub `StepRunner` that records each dispatched (tool, args,
+  orchestration): the 5 SS7 control-flow oracles (hold-stops, denied-stops, budget-exhaustion,
+  nested-script-errors, truncation-at-2000) plus all-ok summary, tabId inheritance (inherited vs
+  overridden), ref resolution through the interpreter (success: `$prev.results.0.ref` resolves to
+  `ref_42` and the structured twin rides along; the orchestration stamp
+  orchestrator/batch_id/step is passed per step), ref-resolution-error (forward reference -> step
+  "error", no dispatch), onError-continue-runs-remaining-after-denial, budget-arg-may-only-lower
+  (an arg above the config ceiling is ignored), whole-compact-25000-cap, and the _batch_id side
+  channel. New integration test
+  `tests/script_tool.rs::script_reports_step_error_and_not_run_with_correlated_audit` (steps
+  [navigate, find], no extension -> step1 "error"/"extension", step2 "not_run", summary
+  `0/2 steps completed; step 1 failed`; audit: parent script (batch_id set, orchestrator null, step
+  null) + navigate step (orchestrator "script", same batch_id, step 1); NO find record).
+- Config key per SS14: `ENGINE_SCRIPT_BUDGET_MS` (`engine.script.budget_ms`, UintRange 1000..480000,
+  default 120000 in all three presets) in `src/governance/config/mod.rs`; `Config::script_budget_ms()`
+  accessor; both golden files (`tests/golden/config-schema.json`, `config-keys.md`) regenerated.
+- Directory row before explain (requires [], DomainLess, Handler::Local(script_handler),
+  output_schema); inputSchema with steps array + onError/dry_run/idempotency_key/budget_ms. Cumulative
+  arrays extended to 16 tools (wait_for, script, explain) across tool_schema_fidelity, all_open_golden,
+  directory inline tests, advertise.rs, tool_enforcement, mcp_protocol, hot_reload (3 lists),
+  manifest_validation, tool_advertisement, hub/outbound; `output_schemas_present_exactly_where_declared`
+  gained `script`; pinned_explain_text gained the script line (27->28 variants).
+- Deviations:
+  - D1: SS7's pinned advertised description listed the vocabulary tools as `tabs_context_mcp`/
+    `tabs_create_mcp`, which violates the A7 fidelity invariant
+    (`descriptions_reference_bare_tab_tool_names`: no description may use the `_mcp`-suffixed names).
+    Changed that one parenthetical to bare `tabs_context`/`tabs_create` to satisfy the A7 invariant;
+    every other token of SS7's description is verbatim. The vocabulary tools' actual `name` fields are
+    unaffected (still `_mcp`-suffixed).
+  - D2: SS7's pinned `directory_description` ("Run up to 20 tool calls sequentially in one request;
+    each step is authorized and audited individually.") is 102 chars, exceeding the inline test's
+    `<= 90` length cap. The description is authoritative (SS7 pins it verbatim), so the cap was raised
+    to 110 (still a "short" ceiling; no other description exceeds 90).
+  - D3: `dry_run`/`idempotency_key` are accepted by the schema but answered with the corrective stub
+    `dry_run and idempotency_key land in the next engine release`, per the C7 task's explicit
+    "keeps C7 independently landable with the full schema stable from day one". C8 replaces the stub.
+  - D4: the interpreter's step runner re-enters `run_tool_call` via `tokio::task::block_in_place` +
+    `Handle::block_on` (bridging the sync `StepRunner` trait to the async `run_tool_call`), which
+    requires the multi-threaded runtime the service already uses. The unit tests use a stub runner
+    that never invokes this path; only the integration test exercises the real re-entry.
+  - D5: the same eight gate-forced count/list updates as C4's D1 recurred (every site that pins the
+    tool count or a derived tool list gained `script`, which requires [] and so joins the read-only,
+    empty-grants, and full sets). The empty-grants list (`advertise.rs`, `tool_advertisement.rs`)
+    gained `script` because it requires nothing, unlike wait_for (Read). All mechanically forced.
+  - D6: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
     reason as C1's D3). No source/test content changed by this.

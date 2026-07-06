@@ -16,6 +16,16 @@ Upper bound on the first-call wait for the extension handshake.
 - Default (safe, = built-in Minimal): 5000
 - Default (restricted): 5000
 
+## `engine.script.budget_ms`
+
+Total wall-clock budget for one script tool call, in milliseconds.
+
+- Type: uint
+- Constraints: integer between 1000 and 480000
+- Default (fully_open): 120000
+- Default (safe, = built-in Minimal): 120000
+- Default (restricted): 120000
+
 ## `content.security.secrets.redact`
 
 Redact values of secret fields (password/OTP/payment) in read_page output.

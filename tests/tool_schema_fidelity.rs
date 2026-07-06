@@ -53,19 +53,20 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         .collect();
     assert_eq!(
         names.len(),
-        15,
-        "13 trained tools plus wait_for and explain"
+        16,
+        "13 trained tools plus wait_for, script, and explain"
     );
     assert_eq!(
         names[..13],
         EXPECTED_TRAINED,
         "the 13 trained tools must stay byte-identical and in order"
     );
+    assert_eq!(names[13], "wait_for", "the 14th tool is wait_for");
     assert_eq!(
-        names[13], "wait_for",
-        "the 14th tool is wait_for, immediately before explain"
+        names[14], "script",
+        "the 15th tool is script, immediately before explain"
     );
-    assert_eq!(names[14], "explain", "explain stays positioned last");
+    assert_eq!(names[15], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -103,8 +104,8 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        15,
-        "no tool other than wait_for and explain was added to the sacred fixture"
+        16,
+        "no tool other than wait_for, script, and explain was added to the sacred fixture"
     );
 }
 
@@ -317,7 +318,7 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
 
 /// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
 /// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
-/// each is a JSON-Schema object. C4 adds `wait_for`.
+/// each is a JSON-Schema object. C4 adds `wait_for`; C7 adds `script`.
 #[test]
 fn output_schemas_present_exactly_where_declared() {
     let with_schema: Vec<String> = tools()
@@ -332,7 +333,8 @@ fn output_schemas_present_exactly_where_declared() {
             "tabs_create_mcp",
             "navigate",
             "find",
-            "wait_for"
+            "wait_for",
+            "script"
         ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );

@@ -26,6 +26,13 @@
           "maximum": 60000,
           "default": 5000
         },
+        "engine.script.budget_ms": {
+          "description": "Total wall-clock budget for one script tool call, in milliseconds.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 480000,
+          "default": 120000
+        },
         "content.security.secrets.redact": {
           "description": "Redact values of secret fields (password/OTP/payment) in read_page output.",
           "type": "boolean",

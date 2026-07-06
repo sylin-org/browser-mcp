@@ -143,9 +143,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 15 descriptors (the 13 browser tools plus `wait_for` and `explain`), in
-/// the order they appear in `tools/list`. `computer`'s 13 variants are in the schema's `action`
-/// enum order, byte-for-byte, as `variants`.
+/// The tool registry: 16 descriptors (the 13 browser tools plus `wait_for`, `script`, and
+/// `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
+/// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
         tool: "tabs_context_mcp",
@@ -895,6 +895,92 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
     },
     ToolDescriptor {
+        tool: "script",
+        advertised_description: "Run a sequence of tool calls in one request. Steps execute in order; each step is validated, authorized, and audited exactly as if called individually. Step arguments may reference a prior step's structured result: $prev.field for the previous step, $N.field for step N (1-indexed), with .0-style numeric segments indexing arrays (example: $prev.results.0.ref after find). Write $$ for a literal leading $. Only tools with structured results (find, tabs_context, tabs_create, navigate, wait_for) can be referenced. Steps may not include script itself. Use wait_for between navigate and reads on dynamic pages.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID the steps run against. Steps inherit this tabId when their own args omit it. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": { "type": "string", "description": "The tool to call for this step (any advertised tool except script itself)." },
+                            "args": { "type": "object", "description": "Arguments for this step's tool. May reference a prior step's structured result via $prev.field / $N.field." }
+                        },
+                        "required": ["tool"],
+                        "additionalProperties": false
+                    },
+                    "description": "Ordered tool calls to execute sequentially."
+                },
+                "onError": {
+                    "type": "string",
+                    "enum": ["stop", "continue"],
+                    "description": "\"stop\" (default) halts the chain on the first non-ok step; \"continue\" runs remaining steps. A held step always stops the chain regardless."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "When true, validate and authorize every step without dispatching. (Lands in the next engine release.)"
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional key for retry-safe replay. (Lands in the next engine release.)"
+                },
+                "budget_ms": {
+                    "type": "number",
+                    "description": "Total wall-clock budget for the whole script in milliseconds. Lowers (never raises) the configured ceiling; remaining steps report not_run on exhaustion."
+                }
+            },
+            "required": ["steps"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"steps":[{"tool":"find","args":{"tabId":0,"query":"submit button"}},{"tool":"computer","args":{"action":"left_click","ref":"$prev.results.0.ref"}}]}"#,
+            returns: Some("Each step's status (ok, error, denied, held, not_run), its text, and its structured result; a summary line; total duration_ms."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[],
+            directory_description:
+                "Run up to 20 tool calls sequentially in one request; each step is authorized and audited individually.",
+        }],
+        resource: ResourceShape::DomainLess,
+        handler: Handler::Local(crate::transport::mcp::script::script_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "step": { "type": "number" },
+                                "tool": { "type": "string" },
+                                "status": { "type": "string" },
+                                "result": { "type": "string" },
+                                "structured": {}
+                            },
+                            "required": ["step", "tool", "status"]
+                        }
+                    },
+                    "summary": { "type": "string" },
+                    "duration_ms": { "type": "number" }
+                },
+                "required": ["results", "summary", "duration_ms"]
+            })
+        }),
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -985,7 +1071,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 15 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 16 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1123,7 +1209,7 @@ mod tests {
         }
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 27);
+        assert_eq!(total_variants, 28);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1167,6 +1253,7 @@ mod tests {
             ("resize_window", None, &[]),
             ("update_plan", None, &[]),
             ("wait_for", None, &[Capability::Read]),
+            ("script", None, &[]),
             ("explain", None, &[]),
         ];
 
@@ -1228,7 +1315,7 @@ mod tests {
                     variant.action
                 );
                 assert!(
-                    variant.directory_description.len() <= 90,
+                    variant.directory_description.len() <= 110,
                     "description too long ({} chars): {} {:?}",
                     variant.directory_description.len(),
                     row.tool,
@@ -1358,6 +1445,14 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "script",
+                None,
+                ResourceShape::DomainLess,
+                true,
                 false,
                 PostDispatch::None,
             ),

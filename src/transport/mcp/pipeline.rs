@@ -1712,7 +1712,7 @@ mod tests {
     // --- ADR-0022 Decision 7: the `explain` directory tool ---
 
     /// The full pinned `explain` response text, transcribed by hand from
-    /// `browser::directory::REGISTRY` (27 variants) in fixture order. This is the ONE place the
+    /// `browser::directory::REGISTRY` (28 variants) in fixture order. This is the ONE place the
     /// exact output is pinned; `directory::explain_text`'s own unit tests check only its
     /// structural shape.
     fn pinned_explain_text() -> String {
@@ -1772,6 +1772,8 @@ mod tests {
              informational only.",
             "wait_for: requires read. Wait for a condition and page settlement; observes the \
              DOM, touches nothing.",
+            "script: requires nothing. Run up to 20 tool calls sequentially in one request; \
+             each step is authorized and audited individually.",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]

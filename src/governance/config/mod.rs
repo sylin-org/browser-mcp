@@ -351,6 +351,11 @@ pub fn key_def(key: &str) -> Option<&'static KeyDef> {
 /// extension handshake (ADR-0017).
 pub const ENGINE_CONNECTION_FIRST_CALL_WAIT_MS: &str = "engine.connection.first_call_wait_ms";
 
+/// `engine.script.budget_ms` -- total wall-clock budget for one `script` tool call, in
+/// milliseconds (ADR-0035 Decision 3). The call's `budget_ms` argument may lower but never exceed
+/// this configured ceiling.
+pub const ENGINE_SCRIPT_BUDGET_MS: &str = "engine.script.budget_ms";
+
 /// `content.security.secrets.redact` -- when true, values of fields the page itself marks
 /// secret (input `type=password`/`hidden`, or a sensitive `autocomplete` token) are replaced
 /// with `[value redacted]` in `read_page` output before it leaves the binary. The engine still
@@ -431,6 +436,17 @@ pub const KEYS: &[KeyDef] = &[
         default_fully_open: KeyValue::Uint(5000),
         default_safe: KeyValue::Uint(5000),
         default_restricted: KeyValue::Uint(5000),
+    },
+    KeyDef {
+        key: ENGINE_SCRIPT_BUDGET_MS,
+        description: "Total wall-clock budget for one script tool call, in milliseconds.",
+        constraint: KeyConstraint::UintRange {
+            min: 1000,
+            max: 480000,
+        },
+        default_fully_open: KeyValue::Uint(120000),
+        default_safe: KeyValue::Uint(120000),
+        default_restricted: KeyValue::Uint(120000),
     },
     KeyDef {
         key: CONTENT_SECURITY_SECRETS_REDACT,
@@ -655,6 +671,7 @@ fn resolved_str_list(resolution: &layers::Resolution, key: &str) -> Vec<String> 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     first_call_wait_ms: u64,
+    script_budget_ms: u64,
     secrets_redact: bool,
     sacred_domains: Vec<String>,
     audit_enabled: bool,
@@ -670,6 +687,7 @@ impl Config {
     pub fn from_preset(preset: Preset) -> Self {
         Self {
             first_call_wait_ms: preset_uint(ENGINE_CONNECTION_FIRST_CALL_WAIT_MS, preset),
+            script_budget_ms: preset_uint(ENGINE_SCRIPT_BUDGET_MS, preset),
             secrets_redact: preset_bool(CONTENT_SECURITY_SECRETS_REDACT, preset),
             sacred_domains: preset_str_list(CONTENT_SECURITY_SACRED_DOMAINS, preset),
             audit_enabled: preset_bool(AUDIT_ENABLED, preset),
@@ -699,6 +717,7 @@ impl Config {
     pub fn from_resolution(resolution: &layers::Resolution) -> Self {
         Self {
             first_call_wait_ms: resolved_uint(resolution, ENGINE_CONNECTION_FIRST_CALL_WAIT_MS),
+            script_budget_ms: resolved_uint(resolution, ENGINE_SCRIPT_BUDGET_MS),
             secrets_redact: resolved_bool(resolution, CONTENT_SECURITY_SECRETS_REDACT),
             sacred_domains: resolved_str_list(resolution, CONTENT_SECURITY_SACRED_DOMAINS),
             audit_enabled: resolved_bool(resolution, AUDIT_ENABLED),
@@ -716,6 +735,12 @@ impl Config {
     /// (`engine.connection.first_call_wait_ms`).
     pub fn first_call_wait_ms(&self) -> u64 {
         self.first_call_wait_ms
+    }
+
+    /// Total wall-clock budget for one `script` tool call, in milliseconds
+    /// (`engine.script.budget_ms`).
+    pub fn script_budget_ms(&self) -> u64 {
+        self.script_budget_ms
     }
 
     /// Whether secret field values must be redacted from `read_page` output
