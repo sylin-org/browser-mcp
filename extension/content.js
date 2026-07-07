@@ -699,6 +699,101 @@
     });
   }
 
+  // --- formStructure (ADR-0036 D5, PINS.md SS12): the value-free form identity read form_fill
+  // matches against. Returns the controls grouped by their containing <form> (document order,
+  // formIndex from 0) plus the formless controls, each control carrying only identity fields
+  // (label, placeholder, name, id, aria-label, type, disabled, readonly) -- NO field values read.
+  // Submit candidates are buttons whose accessible name exactly matches the pinned list, plus native
+  // submit inputs/buttons. Visibility-filtered; refs via the existing refFor. ---
+  const SUBMIT_LABELS = ["submit", "sign in", "log in", "save"];
+
+  // The label for matching: label[for] text, else a wrapping <label>'s text, else null. Deliberately
+  // NOT accessibleName (which collapses aria-label/placeholder/title into one string); form_fill
+  // matches against the label association the page itself declares, separate from the other fields.
+  function controlLabel(el) {
+    if (el.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (label && label.textContent.trim()) return label.textContent.trim();
+    }
+    const wrapping = el.closest && el.closest("label");
+    if (wrapping && wrapping.textContent.trim()) return wrapping.textContent.trim();
+    return null;
+  }
+
+  function controlType(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") return "textarea";
+    if (tag === "select") return "select";
+    if (tag === "input") return (el.type && el.type !== "hidden") ? el.type : "text";
+    return "text";
+  }
+
+  function isFormControl(el) {
+    const tag = el.tagName.toLowerCase();
+    return (tag === "input" && (el.type || "text") !== "hidden") || tag === "select" || tag === "textarea";
+  }
+
+  function readControl(el) {
+    return {
+      ref: refFor(el),
+      type: controlType(el),
+      label: controlLabel(el),
+      placeholder: typeof el.placeholder === "string" && el.placeholder ? el.placeholder : null,
+      name: el.name || null,
+      id: el.id || null,
+      ariaLabel: el.getAttribute("aria-label") || null,
+      disabled: !!el.disabled,
+      readonly: !!el.readOnly,
+    };
+  }
+
+  function submitKind(el) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || "").toLowerCase();
+    if (tag === "input" && type === "submit") return "input-submit";
+    if (tag === "button" && type === "submit") return "button-submit";
+    if (tag === "button") {
+      const name = (accessibleName(el) || "").toLowerCase().trim();
+      if (SUBMIT_LABELS.includes(name)) return "labeled-button";
+    }
+    return null;
+  }
+
+  function formStructure() {
+    const forms = [];
+    const formElements = collectAll(document).filter((el) => el.tagName.toLowerCase() === "form");
+    const seen = new WeakSet();
+    // Build each form's controls and submit candidates in document order.
+    for (let fi = 0; fi < formElements.length; fi++) {
+      const form = formElements[fi];
+      const controls = [];
+      const submits = [];
+      for (const el of collectAll(form)) {
+        if (seen.has(el) || !visible(el)) continue;
+        if (isFormControl(el)) {
+          seen.add(el);
+          controls.push(readControl(el));
+        }
+        const kind = submitKind(el);
+        if (kind) {
+          seen.add(el);
+          submits.push({ ref: refFor(el), label: accessibleName(el) || null, kind });
+        }
+      }
+      forms.push({ formIndex: fi, controls, submits });
+    }
+    // Formless controls (not inside any <form>).
+    const formless = [];
+    for (const el of collectAll(document)) {
+      if (seen.has(el) || !visible(el)) continue;
+      if (isFormControl(el)) {
+        seen.add(el);
+        formless.push(readControl(el));
+      }
+    }
+    return { forms, formless };
+  }
+
   // --- Message handler ---
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
@@ -727,6 +822,7 @@
         observeSample(msg.before).then((result) => sendResponse({ result }));
         return true;
       }
+      case "formStructure": sendResponse({ result: formStructure() }); return true;
       default:
         return false; // not ours -- let the visual-indicator content script handle it
     }

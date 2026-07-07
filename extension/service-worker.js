@@ -1382,6 +1382,14 @@ const handlers = {
     const approach = (a.approach || []).map((s) => `- ${s}`).join("\n");
     return text(`Plan (auto-approved by the v1.0 engine):\nDomains: ${domains}\n${approach}`);
   },
+  // Internal read for form_fill (ADR-0036 D5, PINS.md SS12): NOT in the tool REGISTRY, so models
+  // cannot call it -- only form_fill's handler dials it via browser.call. Returns the value-free
+  // form identity (controls + submit candidates) as raw JSON, no prose rendering.
+  async form_structure_internal(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    const r = await content(tabId, { type: "formStructure" });
+    return text(JSON.stringify((r && r.result) || { forms: [], formless: [] }, null, 2));
+  },
 };
 
 async function dispatch(id, tool, args) {

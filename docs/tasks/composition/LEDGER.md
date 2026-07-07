@@ -5,8 +5,10 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C9 is NEXT.** Baseline: dev @ 6c5d351 + this batch through C8. C1..C8 committed. C9 is HALT
-(formStructure content-script read; C10's form_fill depends on it).
+**C10 is NEXT.** C1..C9 committed. Post-C8 reconciliation is DONE (8e51f57 + bf070c6): dry_run
+ratified as landed (ADR-0035 D8 re-amended, navigate landing caveat implemented), idempotency
+not taken (D9 superseded by ADR-0040, Proposed), C10/PINS/LIVE-VERIFY revised to match --
+form_fill ships WITHOUT an idempotency_key. Read C10's revised header before executing.
 
 ## Log
 
@@ -355,3 +357,17 @@ Template per task:
     `would_allow`.
   - D4: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
     reason as C1's D3). No source/test content changed by this.
+
+### C9: formStructure identity read -- DONE (committed by the review session)
+- Baseline unchanged (no Rust; node gate unchanged at 30 -- no DOM-testable surface).
+- Found drafted-but-uncommitted in the working tree during the post-C8 review; verified against
+  PINS SS12 line by line: forms/formless grouping with formIndex from 0, control fields
+  ref/type/label/placeholder/name/id/ariaLabel/disabled/readonly, label from label[for]/wrapping
+  label ONLY (not accessibleName), pinned submit-label list, visibility filter, refFor reuse,
+  `case "formStructure"` wired (content.js:825), SW `form_structure_internal` handler present
+  and NOT in the REGISTRY. Zero field-value reads (grep for `.value` over the added block: no
+  hits). Committed as-is by the reviewing frontier session.
+- Deviations: D1: authorship -- drafted by a prior session without a ledger entry or commit;
+  this entry reconstructs the record. D2: a bare `<button>` inside a form is caught by the
+  `type === "submit"` check because the DOM defaults button.type to "submit" -- noted as
+  correct-by-spec rather than an accident.
