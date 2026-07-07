@@ -306,6 +306,9 @@ pub fn apply_steps(label: &str, steps: &[SupervisorStep], dry_run: bool) {
 mod tests {
     use super::*;
 
+    // Only the Windows test below consumes this today; cfg-gate it so the non-Windows
+    // `-D dead-code` gate stays green until macOS/Linux step tests exist.
+    #[cfg(windows)]
     fn test_ctx() -> PlanCtx {
         PlanCtx {
             current_exe: PathBuf::from("/abs/ghostlight"),

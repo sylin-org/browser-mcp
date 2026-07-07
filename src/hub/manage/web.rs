@@ -24,7 +24,7 @@ use crate::hub::inbound::web::{decide_inbound_web_from, write_http_error};
 use crate::hub::manage::assets;
 use crate::hub::ServiceContext;
 use std::net::SocketAddr;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// Every path this router recognizes, regardless of method -- distinguishes a 404 ("no such
@@ -100,6 +100,20 @@ pub(crate) async fn route(
     // client's read returns a partial body.
     stream.flush().await.ok();
     stream.shutdown().await.ok();
+    // Lingering close (the rest of the truncation fix): flush+shutdown alone still truncated
+    // deterministically on the hosted Windows CI runners -- closing the socket right after the
+    // FIN can abort delivery of the response tail. Wait, bounded, for the client to finish
+    // reading and close its end (read returns 0) before this socket drops.
+    let mut scratch = [0u8; 256];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match stream.read(&mut scratch).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await;
     Ok(())
 }
 
