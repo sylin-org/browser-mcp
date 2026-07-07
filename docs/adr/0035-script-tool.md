@@ -3,7 +3,9 @@
 - Status: Accepted
 - Date: 2026-07-06 (amended same day: pre-implementation correction pass against the live
   pipeline -- reference resolution re-grounded on structured results, denial/hold visibility
-  fixed, parent audit flipped, dry-run + idempotency + budget added)
+  fixed, parent audit flipped, dry-run + idempotency + budget added. Re-amended same day,
+  post-implementation: Decision 8 re-grounded as a pipeline-level parameter matching the landed
+  code; Decision 9 not taken in v1 and superseded by ADR-0040, Proposed)
 
 ## Relationship to other decisions
 
@@ -113,7 +115,6 @@ workflow is "read the form, then fill it", the answer is `form_fill` (ADR-0036),
     ],
     "onError": "stop",
     "dry_run": false,
-    "idempotency_key": "dl-report-2026-07-06",
     "budget_ms": 90000
   }
 }
@@ -124,14 +125,14 @@ workflow is "read the form, then fill it", the answer is `form_fill` (ADR-0036),
 - `steps` -- the ordered array; each step has `tool` and `args`. `minItems: 1`, `maxItems: 20`.
 - `onError` -- `"stop"` (default) or `"continue"`. Under `"stop"`, prior results are returned.
 - `dry_run` -- Decision 8. Default false.
-- `idempotency_key` -- Decision 9. Optional.
 - `budget_ms` -- total wall-clock budget for the whole script. Registered in the typed config
   registry as `script.budget_ms` (default 120000; hard cap 480000; org-lockable like any key);
   the argument may lower but never exceed the configured value. On exhaustion, the current step
   finishes its own `TOOL_TIMEOUT` window, remaining steps report `not_run`, and the compact
   result returns what completed. Rationale: 20 steps x 60s is a 20-minute single `tools/call`;
   MCP clients time out far earlier, and a server still executing Write steps after the client
-  gave up invites a retry and a double-submit. The budget plus Decision 9 closes that hazard.
+  gave up invites a retry and a double-submit. The budget narrows that hazard; closing it fully
+  is ADR-0040's mandate (Proposed).
 
 ### Decision 4: compact results with honest per-step status
 
@@ -218,43 +219,58 @@ faithful.
 - **The parent `script` call gets one record**: tool `script`, requirement-free allow, with a
   fresh `batch_id` (GUID).
 - **Each step's record** carries the step's own tool name and the standard shape, plus three
-  additive keys after `capability_origin` (old-record byte-order preserved):
+  additive keys appended at the END of the record (after `held` today; ADR-0034 Decision 8's
+  `transport`/`capability_origin` had not landed as of this amendment and append after these
+  whenever they do; old-record byte-order preserved):
   `orchestrator: "script"`, `batch_id` (the parent's GUID), `step` (1-indexed).
 - One script call is therefore fully reconstructable from the stream: one parent + N correlated
   step records, each step record still representing one actual tool execution.
 
 ### Decision 8: `dry_run` -- per-step governance verdicts without execution
 
-`dry_run: true` runs every step through the full decision machinery -- registry lookup, schema
-validation, reference-syntax validation (values cannot resolve, but grammar is checked),
-governance authorize, sacred check -- and dispatches NOTHING. The result mirrors the compact
-shape with `status: "would_allow" | "would_deny" | "indeterminate"` per step, plus the denial
-text a real run would produce.
+As re-grounded by the implementation (the landed design is BETTER than the original
+script-layer evaluator, and this amendment ratifies it): dry-run is a PIPELINE parameter, not a
+script-internal simulation. `run_tool_call` carries a `dry_run` flag; a dry step runs the REAL
+decision path -- registry lookup, schema validation, hold check, sacred check, and the genuine
+governance verdict (via the audit-free decision port, so no step record is written) -- and at
+the dispatch boundary returns the verdict instead of sending a tool frame. Verdicts cannot
+drift from live behavior because they ARE live behavior; a denial's text is the exact text a
+live call would produce.
 
-- Dry-run may probe tab URLs (read-only tab metadata, the same probe the sacred/grant checks
-  use) but never sends a tool frame to the page.
-- `indeterminate` covers verdicts that depend on execution-time facts (a `navigate` landing
-  after redirects, a reference whose value determines the touched resource).
-- Audit: the parent record is written with the additive key `dry_run: true`; no step records
-  (nothing executed -- the absence is the honest signal, and the parent's flag disambiguates
-  "dry run" from "script that ran nothing").
+- Statuses: `would_allow` | `would_deny`. There is no `indeterminate`: every verdict is the
+  real pre-dispatch decision. The one execution-time dependency is named instead of encoded: a
+  dry verdict for a tool with a landing re-check (`navigate`) carries the suffix
+  `(pre-dispatch verdict; the post-redirect landing is checked live)` so the pre-flight map
+  never over-promises.
+- Under dry-run the interpreter never halts on a non-ok verdict: the point is the FULL map.
+- Dry-run may probe tab URLs (read-only tab metadata) but never sends a tool frame.
+- Audit: the parent record is written with `dry_run: true` (stamped via the same side-channel
+  pattern as `batch_id`); no step records (nothing executed -- the absence is the honest
+  signal, and the parent's flag disambiguates "dry run" from "script that ran nothing").
+- The flag originates from the script tool's own arguments and flows to its steps;
+  `handle_tools_call` always passes `dry_run: false` for top-level calls.
 
 The strategic point: the worst governance experience is not denial, it is denial at step 7 of
 10 with the world half-mutated. Dry-run turns denial from a landmine into a map, and it is
 `policy simulate` exposed to the model -- the governance pillar and the delight pillar in one
 feature. No competitor can copy it without first having the governance layer.
 
-### Decision 9: `idempotency_key` -- retry safety for orchestrated calls
+### Decision 9: retry safety -- NOT TAKEN in v1; superseded by ADR-0040 (Proposed)
 
-Optional string, scoped per session (`SessionGuid`, key). The service keeps a small LRU
-(64 entries, 10-minute TTL) mapping keys to final results:
+The originally ratified design (an `idempotency_key` argument on `script`/`form_fill` backed by
+a service-scoped LRU with in-flight join) was NOT implemented, and the argument does not exist
+in any shipped schema. The implementation pass recorded the reasons (composition batch LEDGER,
+C8): a two-tool cache protects `script` and `form_fill` while every direct
+`computer(left_click)` and `form_input` carries the identical double-submit hazard unprotected
+-- partial coverage that teaches false confidence; and the correct placement is a pre-decision
+gate in the pipeline, covering EVERY tool call, exactly as Decision 8's dry-run flag proved
+out.
 
-- A repeat of a key whose script is STILL RUNNING blocks until the original completes and
-  returns the original's result. This is the true double-fire protection: client times out,
-  client retries, the retry joins the in-flight run instead of re-submitting a form.
-- A repeat within the TTL after completion returns the stored result with `"replayed": true`
-  injected into the compact result. No audit records are written on replay (nothing executed).
-- `form_fill` (ADR-0036) accepts the same argument with the same semantics.
+That critique is accepted as being about PLACEMENT, not about whether retry safety matters:
+the client-timeout -> automatic-retry -> duplicate-submit sequence remains a real, open hazard
+(narrowed but not closed by `budget_ms`). ADR-0040 (Proposed) owns the rebuild as a
+pipeline-level deduplication gate. Until it lands, an interrupted mutating call fires once and
+a re-fire is the model's or user's explicit choice.
 
 ## Consequences
 
@@ -265,8 +281,9 @@ Optional string, scoped per session (`SessionGuid`, key). The service keeps a sm
   with escaping, and fails loudly and correctively instead of silently misfiring.
 - Denied/held steps are visible AS denied/held in the compact result; a script can never
   report success for work governance stopped.
-- The client-timeout/retry double-submit hazard is closed (budget + idempotency).
-- Dry-run gives models a pre-flight map of what a script would be allowed to do.
+- The client-timeout/retry double-submit hazard is narrowed (budget); closing it is ADR-0040.
+- Dry-run gives models a pre-flight map of what a script would be allowed to do, from the real
+  decision path.
 
 ### Cost
 
@@ -276,7 +293,7 @@ Optional string, scoped per session (`SessionGuid`, key). The service keeps a sm
 - The reference resolver (grammar, path walk, array indexing, `$$` escape, corrective errors).
 - The script interpreter (iterate, resolve, call `run_tool_call`, collect, budget accounting).
 - The compact formatter (status mapping, truncation budgets, structured passthrough).
-- The idempotency LRU and the `script.budget_ms` config key.
+- The `script.budget_ms` config key and the dry-run plumbing through `run_tool_call`.
 - Three additive audit keys plus `dry_run`, and their shared-format doc section.
 
 ### Preserved invariants

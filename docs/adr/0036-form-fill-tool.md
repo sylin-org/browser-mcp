@@ -3,7 +3,9 @@
 - Status: Accepted
 - Date: 2026-07-06 (amended same day: pre-implementation correction pass -- matcher hardened
   for a Write-class tool, the authorization contradiction resolved, a dedicated form-structure
-  read replaces the read_page premise, audit shape pinned, multi-form scoping pinned)
+  read replaces the read_page premise, audit shape pinned, multi-form scoping pinned.
+  Re-amended same day, post-C8: `idempotency_key` removed -- ADR-0035 D9 not taken, retry
+  safety re-homed in ADR-0040, Proposed)
 
 ## Relationship to other decisions
 
@@ -87,8 +89,7 @@ writing into the WRONG field:
       "Password": "hunter2",
       "Remember me": true
     },
-    "submit": true,
-    "idempotency_key": "login-acme-2026-07-06"
+    "submit": true
   }
 }
 ```
@@ -97,8 +98,9 @@ writing into the WRONG field:
 - `fields` -- the semantic map. Keys are human-readable field identifiers; values are string,
   boolean, or number (the same types `form_input` accepts). `minProperties: 1`.
 - `submit` -- `true` (click submit after filling) or `false`/omitted (fill only).
-- `idempotency_key` -- optional; exactly ADR-0035 Decision 9's semantics (in-flight joins,
-  10-minute replay window, `"replayed": true` marker). A retried login must not double-submit.
+- Retry safety: v1 ships WITHOUT an `idempotency_key` (ADR-0035 Decision 9 as re-amended --
+  not taken; the pipeline-level rebuild is ADR-0040, Proposed). A `form_fill` fires once; a
+  re-fire is an explicit choice.
 
 ### Decision 3: the result shape
 

@@ -47,6 +47,7 @@ history live here.
 | [0037](0037-page-state-awareness.md) | Page-state awareness: `wait_for`, consequence digests on mutating actions, `read_page` diff mode, stale-ref corrective errors | Accepted |
 | [0038](0038-structured-results.md) | Structured results (`structuredContent` + `outputSchema`, per-tool vocabulary) and cost-aware guidance; substrate for ADR-0035 references | Accepted |
 | [0039](0039-saved-scripts-governed-artifacts.md) | Saved scripts as governed artifacts: named, parameterized, hash-bound approved workflows | Proposed |
+| [0040](0040-pipeline-idempotency-gate.md) | Pipeline-level idempotency gate: universal pre-decision dedup with in-flight join (supersedes ADR-0035 D9's two-tool cache, not taken) | Proposed |
 
 ## Conventions
 

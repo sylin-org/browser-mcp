@@ -301,7 +301,7 @@ Template per task:
   - D6: gate commands run with `CARGO_TARGET_DIR` pointed at an isolated scratch directory (same
     reason as C1's D3). No source/test content changed by this.
 
-### C8: script dry_run verdicts (idempotency dropped) -- DONE (pending commit)
+### C8: script dry_run verdicts (idempotency dropped) -- DONE (c69f432)
 - Baseline 615 -> 617 (cargo); node gate unchanged at 30.
 - **Design departure from ADR-0035 D8/D9 and PINS SS8:** the idempotency cache was dropped entirely,
   and dry_run was re-grounded as a pipeline-level parameter rather than a script-layer guess. The

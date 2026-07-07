@@ -48,23 +48,31 @@ A new browser-capability tool: wait until a condition holds on the page AND the 
 { "tool": "wait_for", "args": { "tabId": 0, "text": "Results", "state": "visible", "timeout_ms": 10000, "min_ms": 0 } }
 ```
 
-- **Condition:** exactly one of `selector` (CSS) or `text` (visible-text substring). Both may
-  be omitted (bare settle-wait -- see Decision 5).
+- **Condition:** at most one of `selector` (CSS) or `text` (visible-text substring). Both may
+  be omitted (bare settle-wait -- see Decision 6).
 - **`state`:** `"visible"` (default; present AND visually rendered), `"present"` (in the DOM),
-  `"gone"` (absent or hidden), `"settled"` (page mutation rate has decayed below an adaptive
-  threshold for N consecutive windows -- see Decision 5). A condition (`text`/`selector`) plus
-  `"settled"` is allowed: the condition must match AND the page must be settled.
+  `"gone"` (absent or hidden), `"settled"` (the explicit spelling of the bare settle-wait,
+  valid only when `selector`/`text` are omitted; the detector is Decision 5). A condition plus
+  settlement needs no special state: every `wait_for` already waits for BOTH its condition and
+  settlement by default (Decision 6).
 - **`timeout_ms`:** default 10000, hard cap 30000 (inside the 60s `TOOL_TIMEOUT` with margin).
 - **`min_ms`:** default 0; a minimum elapsed time the wait must observe before returning,
   regardless of whether the condition matched and the page settled. A `min_ms` of 3000 means
   "even if the page settled at 2s, do not return until 3s" -- giving a late hydrating widget
-  its window. Under `timeout_ms`, always.
+  its window. Under `timeout_ms`, always; `min_ms` greater than `timeout_ms` is a corrective
+  validation error.
+- **`settle`:** default `true` (Decision 6); `false` opts out of the settlement gate so the
+  explicit condition alone decides.
 - **RAWX class:** `Read` (it observes the DOM, touches nothing).
 - **Mechanism:** content-script `MutationObserver` with a 250ms polling fallback (observers
   miss visibility-only changes from CSS/layout).
-- **Result** (structured per ADR-0038): `{ "found": true, "elapsed_ms": 640, "ref": "ref_12" }`
-  -- when the condition matched an element, its ref is minted and returned, so
-  `wait_for -> computer(left_click, $prev.ref)` chains directly in a script.
+- **Result** (structured per ADR-0038): `{ "found": true, "settled": true, "elapsed_ms": 640,
+  "ref": "ref_12", "peak_mutations": 450, "final_rate": 3 }` -- when the condition matched an
+  element, its ref is minted and returned, so `wait_for -> computer(left_click, $prev.ref)`
+  chains directly in a script. The settle diagnostics (`settled`, `peak_mutations`,
+  `final_rate`) are present whenever the settle gate ran (omitted under `settle: false`); a
+  bare settle-wait reports `found: true` on settlement. This is the ONE result shape; Decision
+  5's diagnostics land in these same fields.
 - **Timeout is a ToolError** (isError), with a corrective message reporting what WAS on the
   page (title, a short excerpt near the closest fuzzy match if any). Failing loudly matters:
   under `script`'s `onError: "stop"`, a timed-out wait halts the chain instead of letting
@@ -89,8 +97,8 @@ alert appeared: "Changes saved"
   only -- no node retention), newly appeared `role="alert"` / `role="status"` text (first
   200 chars), newly appeared `role="dialog"` presence.
 - **Format pinned:** a single `observation:` block, at most 400 chars, appended to the
-  existing confirmation text. Omitted entirely when nothing observable happened ("no observable
-  change" is itself reported, because a silent click is a signal the model needs).
+  existing confirmation text. Always present: when nothing observable happened it reads
+  `observation: no observable change`, because a silent click is a signal the model needs.
 - **Structured twin** under ADR-0038 for the same fields.
 - **Cost accepted:** +300ms latency on mutating actions. That is the price of killing the
   verify round-trip, which costs seconds and thousands of tokens. Screenshot-returning actions
@@ -137,7 +145,7 @@ that teaches, which is the cheapest reliability feature that exists.
 rate-of-change decay evaluator over the mutation counter that Decision 2 already mandates. No
 content diffing, no tree walks -- just the per-window mutation count, which is free.
 
-**Window size:** 500ms (reuses the ADR-0037 poll interval).
+**Window size:** 500ms (two 250ms condition polls per window).
 
 **Adaptive threshold:** `T = max(floor(peak_rate * 0.05), 3)` where `peak_rate` is the highest
 mutation count seen across all windows so far. The threshold adapts to the page: a heavy
@@ -158,8 +166,8 @@ actually here."
 model falls back to `wait_for(text: "...")` or `computer(wait)` -- the existing escape hatches.
 A layout-stability check (Chrome's LCP / web-vitals CLS) is a possible v2.
 
-**Result enrichment:** when the settle detector fires, the result carries diagnostic fields:
-`{ "settled": true, "elapsed_ms": 2500, "peak_mutations": 450, "final_rate": 3 }`. The model
+**Result enrichment:** the settle diagnostics ride in Decision 1's single result shape
+(`settled`, `peak_mutations`, `final_rate`). The model
 sees "this was a heavy page that settled in 2.5s" vs. "this was a light page" -- building its
 own mental model of the site for future visits.
 

@@ -51,7 +51,7 @@ in the service worker -- never re-derived from each other.
 | `tabs_context_mcp` | `{ "mcpGroupId", "tabs": [{ "tabId", "title", "url" }] }` |
 | `tabs_create_mcp` | `{ "tabId", "tabs": [{ "tabId", "title", "url" }] }` (`tabId` = the created tab) |
 | `navigate` | `{ "tabId", "url", "title" }` (final, post-redirect landing) |
-| `wait_for` | `{ "found", "elapsed_ms", "ref"? }` (ADR-0037 Decision 1) |
+| `wait_for` | `{ "found", "elapsed_ms", "ref"?, "settled"?, "peak_mutations"?, "final_rate"? }` (ADR-0037 Decisions 1, 5, 6) |
 | `form_fill` | its full result object (ADR-0036 Decision 3) |
 | `script` | its compact result object (ADR-0035 Decision 4) |
 | mutating `computer` actions / `form_input` | the digest twin: `{ "url_changed"?, "title_changed"?, "focus"?, "mutations", "alert"?, "dialog_appeared"? }` (ADR-0037 Decision 2) |
