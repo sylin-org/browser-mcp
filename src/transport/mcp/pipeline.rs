@@ -370,10 +370,16 @@ pub(crate) async fn run_tool_call(
     // accepted" -- and drop the audit scope without `complete()` (no step record: nothing ran).
     // The verdict text names the tool and action so the model can read the pre-flight map.
     if dry_run {
-        let label = match action {
+        let mut label = match action {
             Some(a) => format!(r#"{} ({}) would be accepted"#, descriptor.tool, a),
             None => format!("{} would be accepted", descriptor.tool),
         };
+        // ADR-0035 Decision 8 (amended): a dry verdict for a tool with a landing re-check is a
+        // PRE-DISPATCH verdict only -- a live call's post-redirect landing can still be denied.
+        // Saying so keeps the pre-flight map honest instead of over-promising.
+        if descriptor.post_dispatch == directory::PostDispatch::NavigateLanding {
+            label.push_str(" (pre-dispatch verdict; the post-redirect landing is checked live)");
+        }
         return CallOutcome::Success {
             result: crate::transport::mcp::types::text_content(label),
         };
