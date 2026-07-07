@@ -5,8 +5,9 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C11 is NEXT (SKIP allowed).** C1..C10 committed. C10 landed form_fill exactly per PINS SS13's
-revised (no-idempotency-key) header. Read C11's task file, then PINS SS16, before executing.
+**Batch complete.** C1..C11 all committed (none skipped). Next step is the operator-run
+`LIVE-VERIFY.md` (13 pinned observations) -- the executor does not attempt it (BOOTSTRAP
+completion criteria).
 
 ## Log
 
@@ -495,3 +496,38 @@ Template per task:
     directory (reused per BOOTSTRAP's practical note, already warm from this lineage), same reason
     as C1's D3 (Chrome's live native-messaging host holds `target/debug/ghostlight.exe` open). No
     source/test content changed by this.
+
+### C11: cost-aware coaching in the browser capability guide -- DONE (pending commit)
+
+- Baseline 625 -> 626 (cargo); node gate unchanged at 30 (no extension JS touched).
+- `src/browser/directory.rs`: `AgentGuide` gained a fifth field, `cost_notes: &'static str`
+  (ADR-0031 Decision 1's original four -- summary/workflow/flow/denials -- untouched), populated
+  with PINS SS16's exact `"Cost notes: ..."` paragraph, four sentences verbatim; `agent_guide_text()`
+  appends it last (`"{summary}\n\n{workflow}\n\nTypical flow: {flow}\n\n{denials}\n\n{cost_notes}"`),
+  so it reaches `initialize.instructions` through the SAME composition path every other guide field
+  already uses -- no new surface, no change to any tool's own `description`/`inputSchema`.
+- Test: grepping `instructions` under `tests/` found no existing test pinning the composed guide
+  string (the closest relative, `tests/tool_schema_fidelity.rs::agent_guide_is_present_with_all_
+  four_non_empty_fields`, checks the four ADR-0031 fields directly, not the rendered
+  `initialize.instructions` string), so added the task's own named fallback:
+  `tests/tool_advertisement.rs::instructions_carry_cost_notes` -- asserts
+  `ghostlight::mcp::tools::agent_guide_text()` contains `"Cost notes:"` and the get_page_text
+  sentence's first eight words (`"get_page_text can return tens of thousands of tokens"`).
+- Deviations:
+  - D1: added `cost_notes` as a NEW field on `AgentGuide` (composed last) rather than
+    concatenating the paragraph into the existing `denials` field's string constant: keeps the
+    four ADR-0031 Decision 1 fields' own content and every one of their existing assertions
+    (`text.contains(AGENT_GUIDE.denials)`, etc.) byte-identical, while still landing the paragraph
+    in the exact composed string the task requires. Not itself named by the task (which only says
+    "append... to the guide text"), but the natural, minimal-surface way to do so without
+    mutating an existing field's semantics.
+  - D2: gate commands run with `CARGO_TARGET_DIR` pointed at the isolated `gl-review-target`
+    scratch directory, same reason as every prior task's D3/D7-equivalent note.
+
+## Batch summary (C1..C11)
+
+All eleven tasks landed; none were skipped. `tools/list` advertises 17 tools in PINS SS4's final
+order (13 trained + wait_for, script, form_fill, explain). ADR-0035 Decision 9 (idempotency) was
+NOT taken (re-amended post-C8; the future rebuild is ADR-0040, Proposed) -- this is a ratified
+scope reduction, not an unfinished task. `LIVE-VERIFY.md`'s 13 pinned observations are the
+operator's next step; the executor does not attempt them.

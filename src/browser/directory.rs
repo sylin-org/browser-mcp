@@ -1103,33 +1103,44 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
 ];
 
-/// The agent onboarding guide (ADR-0031 Decision 1, ADR-0034 Decision 6): the four prose fields
-/// served at handshake in `initialize.instructions`. Each capability contributes its own guide;
-/// the registry composes them. Today only the browser capability exists.
+/// The agent onboarding guide (ADR-0031 Decision 1, ADR-0034 Decision 6): the prose fields served
+/// at handshake in `initialize.instructions`. Each capability contributes its own guide; the
+/// registry composes them. Today only the browser capability exists. `cost_notes` (C11, ADR-0038
+/// Decision 5, PINS.md SS16) is a fifth, capability-level field appended after `denials`: unlike
+/// the other four (summary/workflow/flow/denials, ADR-0031 Decision 1's original set), it teaches
+/// cost discipline across several tools at once rather than the workflow contract, but composes
+/// into the exact same `initialize.instructions` string.
 pub const AGENT_GUIDE: AgentGuide = AgentGuide {
     summary: "Ghostlight drives the user's own authenticated browser. You observe and act on the web pages they're already logged into, in an isolated Ghostlight tab group separate from their own tabs. Default (no policy) is unrestricted; a policy can scope what's allowed.",
     workflow: "BEFORE ANYTHING ELSE: GET A tabId. Every tool below that touches a page requires a `tabId` (a number) -- it is required, not optional. Get one with tabs_context_mcp (pass createIfEmpty: true to create the group if none exists; usually your first call) or tabs_create_mcp (open a new tab). Then navigate (tabId + url) to go somewhere. COST DISCIPLINE: computer screenshot and zoom return large images costing many tokens; prefer read_page (structured tree) or get_page_text (plain text) when you only need structure or text, and screenshot only when you need to see layout.",
     flow: "tabs_context_mcp -> navigate -> read (read_page or get_page_text or computer screenshot) -> act (computer or form_input) -> re-read.",
     denials: "If a call is denied you'll see `Denied (D-xxxxxxxx): ...`. Call `explain` (no arguments) to see what's permitted in this session; hand the denial id to the policy administrator.",
+    cost_notes: "Cost notes: get_page_text can return tens of thousands of tokens on document-heavy pages; prefer find for targeted lookups and read_page filter interactive for form work. A screenshot costs roughly 1,600 tokens; prefer read_page or find when you need targets rather than appearance. read_page full is large on complex pages; filter interactive is dramatically smaller, and diff true returns only changes since your last read. script steps still cost a browser round-trip each; use wait_for between navigation and reads.",
 };
 
-/// The agent onboarding guide's four prose fields (ADR-0031 Decision 1).
+/// The agent onboarding guide's prose fields (ADR-0031 Decision 1; `cost_notes` added by C11).
 #[derive(Clone, Copy)]
 pub struct AgentGuide {
     pub summary: &'static str,
     pub workflow: &'static str,
     pub flow: &'static str,
     pub denials: &'static str,
+    pub cost_notes: &'static str,
 }
 
 /// Render the agent onboarding guide into the single string MCP's `initialize.instructions`
-/// field expects (ADR-0031 Decision 1). The four fields are concatenated with clear separators.
-/// Served once at handshake, before any tool call, so any model gets the workflow contract
-/// without having to derive it from per-tool descriptions.
+/// field expects (ADR-0031 Decision 1; `cost_notes` appended last by C11, ADR-0038 Decision 5).
+/// The fields are concatenated with clear separators. Served once at handshake, before any tool
+/// call, so any model gets the workflow contract without having to derive it from per-tool
+/// descriptions.
 pub fn agent_guide_text() -> String {
     format!(
-        "{}\n\n{}\n\nTypical flow: {}\n\n{}",
-        AGENT_GUIDE.summary, AGENT_GUIDE.workflow, AGENT_GUIDE.flow, AGENT_GUIDE.denials
+        "{}\n\n{}\n\nTypical flow: {}\n\n{}\n\n{}",
+        AGENT_GUIDE.summary,
+        AGENT_GUIDE.workflow,
+        AGENT_GUIDE.flow,
+        AGENT_GUIDE.denials,
+        AGENT_GUIDE.cost_notes
     )
 }
 

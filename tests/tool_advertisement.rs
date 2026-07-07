@@ -182,3 +182,17 @@ fn empty_grants_manifest_advertises_exactly_the_requires_empty_set() {
 
     std::fs::remove_file(&manifest).ok();
 }
+
+/// C11 (ADR-0038 Decision 5, PINS.md SS16): the composed guide text -- the exact surface that
+/// reaches `initialize.instructions` -- carries the `Cost notes:` paragraph verbatim, and no test
+/// under `tests/` pinned the instructions/guide content before this one (grep `instructions`
+/// found nothing relevant), so this is the new test the task file names.
+#[test]
+fn instructions_carry_cost_notes() {
+    let text = ghostlight::mcp::tools::agent_guide_text();
+    assert!(text.contains("Cost notes:"), "{text}");
+    assert!(
+        text.contains("get_page_text can return tens of thousands of tokens"),
+        "{text}"
+    );
+}
