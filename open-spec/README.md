@@ -10,6 +10,7 @@ Apache-2.0 OR MIT so anyone may implement it freely.
 | Spec | What it is |
 |---|---|
 | [rawx-capability-model.md](rawx-capability-model.md) | The RAWX capability vocabulary (read, action, write, execute): a mechanism-independent, domain-neutral model for governing what an AI agent is allowed to do. `rwx` for agents. |
+| [rawx-owasp-agentic-mapping.md](rawx-owasp-agentic-mapping.md) | An honest mapping of RAWX and the governance-overlay pattern onto the OWASP agentic threat taxonomy and the 2026 UW agentic-browser findings, including what a governance layer does NOT mitigate. |
 
 More will follow as parts of the design prove general enough to stand on their own
 (candidates: the resource-polarity grant format, the audit record schema, the layered

@@ -1,7 +1,8 @@
 # 0039. Saved scripts as governed artifacts
 
-- Status: Proposed (direction ratified 2026-07-06; implementation deferred until ADR-0035's
-  `script` has landed and real scripts exist to learn from)
+- Status: Accepted (direction ratified 2026-07-06; accepted 2026-07-07 by ADR-0041 Decision 4.
+  Implementation still follows its own design pass and batch, sequenced after the origin-flow
+  provenance key lands, so the retrospective path reads the provenance-enriched audit stream)
 
 ## Relationship to other decisions
 
