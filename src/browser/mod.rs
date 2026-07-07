@@ -24,6 +24,7 @@
 
 pub mod advertise;
 pub mod directory;
+pub mod form_match;
 pub mod pattern;
 pub mod polarity;
 pub mod redact;

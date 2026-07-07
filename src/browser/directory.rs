@@ -143,8 +143,8 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 16 descriptors (the 13 browser tools plus `wait_for`, `script`, and
-/// `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
+/// The tool registry: 17 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
+/// and `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
@@ -977,6 +977,102 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
     },
     ToolDescriptor {
+        tool: "form_fill",
+        advertised_description: "Fill a form by field labels in one call. Provide fields as a map from a label, placeholder, or name attribute to the value (string, number, or boolean for checkboxes). Matching is case-insensitive and specificity-ordered; ambiguous keys are returned unmatched with candidates instead of guessed. submit:true clicks the form's own submit control after filling. Passwords are masked in the result. Falls back cleanly: anything unmatched can be filled with form_input using the refs in the result.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID the form lives in. Use tabs_context first if you don't have a valid tab ID."
+                },
+                "fields": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": { "type": ["string", "boolean", "number"] },
+                    "description": "Map from a field's label, placeholder, or name attribute to the value to set (string, number, or boolean for checkboxes)."
+                },
+                "submit": {
+                    "type": "boolean",
+                    "description": "Click the form's own submit control after filling. Default false (fill only)."
+                }
+            },
+            "required": ["tabId", "fields"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"fields":{"Email":"user@example.com","Remember me":true},"submit":true}"#,
+            returns: Some("Returns which fields were filled, any unmatched keys with candidates, and whether submit succeeded."),
+        }),
+        action_key: Some("submit"),
+        variants: &[
+            ActionVariant {
+                action: None,
+                requires: &[Capability::Read, Capability::Write],
+                directory_description:
+                    "Fill form fields by label in one call; matches keys to controls and fills them.",
+            },
+            ActionVariant {
+                action: Some("submit"),
+                requires: &[Capability::Read, Capability::Write, Capability::Action],
+                directory_description:
+                    "Fill form fields by label and click the form's own submit control.",
+            },
+        ],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::Local(crate::transport::mcp::form_fill::form_fill_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "filled": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string" },
+                                "ref": { "type": "string" },
+                                "value": {},
+                                "type": { "type": "string" }
+                            },
+                            "required": ["label", "ref", "type"]
+                        }
+                    },
+                    "unmatched": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": { "type": "string" },
+                                "candidates": { "type": "array" }
+                            },
+                            "required": ["key", "candidates"]
+                        }
+                    },
+                    "skipped": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string" },
+                                "ref": { "type": "string" },
+                                "reason": { "type": "string" }
+                            },
+                            "required": ["label", "reason"]
+                        }
+                    },
+                    "submitted": { "type": "boolean" },
+                    "submit_ref": { "type": "string" },
+                    "observation": { "type": "string" },
+                    "duration_ms": { "type": "number" }
+                },
+                "required": ["filled", "unmatched", "skipped", "submitted", "duration_ms"]
+            })
+        }),
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -1067,7 +1163,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 16 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 17 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1085,13 +1181,17 @@ pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
 pub fn requires(tool: &str, action: Option<&str>) -> Option<&'static [Capability]> {
     let row = descriptor(tool)?;
     match row.action_key {
-        Some(_) => {
-            let action = action?;
-            row.variants
-                .iter()
-                .find(|variant| variant.action == Some(action))
-                .map(|variant| variant.requires)
-        }
+        // `form_fill` (C10) also carries an `action_key` (`"submit"`), but unlike `computer` its
+        // `action: None` variant is a real, reachable row (the no-submit default) rather than an
+        // impossible state -- so the lookup matches on `action` DIRECTLY (`None` finds the
+        // `action: None` variant when one exists) instead of failing closed the moment `action`
+        // is `None`. This is a strict widening: `computer` has no `action: None` variant at all,
+        // so `requires("computer", None)` still misses exactly as before.
+        Some(_) => row
+            .variants
+            .iter()
+            .find(|variant| variant.action == action)
+            .map(|variant| variant.requires),
         None => row.variants.first().map(|variant| variant.requires),
     }
 }
@@ -1170,14 +1270,22 @@ mod tests {
             .collect();
         assert_eq!(
             with_action_key.len(),
-            1,
-            "exactly one descriptor may carry an action_key"
+            2,
+            "computer and form_fill (C10) are the only descriptors carrying an action_key"
         );
-        assert_eq!(with_action_key[0].tool, "computer");
-        assert_eq!(with_action_key[0].action_key, Some("action"));
+        let computer = with_action_key
+            .iter()
+            .find(|d| d.tool == "computer")
+            .expect("computer present");
+        assert_eq!(computer.action_key, Some("action"));
+        let form_fill = with_action_key
+            .iter()
+            .find(|d| d.tool == "form_fill")
+            .expect("form_fill present");
+        assert_eq!(form_fill.action_key, Some("submit"));
 
         let declared_actions = declared_computer_actions_in_order();
-        let computer_actions: Vec<String> = with_action_key[0]
+        let computer_actions: Vec<String> = computer
             .variants
             .iter()
             .map(|variant| {
@@ -1190,7 +1298,10 @@ mod tests {
         assert_eq!(computer_actions, declared_actions);
         assert_eq!(computer_actions.len(), 13);
 
-        for row in REGISTRY.iter().filter(|row| row.tool != "computer") {
+        for row in REGISTRY
+            .iter()
+            .filter(|row| row.tool != "computer" && row.tool != "form_fill")
+        {
             assert_eq!(
                 row.variants.len(),
                 1,
@@ -1203,9 +1314,14 @@ mod tests {
                 row.tool
             );
         }
+        assert_eq!(
+            form_fill.variants.len(),
+            2,
+            "form_fill carries two variants"
+        );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 28);
+        assert_eq!(total_variants, 30);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1250,6 +1366,12 @@ mod tests {
             ("update_plan", None, &[]),
             ("wait_for", None, &[Capability::Read]),
             ("script", None, &[]),
+            ("form_fill", None, &[Capability::Read, Capability::Write]),
+            (
+                "form_fill",
+                Some("submit"),
+                &[Capability::Read, Capability::Write, Capability::Action],
+            ),
             ("explain", None, &[]),
         ];
 
@@ -1291,6 +1413,20 @@ mod tests {
             requires("read_page", Some("left_click")),
             Some(&[Capability::Read][..]),
             "action is ignored for non-computer tools"
+        );
+    }
+
+    /// C10 (PINS.md SS13, ADR-0036 Decision 4): `form_fill`'s two variants differ by whether
+    /// `submit` was requested, per the boolean-action-key mapping (PINS.md SS13 point 1).
+    #[test]
+    fn form_fill_requires_vary_by_submit_variant() {
+        assert_eq!(
+            requires("form_fill", None),
+            Some(&[Capability::Read, Capability::Write][..])
+        );
+        assert_eq!(
+            requires("form_fill", Some("submit")),
+            Some(&[Capability::Read, Capability::Write, Capability::Action][..])
         );
     }
 
@@ -1448,6 +1584,14 @@ mod tests {
                 "script",
                 None,
                 ResourceShape::DomainLess,
+                true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "form_fill",
+                Some("submit"),
+                ResourceShape::TabScoped,
                 true,
                 false,
                 PostDispatch::None,

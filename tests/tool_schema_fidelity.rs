@@ -53,8 +53,8 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         .collect();
     assert_eq!(
         names.len(),
-        16,
-        "13 trained tools plus wait_for, script, and explain"
+        17,
+        "13 trained tools plus wait_for, script, form_fill, and explain"
     );
     assert_eq!(
         names[..13],
@@ -62,11 +62,12 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         "the 13 trained tools must stay byte-identical and in order"
     );
     assert_eq!(names[13], "wait_for", "the 14th tool is wait_for");
+    assert_eq!(names[14], "script", "the 15th tool is script");
     assert_eq!(
-        names[14], "script",
-        "the 15th tool is script, immediately before explain"
+        names[15], "form_fill",
+        "the 16th tool is form_fill, immediately before explain"
     );
-    assert_eq!(names[15], "explain", "explain stays positioned last");
+    assert_eq!(names[16], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -104,8 +105,8 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        16,
-        "no tool other than wait_for, script, and explain was added to the sacred fixture"
+        17,
+        "no tool other than wait_for, script, form_fill, and explain was added to the sacred fixture"
     );
 }
 
@@ -318,7 +319,7 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
 
 /// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
 /// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
-/// each is a JSON-Schema object. C4 adds `wait_for`; C7 adds `script`.
+/// each is a JSON-Schema object. C4 adds `wait_for`; C7 adds `script`; C10 adds `form_fill`.
 #[test]
 fn output_schemas_present_exactly_where_declared() {
     let with_schema: Vec<String> = tools()
@@ -334,7 +335,8 @@ fn output_schemas_present_exactly_where_declared() {
             "navigate",
             "find",
             "wait_for",
-            "script"
+            "script",
+            "form_fill"
         ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );

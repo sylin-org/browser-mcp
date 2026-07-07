@@ -5,10 +5,8 @@ A fresh executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-**C10 is NEXT.** C1..C9 committed. Post-C8 reconciliation is DONE (8e51f57 + bf070c6): dry_run
-ratified as landed (ADR-0035 D8 re-amended, navigate landing caveat implemented), idempotency
-not taken (D9 superseded by ADR-0040, Proposed), C10/PINS/LIVE-VERIFY revised to match --
-form_fill ships WITHOUT an idempotency_key. Read C10's revised header before executing.
+**C11 is NEXT (SKIP allowed).** C1..C10 committed. C10 landed form_fill exactly per PINS SS13's
+revised (no-idempotency-key) header. Read C11's task file, then PINS SS16, before executing.
 
 ## Log
 
@@ -371,3 +369,129 @@ Template per task:
   this entry reconstructs the record. D2: a bare `<button>` inside a form is caught by the
   `type === "submit"` check because the DOM defaults button.type to "submit" -- noted as
   correct-by-spec rather than an accident.
+
+### C10: form_fill -- semantic form interaction by label -- DONE (pending commit)
+
+- Baseline 617 -> 625 (cargo); node gate unchanged at 30 (no extension JS touched by this task).
+- `src/browser/form_match.rs` (pure, SPDX Apache-2.0 OR MIT): `Control`/`SubmitCandidate`/`Form`/
+  `FormStructure` (serde types mirroring PINS SS12's `formStructure` shape); `match_fields(keys,
+  structure) -> MatchOutcome` per SS13 -- normalization (casefold/trim/collapse whitespace), tiers
+  (exact > prefix (source starts with key) > substring (either contains)), source priority
+  (label > placeholder > name/id > aria-label) breaking a same-tier tie, longest-normalized-key-
+  first resolution with single consumption per control, a substring-only tie across distinct
+  controls reported `unmatched` with candidates, an exact/prefix tie resolved to document order.
+  Multi-form scoring (Decision 8): each form (plus `formless` when non-empty) is matched
+  independently and scored `2*exact + 1*other`; the highest score wins (ties favor the lower
+  `formIndex`, `formless` losing every tie against a real form); keys that matched only in a
+  non-winning pool surface in that pool's own `unmatched`. 4 inline tests: the three SS13 literal
+  oracles (`specificity_and_single_consumption`, `substring_tie_goes_unmatched`,
+  `exact_on_name_attr_beats_prefix_on_label`) plus `form_scoring_picks_majority_form` (SS13
+  describes this scenario in prose only, not a literal fixture; built a two-form fixture matching
+  the described shape).
+- `src/transport/mcp/form_fill.rs` (SPDX Apache-2.0 OR MIT): the `Handler::Local` entry point
+  (post-grant dispatch position, SS2 -- `form_fill`'s `action:None` variant requires `[Read,
+  Write]`, non-empty, so it is never free-local). Mints a `batch_id`; dials
+  `browser.call("form_structure_internal", {tabId})` directly (bypassing the registry, sanctioned
+  per SS13 since the internal read has no REGISTRY row), parses the JSON text back into
+  `FormStructure`; matches; fills each matched, fillable control (skipping file/disabled/readonly
+  with a `skipped` reason, aborting remaining matched fields with reason "held" the instant
+  `browser.held_for()` reports a hold) via `browser.call("form_input", ...)`; `submit: true` clicks
+  the winning form's first submit candidate via `browser.call("computer", {action:"left_click",
+  ...})`, lifting its consequence-digest `observation: ...` line (C5) into the result's own
+  `observation` field (prefix stripped; omitted when the digest reports no observable change).
+  Each internal dispatch opens its own `CallAudit` scope (`begin` + `orchestrated("form_fill",
+  batch, step)` + `attribute_grant(None)` + `complete()`), audited under its OWN mechanism name
+  (`form_structure` step 1, `form_input` per fill, `computer` for the submit click) -- never
+  re-entering `run_tool_call` (unlike `script`): the parent's ONE governance decision already
+  covers the whole interaction (ADR-0036 Decision 4), so internals dial `Browser::call` directly.
+  Result object per ADR-0036 Decision 3 (password masking `"********"`; `filled`/`unmatched`/
+  `skipped`/`submitted`/`submit_ref`/`observation`?/`duration_ms`), rendered as the pinned compact
+  text summary (`Filled {n}/{m} fields.` + one `{label} -> {type}` line per filled + optional
+  `unmatched: {keys}` + `submitted: {bool}`) plus identical `structuredContent`.
+- `src/browser/directory.rs`: new row before `explain` (`action_key: Some("submit")`, two variants
+  `[Read,Write]`/`[Read,Write,Action]`, `TabScoped`, `Handler::Local(form_fill::form_fill_handler)`,
+  `output_schema` Some, inputSchema/advertised_description/example exactly per SS13).
+  **`requires()` widened** (not itself named by the task, but load-bearing): the `Some(action_key)`
+  branch used to `let action = action?;` (failing closed the instant `action` was `None`), correct
+  while `computer` was the only `action_key`-bearing tool (every `computer` call carries a
+  required, schema-validated `action` string); `form_fill`'s `submit` is OPTIONAL, so a no-submit
+  call's `action` is `None` and must still resolve to the real `action:None` variant `[Read,
+  Write]`. Changed to `.find(|variant| variant.action == action)` directly (matching `None`
+  against a real `action:None` row when one exists) -- a strict widening: `computer` has no
+  `action:None` variant at all, so `requires("computer", None)` still misses exactly as before
+  (`absent_is_none_and_empty_is_some` unchanged and green).
+- `src/transport/mcp/pipeline.rs`: action extraction extracted into a new, unit-testable
+  `extract_action(action_key, args)` (PINS SS13 point 1): a string value passes through; `true`
+  maps to the action_key's own NAME (`form_fill`'s `submit: true` -> action `"submit"`); `false`/
+  absent/any other type -> `None`. `computer`'s string-valued `action` is byte-identical.
+- Cumulative tool-count/list sites updated to 17 tools (form_fill before `explain`): both
+  `directory.rs` inline tests (`registry_covers_the_declared_surface_exactly`'s `with_action_key`
+  now asserts 2 -- `computer` and `form_fill` -- `total_variants` 28->30;
+  `registry_requires_match_the_adr_table` and `per_tool_fields_match_the_adr_table` EXPECTED
+  arrays), `pipeline.rs`'s `pinned_explain_text` (+2 lines, "28 variants"->"30 variants" comment),
+  `tests/tool_schema_fidelity.rs` (name-order + count + `output_schemas_present_exactly_where_
+  declared`), `tests/all_open_golden.rs` (`GOLDEN_TOOL_NAMES`, 16->17), `tests/mcp_protocol.rs`,
+  `tests/tool_enforcement.rs` (count comment), `src/hub/outbound/mod.rs` (two `len()` sites).
+  `tests/hot_reload.rs`'s "expanded" (`[read,action,write]`) and "full_set" (all-open) lists gained
+  `form_fill` (its `[Read,Write]` variant is a subset of `[read,action,write]`); "governed_read_only"
+  (`[read]` only) did NOT, since `form_fill` needs `write` too. `advertise.rs`/
+  `tests/tool_advertisement.rs`/`tests/manifest_validation.rs`'s read-only and empty-grants lists
+  were NOT touched: `form_fill` requires `Read+Write` TOGETHER, so (unlike `wait_for`/`script`,
+  which need at most one capability) it never joins a read-only or empty-grants set.
+- New tests: `directory.rs::form_fill_requires_vary_by_submit_variant` (`requires("form_fill",
+  None)` == `Some(&[Read, Write])`; `requires("form_fill", Some("submit"))` ==
+  `Some(&[Read, Write, Action])`); `pipeline.rs::boolean_action_key_extraction`; two integration
+  tests in `tests/tool_enforcement.rs` (`form_fill_denied_upfront_under_write_deny`,
+  `form_fill_without_extension_fails_with_parent_audit`) per the task file, verbatim assertions.
+- Deviations:
+  - D1: `requires()` widened as described above (load-bearing for the pinned
+    `form_fill_requires_vary_by_submit_variant` test to pass at all).
+  - D2: `extract_action` was pulled out of the inline expression into its own function so
+    `boolean_action_key_extraction` (named by the task) could unit-test it directly.
+  - D-grant (per the task's own STOP-precondition text, which pre-answers this rather than
+    requiring a STOP): `Gate::Proceed` carries no grant id (`enum Gate { Deny { message }, Proceed
+    }`), and `CallAudit::grant_id` is a private field with no getter -- confirmed by inspection
+    before writing any code. Every `form_fill` internal execution (`form_structure`, each
+    `form_input`, the submit `computer` click) calls `attribute_grant(None)` rather than the
+    parent's real grant id.
+  - D3: the internal `form_structure_internal` dispatch failing (no extension) is rendered via a
+    synthetic `CallOutcome::Success` carrying `isError: true` -- byte-identical on the wire to what
+    `CallOutcome::Failure` renders (`pipeline::error_result`'s exact shape) -- rather than an actual
+    `Failure`, because `take_batch_id` (the `_batch_id` side-channel extractor, PINS SS7) only reads
+    a `Success` result; a real `Failure` would leave the PARENT's `batch_id` unstamped, contradicting
+    the pinned `form_fill_without_extension_fails_with_parent_audit` test's explicit requirement
+    that the parent record carries a non-null `batch_id` even when the internal read fails.
+  - D4: `advertised_set_diff_gates_the_notification` (`src/transport/mcp/server.rs`, PRE-EXISTING,
+    not named anywhere in the task file or PINS) broke: its doc comment's premise ("every variant
+    here requires at most one capability, satisfied identically either way") is exactly what
+    `form_fill` -- the batch's first tool requiring TWO capabilities (`[Read, Write]`) in ONE
+    variant -- falsifies. `browser::advertise::tool_has_a_reachable_variant` checks a SINGLE
+    grant's subset, by design (matches real per-call domain-scoped authorization: two grants on two
+    different domains never jointly cover one call), so two SEPARATE single-capability grants
+    (`[read]` + `[write]`) never satisfy `form_fill`'s `[Read, Write]` variant, while one combined
+    grant (`[read, write]`) does -- `split_set` and `combined_set` genuinely differ now. Fixed the
+    test to assert this explicitly (`form_fill` present only in `combined_set`; every OTHER tool's
+    presence is identical between the two sets) rather than silently patching the assertion away or
+    reverting; this is the one deviation in this task requiring judgment rather than mechanical
+    transcription, so it is logged most prominently. No PINS/ADR text changed; only this one
+    pre-existing test's assertion and doc comment.
+  - D5: `tests/tool_enforcement.rs::form_fill_without_extension_fails_with_parent_audit` could not
+    reuse the file's own `drive()`/`manifest_value()` helpers: `form_fill` is `TabScoped`, so under
+    ANY manifest at all (even `grants: []`) the session is `Governance::Governed`, and with no
+    extension connected the tab's URL cannot be resolved -- grant-path resolution fails closed to
+    `Indeterminate` and the PARENT call is denied before the handler (and its `form_structure`
+    internal read) ever runs, the opposite of what this test must prove. True all-open (`--manifest`
+    absent entirely) is required, so audit had to be enabled via the separate
+    `GHOSTLIGHT_USER_CONFIG_DIR` user-config-file layer (`governance::config::load::
+    user_config_path`) instead of a manifest's `config` array, reusing
+    `support::spawn_service_with_user_config_dir_and_webapi_port` (the one existing helper spawning
+    an all-open service with an isolated user-config dir) even though its webapi-port argument is
+    otherwise unused here.
+  - D6: `form_fill`'s two `ActionVariant::directory_description` strings (rendered by `explain`) are
+    not literally pinned by PINS SS13 (which pins only the top-level `advertised_description`);
+    authored to match the existing terse-label house style and the <=110-char ASCII cap the
+    `every_description_is_nonempty_ascii_and_short` inline test enforces.
+  - D7: gate commands run with `CARGO_TARGET_DIR` pointed at the isolated `gl-review-target` scratch
+    directory (reused per BOOTSTRAP's practical note, already warm from this lineage), same reason
+    as C1's D3 (Chrome's live native-messaging host holds `target/debug/ghostlight.exe` open). No
+    source/test content changed by this.

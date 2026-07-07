@@ -127,6 +127,22 @@ fn is_free_local_action(descriptor: &directory::ToolDescriptor) -> bool {
             .is_some_and(|v| v.requires.is_empty())
 }
 
+/// Extract this call's action, given the descriptor's `action_key` name and the raw args
+/// (ADR-0024 Decision 1's per-tool action lookup, extended by ADR-0036 Decision 4 / PINS.md SS13
+/// point 1 for a BOOLEAN-valued action key): a string value passes through unchanged (`computer`'s
+/// `action`); a boolean `true` maps to the action_key's own NAME (`form_fill`'s `submit: true` is
+/// looked up and audited as the action `"submit"`); `false`, an absent key, or any other value
+/// type yields no action. `action_key: None` (every tool but `computer` and `form_fill`) always
+/// yields `None`, ignoring whatever the args carry.
+fn extract_action<'a>(action_key: Option<&'a str>, args: &'a Value) -> Option<&'a str> {
+    let key = action_key?;
+    match args.get(key) {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(Value::Bool(true)) => Some(key),
+        _ => None,
+    }
+}
+
 /// The dispatch chokepoint's core (ADR-0024 Decision 2, split out by ADR-0035 Decision 6):
 /// everything from the registry lookup through post-dispatch -- per-call config snapshot,
 /// schema validation, hold, sacred, free-action/grant enforcement, dispatch (extension or
@@ -193,11 +209,9 @@ pub(crate) async fn run_tool_call(
     // (shared format doc section 6.2 sensitive-parameter omission; no other argument is read,
     // logged, or stored). Stage 4 (ADR-0024 Decision 1): the registry's `action_key` drives
     // this instead of a hardcoded `name == "computer"` check -- `computer` is the only
-    // descriptor carrying one today.
-    let action = descriptor
-        .action_key
-        .and_then(|key| args.get(key))
-        .and_then(Value::as_str);
+    // descriptor carrying one today. C10 (PINS.md SS13 point 1) extends this to a BOOLEAN
+    // action key (`form_fill`'s `submit`): see [`extract_action`].
+    let action = extract_action(descriptor.action_key, args);
 
     // The single per-call action-directory lookup (ADR-0022 Decision 2, ADR-0024 Decision 3): a
     // pure static table scan, no I/O, performed ONCE and kept as the `Option` it is (a registry
@@ -1780,7 +1794,7 @@ mod tests {
     // --- ADR-0022 Decision 7: the `explain` directory tool ---
 
     /// The full pinned `explain` response text, transcribed by hand from
-    /// `browser::directory::REGISTRY` (28 variants) in fixture order. This is the ONE place the
+    /// `browser::directory::REGISTRY` (30 variants) in fixture order. This is the ONE place the
     /// exact output is pinned; `directory::explain_text`'s own unit tests check only its
     /// structural shape.
     fn pinned_explain_text() -> String {
@@ -1842,6 +1856,10 @@ mod tests {
              DOM, touches nothing.",
             "script: requires nothing. Run up to 20 tool calls sequentially in one request; \
              each step is authorized and audited individually.",
+            "form_fill: requires read. Fill form fields by label in one call; matches keys to \
+             controls and fills them.",
+            "form_fill (submit): requires read. Fill form fields by label and click the form's \
+             own submit control.",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]
@@ -2139,6 +2157,29 @@ mod tests {
             "back/forward resolves the union-rule resource pre-dispatch (allowed by g1's read \
              capability), and the point-5 landing re-check still probes the final tab url"
         );
+    }
+
+    // --- C10 (ADR-0036 Decision 4, PINS.md SS13 point 1): the boolean action-key extension ---
+
+    /// C10: a boolean-valued action key (`form_fill`'s `submit`) maps `true` to the action_key's
+    /// own name and `false`/absent to no action; a string-valued action key (`computer`'s
+    /// `action`) is unchanged.
+    #[test]
+    fn boolean_action_key_extraction() {
+        assert_eq!(
+            extract_action(Some("submit"), &json!({"submit": true})),
+            Some("submit")
+        );
+        assert_eq!(
+            extract_action(Some("submit"), &json!({"submit": false})),
+            None
+        );
+        assert_eq!(extract_action(Some("submit"), &json!({})), None);
+        assert_eq!(
+            extract_action(Some("action"), &json!({"action": "left_click"})),
+            Some("left_click")
+        );
+        assert_eq!(extract_action(None, &json!({"submit": true})), None);
     }
 
     // --- C2 (ADR-0035 Decision 6): CallOutcome + async ctx-bearing Handler::Local ---

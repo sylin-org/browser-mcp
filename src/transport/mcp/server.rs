@@ -680,10 +680,17 @@ mod tests {
 
     /// ADR-0025 Decision 4: the notification fires only when the ADVERTISED SET actually
     /// changes. Adding a read-only grant where there were none changes the set (unlocks the
-    /// whole read-only surface); splitting a read+write union across two grants versus one
-    /// combined grant does NOT change the set (every variant here requires at most one
-    /// capability, satisfied identically either way) -- the pinned "two grants collapsing to
-    /// the same capability union" no-op case.
+    /// whole read-only surface). Splitting a read+write union across two grants versus one
+    /// combined grant does NOT change the set for any tool whose variants require at most ONE
+    /// capability each (satisfied identically either way, since `requires.is_empty()` or a
+    /// subset of a SINGLE grant is unaffected by how the union is split across grants) --
+    /// EXCEPT `form_fill` (C10, ADR-0036 Decision 4), the first tool whose `action: None`
+    /// variant requires TWO capabilities (`[read, write]`) TOGETHER: reachability is a
+    /// single-grant subset check (`browser::advertise::tool_has_a_reachable_variant`), so two
+    /// SEPARATE single-capability grants never satisfy it (no one grant carries both), while one
+    /// grant carrying the union does. This is the mechanically-forced consequence of C10 adding
+    /// the batch's first multi-capability-requiring variant, surfaced by this pre-existing test;
+    /// the assertion below is corrected to name it explicitly rather than silently going stale.
     #[test]
     fn advertised_set_diff_gates_the_notification() {
         let fixture = advertised_tools_json();
@@ -701,9 +708,38 @@ mod tests {
         let combined = vec![grant(&[Capability::Read, Capability::Write])];
         let split_set = advertise::advertised_tools(&fixture, Some(&split));
         let combined_set = advertise::advertised_tools(&fixture, Some(&combined));
+
+        fn names(v: &Value) -> Vec<String> {
+            v["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .map(|t| t["name"].as_str().expect("name").to_string())
+                .collect()
+        }
+        let split_names = names(&split_set);
+        let combined_names = names(&combined_set);
+
+        assert!(
+            !split_names.contains(&"form_fill".to_string()),
+            "form_fill needs read+write from a SINGLE grant; two separate single-capability \
+             grants never satisfy it: {split_names:?}"
+        );
+        assert!(
+            combined_names.contains(&"form_fill".to_string()),
+            "one grant carrying both read and write does satisfy form_fill's variant: \
+             {combined_names:?}"
+        );
+
+        let split_rest: Vec<&String> = split_names.iter().filter(|n| *n != "form_fill").collect();
+        let combined_rest: Vec<&String> = combined_names
+            .iter()
+            .filter(|n| *n != "form_fill")
+            .collect();
         assert_eq!(
-            split_set, combined_set,
-            "two grants collapsing to the same capability union advertise the identical set"
+            split_rest, combined_rest,
+            "every OTHER tool's variants require at most one capability each, satisfied \
+             identically either way two grants collapse to the same capability union"
         );
     }
 }
