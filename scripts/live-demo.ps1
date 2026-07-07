@@ -193,7 +193,7 @@ try {
 
   Step 'tools/list'
   $tl = Send-Rpc -Method 'tools/list' -Params @{}
-  Write-Host "   advertised $($tl.result.tools.Count) tools (13 trained + explain)"
+  Write-Host "   advertised $($tl.result.tools.Count) tools (13 trained + wait_for + script + form_fill + explain)"
 
   Step "Open the $($Ghost)Ghostlight group, then a fresh tab in it"
   Invoke-Tool 'tabs_context_mcp' @{ createIfEmpty = $true } | Out-Null

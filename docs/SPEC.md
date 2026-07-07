@@ -1,6 +1,6 @@
 # Governed Browser Automation MCP Server
 
-## Design Specification v0.1
+## Design Specification v0.2
 
 **Author:** Leonardo Botinelly / Kintsugi Architecture  
 **Date:** 2026-07-01  
@@ -126,7 +126,11 @@ The extension is **policy-free**: it holds mechanism (CDP execution, DOM reads v
 
 ### 3.1. Included Tools
 
-The following 13 tools are derived from the Claude in Chrome tool schemas. Tool names, parameter signatures, and descriptions are preserved exactly to inherit the model's trained behavior.
+The following 16 browser tools are derived from the Claude in Chrome tool schemas (the 13 trained
+tools) and the composition batch (`wait_for`, `script`, `form_fill`; ADR-0035..0037). Tool names,
+parameter signatures, and descriptions for the trained 13 are preserved exactly to inherit the
+model's trained behavior; the additive tools extend the surface without reshaping it
+([ADR-0034](adr/0034-declarations-in-code-and-additive-growth.md) Decision 7).
 
 #### Observe Tier
 
@@ -140,7 +144,8 @@ Tools that read browser state without modifying application state.
 | `computer` (action: `zoom`) | Screenshot of a region for inspection | Returns a screenshot; observe. |
 | `read_page` | Accessibility tree with element refs | Returns interactive elements and their ref IDs. |
 | `get_page_text` | Extract article/main text content | Text-only extraction. |
-| `find` | Find elements by text/attributes | Read-only DOM query. |
+| `find` | Find elements by text/attributes | Read-only DOM query. Returns structured results (ref, role, name, coordinates). |
+| `wait_for` | Wait for a page condition and settlement | Adaptive settle detector (mutation-rate decay); condition + settlement gated together. Returns elapsed_ms, settle diagnostics, and the matched element's ref. ([ADR-0037](adr/0037-page-state-awareness.md)) |
 | `read_console_messages` | Console output (filtered) | Buffered event replay. |
 | `read_network_requests` | Network activity | Buffered event replay. |
 | `tabs_context_mcp` | Get tab group context | Session metadata. Exact reference name (note the `_mcp` suffix). |
@@ -153,6 +158,7 @@ Tools that change browser or application state. Only available when the grant sp
 |---|---|---|
 | `computer` (mutate actions: `left_click`, `right_click`, `double_click`, `triple_click`, `type`, `key`, `scroll`, `hover`, `left_click_drag`, `scroll_to`) | Mouse, keyboard, scroll interactions | The `computer` tool is a single MCP tool with an `action` parameter (13 actions total). Classification is per-action, enforced in the binary. See sec 3.3. |
 | `form_input` | Set form values by element ref | Shadow DOM traversal for web components. |
+| `form_fill` | Fill a form by field labels in one call | Semantic match against label/placeholder/name; optional `submit: true` clicks the form's submit control (requires `action`). Ambiguous keys returned unmatched with candidates. ([ADR-0036](adr/0036-form-fill-tool.md)) |
 | `javascript_tool` | Execute JS in page context | Always Mutate. No exceptions. Requires explicit grant. |
 | `tabs_create_mcp` | Create new tab | Opens a tab in the MCP group. Exact reference name (`_mcp` suffix). |
 
@@ -164,6 +170,28 @@ Session housekeeping. Always available regardless of access tier.
 |---|---|---|
 | `resize_window` | Resize browser window | No security implication. |
 | `update_plan` | Present plan to user (auto-approved) | Informational pass-through. |
+
+#### Compose Tier
+
+Orchestration tools that sequence other tools. `script` itself touches no page and no server; each
+step is independently authorized, audited, and post-processed through the same dispatch chokepoint.
+
+| Tool | Description | Notes |
+|---|---|---|
+| `script` | Run up to 20 tool calls sequentially in one request | Inter-step data flow via `$prev`/`$N` references against structured results; `dry_run: true` returns per-step governance verdicts without dispatching; per-step audit with batch correlation. ([ADR-0035](adr/0035-script-tool.md)) |
+
+#### Structured results, diff reads, and consequence digests
+
+- **Structured results** ([ADR-0038](adr/0038-structured-results.md)): tools with a declared result
+  vocabulary (`find`, `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `wait_for`, `script`,
+  `form_fill`) carry a `structuredContent` field alongside their text rendering, and advertise an
+  `outputSchema`. This is the substrate `script`'s `$prev`/`$N` references resolve against.
+- **`read_page` diff mode** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 3): the optional
+  `diff: true` argument returns only added/removed/changed lines since the previous `read_page` on
+  that tab, keyed by ref identity. Stale-ref errors name the re-render and the fix.
+- **Consequence digests** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 2): every mutating
+  action's confirmation gains an `observation:` block reporting what changed (URL, title, DOM
+  mutations, focus movement, alerts, dialogs), killing the verify round-trip.
 
 ### 3.2. Excluded Tools
 

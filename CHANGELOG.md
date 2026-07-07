@@ -5,6 +5,51 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The composition batch (ADR-0035 through ADR-0038): sequential multi-step scripting, semantic form
+filling, page-state awareness, and structured results -- the tools that collapse multi-round-trip
+browser workflows into a single call.
+
+### Added
+
+- **`script` tool** ([ADR-0035](docs/adr/0035-script-tool.md)): run up to 20 tool calls sequentially
+  in one request. Steps execute in order through the same governance chokepoint every individual call
+  enters; each step is independently authorized, audited, and post-processed. Step arguments may
+  reference a prior step's structured result (`$prev.field`, `$N.field`); a `dry_run: true` flag
+  returns per-step governance verdicts (`would_allow` / `would_deny`) without dispatching, so the
+  model sees the pre-flight map before committing. A `budget_ms` argument bounds the whole call.
+- **`form_fill` tool** ([ADR-0036](docs/adr/0036-form-fill-tool.md)): fill a form by field labels in
+  one call. Matches keys against label, placeholder, name, and aria-label with specificity-ordered
+  tiering; ambiguous keys are returned unmatched with candidates instead of guessed. Optional
+  `submit: true` clicks the form's own submit control after filling.
+- **`wait_for` tool** ([ADR-0037](adr/0037-page-state-awareness.md)): wait until a page condition
+  holds and the page has settled. An adaptive settle detector (mutation-rate decay, floored at 3)
+  gates on the page's own pace; returns elapsed_ms, settle diagnostics, and the matched element's
+  ref for direct chaining.
+- **Structured results** ([ADR-0038](docs/adr/0038-structured-results.md)): tools with a declared
+  result vocabulary (`find`, `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `wait_for`,
+  `script`, `form_fill`) carry a `structuredContent` field alongside text and advertise an
+  `outputSchema`. This is the substrate `script`'s references resolve against.
+- **Consequence digests** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 2): every mutating
+  action's confirmation gains an `observation:` block reporting what changed (URL, title, DOM
+  mutations, focus movement, alerts, dialogs).
+- **`read_page` diff mode** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 3): the optional
+  `diff: true` argument returns only changes since the previous read on that tab. Stale-ref errors
+  now name the re-render and the fix.
+- **`engine.script.budget_ms` config key**: total wall-clock budget for one `script` call (default
+  120000ms, range 1000..480000).
+
+### Changed
+
+- `dry_run` is a pipeline-level parameter on `run_tool_call`, not a script-internal evaluator: it
+  runs the real governance decision (registry, schema, sacred, authorize) and returns the verdict at
+  the dispatch boundary without dispatching. It is honored by every tool at the pipeline layer but
+  advertised only on `script`'s inputSchema (the 13 trained schemas are byte-pinned).
+- [ADR-0035](docs/adr/0035-script-tool.md) Decision 9 (an `idempotency_key` cache on `script` /
+  `form_fill`) was not taken in v1; it is superseded by [ADR-0040](docs/adr/0040-pipeline-idempotency-gate.md)
+  (Proposed), which relocates retry-safety to a pipeline-level gate covering every tool call.
+
 ## [0.2.0] -- 2026-07-05
 
 The Ghostlight Hub release. The single-session model is replaced by a persistent

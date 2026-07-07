@@ -20,9 +20,13 @@ Two concerns, one binary: a full browser-automation engine, and a governance lay
 per call, what the agent may do.
 
 - **The full tool surface.** The 13 trained tools at byte-parity with the official Claude-in-Chrome
-  schemas, plus one additive governance tool, `explain`: screenshots with coordinate mapping, an
-  on-page agent cursor, accessibility-tree and text reads, form input (including shadow DOM),
-  in-page JavaScript, console and network inspection, and tab management.
+  schemas, plus four additive tools -- `wait_for`, `script`, `form_fill`, and `explain`: screenshots
+  with coordinate mapping, an on-page agent cursor, accessibility-tree and text reads, form input
+  (including shadow DOM), in-page JavaScript, console and network inspection, tab management,
+  condition-and-settlement waiting, sequential multi-step scripts with inter-step data flow, and
+  semantic form filling by label. Structured results (`structuredContent`) on the tools that carry
+  one, `dry_run` pre-flight verdicts on `script`, `read_page` diff mode, and consequence digests on
+  mutating actions round out the surface.
 - **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
   / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
   never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` and `enforce` modes
@@ -132,8 +136,9 @@ separated from your own tabs. A typical first request to the agent:
 > Open a new browser tab, go to example.com, and tell me what the page says.
 
 The agent will create a tab in the MCP group, navigate, read the page, and report back. It can then
-click, type, fill forms, run JavaScript, take screenshots, and inspect console and network activity,
-all in your real logged-in session, subject to whatever governance policy is active.
+click, type, fill forms (by ref or by label), run JavaScript, take screenshots, inspect console and
+network activity, wait for dynamic pages to settle, and compose multi-step scripts that chain
+results -- all in your real logged-in session, subject to whatever governance policy is active.
 
 ### The tools
 
@@ -156,6 +161,9 @@ manifest (all-open) every action is allowed.
 | `read_network_requests` | Recent network activity                          | read                       |
 | `resize_window`         | Resize the browser window                        | none                       |
 | `update_plan`           | Record the agent's working plan                  | none                       |
+| `wait_for`              | Wait for a page condition and settlement         | read                       |
+| `script`                | Run a sequence of tool calls in one request (with optional `dry_run`) | none |
+| `form_fill`             | Fill a form by field labels in one call          | read + write (or read + write + action when `submit: true`) |
 | `explain`               | List every action and the capability it requires | none                       |
 
 For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require
