@@ -131,3 +131,13 @@ session whose service dropped) retries every 500ms for up to 120s, asking the OS
 start the service once at the episode's start. This covers a rebuild-length gap in development
 and a crash/upgrade in production; if the window elapses, the adapter exits and the client
 reload path is the fallback, exactly the pre-0045 behavior.
+
+## Amendment (2026-07-08, ADR-0047 D6): down-relay error classification
+
+The service->client relay direction now classifies a service-side READ error the same as a
+service-side EOF: both are ServiceClosed, which reconnects. Only a failed write toward the client
+is ClientClosed, which exits. The original arm used `tokio::io::copy` and mapped its single
+`Err` into ClientClosed, so on Windows -- where an abrupt service death typically surfaces as
+ERROR_BROKEN_PIPE on the READ, not the write -- the adapter exited and forced the very MCP-client
+reload this ADR exists to prevent. A hand-rolled copy loop separates the two failure sides. See
+ADR-0047 D6.

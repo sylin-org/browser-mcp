@@ -232,15 +232,38 @@ where
             }
         }
     };
-    let down = async {
-        match tokio::io::copy(ipc_read, client_out).await {
-            Ok(_) => RelaySide::ServiceClosed, // service EOF
-            Err(_) => RelaySide::ClientClosed, // writing to the client failed
-        }
-    };
+    let down = copy_service_to_client(ipc_read, client_out);
     tokio::select! {
         side = up => side,
         side = down => side,
+    }
+}
+
+/// The service->client relay direction (ADR-0047 D6, amending ADR-0045): a manual copy loop so
+/// the two failure sides classify differently. Reading 0 bytes OR a read error from the service
+/// pipe is the SERVICE side ending (reconnect); only a failed write toward the client is the
+/// CLIENT side ending (exit). The pre-0047 `tokio::io::copy` arm collapsed both error kinds into
+/// ClientClosed, which on Windows (an abrupt service death often surfaces as ERROR_BROKEN_PIPE
+/// on the read) exited the adapter and forced the client reload ADR-0045 exists to prevent.
+async fn copy_service_to_client<R, W>(ipc_read: &mut R, client_out: &mut W) -> RelaySide
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = [0u8; 8192];
+    loop {
+        match ipc_read.read(&mut buf).await {
+            Ok(0) => return RelaySide::ServiceClosed, // service EOF
+            Ok(n) => {
+                if client_out.write_all(&buf[..n]).await.is_err()
+                    || client_out.flush().await.is_err()
+                {
+                    return RelaySide::ClientClosed; // writing to the client failed
+                }
+            }
+            Err(_) => return RelaySide::ServiceClosed, // service read error (e.g. broken pipe)
+        }
     }
 }
 
@@ -680,5 +703,78 @@ mod tests {
         assert_eq!(tail, b"LEFTOVER".to_vec());
         let eof = read_line_unbuffered(&mut reader).await.unwrap();
         assert!(eof.is_empty());
+    }
+
+    // ADR-0047 D6 (PINS P2): the service->client relay direction must classify a service-side EOF
+    // OR read error as ServiceClosed (reconnect), and only a client-side write failure as
+    // ClientClosed (exit).
+
+    #[tokio::test]
+    async fn down_eof_classifies_service_closed() {
+        // duplex(64) -> (first, second); read from `first`, drop the ENTIRE `second` half so
+        // `first` observes EOF (dropping only a split WriteHalf would leave the read pending).
+        let (mut ipc_read, service_peer) = tokio::io::duplex(64);
+        drop(service_peer);
+        let mut client_out = tokio::io::sink();
+        assert!(matches!(
+            copy_service_to_client(&mut ipc_read, &mut client_out).await,
+            RelaySide::ServiceClosed
+        ));
+    }
+
+    #[tokio::test]
+    async fn down_read_error_classifies_service_closed() {
+        struct FailingReader;
+        impl tokio::io::AsyncRead for FailingReader {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)))
+            }
+        }
+        let mut ipc_read = FailingReader;
+        let mut client_out = tokio::io::sink();
+        assert!(matches!(
+            copy_service_to_client(&mut ipc_read, &mut client_out).await,
+            RelaySide::ServiceClosed
+        ));
+    }
+
+    #[tokio::test]
+    async fn down_client_write_error_classifies_client_closed() {
+        struct FailingWriter;
+        impl tokio::io::AsyncWrite for FailingWriter {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::task::Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)))
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        // Service side carries one pending byte; keep the write end alive so no EOF races the byte.
+        use tokio::io::AsyncWriteExt;
+        let (mut service_write, mut ipc_read) = tokio::io::duplex(64);
+        service_write.write_all(b"x").await.unwrap();
+        let mut client_out = FailingWriter;
+        assert!(matches!(
+            copy_service_to_client(&mut ipc_read, &mut client_out).await,
+            RelaySide::ClientClosed
+        ));
+        drop(service_write);
     }
 }
