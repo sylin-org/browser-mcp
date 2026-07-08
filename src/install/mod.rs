@@ -165,6 +165,16 @@ enum Op {
     RemoveFile {
         path: PathBuf,
     },
+    /// Copy the running binary to a per-instance native-host launcher (ADR-0044 Decision 4, non-
+    /// default instances only). Creates parent dirs and overwrites, so a re-install refreshes it.
+    CopyBinary {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    /// Remove a plain file (a per-instance launcher copy) if present; absence is not an error.
+    RemovePath {
+        path: PathBuf,
+    },
     DeleteReg {
         hive: Hive,
         key: String,
@@ -241,10 +251,37 @@ fn scope_of(system: bool) -> Scope {
 // --- Plan: install ---
 
 fn plan_install(opts: &InstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>> {
-    let manifest = HostManifest::resolve(&ctx.current_exe, opts.extension_id.as_deref())?;
+    // ADR-0044 Decision 4: the DEFAULT instance's manifest points at the bare binary; a non-default
+    // instance's points at a per-instance copy Chrome launches by name (argv[0]).
+    let (launcher, needs_copy) = native_host::instance_launcher(ctx);
+    let manifest = HostManifest::resolve(&launcher, opts.extension_id.as_deref())?;
     let manifest_json = manifest.to_json();
     let scope = scope_of(opts.system);
     let mut actions = Vec::new();
+
+    // Place the per-instance binary copy FIRST (before the manifest that references it). Overwrite
+    // so a re-install refreshes it; a size match is treated as already-current for the report.
+    if needs_copy {
+        let up_to_date = std::fs::metadata(&launcher)
+            .ok()
+            .zip(std::fs::metadata(&ctx.current_exe).ok())
+            .map(|(a, b)| a.len() == b.len())
+            .unwrap_or(false);
+        actions.push(Action {
+            label: "native host (instance binary)".into(),
+            detail: launcher.display().to_string(),
+            noop: up_to_date.then_some("already present"),
+            manual: format!(
+                "copy {} to {}",
+                ctx.current_exe.display(),
+                launcher.display()
+            ),
+            op: Op::CopyBinary {
+                from: ctx.current_exe.clone(),
+                to: launcher.clone(),
+            },
+        });
+    }
 
     // --- native host, per selected browser ---
     if cfg!(windows) {
@@ -451,6 +488,19 @@ fn plan_uninstall(opts: &UninstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>>
         }
     }
 
+    // Remove the per-instance binary copy (ADR-0044 Decision 4; non-default instances only). The
+    // default instance has no copy, so this action is absent.
+    let (launcher, is_copy) = native_host::instance_launcher(ctx);
+    if is_copy {
+        actions.push(Action {
+            label: "native host (instance binary)".into(),
+            detail: launcher.display().to_string(),
+            noop: (!launcher.exists()).then_some("absent"),
+            manual: format!("delete {}", launcher.display()),
+            op: Op::RemovePath { path: launcher },
+        });
+    }
+
     // Per-client planning is infallible (see plan_install): one bad config blocks that client only.
     for c in selected_clients(&opts.clients, ctx) {
         actions.push(plan_client_uninstall(c, ctx));
@@ -608,6 +658,18 @@ fn apply_one(op: &Op) -> Result<()> {
             native_host::remove_host_file_if_ours(path)?;
             Ok(())
         }
+        Op::CopyBinary { from, to } => {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(from, to)?;
+            Ok(())
+        }
+        Op::RemovePath { path } => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Io(e)),
+        },
         Op::SetReg {
             hive,
             key,

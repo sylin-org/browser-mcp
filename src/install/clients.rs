@@ -104,12 +104,20 @@ pub fn detect(spec: &ClientSpec, ctx: &PlanCtx) -> bool {
 
 /// The server entry we register: absolute binary path, never npx (doc 11 B.7/C.4).
 pub fn server_entry(exe: &Path) -> ServerEntry {
+    let instance = crate::instance::Instance::resolve();
+    // A non-default instance carries `--instance <n>` so the client launches the right stack. The
+    // command stays the bare (stable) binary path, so a dev rebuild is picked up with no reinstall
+    // (the adapter is a dumb pipe; ADR-0044 Decision 4 / ADR-0045).
+    let args = match instance.name() {
+        Some(name) => vec!["--instance".to_string(), name.to_string()],
+        None => vec![],
+    };
     ServerEntry {
-        name: crate::instance::Instance::resolve().mcp_server_name(),
+        name: instance.mcp_server_name(),
         command: super::native_host::normalize_exe_path(exe)
             .to_string_lossy()
             .into_owned(),
-        args: vec![],
+        args,
         env: BTreeMap::new(),
     }
 }

@@ -48,7 +48,11 @@ pub enum SupervisorStep {
 #[cfg(windows)]
 pub fn register_steps(exe: &Path, _ctx: &PlanCtx) -> Vec<SupervisorStep> {
     let exe = native_host::normalize_exe_path(exe);
-    let tr = format!("\"{}\" service", exe.display());
+    // A non-default instance carries `--instance <n>` so the supervisor starts the right stack.
+    let tr = match crate::instance::Instance::resolve().name() {
+        Some(n) => format!("\"{}\" --instance {n} service", exe.display()),
+        None => format!("\"{}\" service", exe.display()),
+    };
     vec![
         SupervisorStep::Run(SupervisorCommand::new(
             "schtasks",
@@ -100,16 +104,22 @@ pub fn plist_path(ctx: &PlanCtx) -> PathBuf {
 #[cfg(target_os = "macos")]
 fn render_plist(exe: &Path) -> String {
     let label = supervisor_label();
+    // ProgramArguments: [<exe>, (--instance <n>)?, service] -- a non-default instance carries its
+    // name so launchd starts the right stack.
+    let mut prog_args = format!("<string>{}</string>", exe.display());
+    if let Some(n) = crate::instance::Instance::resolve().name() {
+        prog_args.push_str(&format!("<string>--instance</string><string>{n}</string>"));
+    }
+    prog_args.push_str("<string>service</string>");
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\"><dict>\n  \
 <key>Label</key><string>{label}</string>\n  \
-<key>ProgramArguments</key><array><string>{}</string><string>service</string></array>\n  \
+<key>ProgramArguments</key><array>{prog_args}</array>\n  \
 <key>RunAtLoad</key><true/>\n  \
 <key>KeepAlive</key><true/>\n\
-</dict></plist>\n",
-        exe.display()
+</dict></plist>\n"
     )
 }
 
@@ -176,11 +186,16 @@ pub fn unit_path(ctx: &PlanCtx) -> PathBuf {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn render_unit(exe: &Path) -> String {
+    // A non-default instance carries `--instance <n>` so systemd starts the right stack.
+    let instance_flag = match crate::instance::Instance::resolve().name() {
+        Some(n) => format!(" --instance {n}"),
+        None => String::new(),
+    };
     format!(
         "[Unit]\n\
 Description=Ghostlight Hub service\n\
 [Service]\n\
-ExecStart={} service\n\
+ExecStart={}{instance_flag} service\n\
 Restart=on-failure\n\
 [Install]\n\
 WantedBy=default.target\n",

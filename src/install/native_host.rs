@@ -201,6 +201,31 @@ pub fn linux_host_path(spec: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
         .join(format!("{}.json", host_name()))
 }
 
+/// The native-host launcher for the active instance (ADR-0044 Decision 4, the multi-call binary):
+/// the path the host manifest `path` field points at, plus whether the installer must place a copy
+/// of the running binary there.
+///
+/// The DEFAULT instance points the manifest straight at the running binary -- no copy, byte-
+/// identical. A NON-DEFAULT instance points it at a per-instance copy named `ghostlight-<n>[.exe]`
+/// (its `mcp_server_name`) under that instance's data dir, because Chrome launches the native host
+/// with a bare path and no argument room; the binary reads its own `argv[0]` basename to know which
+/// instance it is. A stale copy is harmless (the native host is a dumb pipe; only the service, which
+/// the installer launches via `--instance`, carries code).
+pub fn instance_launcher(ctx: &PlanCtx) -> (PathBuf, bool) {
+    let instance = crate::instance::Instance::resolve();
+    if instance.is_default() {
+        (normalize_exe_path(&ctx.current_exe), false)
+    } else {
+        let file_name = if cfg!(windows) {
+            format!("{}.exe", instance.mcp_server_name())
+        } else {
+            instance.mcp_server_name()
+        };
+        let path = ctx.local.join(instance.dir_leaf()).join(file_name);
+        (path, true)
+    }
+}
+
 /// The hive to use for a scope.
 pub fn hive_for(scope: Scope) -> Hive {
     match scope {
