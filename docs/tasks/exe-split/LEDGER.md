@@ -5,10 +5,10 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 
 ## RESUME HERE
 
-- Next task: **S6** (`S6-adapter-browser-bin.md`)
+- Next task: **S7** (`S7-retire-roles-from-main.md`)
 - Base commit: `fccca60` on `dev` (tree green at batch authoring; later docs-only commits carry
   the batch itself)
-- Batch state: IN PROGRESS (S1, S2, S3, S4, S5 complete)
+- Batch state: IN PROGRESS (S1, S2, S3, S4, S5, S6 complete)
 
 ## Task table
 
@@ -19,7 +19,7 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 | S3 | Move wire + handshake to transport | done | a48c136 |
 | S4 | Create ghostlight-core; root becomes facade | done | 4d8767a |
 | S5 | ghostlight-adapter-agent bin + rewire clients + test harness | done | a6ff4e0 |
-| S6 | ghostlight-adapter-browser bin + host install rework | pending | - |
+| S6 | ghostlight-adapter-browser bin + host install rework | done | 4a95f68 |
 | S7 | Retire roles from the ghostlight bin | pending | - |
 | S8 | Reconnect patience (120s) + ADR-0045 amendment | pending | - |
 | S9 | --no-supervisor + DEV-LOOP.md | pending | - |
@@ -75,6 +75,14 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
   1. clients.rs had NO `#[cfg(test)] mod tests` block; created one to house the pinned `server_entry_points_at_the_agent_adapter_sibling` test (the task's "NEW in clients.rs tests module" implied it exists -- it did not).
   2. crates/adapter-agent/Cargo.toml uses tokio features `["rt-multi-thread", "macros"]` exactly as SPEC 5.1 pins. The main uses `tokio::sync::Notify` (the "sync" feature), which resolves via Cargo feature unification: ghostlight-transport (a dependency) enables tokio "sync", and the single tokio build in the adapter's dep graph carries the union. Build + core-absence both verified, so no feature was added; noted only so a future transport dep change that drops "sync" is understood to affect this bin.
   3. tests/adapter_reconnect.rs got its OWN local `adapter_bin()` helper (it does not `mod support;`); tests/hub_lifecycle.rs uses `support::adapter_bin()` (it does). tests/peer_death.rs (native-host role) and the install_instance/policy_* CLI spawns were left untouched per S5's CAUTION.
+
+### S6 -- ghostlight-adapter-browser bin + host install rework
+- Commit: 4a95f68
+- Verification: fmt OK / clippy OK / test --workspace OK (full suite green; the 4 oracles pass: from_exe_stem_with_base_resolves_the_browser_adapter_family, instance_launcher_default_is_the_adapter_browser_sibling, dev_install_plan_copies_a_named_binary_and_suffixes_the_whole_stack, native_host_exits_when_server_dies -- the last now spawning the browser adapter) / linux cross-check OK. `node --check tests/e2e/run-smoke.mjs` OK; `cargo build -p ghostlight-adapter-browser` OK; `cargo tree -p ghostlight-adapter-browser` has 0 ghostlight-core refs (native + linux).
+  1. tests/peer_death.rs: removed its now-unused local `fn bin()` when switching the native-host spawn to `support::browser_bin()` (it was the fn's only caller; leaving it would trip clippy -D warnings dead_code).
+  2. Added `pub fn browser_bin()` to tests/support/mod.rs (symmetric with S5's `adapter_bin()`); peer_death uses it. adapter_reconnect keeps its own local helpers (still no `mod support;`).
+  3. install_instance dev test: updated BOTH the assertion (`ghostlight-dev` -> `ghostlight-adapter-browser-dev`) and its panic-message text; the default-plan test's `!plan.contains("ghostlight-dev")` still holds (the default plan copies nothing and names only the two adapter siblings).
+  4. instance_launcher named-branch derives the copy file name as `ghostlight-adapter-browser-<name>[.exe]` directly from `instance.name()` (the old code used `mcp_server_name()` = `ghostlight-<n>`); default branch uses `sibling_bin(current_exe, "ghostlight-adapter-browser")` instead of `normalize_exe_path(current_exe)`. install/mod.rs copies FROM the browser-adapter sibling (computed once into `copy_from`, used by the size-check, the manual hint, and the CopyBinary op).
 
 ## Blocked
 
