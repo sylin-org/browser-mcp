@@ -8,10 +8,13 @@
 use crate::{Error, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The Chrome native-messaging host name. MUST match `extension/native-messaging-host.json`,
-/// `extension/manifest.json`, and every registration the installer writes. Distinct from the IPC
-/// socket name (`org.sylin.ghostlight.v1.sock` in `super::ipc`).
-pub const HOST_NAME: &str = "org.sylin.ghostlight";
+/// The Chrome native-messaging host name for the active instance (ADR-0044): `org.sylin.ghostlight`
+/// for the default instance, `org.sylin.ghostlight.<n>` for a named one. MUST match the host
+/// manifest and every registration the installer writes for that instance. Distinct from the IPC
+/// endpoint name, which carries a `.v1` version suffix (`super::ipc`).
+pub fn host_name() -> String {
+    crate::instance::Instance::resolve().host_name()
+}
 
 /// Human-readable description written into the native-messaging host manifest.
 pub const HOST_DESCRIPTION: &str = "Ghostlight native messaging host";

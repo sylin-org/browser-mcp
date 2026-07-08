@@ -207,14 +207,19 @@ fn browser_rows(ctx: &PlanCtx) -> Vec<(String, bool, bool)> {
 }
 
 /// (display name, detected?, registered?) for each known MCP client (registered means the config
-/// file contains the literal substring `"ghostlight"`, quotes included, as today).
+/// file contains the active instance's server name as a quoted substring -- `"ghostlight"` for the
+/// default instance, `"ghostlight-<n>"` for a named one, ADR-0044).
 fn client_rows(ctx: &PlanCtx) -> Vec<(String, bool, bool)> {
+    let needle = format!(
+        "\"{}\"",
+        crate::instance::Instance::resolve().mcp_server_name()
+    );
     clients::CLIENTS
         .iter()
         .map(|c| {
             let detected = clients::detect(c, ctx);
             let registered = std::fs::read_to_string(clients::config_path(c, ctx))
-                .map(|s| s.contains("\"ghostlight\""))
+                .map(|s| s.contains(&needle))
                 .unwrap_or(false);
             (c.display.to_string(), detected, registered)
         })

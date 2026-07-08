@@ -460,14 +460,18 @@ fn plan_uninstall(opts: &UninstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>>
 
 fn plan_client_uninstall(c: &clients::ClientSpec, ctx: &PlanCtx) -> Action {
     let label = format!("{} (client)", c.display);
+    // The MCP server entry key for the active instance (ADR-0044): `ghostlight` for the default,
+    // `ghostlight-<n>` for a named instance -- so uninstall removes only this instance's entry.
+    let server = crate::instance::Instance::resolve().mcp_server_name();
     // VS Code's JSONC config can't be safely rewritten by a value-level merge -> manual removal.
     if c.is_jsonc {
         return Action {
             label,
             detail: "manual".into(),
             noop: None,
-            manual: "remove the \"ghostlight\" entry from the VS Code mcp.json 'servers' block"
-                .into(),
+            manual: format!(
+                "remove the \"{server}\" entry from the VS Code mcp.json 'servers' block"
+            ),
             op: Op::Manual,
         };
     }
@@ -475,15 +479,15 @@ fn plan_client_uninstall(c: &clients::ClientSpec, ctx: &PlanCtx) -> Action {
     // single idempotent value-level merge -- no subprocess, and a semantic no-op when absent.
     let path = clients::config_path(c, ctx);
     let target = path.display().to_string();
-    let manual = format!("remove \"ghostlight\" from {target}");
+    let manual = format!("remove \"{server}\" from {target}");
     // Missing config => empty (nothing to remove); an unreadable *existing* file blocks this client.
     let existing = match read_config_or_empty(&path) {
         Ok(s) => s,
         Err(e) => return blocked(label, target, format!("cannot read config: {e}"), manual),
     };
     // Validate now (a non-object root errors here, at dry-run) and compute the no-op state.
-    match merge::remove_server(&existing, c.dialect, "ghostlight")
-        .and_then(|_| merge::has_server(&existing, c.dialect, "ghostlight"))
+    match merge::remove_server(&existing, c.dialect, &server)
+        .and_then(|_| merge::has_server(&existing, c.dialect, &server))
     {
         Ok(present) => Action {
             label,
@@ -493,7 +497,7 @@ fn plan_client_uninstall(c: &clients::ClientSpec, ctx: &PlanCtx) -> Action {
             op: Op::Merge {
                 path,
                 dialect: c.dialect,
-                change: MergeChange::Remove("ghostlight".into()),
+                change: MergeChange::Remove(server),
             },
         },
         Err(e) => blocked(label, target, e.to_string(), manual),
@@ -695,7 +699,7 @@ pub fn run_install(opts: InstallOptions) -> Result<()> {
     // never turns an otherwise-successful install into a failure.
     println!("\nSupervisor (auto-start):");
     supervisor::apply_steps(
-        "Ghostlight Service",
+        &crate::hub::supervisor::supervisor_task_name(),
         &supervisor::register_steps(&ctx.current_exe, &ctx),
         opts.dry_run,
     );
@@ -721,7 +725,7 @@ pub fn run_uninstall(opts: UninstallOptions) -> Result<()> {
     // Unregister + stop the OS supervisor, best-effort (see run_install's matching note).
     println!("\nSupervisor (auto-start):");
     supervisor::apply_steps(
-        "Ghostlight Service",
+        &crate::hub::supervisor::supervisor_task_name(),
         &supervisor::unregister_steps(&ctx),
         opts.dry_run,
     );

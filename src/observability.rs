@@ -50,12 +50,14 @@ pub(crate) fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-/// The log directory: `GHOSTLIGHT_LOG_DIR`, else `<data-local>/ghostlight`.
+/// The log directory: `GHOSTLIGHT_LOG_DIR`, else `<data-local>/<instance-leaf>` (ADR-0044:
+/// `ghostlight` for the default instance, `ghostlight-<n>` for a named one, so a dev instance's
+/// observability never mixes with the default's).
 pub fn log_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("GHOSTLIGHT_LOG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::data_local_dir().map(|d| d.join("ghostlight"))
+    dirs::data_local_dir().map(|d| d.join(crate::instance::Instance::resolve().dir_leaf()))
 }
 
 /// Truncate `s` to at most `max` bytes on a UTF-8 char boundary (so non-ASCII never panics).

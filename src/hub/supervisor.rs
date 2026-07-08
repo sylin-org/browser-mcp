@@ -10,15 +10,26 @@
 use crate::hub::role;
 use std::time::Duration;
 
-/// Windows Task Scheduler task name (PINNED, PINS.md SS5.2; H9 registers it under this exact
-/// name).
-pub const SUPERVISOR_TASK_NAME: &str = "Ghostlight Service";
+/// Windows Task Scheduler task name for the active instance (ADR-0044). The default instance
+/// yields `Ghostlight Service` (the PINNED name H9 registers, PINS.md SS5.2); a named instance
+/// yields `Ghostlight Service (<n>)`.
+pub fn supervisor_task_name() -> String {
+    crate::instance::Instance::resolve().supervisor_task_name()
+}
 
-/// macOS launchd label (PINNED, PINS.md SS5.2; H9 registers it under this exact name).
-pub const SUPERVISOR_LABEL: &str = "org.sylin.ghostlight.service";
+/// macOS launchd label for the active instance (ADR-0044). The default instance yields
+/// `org.sylin.ghostlight.service` (the PINNED label, PINS.md SS5.2); a named instance yields
+/// `org.sylin.ghostlight.<n>.service`.
+pub fn supervisor_label() -> String {
+    crate::instance::Instance::resolve().supervisor_label()
+}
 
-/// Linux systemd --user unit (PINNED, PINS.md SS5.2; H9 registers it under this exact name).
-pub const SUPERVISOR_UNIT: &str = "ghostlight.service";
+/// Linux systemd --user unit for the active instance (ADR-0044). The default instance yields
+/// `ghostlight.service` (the PINNED unit, PINS.md SS5.2); a named instance yields
+/// `ghostlight-<n>.service`.
+pub fn supervisor_unit() -> String {
+    crate::instance::Instance::resolve().supervisor_unit()
+}
 
 /// Self-heal retry window (PINNED, PINS.md SS5.2): after asking the supervisor to start the
 /// service, the adapter retries its dial for up to this long before giving up.
@@ -42,7 +53,7 @@ pub fn supervisor_start_command() -> Option<(String, Vec<String>)> {
         vec![
             "/run".to_string(),
             "/tn".to_string(),
-            SUPERVISOR_TASK_NAME.to_string(),
+            supervisor_task_name(),
         ],
     ))
 }
@@ -55,7 +66,7 @@ pub fn supervisor_start_command() -> Option<(String, Vec<String>)> {
         vec![
             "kickstart".to_string(),
             "-k".to_string(),
-            format!("gui/{}/{}", unsafe { libc::getuid() }, SUPERVISOR_LABEL),
+            format!("gui/{}/{}", unsafe { libc::getuid() }, supervisor_label()),
         ],
     ))
 }
@@ -65,11 +76,7 @@ pub fn supervisor_start_command() -> Option<(String, Vec<String>)> {
 pub fn supervisor_start_command() -> Option<(String, Vec<String>)> {
     Some((
         "systemctl".to_string(),
-        vec![
-            "--user".to_string(),
-            "start".to_string(),
-            SUPERVISOR_UNIT.to_string(),
-        ],
+        vec!["--user".to_string(), "start".to_string(), supervisor_unit()],
     ))
 }
 
@@ -118,12 +125,22 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(program, "schtasks");
-            assert_eq!(args, vec!["/run", "/tn", SUPERVISOR_TASK_NAME]);
+            assert_eq!(
+                args,
+                vec![
+                    "/run".to_string(),
+                    "/tn".to_string(),
+                    supervisor_task_name()
+                ]
+            );
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             assert_eq!(program, "systemctl");
-            assert_eq!(args, vec!["--user", "start", SUPERVISOR_UNIT]);
+            assert_eq!(
+                args,
+                vec!["--user".to_string(), "start".to_string(), supervisor_unit()]
+            );
         }
         #[cfg(target_os = "macos")]
         {
@@ -131,7 +148,7 @@ mod tests {
             assert_eq!(args[0], "kickstart");
             assert_eq!(args[1], "-k");
             assert!(args[2].starts_with("gui/"));
-            assert!(args[2].ends_with(SUPERVISOR_LABEL));
+            assert!(args[2].ends_with(supervisor_label().as_str()));
         }
     }
 

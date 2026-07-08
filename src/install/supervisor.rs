@@ -11,11 +11,11 @@
 
 use super::{native_host, PlanCtx};
 #[cfg(target_os = "macos")]
-use crate::hub::supervisor::SUPERVISOR_LABEL;
+use crate::hub::supervisor::supervisor_label;
 #[cfg(windows)]
-use crate::hub::supervisor::SUPERVISOR_TASK_NAME;
+use crate::hub::supervisor::supervisor_task_name;
 #[cfg(all(unix, not(target_os = "macos")))]
-use crate::hub::supervisor::SUPERVISOR_UNIT;
+use crate::hub::supervisor::supervisor_unit;
 use std::path::{Path, PathBuf};
 
 /// One external command to run best-effort (never fatal to the caller).
@@ -55,7 +55,7 @@ pub fn register_steps(exe: &Path, _ctx: &PlanCtx) -> Vec<SupervisorStep> {
             vec![
                 "/create".into(),
                 "/tn".into(),
-                SUPERVISOR_TASK_NAME.into(),
+                supervisor_task_name(),
                 "/tr".into(),
                 tr,
                 "/sc".into(),
@@ -67,7 +67,7 @@ pub fn register_steps(exe: &Path, _ctx: &PlanCtx) -> Vec<SupervisorStep> {
         )),
         SupervisorStep::Run(SupervisorCommand::new(
             "schtasks",
-            vec!["/run".into(), "/tn".into(), SUPERVISOR_TASK_NAME.into()],
+            vec!["/run".into(), "/tn".into(), supervisor_task_name()],
         )),
     ]
 }
@@ -80,7 +80,7 @@ pub fn unregister_steps(_ctx: &PlanCtx) -> Vec<SupervisorStep> {
         vec![
             "/delete".into(),
             "/tn".into(),
-            SUPERVISOR_TASK_NAME.into(),
+            supervisor_task_name(),
             "/f".into(),
         ],
     ))]
@@ -94,16 +94,17 @@ pub fn plist_path(ctx: &PlanCtx) -> PathBuf {
     ctx.home
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{SUPERVISOR_LABEL}.plist"))
+        .join(format!("{}.plist", supervisor_label()))
 }
 
 #[cfg(target_os = "macos")]
 fn render_plist(exe: &Path) -> String {
+    let label = supervisor_label();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\"><dict>\n  \
-<key>Label</key><string>{SUPERVISOR_LABEL}</string>\n  \
+<key>Label</key><string>{label}</string>\n  \
 <key>ProgramArguments</key><array><string>{}</string><string>service</string></array>\n  \
 <key>RunAtLoad</key><true/>\n  \
 <key>KeepAlive</key><true/>\n\
@@ -137,7 +138,7 @@ pub fn register_steps(exe: &Path, ctx: &PlanCtx) -> Vec<SupervisorStep> {
             vec![
                 "kickstart".into(),
                 "-k".into(),
-                format!("gui/{uid}/{SUPERVISOR_LABEL}"),
+                format!("gui/{uid}/{}", supervisor_label()),
             ],
         )),
     ]
@@ -150,7 +151,10 @@ pub fn unregister_steps(ctx: &PlanCtx) -> Vec<SupervisorStep> {
     vec![
         SupervisorStep::Run(SupervisorCommand::new(
             "launchctl",
-            vec!["bootout".into(), format!("gui/{uid}/{SUPERVISOR_LABEL}")],
+            vec![
+                "bootout".into(),
+                format!("gui/{uid}/{}", supervisor_label()),
+            ],
         )),
         SupervisorStep::RemoveFile {
             path: plist_path(ctx),
@@ -167,7 +171,7 @@ pub fn unit_path(ctx: &PlanCtx) -> PathBuf {
     ctx.config
         .join("systemd")
         .join("user")
-        .join(SUPERVISOR_UNIT)
+        .join(supervisor_unit())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -204,7 +208,7 @@ pub fn register_steps(exe: &Path, ctx: &PlanCtx) -> Vec<SupervisorStep> {
                 "--user".into(),
                 "enable".into(),
                 "--now".into(),
-                SUPERVISOR_UNIT.into(),
+                supervisor_unit(),
             ],
         )),
     ]
@@ -220,7 +224,7 @@ pub fn unregister_steps(ctx: &PlanCtx) -> Vec<SupervisorStep> {
                 "--user".into(),
                 "disable".into(),
                 "--now".into(),
-                SUPERVISOR_UNIT.into(),
+                supervisor_unit(),
             ],
         )),
         SupervisorStep::RemoveFile {

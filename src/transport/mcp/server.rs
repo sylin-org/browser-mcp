@@ -641,7 +641,7 @@ fn initialize_result(capabilities: &crate::hub::outbound::Registry) -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "ghostlight", "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": { "name": crate::instance::Instance::resolve().mcp_server_name(), "version": env!("CARGO_PKG_VERSION") },
         // The agent onboarding guide (ADR-0031 Decision 1), composed from each capability's
         // guide (ADR-0034 Decision 6). Today only the browser capability contributes; future
         // capabilities enrich this additively.

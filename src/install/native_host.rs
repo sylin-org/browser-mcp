@@ -6,7 +6,7 @@
 //! OS; only the small apply primitives touch the registry / filesystem.
 
 use super::{Hive, PlanCtx, Scope};
-use crate::transport::native::host::{HOST_DESCRIPTION, HOST_NAME};
+use crate::transport::native::host::{host_name, HOST_DESCRIPTION};
 use crate::{Error, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -145,7 +145,7 @@ impl HostManifest {
     /// Emit the manifest JSON (name, description, path, `type: "stdio"`, allowed_origins) + newline.
     pub fn to_json(&self) -> String {
         let value = json!({
-            "name": HOST_NAME,
+            "name": host_name(),
             "description": HOST_DESCRIPTION,
             "path": self.path.to_string_lossy(),
             "type": "stdio",
@@ -170,16 +170,20 @@ pub enum WowView {
 pub fn win_reg_key(spec: &BrowserSpec) -> String {
     format!(
         r"SOFTWARE\{}\NativeMessagingHosts\{}",
-        spec.win_vendor, HOST_NAME
+        spec.win_vendor,
+        host_name()
     )
 }
 
-/// The (Windows) shared host-manifest file path -- one file, referenced by every browser's key.
+/// The (Windows) shared host-manifest file path -- one file per instance, referenced by every
+/// browser's key. The dir leaf and the manifest file name both carry the active instance
+/// (`ghostlight` / `org.sylin.ghostlight.json` for the default; `ghostlight-<n>` /
+/// `org.sylin.ghostlight.<n>.json` for a named one), so instances never share a manifest.
 pub fn win_manifest_path(ctx: &PlanCtx) -> PathBuf {
     ctx.local
-        .join("ghostlight")
+        .join(crate::instance::Instance::resolve().dir_leaf())
         .join("NativeMessagingHosts")
-        .join(format!("{HOST_NAME}.json"))
+        .join(format!("{}.json", host_name()))
 }
 
 /// macOS per-browser host-manifest file path.
@@ -187,14 +191,14 @@ pub fn mac_host_path(spec: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
     ctx.home
         .join("Library/Application Support")
         .join(spec.mac_host_subdir)
-        .join(format!("{HOST_NAME}.json"))
+        .join(format!("{}.json", host_name()))
 }
 
 /// Linux per-browser host-manifest file path (user scope; CamelCase `NativeMessagingHosts` tail).
 pub fn linux_host_path(spec: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
     ctx.config
         .join(spec.linux_user_subdir)
-        .join(format!("{HOST_NAME}.json"))
+        .join(format!("{}.json", host_name()))
 }
 
 /// The hive to use for a scope.
@@ -272,7 +276,7 @@ pub fn host_file_owner(path: &Path) -> Result<Option<bool>> {
             let ours = serde_json::from_str::<serde_json::Value>(&contents)
                 .ok()
                 .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
-                .is_some_and(|name| name == HOST_NAME);
+                .is_some_and(|name| name == host_name());
             Ok(Some(ours))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -389,7 +393,7 @@ mod tests {
     fn host_manifest_json_has_type_stdio_and_exact_origin() {
         let m = HostManifest::resolve(Path::new("/abs/ghostlight"), Some(&"a".repeat(32))).unwrap();
         let v: serde_json::Value = serde_json::from_str(&m.to_json()).unwrap();
-        assert_eq!(v["name"], HOST_NAME);
+        assert_eq!(v["name"], host_name());
         assert_eq!(v["type"], "stdio");
         assert_eq!(
             v["allowed_origins"][0],
@@ -433,11 +437,17 @@ mod tests {
     fn windows_reg_key_per_browser() {
         assert_eq!(
             win_reg_key(browser_by_id("chrome").unwrap()),
-            format!(r"SOFTWARE\Google\Chrome\NativeMessagingHosts\{HOST_NAME}")
+            format!(
+                r"SOFTWARE\Google\Chrome\NativeMessagingHosts\{}",
+                host_name()
+            )
         );
         assert_eq!(
             win_reg_key(browser_by_id("brave").unwrap()),
-            format!(r"SOFTWARE\BraveSoftware\Brave-Browser\NativeMessagingHosts\{HOST_NAME}")
+            format!(
+                r"SOFTWARE\BraveSoftware\Brave-Browser\NativeMessagingHosts\{}",
+                host_name()
+            )
         );
     }
 
@@ -464,7 +474,7 @@ mod tests {
     #[test]
     fn write_atomic_creates_parents_overwrites_and_removes_only_ours() {
         let dir = std::env::temp_dir().join(format!("ghostlight-it-{}", std::process::id()));
-        let path = dir.join("nested").join(format!("{HOST_NAME}.json"));
+        let path = dir.join("nested").join(format!("{}.json", host_name()));
         let ours = HostManifest::resolve(Path::new("/abs/ghostlight"), Some(&"a".repeat(32)))
             .unwrap()
             .to_json();

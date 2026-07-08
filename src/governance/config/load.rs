@@ -31,7 +31,10 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
         .ok()
         .or_else(dirs::config_dir)?;
-    Some(base.join("ghostlight").join("config.json"))
+    Some(
+        base.join(crate::instance::Instance::resolve().dir_leaf())
+            .join("config.json"),
+    )
 }
 
 /// Path of the org policy file (fixed per platform; shared format section 1.2). No flag,

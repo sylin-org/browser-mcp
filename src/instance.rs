@@ -292,19 +292,19 @@ mod tests {
     #[test]
     fn validation_rejects_dangerous_or_malformed_names() {
         for bad in [
-            "",             // empty
-            "Dev",          // uppercase
-            "DEV",          // uppercase
-            "1dev",         // leading digit
-            "-dev",         // leading hyphen
-            "dev-",         // trailing hyphen
-            "de v",         // whitespace
-            "a.b",          // dot would look like a nested reverse-dns segment
-            "a/b",          // path separator
-            "a\\b",         // path separator
-            "../evil",      // path traversal
-            "default",      // reserved
-            "DEFAULT",      // reserved (case-insensitive)
+            "",        // empty
+            "Dev",     // uppercase
+            "DEV",     // uppercase
+            "1dev",    // leading digit
+            "-dev",    // leading hyphen
+            "dev-",    // trailing hyphen
+            "de v",    // whitespace
+            "a.b",     // dot would look like a nested reverse-dns segment
+            "a/b",     // path separator
+            "a\\b",    // path separator
+            "../evil", // path traversal
+            "default", // reserved
+            "DEFAULT", // reserved (case-insensitive)
         ] {
             assert!(Instance::from_name(bad).is_err(), "should reject {bad:?}");
         }

@@ -9,7 +9,7 @@
 pub fn default_audit_path() -> Option<std::path::PathBuf> {
     Some(
         dirs::data_local_dir()?
-            .join("ghostlight")
+            .join(crate::instance::Instance::resolve().dir_leaf())
             .join("audit.jsonl"),
     )
 }

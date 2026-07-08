@@ -41,14 +41,14 @@ use crate::{Error, Result};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
-/// Default endpoint base name; override with `GHOSTLIGHT_ENDPOINT` (used by tests and advanced
-/// deployments that run more than one isolated instance on a host). Each platform derives the real
-/// path from it: `\\.\pipe\<name>` on Windows, `<runtime-dir>/ghostlight/<name>.sock` on Unix.
-const DEFAULT_ENDPOINT: &str = "org.sylin.ghostlight.v1";
-
-/// The endpoint name both roles use: the `GHOSTLIGHT_ENDPOINT` env override, else the default.
+/// The endpoint name both roles use, in precedence order: the explicit `GHOSTLIGHT_ENDPOINT`
+/// override (tests and advanced deployments), else the active instance's endpoint (ADR-0044:
+/// `org.sylin.ghostlight.v1` for the default instance, `org.sylin.ghostlight.<n>.v1` for a named
+/// one). Each platform derives the real path from it: `\\.\pipe\<name>` on Windows,
+/// `<runtime-dir>/ghostlight/<name>.sock` on Unix.
 pub fn default_endpoint() -> String {
-    std::env::var("GHOSTLIGHT_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string())
+    std::env::var("GHOSTLIGHT_ENDPOINT")
+        .unwrap_or_else(|_| crate::instance::Instance::resolve().endpoint())
 }
 
 /// The ADAPTER/CONTROL endpoint's name (ADR-0030 Decision 1; PINS.md SS1): the extension
