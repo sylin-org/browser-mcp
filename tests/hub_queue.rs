@@ -69,6 +69,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         },
         session_registry: Arc::new(Mutex::new(SessionRegistry::new())),
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
+        session_titles: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
         live_sessions: Arc::new(AtomicUsize::new(0)),
         debug_sink: ghostlight::observability::DebugSink::disabled(),

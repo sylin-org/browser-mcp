@@ -1268,6 +1268,9 @@ mod tests {
             owned_tabs: std::sync::Arc::new(
                 std::sync::Mutex::new(std::collections::HashMap::new()),
             ),
+            session_titles: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         };
         crate::mcp::server::handle_line(
             &browser,

@@ -309,6 +309,10 @@ pub struct ServiceContext {
     pub initial_policy: LoadedPolicy,
     pub session_registry: Arc<std::sync::Mutex<session::SessionRegistry>>,
     pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
+    /// Per-session Chrome group titles (ADR-0047 D4), keyed by guid string: the service-lifetime
+    /// registry `session_title` dedupes and caches into, so a session's title stays stable across
+    /// reconnects (ADR-0047 D2) and two clients sharing a name get distinct `(2)`/`(3)` suffixes.
+    pub session_titles: Arc<std::sync::Mutex<HashMap<String, String>>>,
     pub mint_quota: MintQuota,
     pub live_sessions: Arc<AtomicUsize>,
     /// The service's observability sink (a clone of the one the browser holds). The inbound.web
@@ -369,6 +373,7 @@ impl ServiceContext {
             initial_policy: loaded_policy.clone(),
             session_registry: Arc::new(std::sync::Mutex::new(session::SessionRegistry::new())),
             owned_tabs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            session_titles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mint_quota: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(AtomicUsize::new(0)),
             debug_sink,

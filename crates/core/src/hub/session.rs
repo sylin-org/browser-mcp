@@ -88,17 +88,32 @@ pub fn owned_tab_ids(
     ids
 }
 
-/// The PINNED per-session group title (`docs/tasks/hub/PINS.md` SS6): `"\u{1F47B} Ghostlight
-/// <short>"`, where `<short>` is the first 8 characters of the GUID's canonical string -- matches
-/// the existing single-group `GROUP_TITLE` ghost-glyph convention in
-/// `extension/service-worker.js`. Embedding this TRUNCATED prefix in an outbound wire
-/// message/Chrome tab-group title is the pinned wire behavior itself, not the log/audit-sink leak
-/// ADR-0030 Decision 4 forbids ([`SessionGuid`]'s [`Display`](std::fmt::Display)/
-/// [`Debug`](std::fmt::Debug) stay fully redacted for every other path). A canonical
-/// [`SessionGuid`] is always at least 8 ASCII characters (the first hyphen falls at index 8), so
-/// this slice never panics.
-pub fn group_title(guid: &SessionGuid) -> String {
-    format!("\u{1F47B} Ghostlight {}", &guid.as_str()[..8])
+/// The per-session Chrome group title (ADR-0047 D4, superseding the hub batch's SS6 pin):
+/// `"\u{1F47B} <client name>"`, deduplicated with `" (2)"`, `" (3)"`, ... when another session
+/// already holds the same base title, falling back to the literal name `Ghostlight` when no
+/// clientInfo was captured. Computed once per guid in the service-lifetime `titles` registry and
+/// reused for every later request for the SAME guid (stable across reconnects, ADR-0047 D2). The
+/// client name is the MCP `clientInfo.name` the agent presented; unlike the superseded
+/// guid-prefix title it embeds no GUID, so it never touches ADR-0030 Decision 4's redaction path.
+pub fn session_title(
+    titles: &Mutex<HashMap<String, String>>,
+    guid: &SessionGuid,
+    client_name: Option<&str>,
+) -> String {
+    let mut map = titles.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(existing) = map.get(guid.as_str()) {
+        return existing.clone();
+    }
+    let name = client_name.unwrap_or("Ghostlight");
+    let base = format!("\u{1F47B} {name}");
+    let mut candidate = base.clone();
+    let mut n = 1u32;
+    while map.values().any(|t| t == &candidate) {
+        n += 1;
+        candidate = format!("{base} ({n})");
+    }
+    map.insert(guid.as_str().to_string(), candidate.clone());
+    candidate
 }
 
 /// The connecting peer's OS credential, captured by the LOCAL accept layer (`ipc::serve_adapters`)
@@ -283,15 +298,30 @@ mod tests {
         assert_eq!(owned_tab_ids(&owned_tabs, &b), vec![303]);
     }
 
-    /// H7 supplementary: the PINNED title format (PINS.md SS6), transcribed -- the ghost glyph
-    /// escape, a literal space, "Ghostlight", another space, then exactly the first 8 characters
-    /// of the GUID's canonical string.
+    /// ADR-0047 D4 (PINS P5): the title is the ghost glyph + the client's name, deduped with
+    /// `" (2)"`/`" (3)"` across distinct sessions holding the same base name, cached per guid so a
+    /// repeat call is stable (never bumps), and falls back to `Ghostlight` when no client name was
+    /// captured.
     #[test]
-    fn group_title_matches_the_pinned_format() {
-        let g = SessionGuid::mint();
-        let title = group_title(&g);
-        let expected_short = &g.as_str()[..8];
-        assert_eq!(title, format!("\u{1F47B} Ghostlight {expected_short}"));
+    fn session_title_uses_client_name_with_dedupe_and_fallback() {
+        let t = Mutex::new(HashMap::new());
+        let g1 = SessionGuid::mint();
+        let g2 = SessionGuid::mint();
+        let g3 = SessionGuid::mint();
+        assert_eq!(
+            session_title(&t, &g1, Some("Claude Code")),
+            "\u{1F47B} Claude Code"
+        );
+        assert_eq!(
+            session_title(&t, &g2, Some("Claude Code")),
+            "\u{1F47B} Claude Code (2)"
+        );
+        // A repeat call for the SAME guid returns the cached title, never bumps to (3).
+        assert_eq!(
+            session_title(&t, &g1, Some("Claude Code")),
+            "\u{1F47B} Claude Code"
+        );
+        assert_eq!(session_title(&t, &g3, None), "\u{1F47B} Ghostlight");
     }
 
     #[test]

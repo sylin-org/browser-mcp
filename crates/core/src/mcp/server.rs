@@ -200,6 +200,7 @@ where
         initial_policy: loaded_policy,
         session_registry: _,
         owned_tabs,
+        session_titles,
         mint_quota: _,
         live_sessions,
         debug_sink: _,
@@ -362,6 +363,7 @@ where
     let seat = SessionSeat {
         guid: guid.clone(),
         owned_tabs: Arc::clone(&owned_tabs),
+        session_titles: Arc::clone(&session_titles),
     };
 
     while let Some(line) = lines.next_line().await? {
@@ -379,7 +381,14 @@ where
         // "Preserved invariants": all-open byte-identity). H7 (ADR-0030 Decision 6/7; PINS.md
         // SS6) piggybacks on this SAME gate: a NEWLY adopted tabId (never an already-owned one)
         // also fires the out-of-band group-request presentation through `browser`.
-        if let Some(resp) = check_tab_ownership(line, &owned_tabs, &guid, &governance, &browser) {
+        if let Some(resp) = check_tab_ownership(
+            line,
+            &owned_tabs,
+            &session_titles,
+            &guid,
+            &governance,
+            &browser,
+        ) {
             let _ = tx.send(Outbound::Response(resp));
             continue;
         }
@@ -430,6 +439,7 @@ where
 fn check_tab_ownership(
     line: &str,
     owned_tabs: &Arc<Mutex<HashMap<i64, SessionGuid>>>,
+    titles: &Mutex<HashMap<String, String>>,
     guid: &SessionGuid,
     governance: &Governance,
     browser: &Browser,
@@ -447,7 +457,7 @@ fn check_tab_ownership(
     match crate::hub::session::claim_tab(owned_tabs, guid, tab_id) {
         crate::hub::session::TabClaim::Owned => None,
         crate::hub::session::TabClaim::Adopted => {
-            emit_group_request(browser, owned_tabs, guid);
+            emit_group_request(browser, owned_tabs, titles, governance, guid);
             None
         }
         crate::hub::session::TabClaim::Refused => {
@@ -462,14 +472,25 @@ fn check_tab_ownership(
 /// Chrome tab group. Fire-and-forget through the shared `Browser` seam (H2's existing plumbing --
 /// this function builds no new native-send transport); a missing extension link is a harmless
 /// no-op, same as any other out-of-band presentation call. The GUID is passed only as the wire
-/// argument `Browser::request_group` needs; it is never logged here.
+/// argument `Browser::request_group` needs; it is never logged here. The title is the client-name
+/// title (ADR-0047 D4) resolved from the service-lifetime `titles` registry and this session's
+/// captured `clientInfo.name`, deduped and cached per guid so it stays stable across reconnects.
 fn emit_group_request(
     browser: &Browser,
     owned_tabs: &Arc<Mutex<HashMap<i64, SessionGuid>>>,
+    titles: &Mutex<HashMap<String, String>>,
+    governance: &Governance,
     guid: &SessionGuid,
 ) {
     let tab_ids = crate::hub::session::owned_tab_ids(owned_tabs, guid);
-    let title = crate::hub::session::group_title(guid);
+    let title = crate::hub::session::session_title(
+        titles,
+        guid,
+        governance
+            .current_client()
+            .as_ref()
+            .map(|c| c.name.as_str()),
+    );
     browser.request_group(guid.as_str(), &tab_ids, &title);
 }
 
@@ -502,6 +523,7 @@ fn record_unowned_tab_denial(governance: &Governance, name: &str, args: Option<&
 pub(super) struct SessionSeat {
     pub(super) guid: SessionGuid,
     pub(super) owned_tabs: Arc<Mutex<HashMap<i64, SessionGuid>>>,
+    pub(super) session_titles: Arc<Mutex<HashMap<String, String>>>,
 }
 
 /// Parse and route one JSON-RPC line.
@@ -609,6 +631,7 @@ pub(super) async fn handle_line(
             // first-touch-steal it; a newly adopted tab fires the group-request presentation.
             let guid = seat.guid.clone();
             let owned_tabs = Arc::clone(&seat.owned_tabs);
+            let session_titles = Arc::clone(&seat.session_titles);
             let tool_name = params
                 .as_ref()
                 .and_then(|p| p.get("name"))
@@ -635,7 +658,13 @@ pub(super) async fn handle_line(
                         if let crate::hub::session::TabClaim::Adopted =
                             crate::hub::session::claim_tab(&owned_tabs, &guid, tab_id)
                         {
-                            emit_group_request(&browser, &owned_tabs, &guid);
+                            emit_group_request(
+                                &browser,
+                                &owned_tabs,
+                                &session_titles,
+                                &governance,
+                                &guid,
+                            );
                         }
                     }
                 }

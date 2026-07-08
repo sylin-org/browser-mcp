@@ -685,14 +685,14 @@ async function effectiveTabId(rawTabId) {
     await ensureGroup(false);
     const tabs = await groupTabs();
     if (!tabs.length) {
-      throw new TabAccessError(`Tab ${rawTabId} is not in the ${GROUP_TITLE} group. The group has no tabs; use tabs_create_mcp to open one.`);
+      throw new TabAccessError(`Tab ${rawTabId} is not a tab Ghostlight manages, and there are no managed tabs yet. Create one with tabs_create_mcp.`);
     }
-    throw new TabAccessError(`Tab ${rawTabId} is not in the ${GROUP_TITLE} group. Valid tab IDs are: ${tabs.map((t) => t.id).join(", ")}.`);
+    throw new TabAccessError(`Tab ${rawTabId} is not a tab Ghostlight manages. Valid tab IDs: ${tabs.map((t) => t.id).join(", ")}. List them with tabs_context_mcp.`);
   }
   await ensureGroup(false);
   const tabs = await groupTabs();
   if (!tabs.length) {
-    throw new TabAccessError(`No tabs in the ${GROUP_TITLE} group. Use tabs_create_mcp to open one, or tabs_context_mcp with createIfEmpty: true.`);
+    throw new TabAccessError(`No Ghostlight tabs yet. Create one with tabs_create_mcp, or call tabs_context_mcp with createIfEmpty: true.`);
   }
   const active = tabs.filter((t) => t.active);
   const pool = active.length ? active : tabs;
