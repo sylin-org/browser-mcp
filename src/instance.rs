@@ -324,16 +324,17 @@ mod tests {
     #[test]
     fn from_exe_stem_reads_the_multi_call_name() {
         use std::path::Path;
-        // The bare binary is the default (Windows .exe and bare Unix name both).
+        // Forward-slash paths are separator-valid on every platform (a backslash is NOT a
+        // separator on Unix, so Windows-style literals here would break the Linux/macOS CI).
         assert!(Instance::from_exe_stem(Path::new("/usr/bin/ghostlight"))
             .unwrap()
             .is_default());
-        assert!(Instance::from_exe_stem(Path::new(r"C:\x\ghostlight.exe"))
+        assert!(Instance::from_exe_stem(Path::new("/x/ghostlight.exe"))
             .unwrap()
             .is_default());
         // A ghostlight-<n> copy resolves to <n>.
         assert_eq!(
-            Instance::from_exe_stem(Path::new(r"C:\x\ghostlight-dev.exe"))
+            Instance::from_exe_stem(Path::new("/x/ghostlight-dev.exe"))
                 .unwrap()
                 .name(),
             Some("dev")
@@ -344,6 +345,19 @@ mod tests {
                 .name(),
             Some("qa-staging")
         );
+        // Windows-style separators, on Windows only.
+        #[cfg(windows)]
+        {
+            assert!(Instance::from_exe_stem(Path::new(r"C:\x\ghostlight.exe"))
+                .unwrap()
+                .is_default());
+            assert_eq!(
+                Instance::from_exe_stem(Path::new(r"C:\x\ghostlight-dev.exe"))
+                    .unwrap()
+                    .name(),
+                Some("dev")
+            );
+        }
         // No instance signal: an unrelated basename, or an invalid <n> (dot, leading digit).
         assert!(Instance::from_exe_stem(Path::new("/usr/bin/some-other-tool")).is_none());
         assert!(Instance::from_exe_stem(Path::new("/x/ghostlight-1.2.3.exe")).is_none());
