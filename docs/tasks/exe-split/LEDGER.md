@@ -5,10 +5,10 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 
 ## RESUME HERE
 
-- Next task: **S5** (`S5-adapter-agent-bin.md`)
+- Next task: **S6** (`S6-adapter-browser-bin.md`)
 - Base commit: `fccca60` on `dev` (tree green at batch authoring; later docs-only commits carry
   the batch itself)
-- Batch state: IN PROGRESS (S1, S2, S3, S4 complete)
+- Batch state: IN PROGRESS (S1, S2, S3, S4, S5 complete)
 
 ## Task table
 
@@ -18,7 +18,7 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 | S2 | Move leaf utilities to transport | done | bbb02da |
 | S3 | Move wire + handshake to transport | done | a48c136 |
 | S4 | Create ghostlight-core; root becomes facade | done | 4d8767a |
-| S5 | ghostlight-adapter-agent bin + rewire clients + test harness | pending | - |
+| S5 | ghostlight-adapter-agent bin + rewire clients + test harness | done | a6ff4e0 |
 | S6 | ghostlight-adapter-browser bin + host install rework | pending | - |
 | S7 | Retire roles from the ghostlight bin | pending | - |
 | S8 | Reconnect patience (120s) + ADR-0045 amendment | pending | - |
@@ -68,6 +68,13 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
   3. Straggler fix (compiler-demanded): crates/core/src/governance/templates.rs `include_str!` paths went `../../examples/` -> `../../../../examples/` (the file is two directory levels deeper after the move; examples/ stays at the repo root, unmoved). Path-only; the embedded template bytes and all governance semantics are byte-unchanged. The a7 governance-purity test (tests/architecture.rs) still passes because `ghostlight_transport::...` does NOT contain the forbidden token `crate::transport` (the ban is on the `crate::`-prefixed path edge).
   4. Straggler fix: removed the `use crate::hub::endpoint;` I first added to hub/mod.rs -- it collided (E0255) with the `pub mod endpoint;` child-module declaration; the child module already puts `endpoint` in scope, so `endpoint::serve` / `endpoint::claim_adapter_endpoint` resolve directly.
   5. endpoint.rs (moved service half): the S3 merge shim became a plain `use ghostlight_transport::ipc::*;` (was `pub use`) -- the root facade (SPEC 6) re-exports both ipc halves under `ghostlight::native::ipc`, so a `pub use` here would double-export. Module doc collapsed to the SPEC section 3 one-liner.
+
+### S5 -- ghostlight-adapter-agent bin + rewire clients + test harness
+- Commit: a6ff4e0
+- Verification: fmt OK / clippy OK / test --workspace OK (full suite green; adapter_reconnect + mcp_protocol + hub_lifecycle spawn the NEW ghostlight-adapter-agent bin and pass; new clients test passes) / linux cross-check OK. `cargo build -p ghostlight-adapter-agent` OK; `cargo tree -p ghostlight-adapter-agent` does NOT contain ghostlight-core (the load-bearing ADR-0046 rule; its tree is transport-only).
+  1. clients.rs had NO `#[cfg(test)] mod tests` block; created one to house the pinned `server_entry_points_at_the_agent_adapter_sibling` test (the task's "NEW in clients.rs tests module" implied it exists -- it did not).
+  2. crates/adapter-agent/Cargo.toml uses tokio features `["rt-multi-thread", "macros"]` exactly as SPEC 5.1 pins. The main uses `tokio::sync::Notify` (the "sync" feature), which resolves via Cargo feature unification: ghostlight-transport (a dependency) enables tokio "sync", and the single tokio build in the adapter's dep graph carries the union. Build + core-absence both verified, so no feature was added; noted only so a future transport dep change that drops "sync" is understood to affect this bin.
+  3. tests/adapter_reconnect.rs got its OWN local `adapter_bin()` helper (it does not `mod support;`); tests/hub_lifecycle.rs uses `support::adapter_bin()` (it does). tests/peer_death.rs (native-host role) and the install_instance/policy_* CLI spawns were left untouched per S5's CAUTION.
 
 ## Blocked
 
