@@ -1,0 +1,9 @@
+[package]
+name = "ghostlight-transport"
+version = "0.3.0"
+edition = "2021"
+description = "Ghostlight transport: the stable substrate shared by the role executables (ADR-0046)."
+publish = false
+license = "Apache-2.0 OR MIT"
+
+[dependencies]

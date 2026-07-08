@@ -20,7 +20,12 @@ pkg-fmt = "tgz"
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
 
+[workspace]
+members = [".", "crates/transport"]
+resolver = "2"
+
 [dependencies]
+ghostlight-transport = { path = "crates/transport" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync", "time", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

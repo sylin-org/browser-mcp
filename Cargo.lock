@@ -351,6 +351,7 @@ dependencies = [
  "clap",
  "dirs",
  "getrandom 0.4.3",
+ "ghostlight-transport",
  "hmac",
  "libc",
  "serde",
@@ -365,6 +366,10 @@ dependencies = [
  "windows-sys",
  "winreg",
 ]
+
+[[package]]
+name = "ghostlight-transport"
+version = "0.3.0"
 
 [[package]]
 name = "hashbrown"
