@@ -31,7 +31,31 @@ const {
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
 const { groupSessionTabs } = self.GhostlightGrouping;
 
-const NATIVE_HOST = "org.sylin.ghostlight";
+// Native-messaging host name. An unpacked/dev extension (installType "development") targets the
+// `dev` named instance, so the dev loop (docs/DEV-LOOP.md) reaches a service run from
+// target/debug; a packed extension (Web Store, installType "normal") targets the default
+// instance. The store build and an unpacked dev build can therefore run side by side, each bound
+// to its own instance (ADR-0044 coexistence). getSelf() is exempt from the "management"
+// permission, so this needs no new manifest permission.
+const NATIVE_HOST_DEFAULT = "org.sylin.ghostlight";
+const NATIVE_HOST_DEV = "org.sylin.ghostlight.dev";
+let resolvedNativeHost = null;
+// Resolved once and cached: an extension's installType does not change within a worker's life.
+async function nativeHost() {
+  if (resolvedNativeHost) return resolvedNativeHost;
+  try {
+    const info = await chrome.management.getSelf();
+    resolvedNativeHost = info.installType === "development" ? NATIVE_HOST_DEV : NATIVE_HOST_DEFAULT;
+  } catch {
+    resolvedNativeHost = NATIVE_HOST_DEFAULT;
+  }
+  return resolvedNativeHost;
+}
+// The named instance this extension is bound to, or null for the default. Display only; accurate
+// once nativeHost() has resolved (every connect() and status query awaits it first).
+function boundInstance() {
+  return resolvedNativeHost === NATIVE_HOST_DEV ? "dev" : null;
+}
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
 // name. The emoji is written as an escape so this source file stays ASCII; it renders as
 // the glyph at runtime.
@@ -85,9 +109,10 @@ async function connect() {
   if (nativePort) return;
   const s = await chrome.storage.session.get("session_killed");
   if (s.session_killed) return; // killed: only an explicit user reconnect resumes
-  if (nativePort) return; // re-check: another caller may have won the await above
+  const host = await nativeHost();
+  if (nativePort) return; // re-check: another caller may have won an await above
   try {
-    nativePort = chrome.runtime.connectNative(NATIVE_HOST);
+    nativePort = chrome.runtime.connectNative(host);
     nativePort.onMessage.addListener((msg) => {
       if (msg && msg.type === "tool_request" && msg.id) {
         if (sessionKilled) {
@@ -291,13 +316,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "GET_SESSION_STATE") {
-    chrome.storage.session.get("session_killed").then((s) => {
+    (async () => {
+      await nativeHost(); // resolve the instance label before answering
+      const s = await chrome.storage.session.get("session_killed");
       sendResponse({
         killed: s.session_killed === true,
         connected: nativePort !== null,
         attachedTabs: attached.size,
+        instance: boundInstance(),
       });
-    });
+    })();
     return true;
   }
   if (msg && msg.type === "KILL_SESSION") {

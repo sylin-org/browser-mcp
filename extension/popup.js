@@ -44,8 +44,26 @@ refresh();
 
 const sessionStatusEl = document.getElementById("session-status");
 const sessionButtonEl = document.getElementById("session-button");
+const linkDot = document.getElementById("link-dot");
+
+// The header connection dot: a live, at-a-glance signal that the agent can reach this browser.
+function renderLinkDot(state) {
+  if (state.killed) {
+    linkDot.className = "";
+    linkDot.title = "Session ended";
+  } else if (state.connected) {
+    linkDot.className = "on";
+    linkDot.title = state.instance
+      ? `Connected to Ghostlight (${state.instance})`
+      : "Connected to Ghostlight";
+  } else {
+    linkDot.className = "wait";
+    linkDot.title = "Waiting for the Ghostlight service...";
+  }
+}
 
 function renderSession(state) {
+  renderLinkDot(state);
   if (state.killed) {
     sessionStatusEl.textContent =
       "Session ended. Browser access is severed until you start a new session.";
@@ -55,7 +73,10 @@ function renderSession(state) {
     sessionButtonEl.disabled = false;
     return;
   }
-  const connectedLine = state.connected ? "Connected to the binary." : "Not connected to the binary.";
+  const inst = state.instance ? ` (${state.instance})` : "";
+  const connectedLine = state.connected
+    ? `Connected to Ghostlight${inst}.`
+    : "Waiting for the Ghostlight service...";
   sessionStatusEl.textContent = `${connectedLine} Debugger attached to ${state.attachedTabs} tab(s).`;
   sessionButtonEl.id = "kill-button";
   sessionButtonEl.textContent = "End session now";
@@ -78,6 +99,9 @@ sessionButtonEl.addEventListener("click", () => {
 });
 
 refreshSession();
+// Poll while the popup is open so the dot flips green on its own when the ~24s keepalive
+// (or a just-started service) connects -- no reopen needed.
+setInterval(refreshSession, 1500);
 
 // --- Action captions (visual feedback dictionary): a persisted, off-by-default UI preference the
 // content-script indicator reads on every page. The one bit this popup persists; all session state

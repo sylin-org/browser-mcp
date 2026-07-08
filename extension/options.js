@@ -26,3 +26,38 @@ effects.addEventListener("change", () => {
 captions.addEventListener("change", () => {
   chrome.storage.local.set({ ghostlight_captions: captions.checked });
 });
+
+// --- Connection status: a live link indicator (polls the worker; the extension holds no policy).
+// It flips green on its own when the native port connects, so a user who opens this page before
+// starting the service sees it turn green without reopening.
+const linkPill = document.getElementById("link-pill");
+const linkText = document.getElementById("link-text");
+const linkSub = document.getElementById("link-sub");
+
+function renderLink(state) {
+  const inst = state.instance ? ` (${state.instance})` : "";
+  if (state.killed) {
+    linkPill.className = "pill";
+    linkText.textContent = "Session ended";
+    linkSub.textContent =
+      "Browser access is severed. Start a new session from the toolbar popup to reconnect.";
+  } else if (state.connected) {
+    linkPill.className = "pill on";
+    linkText.textContent = `Connected${inst}`;
+    linkSub.textContent = "The agent can reach this browser.";
+  } else {
+    linkPill.className = "pill wait";
+    linkText.textContent = "Waiting";
+    linkSub.textContent =
+      "Waiting for the Ghostlight service. Start it, and this turns green on its own.";
+  }
+}
+
+function refreshLink() {
+  chrome.runtime.sendMessage({ type: "GET_SESSION_STATE" }, (state) => {
+    renderLink(state || { killed: false, connected: false, attachedTabs: 0, instance: null });
+  });
+}
+
+refreshLink();
+setInterval(refreshLink, 1500);
