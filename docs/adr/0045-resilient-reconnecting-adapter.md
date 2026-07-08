@@ -122,3 +122,12 @@ already covers the gap.
 - **Reconnect storm.** A service that crash-loops would make the adapter re-dial repeatedly.
   Mitigation: the existing bounded self-heal retry window governs each re-dial, and a client-side
   close still exits promptly.
+
+## Amendment (2026-07-08, pre-implementation of the split batch)
+
+Reconnect patience is asymmetric by design: the FIRST connect keeps the fail-fast 3s self-heal
+window (a misconfigured install should error quickly), while a RECONNECT episode (an established
+session whose service dropped) retries every 500ms for up to 120s, asking the OS supervisor to
+start the service once at the episode's start. This covers a rebuild-length gap in development
+and a crash/upgrade in production; if the window elapses, the adapter exits and the client
+reload path is the fallback, exactly the pre-0045 behavior.

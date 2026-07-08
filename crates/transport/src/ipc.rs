@@ -21,6 +21,17 @@ use crate::{Error, Result};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
+/// Reconnect retry window (ADR-0045 amendment, 2026-07-08): a RECONNECT episode (an established
+/// session whose service dropped) retries for up to this long -- covering a rebuild-length dev gap
+/// (Ctrl-C -> cargo build -> rerun) and a crash/upgrade in production -- before the adapter exits
+/// and the client-reload path becomes the fallback. Deliberately far wider than the first-connect
+/// `supervisor::SELF_HEAL_RETRY_WINDOW`, which stays fail-fast.
+pub const RECONNECT_RETRY_WINDOW: Duration = Duration::from_secs(120);
+
+/// Reconnect retry interval (ADR-0045 amendment): how often a reconnect episode re-dials within
+/// [`RECONNECT_RETRY_WINDOW`].
+pub const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
 /// The endpoint name both roles use, in precedence order: the explicit `GHOSTLIGHT_ENDPOINT`
 /// override (tests and advanced deployments), else the active instance's endpoint (ADR-0044:
 /// `org.sylin.ghostlight.v1` for the default instance, `org.sylin.ghostlight.<n>.v1` for a named
@@ -284,7 +295,7 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSi
         // Connect AND handshake with a bounded retry (see [`connect_and_handshake`]): a service
         // that is mid-startup or mid-restart (endpoint claimed but not yet serving/proving) is
         // tolerated, not a fatal exit -- the crux that makes a reconnect actually resilient.
-        let stream = connect_and_handshake(&adapter_endpoint).await?;
+        let stream = connect_and_handshake(&adapter_endpoint, !first).await?;
         if first {
             debug.ipc_note("connected to the service's adapter/control endpoint");
         } else {
@@ -361,14 +372,26 @@ async fn try_connect_once(
 /// proof -- a genuine squatter simply keeps failing until the window elapses and the adapter exits.
 async fn connect_and_handshake(
     adapter_endpoint: &str,
+    reconnect: bool,
 ) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
     if let Ok(stream) = try_connect_once(adapter_endpoint).await {
         return Ok(stream);
     }
     crate::supervisor::start_service();
-    let deadline = tokio::time::Instant::now() + crate::supervisor::SELF_HEAL_RETRY_WINDOW;
+    // Reconnect patience (ADR-0045 amendment): the FIRST connect stays fail-fast (3s) so a
+    // misconfigured install errors quickly; a RECONNECT episode is patient (120s) so a
+    // rebuild-length service gap or a prod crash/upgrade never forces a client reload.
+    let (interval, window) = if reconnect {
+        (RECONNECT_RETRY_INTERVAL, RECONNECT_RETRY_WINDOW)
+    } else {
+        (
+            crate::supervisor::SELF_HEAL_RETRY_INTERVAL,
+            crate::supervisor::SELF_HEAL_RETRY_WINDOW,
+        )
+    };
+    let deadline = tokio::time::Instant::now() + window;
     loop {
-        sleep(crate::supervisor::SELF_HEAL_RETRY_INTERVAL).await;
+        sleep(interval).await;
         match try_connect_once(adapter_endpoint).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {

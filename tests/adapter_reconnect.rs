@@ -206,3 +206,83 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     let _ = service2.wait();
     let _ = std::fs::remove_dir_all(&log_dir);
 }
+
+#[test]
+fn adapter_survives_a_five_second_service_gap() {
+    // Identical to the restart test above, but with a 5-second gap between kill and respawn --
+    // WIDER than the old first-connect 3s self-heal window, so it exercises the ADR-0045 amendment
+    // patient reconnect path (120s / 500ms). A rebuild-length gap (Ctrl-C -> cargo build -> rerun)
+    // must not force a client reload.
+    let (endpoint, instance, log_dir) = unique();
+    let _ = std::fs::remove_dir_all(&log_dir);
+
+    let mut service1 = service_cmd(&endpoint, &instance, &log_dir)
+        .spawn()
+        .expect("spawn service1");
+    wait_for_state(&log_dir, Duration::from_secs(15));
+
+    let mut adapter = spawn_adapter(&endpoint, &instance, &log_dir);
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    );
+
+    let init = recv(&rx, Duration::from_secs(10));
+    assert_eq!(init["id"], 1, "initialize reply: {init:?}");
+    let list1 = recv(&rx, Duration::from_secs(10));
+    assert_eq!(list1["id"], 2, "pre-gap tools/list reply: {list1:?}");
+
+    // Kill the service, then WAIT 5 seconds (past the old 3s first-connect window) before respawn.
+    let _ = service1.kill();
+    let _ = service1.wait();
+    std::thread::sleep(Duration::from_secs(5));
+    let mut service2 = service_cmd(&endpoint, &instance, &log_dir)
+        .spawn()
+        .expect("spawn service2");
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
+    );
+    let list2 = recv(&rx, Duration::from_secs(30));
+    assert_eq!(
+        list2["id"], 3,
+        "post-gap reply must be id 3 (the adapter reconnected across a 5s gap): {list2:?}"
+    );
+    assert_eq!(
+        list2["result"]["tools"].as_array().map(|t| t.len()),
+        Some(17),
+        "the reconnected session answered a real request: {list2:?}"
+    );
+
+    drop(stdin);
+    let _ = adapter.wait();
+    let _ = service2.kill();
+    let _ = service2.wait();
+    let _ = std::fs::remove_dir_all(&log_dir);
+}
