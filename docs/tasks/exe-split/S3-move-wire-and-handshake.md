@@ -33,7 +33,7 @@ root crate (it moves to core in S4). After this task the transport crate is func
      `crate::hub::session::SessionGuid` -> `crate::session_guid::SessionGuid`,
      `crate::hub::handshake` -> `crate::handshake`, `host::` -> `crate::host::`,
      `crate::observability::DebugSink` -> `crate::observability::DebugSink`).
-     Make `pipe_path`/`socket_path`/`adapter_endpoint_name` `pub` (SPEC pins this).
+     Make `pipe_path`/`socket_path`/`set_mode`/`adapter_endpoint_name` `pub` (SPEC pins this).
    - Service half stays in `src/transport/native/ipc.rs`, which now ALSO does
      `pub use ghostlight_transport::ipc::*;` at its top so the historical
      `ghostlight::native::ipc::{connect, probe_endpoint, default_endpoint, relay_adapter, ...}`

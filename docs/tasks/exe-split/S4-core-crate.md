@@ -50,8 +50,8 @@ SANCTIONED test edits (source-path scans; SPEC section 13), and ONLY these two:
 
 SPEC section 12. Plus:
 - `cargo test -p ghostlight-core 2>&1 | grep "test result"` (core unit tests run, 0 failed)
-- `git diff --name-only HEAD~1..HEAD -- tests/` lists EXACTLY `tests/architecture.rs` and
-  `tests/hub_role_wiring.rs` and nothing else.
+- `git diff --name-only -- tests/` (worktree vs HEAD, run BEFORE the code commit) lists EXACTLY
+  `tests/architecture.rs` and `tests/hub_role_wiring.rs` and nothing else.
 
 ## Out of scope
 

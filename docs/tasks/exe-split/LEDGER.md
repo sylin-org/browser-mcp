@@ -1,7 +1,7 @@
 # exe-split LEDGER
 
-Durable batch progress. One task = one commit = one log entry. Update after EVERY task, before
-starting the next.
+Durable batch progress. One task = one CODE commit + one ledger commit = one log entry
+(BOOTSTRAP per-task procedure). Update after EVERY task, before starting the next.
 
 ## RESUME HERE
 
