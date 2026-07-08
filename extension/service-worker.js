@@ -29,7 +29,7 @@ const {
 } = self.GhostlightConstants;
 // The H7 grouping DECISION (lib/grouping.js): pure, unit-tested in isolation
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
-const { groupSessionTabs } = self.GhostlightGrouping;
+const { groupSessionTabs, managedGroupIds, isManagedGroupId } = self.GhostlightGrouping;
 
 // Native-messaging host name. An unpacked/dev extension (installType "development") targets the
 // `dev` named instance, so the dev loop (docs/DEV-LOOP.md) reaches a service run from
@@ -63,12 +63,14 @@ const GROUP_TITLE = "\u{1F47B}Ghostlight";
 
 let nativePort = null;
 let groupId = null;
-// H7 (ADR-0030 Decision 6/7; PINS.md SS6): the per-session presentation map, guid -> Chrome
-// tab-group id. ADDITIVE to (never a replacement of) the single `groupId` above: `groupId` still
-// backs the existing access-control mechanism (ensureGroup/groupTabs/inGroup/effectiveTabId),
-// unaware of sessions -- the binary's tool_request wire carries no session identity at all,
-// so that check cannot become session-aware. `sessionGroups` backs ONLY the group_request
-// presentation feature, keyed on the guid a request names.
+// H7 (ADR-0030 Decision 6/7) + ADR-0047 D1: the per-session presentation map, guid -> Chrome
+// tab-group id. Since ADR-0047 D1 the single-group access-control gate
+// (groupTabs/inGroup/effectiveTabId) CONSULTS this map through the managed-surface predicate
+// (lib/grouping.js managedGroupIds/isManagedGroupId): a tab is in-surface when it sits in the
+// global `groupId` group OR any per-session group recorded here. This supersedes the earlier
+// posture that the gate "cannot become session-aware" -- one-group-per-tab meant a per-session
+// group evicted a tab from the global group, so a global-only gate wrongly rejected tabs the
+// extension legitimately manages (ADR-0047 Context, the F4 desync).
 const sessionGroups = new Map();
 // Take-the-wheel hold (g10): pending id -> resolver, for get_hold/set_hold/toggle_hold replies.
 // A separate sequence and map from tool_request ids; hold ids never collide with tool ids
@@ -591,7 +593,14 @@ async function ensureGroup(create) {
   await persistSessionState();
 }
 async function groupTabs() {
-  return groupId === null ? [] : chrome.tabs.query({ groupId });
+  const ids = managedGroupIds(groupId, sessionGroups);
+  const all = [];
+  for (const gid of ids) {
+    try {
+      all.push(...(await chrome.tabs.query({ groupId: gid })));
+    } catch { /* a vanished group contributes no tabs */ }
+  }
+  return all;
 }
 async function inGroup(tabId) {
   // Always consult live state; the in-memory groupId can be stale after a restart.
@@ -604,7 +613,7 @@ async function inGroup(tabId) {
         await persistSessionState();
       }
     }
-    return tab.groupId === groupId;
+    return isManagedGroupId(tab.groupId, groupId, sessionGroups);
   } catch {
     return false;
   }

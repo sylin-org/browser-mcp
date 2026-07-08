@@ -8,9 +8,13 @@
 // SAME guid, and titling it every call. Makes NO policy decision: it never reads a tab's
 // url/host/domain/grant to decide membership -- it groups the tabIds the caller named, full stop
 // (ADR-0030 Decision 6: "The extension's per-group checks remain defense-in-depth only"; Migration
-// H7: "groups on request only"). This is ADDITIVE to (never a replacement of) the existing
-// single-group `ensureGroup`/`groupTabs`/`inGroup`/`effectiveTabId` access-control mechanism in
-// `service-worker.js`, which this module does not touch or call.
+// H7: "groups on request only"). Since ADR-0047 D1 this module is no longer merely additive: the
+// single-group access-control gate in `service-worker.js` (`groupTabs`/`inGroup`/`effectiveTabId`)
+// now CONSULTS this module's `managedGroupIds`/`isManagedGroupId` predicate so a tab counts as
+// in-surface when it sits in ANY Ghostlight-managed group -- the legacy global group OR any
+// per-session group. The earlier "does not touch or call" claim was false at the Chrome API level:
+// a tab can be in exactly one group, so a per-session group evicts a tab from the global one
+// (ADR-0047 Context records the resulting F4 desync).
 //
 // IIFE-wrapped so its bindings stay function-scoped under importScripts' shared global (see
 // lib/geometry.js's header for why); this file is ASCII-only source (the ghost glyph the caller
@@ -60,7 +64,22 @@ async function groupSessionTabs(chrome, sessionGroups, guid, tabIds, title) {
   return groupId;
 }
 
-const GhostlightGrouping = { groupSessionTabs };
+// The managed surface (ADR-0047 D1): every Chrome tab-group id this extension manages -- the
+// legacy global group (when set) plus every per-session group it created on service request.
+function managedGroupIds(globalGroupId, sessionGroups) {
+  const ids = new Set();
+  if (globalGroupId !== null && globalGroupId !== undefined) ids.add(globalGroupId);
+  for (const gid of sessionGroups.values()) ids.add(gid);
+  return ids;
+}
+
+// True iff `groupId` (a chrome tab's .groupId; -1 means ungrouped) is a managed group.
+function isManagedGroupId(groupId, globalGroupId, sessionGroups) {
+  if (groupId === -1 || groupId === null || groupId === undefined) return false;
+  return managedGroupIds(globalGroupId, sessionGroups).has(groupId);
+}
+
+const GhostlightGrouping = { groupSessionTabs, managedGroupIds, isManagedGroupId };
 if (typeof module !== "undefined" && module.exports) {
   module.exports = GhostlightGrouping;
 } else {
