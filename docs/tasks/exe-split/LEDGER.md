@@ -5,10 +5,10 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 
 ## RESUME HERE
 
-- Next task: **S10** (`S10-packaging-and-distribution.md`)
+- Next task: **COMPLETE** -- all ten tasks (S1..S10) landed.
 - Base commit: `fccca60` on `dev` (tree green at batch authoring; later docs-only commits carry
   the batch itself)
-- Batch state: IN PROGRESS (S1..S9 complete)
+- Batch state: COMPLETE (S1..S10 done; final code commit 82a921c)
 
 ## Task table
 
@@ -23,7 +23,7 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 | S7 | Retire roles from the ghostlight bin | done | 583a25a |
 | S8 | Reconnect patience (120s) + ADR-0045 amendment | done | cbe3761 |
 | S9 | --no-supervisor + DEV-LOOP.md | done | ef7dc75 |
-| S10 | Packaging + distribution sweep | pending | - |
+| S10 | Packaging + distribution sweep | done | 82a921c |
 
 ## Log
 
@@ -103,6 +103,24 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 - Verification: fmt OK / clippy OK / test --workspace OK (full suite green incl. new no_supervisor_flag_plans_no_supervisor_steps) / linux cross-check OK. docs/DEV-LOOP.md verified pure ASCII (python byte scan, no em-dashes).
 - Deviations:
   1. none. `no_supervisor: bool` added to InstallArgs (root main.rs, the SPEC 10 doc string) + InstallOptions (core install/mod.rs) + the single From<InstallArgs> constructor. run_install prints the existing `\nSupervisor (auto-start):` header then `  (skipped: --no-supervisor)` and skips supervisor::apply_steps when set; run_uninstall's separate supervisor block is untouched. docs/DEV-LOOP.md covers the five pinned topics (build -p ghostlight, dev install --no-supervisor, terminal service --keep-warm, the Ctrl-C/build/rerun loop with the 120s reconnect, and why -p ghostlight avoids relinking the adapters).
+
+### S10 -- Packaging + distribution sweep (three binaries)
+- Commit: 82a921c
+- Verification: `grep -c ghostlight-adapter-agent .github/workflows/release.yml` = 3 and `ghostlight-adapter-browser` = 3 (both >= 1); `grep -rn ghostlight-adapter-agent scripts/get.sh scripts/get.ps1 packaging/npm | wc -l` = 6 (>= 3); `node --check packaging/npm/bin/ghostlight.js` OK; SPEC 12 fmt/clippy/test --workspace/linux all green (S10 changed no Rust, so the gate is confirmation).
+- STOP precondition: release.yml DID have a raw version-less binary upload, so the raw-triple change applied (no adapt-and-skip needed).
+  1. npm launcher (packaging/npm/bin/ghostlight.js): SPEC 11 says the bin execs `ghostlight-adapter-agent`; I REFINED that to branch -- a `ghostlight` CLI subcommand (install/uninstall/doctor/status/config/policy/service) execs `ghostlight`, and a bare/flags-only launch (the MCP case) execs `ghostlight-adapter-agent`. Reason: the npm README's `npx ghostlight install` must still reach the CLI installer, and the bare `ghostlight` no longer serves MCP (S7), so a blanket exec of adapter-agent would break `npx ghostlight install`. Both paths now work; consistent with SPEC 11's "ALSO" note that install config entries point at the sibling adapter. It downloads all three bins into one cache dir on first run.
+  2. release.yml: the single `RAW` GITHUB_ENV var was replaced by a per-bin loop (copy + checksum three raw files); the Upload path lists three disjoint per-name globs (`ghostlight-<target>*`, `ghostlight-adapter-agent-<target>*`, `ghostlight-adapter-browser-<target>*`). The pre-existing `env.ASSET` "context might be invalid" editor warnings are unchanged (a runtime GITHUB_ENV value the YAML linter cannot statically verify; present before this batch too).
+  3. Pre-existing intentional non-ASCII in README.md (a 👻 emoji at L174) and CLAUDE.md (§ section signs, the box-drawing repo-tree) was LEFT untouched: it is not em-dashes, it is intentional, and scrubbing it is out of S10's surgical scope (the whole-repo doc scrub is a separate pending item). My own S10 edits are pure ASCII (verified).
+  4. scoop `bin` became a 3-element array; homebrew `bin.install` names all three; winget gained two more NestedInstallerFiles with PortableCommandAlias per adapter. DISTRIBUTION.md gained an "Artifact shape" subsection; README.md "Get the binary" and CLAUDE.md's Binary bullet name the three executables (surgical, no restructure). tests/e2e/run-smoke.mjs was already wired in S6.
+
+## Batch complete
+
+All ten tasks (S1..S10) landed as code-commit + ledger-commit pairs on `dev`, base fccca60. The
+single multi-role `ghostlight` binary is now three role executables from one workspace
+(`ghostlight` + `ghostlight-transport` + `ghostlight-core` + `ghostlight-adapter-agent` +
+`ghostlight-adapter-browser`); the adapters depend on transport ONLY (verified: 0 ghostlight-core
+refs in either adapter's `cargo tree`). SPEC 12 green at every task boundary. Not pushed (owner
+pushes after review).
 
 ## Blocked
 
