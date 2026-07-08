@@ -160,7 +160,12 @@ pub async fn run(ctx: ServiceContext) {
             return;
         }
     };
-    tracing::info!(addr, "inbound.web listening");
+    // Publish the ACTUAL bound port (it may have been OS-assigned when the configured port was 0),
+    // so an observer -- `status`, `doctor`, or a test -- learns the real port the instant the
+    // listener is up. Done AFTER a successful bind, so its presence in the snapshot means "up".
+    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    ctx.debug_sink.set_webapi_port(actual_port);
+    tracing::info!(addr, port = actual_port, "inbound.web listening");
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(pair) => pair,

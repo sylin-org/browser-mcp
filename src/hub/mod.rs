@@ -245,7 +245,7 @@ async fn run_service_loop(
         );
     }
 
-    let browser = Browser::with_debug(debug_sink);
+    let browser = Browser::with_debug(debug_sink.clone());
 
     // The EXTENSION endpoint: UNCHANGED, server-speaks-first, no hello (ADR-0030 Decision 1;
     // PINS.md SS1).
@@ -266,7 +266,7 @@ async fn run_service_loop(
 
     // Build the SHARED ServiceContext ONCE (PINS.md SS1 pin 4); every multiplexed adapter session
     // `serve_adapters` spawns clones it.
-    let ctx = match ServiceContext::from_startup(browser, loaded_policy, user_source) {
+    let ctx = match ServiceContext::from_startup(browser, debug_sink, loaded_policy, user_source) {
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::error!(error = %e, "failed to build the shared service context");
@@ -404,6 +404,10 @@ pub struct ServiceContext {
     pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
     pub mint_quota: MintQuota,
     pub live_sessions: Arc<AtomicUsize>,
+    /// The service's observability sink (a clone of the one the browser holds). The inbound.web
+    /// transport publishes its actual bound port through this once its listener binds, so a reader
+    /// -- `status`, `doctor`, or a test -- learns the real port even when it was OS-assigned.
+    pub debug_sink: DebugSink,
 }
 
 impl ServiceContext {
@@ -414,6 +418,7 @@ impl ServiceContext {
     /// `mcp::server::run`, itself polled inside `run_mcp_server`'s `rt.block_on` above).
     pub fn from_startup(
         browser: Browser,
+        debug_sink: DebugSink,
         loaded_policy: LoadedPolicy,
         user_source: Option<String>,
     ) -> crate::Result<Self> {
@@ -459,6 +464,7 @@ impl ServiceContext {
             owned_tabs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mint_quota: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(AtomicUsize::new(0)),
+            debug_sink,
         })
     }
 }

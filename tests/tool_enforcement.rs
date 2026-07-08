@@ -646,17 +646,12 @@ fn form_fill_without_extension_fails_with_parent_audit() {
     .unwrap();
 
     let endpoint = format!("ghostlight-ge-noext-{pid}-{seq}");
-    // A deterministic, spread-out port (mirrors tests/manage_web_enable_remote.rs's own
-    // `test_webapi_port`, a different range to avoid cross-binary collisions): the web API
-    // listener itself is unused by this test, but `spawn_service_with_user_config_dir_and_webapi_port`
-    // is the one existing support helper that spawns an ALL-OPEN service (no `--manifest`) with
-    // an isolated `GHOSTLIGHT_USER_CONFIG_DIR`.
-    let port = 41000u16 + ((pid.wrapping_add(seq)) % 9000) as u16;
-    let mut service = support::spawn_service_with_user_config_dir_and_webapi_port(
-        &endpoint,
-        &user_config_dir,
-        port,
-    );
+    // The web API listener is unused by this test, but
+    // `spawn_service_with_user_config_dir_and_webapi_port` is the one existing support helper that
+    // spawns an ALL-OPEN service (no `--manifest`) with an isolated `GHOSTLIGHT_USER_CONFIG_DIR`;
+    // it binds an OS-assigned port, which this test simply ignores.
+    let (mut service, _port) =
+        support::spawn_service_with_user_config_dir_and_webapi_port(&endpoint, &user_config_dir);
     let mut adapter = support::spawn_adapter(&endpoint);
 
     let mut stdin = adapter.stdin.take().expect("adapter stdin");

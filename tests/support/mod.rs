@@ -25,23 +25,37 @@ pub fn log_dir_for(endpoint: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ghostlight-test-logdir-{endpoint}"))
 }
 
-/// Connect to a just-spawned service's TCP web API, retrying while the listener is still coming
-/// up. `wait_for_debug_state` returns when the debug snapshot is written, which can PRECEDE the
-/// web-API bind; a bare `TcpStream::connect` then races the listener and hits `ConnectionRefused`
-/// on slower/differently-scheduled runners (observed deterministically on macOS CI). Retries for
-/// up to 10s, then panics with the last error.
+/// Connect to a service's TCP web API. No retry is needed: the `port` comes from
+/// [`wait_for_webapi_port`], which the spawn helpers call before returning it, and the service
+/// publishes that port only AFTER its listener has bound -- so by the time a caller holds a port,
+/// the listener is up and its backlog accepts this connection immediately.
 pub fn connect_webapi(port: u16) -> std::net::TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    std::net::TcpStream::connect(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("connect to the web API on port {port}: {e}"))
+}
+
+/// Poll `log_dir`'s newest debug state until the service publishes its inbound.web listener's
+/// actual bound port (done right after a successful bind), and return it. Subsumes
+/// [`wait_for_debug_state`] for web-API tests: a published port proves both that the service
+/// started AND that its listener is up. Panics after `within` (the service never started, or its
+/// web-API bind failed -- which is deliberately non-fatal, so it would otherwise hang forever).
+pub fn wait_for_webapi_port(log_dir: &Path, within: Duration) -> u16 {
+    let deadline = Instant::now() + within;
     loop {
-        match std::net::TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => return stream,
-            Err(e) => {
-                if Instant::now() >= deadline {
-                    panic!("connect to the web API on port {port}: {e}");
+        if let Some(state) = newest_state(log_dir) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&state) {
+                if let Some(port) = v.get("webapi_port").and_then(|p| p.as_u64()) {
+                    return port as u16;
                 }
-                std::thread::sleep(Duration::from_millis(50));
             }
         }
+        if Instant::now() >= deadline {
+            panic!(
+                "the service never published a webapi_port within {within:?} (bind failed?); log_dir={}",
+                log_dir.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -101,17 +115,19 @@ pub fn spawn_service_with_program_data(endpoint: &str, program_data_dir: &Path) 
     child
 }
 
-/// Like [`spawn_service`], but with `GHOSTLIGHT_WEBAPI_PORT` forwarded (PINS.md CS11,
-/// `docs/tasks/console`: avoids a fixed-port collision between concurrently-spawned real services
-/// in `cargo test`'s default parallel test execution). Console-batch tests that fetch the real
-/// web API over TCP use this instead of [`spawn_service`].
-pub fn spawn_service_with_webapi_port(endpoint: &str, port: u16) -> Child {
+/// Like [`spawn_service`], but the SERVICE binds an OS-assigned ephemeral web-API port
+/// (`GHOSTLIGHT_WEBAPI_PORT=0`) and this helper returns the ACTUAL bound port it published
+/// (PINS.md CS11, `docs/tasks/console`). Replaces the old fixed pid+seq port guess, which could
+/// collide across the parallel test binaries `cargo test` runs -- on collision one service's bind
+/// failed (deliberately non-fatal), leaving a test connecting to a port with no listener. Returns
+/// `(Child, port)`; the caller kills the child in teardown.
+pub fn spawn_service_with_webapi_port(endpoint: &str) -> (Child, u16) {
     let log_dir = log_dir_for(endpoint);
     let _ = std::fs::remove_dir_all(&log_dir);
     let child = Command::new(bin())
         .arg("service")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
-        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
         .stdin(Stdio::null())
@@ -119,8 +135,8 @@ pub fn spawn_service_with_webapi_port(endpoint: &str, port: u16) -> Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn ghostlight service");
-    wait_for_debug_state(&log_dir, Duration::from_secs(15));
-    child
+    let port = wait_for_webapi_port(&log_dir, Duration::from_secs(15));
+    (child, port)
 }
 
 /// Combines [`spawn_service_with_program_data`] and [`spawn_service_with_webapi_port`] (K3,
@@ -130,15 +146,14 @@ pub fn spawn_service_with_webapi_port(endpoint: &str, port: u16) -> Child {
 pub fn spawn_service_with_program_data_and_webapi_port(
     endpoint: &str,
     program_data_dir: &Path,
-    port: u16,
-) -> Child {
+) -> (Child, u16) {
     let log_dir = log_dir_for(endpoint);
     let _ = std::fs::remove_dir_all(&log_dir);
     let child = Command::new(bin())
         .arg("service")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("ProgramData", program_data_dir)
-        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
         .stdin(Stdio::null())
@@ -146,8 +161,8 @@ pub fn spawn_service_with_program_data_and_webapi_port(
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn ghostlight service");
-    wait_for_debug_state(&log_dir, Duration::from_secs(15));
-    child
+    let port = wait_for_webapi_port(&log_dir, Duration::from_secs(15));
+    (child, port)
 }
 
 /// Combines [`spawn_service_with_webapi_port`] with the `GHOSTLIGHT_USER_CONFIG_DIR` override
@@ -158,15 +173,14 @@ pub fn spawn_service_with_program_data_and_webapi_port(
 pub fn spawn_service_with_user_config_dir_and_webapi_port(
     endpoint: &str,
     user_config_dir: &Path,
-    port: u16,
-) -> Child {
+) -> (Child, u16) {
     let log_dir = log_dir_for(endpoint);
     let _ = std::fs::remove_dir_all(&log_dir);
     let child = Command::new(bin())
         .arg("service")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_USER_CONFIG_DIR", user_config_dir)
-        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
         .stdin(Stdio::null())
@@ -174,8 +188,8 @@ pub fn spawn_service_with_user_config_dir_and_webapi_port(
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn ghostlight service");
-    wait_for_debug_state(&log_dir, Duration::from_secs(15));
-    child
+    let port = wait_for_webapi_port(&log_dir, Duration::from_secs(15));
+    (child, port)
 }
 
 /// Combines [`spawn_service_with_program_data_and_webapi_port`] with the
@@ -187,8 +201,7 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
     endpoint: &str,
     program_data_dir: &Path,
     user_config_dir: &Path,
-    port: u16,
-) -> Child {
+) -> (Child, u16) {
     let log_dir = log_dir_for(endpoint);
     let _ = std::fs::remove_dir_all(&log_dir);
     let child = Command::new(bin())
@@ -196,7 +209,7 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("ProgramData", program_data_dir)
         .env("GHOSTLIGHT_USER_CONFIG_DIR", user_config_dir)
-        .env("GHOSTLIGHT_WEBAPI_PORT", port.to_string())
+        .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
         .stdin(Stdio::null())
@@ -204,8 +217,8 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn ghostlight service");
-    wait_for_debug_state(&log_dir, Duration::from_secs(15));
-    child
+    let port = wait_for_webapi_port(&log_dir, Duration::from_secs(15));
+    (child, port)
 }
 
 /// Spawn a bare `ghostlight` invocation (the thin ADAPTER) with piped stdin/stdout, relaying to the

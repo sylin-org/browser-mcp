@@ -145,6 +145,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
         live_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        debug_sink: ghostlight::observability::DebugSink::disabled(),
     }
 }
 

@@ -202,6 +202,7 @@ where
         owned_tabs,
         mint_quota: _,
         live_sessions,
+        debug_sink: _,
     } = ctx;
 
     // H6 (ADR-0030 Decision 8; PINS.md SS5.4): count this session for the idle-grace watcher's

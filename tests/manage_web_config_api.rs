@@ -11,10 +11,6 @@ use std::time::Duration;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-fn test_webapi_port(seq: u32) -> u16 {
-    20000 + ((std::process::id()).wrapping_add(seq) % 10000) as u16
-}
-
 /// One raw HTTP/1.1 GET over a plain TCP connection, with an optional `Origin` header (used to
 /// exercise the `inbound.web.from` decision without needing a genuinely remote peer).
 fn http_get(port: u16, path: &str, origin: Option<&str>) -> String {
@@ -60,8 +56,7 @@ fn config_api_returns_every_registered_key_in_registry_order() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(10);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let response = http_get(port, "/api/v1/config", None);
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
@@ -115,8 +110,7 @@ fn config_api_is_refused_when_inbound_web_from_denies_the_source() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(12);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let response = http_get(port, "/api/v1/config", Some("http://evil.example.com"));
     assert_eq!(status_line(&response), "HTTP/1.1 403 Forbidden");

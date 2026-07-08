@@ -15,10 +15,6 @@ use std::time::Duration;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-fn test_webapi_port(seq: u32) -> u16 {
-    20000 + ((std::process::id()).wrapping_add(seq) % 10000) as u16
-}
-
 fn http_post(port: u16, path: &str, body: &str) -> String {
     let mut stream = support::connect_webapi(port);
     stream
@@ -62,12 +58,8 @@ fn enable_remote_writes_the_pinned_value() {
     std::fs::create_dir_all(&user_config_dir).unwrap();
 
     let endpoint = format!("ghostlight-console-enable-remote-{pid}-{seq}");
-    let port = test_webapi_port(30);
-    let mut service = support::spawn_service_with_user_config_dir_and_webapi_port(
-        &endpoint,
-        &user_config_dir,
-        port,
-    );
+    let (mut service, port) =
+        support::spawn_service_with_user_config_dir_and_webapi_port(&endpoint, &user_config_dir);
 
     let response = http_post(port, ROUTE, "");
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
@@ -135,13 +127,12 @@ fn enable_remote_records_one_config_changed_event() {
         .expect("write the org policy file");
 
     let endpoint = format!("ghostlight-console-enable-remote-audit-{pid}-{seq}");
-    let port = test_webapi_port(31);
-    let mut service = support::spawn_service_with_program_data_user_config_dir_and_webapi_port(
-        &endpoint,
-        &program_data_dir,
-        &user_config_dir,
-        port,
-    );
+    let (mut service, port) =
+        support::spawn_service_with_program_data_user_config_dir_and_webapi_port(
+            &endpoint,
+            &program_data_dir,
+            &user_config_dir,
+        );
 
     let response = http_post(port, ROUTE, "");
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
@@ -210,13 +201,12 @@ fn enable_remote_refuses_cleanly_under_an_org_mandatory_lock() {
         .expect("write the org policy file");
 
     let endpoint = format!("ghostlight-console-enable-remote-locked-{pid}-{seq}");
-    let port = test_webapi_port(32);
-    let mut service = support::spawn_service_with_program_data_user_config_dir_and_webapi_port(
-        &endpoint,
-        &program_data_dir,
-        &user_config_dir,
-        port,
-    );
+    let (mut service, port) =
+        support::spawn_service_with_program_data_user_config_dir_and_webapi_port(
+            &endpoint,
+            &program_data_dir,
+            &user_config_dir,
+        );
 
     let response = http_post(port, ROUTE, "");
     assert_eq!(status_line(&response), "HTTP/1.1 409 Conflict");
@@ -253,12 +243,8 @@ fn enable_remote_ignores_the_request_body() {
     std::fs::create_dir_all(&user_config_dir).unwrap();
 
     let endpoint = format!("ghostlight-console-enable-remote-ignore-body-{pid}-{seq}");
-    let port = test_webapi_port(33);
-    let mut service = support::spawn_service_with_user_config_dir_and_webapi_port(
-        &endpoint,
-        &user_config_dir,
-        port,
-    );
+    let (mut service, port) =
+        support::spawn_service_with_user_config_dir_and_webapi_port(&endpoint, &user_config_dir);
 
     let response = http_post(
         port,

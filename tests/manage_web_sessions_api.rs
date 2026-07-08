@@ -10,10 +10,6 @@ use std::time::Duration;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-fn test_webapi_port(seq: u32) -> u16 {
-    20000 + ((std::process::id()).wrapping_add(seq) % 10000) as u16
-}
-
 fn http_get(port: u16, path: &str) -> String {
     let mut stream = support::connect_webapi(port);
     stream
@@ -53,8 +49,7 @@ fn sessions_api_reports_a_live_adapter_session_with_truncated_guid() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(20);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
     let mut adapter = support::spawn_adapter(&endpoint);
 
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
@@ -67,14 +62,34 @@ fn sessions_api_reports_a_live_adapter_session_with_truncated_guid() {
               \"params\":{\"name\":\"navigate\",\"arguments\":{\"tabId\":424242}}}\n",
         )
         .unwrap();
-    // Give the service a brief moment to process both lines (initialize + the tools/call's
-    // synchronous claim_tab gate) before querying the sessions view; the tool call's own
-    // (eventual, extension-less) failure is never read back.
-    std::thread::sleep(Duration::from_millis(300));
-
-    let response = http_get(port, "/api/v1/sessions");
-    assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
-    let parsed: serde_json::Value = serde_json::from_str(body(&response)).expect("valid JSON");
+    // Poll the sessions view until the adapter's binding for tab 424242 appears: the adapter's
+    // registration and the tools/call's synchronous claim_tab gate must propagate first, and that
+    // timing varies by platform, so wait on the observable outcome rather than a fixed sleep (the
+    // tool call's own eventual, extension-less failure is never read back).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let parsed = loop {
+        let response = http_get(port, "/api/v1/sessions");
+        assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
+        let parsed: serde_json::Value = serde_json::from_str(body(&response)).expect("valid JSON");
+        let has_binding = parsed["adapter_bindings"]
+            .as_array()
+            .map(|bs| {
+                bs.iter().any(|b| {
+                    b["owned_tab_ids"]
+                        .as_array()
+                        .map(|ids| ids.iter().any(|id| id == 424242))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if has_binding {
+            break parsed;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("no binding owns tabId 424242 within the deadline: {parsed}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
     assert!(
         parsed["live_session_count"].as_u64().unwrap_or(0) >= 1,

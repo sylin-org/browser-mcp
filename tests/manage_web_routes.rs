@@ -11,12 +11,6 @@ use std::time::Duration;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// PINS.md CS11: a test-unique port so concurrently-spawned real services never collide under
-/// `cargo test`'s default parallel execution.
-fn test_webapi_port(seq: u32) -> u16 {
-    20000 + ((std::process::id()).wrapping_add(seq) % 10000) as u16
-}
-
 /// One raw HTTP/1.1 request/response round trip over a plain TCP connection (no WS upgrade).
 /// Returns the full response text (status line, headers, body).
 fn http_get(port: u16, path: &str) -> String {
@@ -69,8 +63,7 @@ fn console_index_page_is_served_over_a_real_http_get() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(0);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let response = http_get(port, "/");
     assert_eq!(status_line(&response), "HTTP/1.1 200 OK");
@@ -99,8 +92,7 @@ fn console_css_and_js_are_served_with_correct_content_type() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(1);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let css = http_get(port, "/manage.css");
     assert_eq!(status_line(&css), "HTTP/1.1 200 OK");
@@ -131,8 +123,7 @@ fn unknown_path_under_api_v1_is_404() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(2);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let response = http_get(port, "/api/v1/nope");
     assert_eq!(status_line(&response), "HTTP/1.1 404 Not Found");
@@ -156,8 +147,7 @@ fn wrong_method_on_a_known_path_is_405() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(3);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let response = http_request(port, "POST", "/");
     assert_eq!(status_line(&response), "HTTP/1.1 405 Method Not Allowed");
@@ -174,8 +164,7 @@ fn a_real_ws_upgrade_request_is_unaffected() {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let port = test_webapi_port(4);
-    let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
+    let (mut service, port) = support::spawn_service_with_webapi_port(&endpoint);
 
     let mut stream = support::connect_webapi(port);
     stream
