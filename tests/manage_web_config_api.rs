@@ -6,7 +6,6 @@
 mod support;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -19,7 +18,7 @@ fn test_webapi_port(seq: u32) -> u16 {
 /// One raw HTTP/1.1 GET over a plain TCP connection, with an optional `Origin` header (used to
 /// exercise the `inbound.web.from` decision without needing a genuinely remote peer).
 fn http_get(port: u16, path: &str, origin: Option<&str>) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the web API");
+    let mut stream = support::connect_webapi(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

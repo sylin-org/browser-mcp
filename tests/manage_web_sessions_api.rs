@@ -5,7 +5,6 @@
 mod support;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -16,7 +15,7 @@ fn test_webapi_port(seq: u32) -> u16 {
 }
 
 fn http_get(port: u16, path: &str) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the web API");
+    let mut stream = support::connect_webapi(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -97,7 +96,13 @@ fn sessions_api_reports_a_live_adapter_session_with_truncated_guid() {
         8,
         "guid must be truncated to 8 characters: {guid}"
     );
-    assert!(entry["pid"].as_u64().unwrap() > 0);
+    let pid = entry["pid"].as_u64().expect("pid is a number");
+    // macOS's getpeereid() reports no pid, so capture_peer_cred records a documented, logging-only
+    // pid: 0 there (ADR-0030 Decision 4 amendment). Linux (SO_PEERCRED) and Windows both provide
+    // it. Assert the positive pid only where the OS actually supplies one.
+    if cfg!(not(target_os = "macos")) {
+        assert!(pid > 0, "peer pid must be reported on this platform: {pid}");
+    }
 
     let _ = adapter.kill();
     let _ = adapter.wait();

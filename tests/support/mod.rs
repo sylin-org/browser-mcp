@@ -25,6 +25,26 @@ pub fn log_dir_for(endpoint: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ghostlight-test-logdir-{endpoint}"))
 }
 
+/// Connect to a just-spawned service's TCP web API, retrying while the listener is still coming
+/// up. `wait_for_debug_state` returns when the debug snapshot is written, which can PRECEDE the
+/// web-API bind; a bare `TcpStream::connect` then races the listener and hits `ConnectionRefused`
+/// on slower/differently-scheduled runners (observed deterministically on macOS CI). Retries for
+/// up to 10s, then panics with the last error.
+pub fn connect_webapi(port: u16) -> std::net::TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return stream,
+            Err(e) => {
+                if Instant::now() >= deadline {
+                    panic!("connect to the web API on port {port}: {e}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Spawn `ghostlight service` bound to `endpoint`: debug on, an isolated `GHOSTLIGHT_LOG_DIR`
 /// ([`log_dir_for`], so the hub-key + debug files are test-isolated), stdio null. BLOCKS until the
 /// service's debug snapshot exists (poll up to ~15s). Returns the `Child` -- the caller kills it in

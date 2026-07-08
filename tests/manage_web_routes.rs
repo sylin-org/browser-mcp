@@ -6,7 +6,6 @@
 mod support;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -25,7 +24,7 @@ fn http_get(port: u16, path: &str) -> String {
 }
 
 fn http_request(port: u16, method: &str, path: &str) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the web API");
+    let mut stream = support::connect_webapi(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -178,7 +177,7 @@ fn a_real_ws_upgrade_request_is_unaffected() {
     let port = test_webapi_port(4);
     let mut service = support::spawn_service_with_webapi_port(&endpoint, port);
 
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut stream = support::connect_webapi(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
