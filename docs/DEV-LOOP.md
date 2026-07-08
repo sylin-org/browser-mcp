@@ -33,11 +33,13 @@ extension at chrome://extensions and restart your editor so it picks up the new 
 ## 3. Run the service in a terminal
 
 ```
-ghostlight --instance dev service --keep-warm --debug
+ghostlight --debug --instance dev service --keep-warm
 ```
 
 `--keep-warm` disables the idle-grace shutdown, so the terminal service stays up between actions
-instead of exiting after a quiet window.
+instead of exiting after a quiet window. Note the flag placement: `--debug` is a root-level flag
+and must come BEFORE the `service` subcommand (`--instance` and `--keep-warm` are accepted in
+either position).
 
 ## 4. The edit loop
 
