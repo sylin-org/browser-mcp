@@ -5,10 +5,10 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 
 ## RESUME HERE
 
-- Next task: **S7** (`S7-retire-roles-from-main.md`)
+- Next task: **S8** (`S8-reconnect-patience.md`)
 - Base commit: `fccca60` on `dev` (tree green at batch authoring; later docs-only commits carry
   the batch itself)
-- Batch state: IN PROGRESS (S1, S2, S3, S4, S5, S6 complete)
+- Batch state: IN PROGRESS (S1, S2, S3, S4, S5, S6, S7 complete)
 
 ## Task table
 
@@ -20,7 +20,7 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 | S4 | Create ghostlight-core; root becomes facade | done | 4d8767a |
 | S5 | ghostlight-adapter-agent bin + rewire clients + test harness | done | a6ff4e0 |
 | S6 | ghostlight-adapter-browser bin + host install rework | done | 4a95f68 |
-| S7 | Retire roles from the ghostlight bin | pending | - |
+| S7 | Retire roles from the ghostlight bin | done | 583a25a |
 | S8 | Reconnect patience (120s) + ADR-0045 amendment | pending | - |
 | S9 | --no-supervisor + DEV-LOOP.md | pending | - |
 | S10 | Packaging + distribution sweep | pending | - |
@@ -83,6 +83,14 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
   2. Added `pub fn browser_bin()` to tests/support/mod.rs (symmetric with S5's `adapter_bin()`); peer_death uses it. adapter_reconnect keeps its own local helpers (still no `mod support;`).
   3. install_instance dev test: updated BOTH the assertion (`ghostlight-dev` -> `ghostlight-adapter-browser-dev`) and its panic-message text; the default-plan test's `!plan.contains("ghostlight-dev")` still holds (the default plan copies nothing and names only the two adapter siblings).
   4. instance_launcher named-branch derives the copy file name as `ghostlight-adapter-browser-<name>[.exe]` directly from `instance.name()` (the old code used `mcp_server_name()` = `ghostlight-<n>`); default branch uses `sibling_bin(current_exe, "ghostlight-adapter-browser")` instead of `normalize_exe_path(current_exe)`. install/mod.rs copies FROM the browser-adapter sibling (computed once into `copy_from`, used by the size-check, the manual hint, and the CopyBinary op).
+
+### S7 -- Retire roles from the ghostlight bin
+- Commit: 583a25a
+- Verification: fmt OK / clippy OK / test --workspace OK (full suite green incl. new bare_invocation_prints_guidance_and_exits_2; the S5/S6 re-points mean nothing else references the deleted roles) / linux cross-check OK. S7-specific grep: `run_mcp_server|run_native_host_role|run_as_adapter` across src+crates returns ONLY doc-comment prose (6 hits, all `//`/`///`), ZERO code hits.
+  1. Removed `use ghostlight::native::ipc;` from src/main.rs -- it was used only inside the deleted `run_native_host_role`; leaving it would trip clippy -D warnings (unused import).
+  2. `doctor::sweep_orphans()` (a `pub fn`) lost its only internal caller (the deleted run_mcp_server) but was NOT removed: it is public API reachable via the facade (`ghostlight::hub::manage::doctor::sweep_orphans`), so it raises no dead_code warning; the standalone `doctor --fix` reaper is the other user of the reap machinery.
+  3. Six stale doc-PROSE mentions of the retired role names survive in transport/handshake.rs, transport/ipc.rs (x2), adapter-agent/main.rs (x2, describing what it was "transcribed from"), and core/hub/mod.rs:~325 (ServiceContext doc). All are `//`/`///` prose (never `[intra-doc links]`), rustdoc-only, explicitly sanctioned by the S7 verify ("doc-comment prose mentions are acceptable"). The role-ENUMERATION docs the task named (root main.rs module doc, core hub/mod.rs module doc) WERE updated to name the two adapter executables.
+  4. The bare-invocation guidance is printed as TWO `eprintln!` lines (the exact SPEC section 9 text) + `std::process::exit(2)` in the `Cli { command: None, .. }` arm.
 
 ## Blocked
 
