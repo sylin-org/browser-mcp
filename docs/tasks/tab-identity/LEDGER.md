@@ -5,7 +5,13 @@ task (or block); this file is the single source of truth for batch progress.
 
 ## RESUME HERE
 
-Next task: **T5** (`T5-client-name-titles.md`). Base: T4 landed at `7ee9b06`.
+Next task: **T6** (`T6-ownership-liveness-gc.md`). Base: T5 landed at `170aaae`.
+NOTE for T6: T5 added `session_titles` to `SessionSeat` (see T5 deviation 1), so the seat already
+has THREE fields (guid, owned_tabs, session_titles). T6's PINS P6 says "the audit-test seat gains
+the third field (live_guids)" -- with T5's field in place, `live_guids` is actually the FOURTH
+field. Re-read the tree (BOOTSTRAP standing order) and add `live_guids` as an additional field to
+BOTH `SessionSeat` and the pipeline.rs audit-test seat literal; the ordinal is a hint, the intent
+(add live_guids to the seat + its literal) is what holds.
 
 ## Task table
 
@@ -15,7 +21,7 @@ Next task: **T5** (`T5-client-name-titles.md`). Base: T4 landed at `7ee9b06`.
 | T2 down-classifier | done | 293dfd1 | |
 | T3 stable session guid | done | fb88795 | build-order note (deviation 1) |
 | T4 envelope guid + session ops | done | 7ee9b06 | deviations 1-3 |
-| T5 client-name titles + errors | pending | - | |
+| T5 client-name titles + errors | done | 170aaae | deviations 1-3 |
 | T6 liveness + pruning + changelog | pending | - | |
 
 ## Per-task log
@@ -147,3 +153,43 @@ your reasoning, then the batch HALTS per BOOTSTRAP.)
   `tool_schema_fidelity` 10 (sacred surface intact), `serve_bridges_a_tool_call_over_the_real_ipc`
   ok (envelope-guid oracle), `hub_multiplex` 3, `hub_isolation` 2, `hub_queue` 2; `cargo check
   --target x86_64-unknown-linux-gnu --workspace --all-targets` OK.
+
+### T5 -- client-name tab-group titles + recovery-steering errors (ADR-0047 D4) -- DONE
+
+- Code commit: `170aaae`. Seven files (see deviation 3), all pure ASCII.
+- STOP preconditions: all passed. `grep --exclude-dir=node_modules "is not in the" tests/ crates/
+  src/` returned NOTHING (no test pins the old error strings); `Governance::current_client()` is
+  `pub(crate) fn -> Option<ClientInfo>` with `ClientInfo { pub name: String, pub version: String }`
+  (ports.rs), so `governance.current_client().as_ref().map(|c| c.name.as_str())` compiles;
+  `serve_session` destructures `ServiceContext` field-by-field with no `..`; hub_isolation/hub_queue
+  build `ServiceContext` literals.
+- Changes per PINS P5: DELETED `group_title` + its test; ADDED `session_title` + the pinned test
+  `session_title_uses_client_name_with_dedupe_and_fallback`; `ServiceContext.session_titles` +
+  `from_startup` init; `emit_group_request` gained `titles` + `governance`, builds via
+  `session_title(...)`; `check_tab_ownership` gained a `titles` param; both gate sites thread it;
+  hub_isolation/hub_queue ServiceContext literals gained the one-line initializer; the three
+  extension `effectiveTabId` error strings replaced (the legacy `tabsContextLegacy` string left
+  verbatim). `grep group_title crates/ src/ tests/` == 0 after the change.
+- DEVIATION 1 (threading mechanism -> touches a non-owned file): the second `emit_group_request`
+  caller is the tabs_create response-claim spawn INSIDE `handle_line`; it can only reach
+  `session_titles` through `SessionSeat` (the T5 task says "serve_session ... includes it in the
+  seat clones"). So `SessionSeat` gained a `session_titles` field, which forced a one-line addition
+  to the audit-test `SessionSeat` literal in `crates/core/src/mcp/pipeline.rs` -- a file NOT in
+  T5's owned list. This is a compiler-forced test-fixture update, identical in kind to the
+  sanctioned hub_isolation/hub_queue ServiceContext literal fixes. Reported per the authority
+  order ("the task file wins; report the disagreement").
+- DEVIATION 2 (downstream: T6 ordinal): because T5 grew `SessionSeat` to three fields, T6's PINS
+  P6 wording "the audit-test seat gains the third field (live_guids)" is now off by one --
+  `live_guids` will be the FOURTH field. Recorded a NOTE in RESUME HERE for T6 to add `live_guids`
+  as an additional field regardless of ordinal (BOOTSTRAP's re-read-the-tree order governs). No
+  semantic impact; both fields still land.
+- DEVIATION 3 (staged seven files, not six): the task says "stage exactly the six named source
+  files", but pipeline.rs's seat literal MUST change in the SAME commit or the tree does not
+  compile (SessionSeat has three fields; a two-field literal is E0063). Staged all seven so every
+  commit builds green (stop-anywhere invariant).
+- Verification (all green): `node --check` OK; `node --test grouping.test.js` 3 pass; `cargo fmt
+  --check` OK; clippy exit 0; `cargo test -p ghostlight-core session_title` = 1 pass; `cargo test
+  --workspace --no-fail-fast` = 43 `test result: ok`, 0 failed; guardrails re-run green --
+  `all_open_golden` 3 (byte-identity intact), `tool_schema_fidelity` 10, `hub_isolation` 2,
+  `hub_queue` 2; `cargo check --target x86_64-unknown-linux-gnu --workspace --all-targets` OK;
+  `grep group_title crates/ src/ tests/` == 0.
