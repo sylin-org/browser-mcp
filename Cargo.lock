@@ -369,6 +369,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostlight-adapter-browser"
+version = "0.3.0"
+dependencies = [
+ "ghostlight-transport",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ghostlight-core"
 version = "0.3.0"
 dependencies = [

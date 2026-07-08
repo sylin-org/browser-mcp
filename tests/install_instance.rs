@@ -53,8 +53,8 @@ fn dev_install_plan_copies_a_named_binary_and_suffixes_the_whole_stack() {
     // The per-instance binary copy Chrome launches by name (ADR-0044 Decision 4, the multi-call
     // binary): a `ghostlight-dev` copy that the native host reads from its own argv[0].
     assert!(
-        plan.contains("instance binary") && plan.contains("ghostlight-dev"),
-        "the dev plan copies a per-instance ghostlight-dev binary: {plan}"
+        plan.contains("instance binary") && plan.contains("ghostlight-adapter-browser-dev"),
+        "the dev plan copies a per-instance ghostlight-adapter-browser-dev binary: {plan}"
     );
     // The native-host name/manifest is instance-isolated.
     assert!(

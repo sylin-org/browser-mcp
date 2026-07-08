@@ -135,11 +135,18 @@ impl Instance {
     /// Windows and leaves a bare Unix name intact. This is the ONLY instance signal Chrome's
     /// arg-free native-host launch can carry.
     pub fn from_exe_stem(exe: &std::path::Path) -> Option<Self> {
+        Self::from_exe_stem_with_base(exe, LEAF_BASE)
+    }
+
+    /// [`from_exe_stem`] generalized over the executable's base name (ADR-0046: each role executable
+    /// resolves argv[0] against ITS OWN base, so `ghostlight-adapter-browser` is that bin's DEFAULT
+    /// instance, never a bogus instance named "adapter-browser").
+    pub fn from_exe_stem_with_base(exe: &std::path::Path, base: &str) -> Option<Self> {
         let stem = exe.file_stem()?.to_str()?;
-        if stem == LEAF_BASE {
+        if stem == base {
             return Some(Self::default());
         }
-        let name = stem.strip_prefix(&format!("{LEAF_BASE}-"))?;
+        let name = stem.strip_prefix(base)?.strip_prefix('-')?;
         Self::from_name(name).ok()
     }
 
@@ -362,5 +369,39 @@ mod tests {
         assert!(Instance::from_exe_stem(Path::new("/usr/bin/some-other-tool")).is_none());
         assert!(Instance::from_exe_stem(Path::new("/x/ghostlight-1.2.3.exe")).is_none());
         assert!(Instance::from_exe_stem(Path::new("/x/ghostlight-.exe")).is_none());
+    }
+
+    #[test]
+    fn from_exe_stem_with_base_resolves_the_browser_adapter_family() {
+        use std::path::Path;
+        // Forward-slash paths only: a backslash is NOT a separator on Unix, so a Windows-style
+        // literal here would break the Linux/macOS CI (this exact mistake reddened CI once already).
+        let base = "ghostlight-adapter-browser";
+        assert!(Instance::from_exe_stem_with_base(
+            Path::new("/x/ghostlight-adapter-browser"),
+            base
+        )
+        .unwrap()
+        .is_default());
+        assert_eq!(
+            Instance::from_exe_stem_with_base(
+                Path::new("/x/ghostlight-adapter-browser-dev.exe"),
+                base
+            )
+            .unwrap()
+            .name(),
+            Some("dev")
+        );
+        assert_eq!(
+            Instance::from_exe_stem_with_base(
+                Path::new("/x/ghostlight-adapter-browser-qa-staging"),
+                base
+            )
+            .unwrap()
+            .name(),
+            Some("qa-staging")
+        );
+        // The bare `ghostlight` binary is NOT in this family.
+        assert!(Instance::from_exe_stem_with_base(Path::new("/x/ghostlight"), base).is_none());
     }
 }

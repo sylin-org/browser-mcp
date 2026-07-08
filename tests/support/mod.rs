@@ -33,6 +33,20 @@ pub fn adapter_bin() -> PathBuf {
     dir.join(name)
 }
 
+/// The `ghostlight-adapter-browser` executable beside the `ghostlight` test binary (ADR-0046),
+/// derived the same way as [`adapter_bin`] (the browser-side pass-through Chrome launches).
+pub fn browser_bin() -> PathBuf {
+    let dir = Path::new(bin())
+        .parent()
+        .expect("the test binary has a parent directory");
+    let name = if cfg!(windows) {
+        "ghostlight-adapter-browser.exe"
+    } else {
+        "ghostlight-adapter-browser"
+    };
+    dir.join(name)
+}
+
 /// The isolated `GHOSTLIGHT_LOG_DIR` a given test's service uses, deterministic from `endpoint`
 /// (which every caller already makes unique per test): lets a caller poll the SAME service's debug
 /// state after [`spawn_service`] hands back only a bare `Child`.

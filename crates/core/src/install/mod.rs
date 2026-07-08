@@ -262,22 +262,22 @@ fn plan_install(opts: &InstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>> {
     // Place the per-instance binary copy FIRST (before the manifest that references it). Overwrite
     // so a re-install refreshes it; a size match is treated as already-current for the report.
     if needs_copy {
+        // ADR-0046: the per-instance copy is of the browser ADAPTER (the tiny pass-through Chrome
+        // launches by name), never the multi-MB `ghostlight` brain -- so a service rebuild never
+        // needs the copy refreshed.
+        let copy_from = native_host::sibling_bin(&ctx.current_exe, "ghostlight-adapter-browser");
         let up_to_date = std::fs::metadata(&launcher)
             .ok()
-            .zip(std::fs::metadata(&ctx.current_exe).ok())
+            .zip(std::fs::metadata(&copy_from).ok())
             .map(|(a, b)| a.len() == b.len())
             .unwrap_or(false);
         actions.push(Action {
             label: "native host (instance binary)".into(),
             detail: launcher.display().to_string(),
             noop: up_to_date.then_some("already present"),
-            manual: format!(
-                "copy {} to {}",
-                ctx.current_exe.display(),
-                launcher.display()
-            ),
+            manual: format!("copy {} to {}", copy_from.display(), launcher.display()),
             op: Op::CopyBinary {
-                from: ctx.current_exe.clone(),
+                from: copy_from,
                 to: launcher.clone(),
             },
         });
