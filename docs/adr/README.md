@@ -51,6 +51,7 @@ history live here.
 | [0041](0041-post-evaluation-response.md) | Post-evaluation response: standards posture (alternatives, not competition), capability onboarding discipline, origin-flow focus, P1-P10 dispositions | Accepted |
 | [0042](0042-origin-flow-provenance.md) | Origin-flow provenance: the `sources` audit key (in-band `$prev`/`$N` flow attestation, honesty fence, consumer-side host join); enforcement direction-pinned for a future ADR | Accepted (phase 1) |
 | [0043](0043-webmcp-stance.md) | WebMCP stance: future governed consumer via the capability registry; no implementation during origin-trial flux; named re-evaluation triggers | Accepted |
+| [0044](0044-named-instances.md) | Named instances: one `--instance`/`GHOSTLIGHT_INSTANCE` parameter derives all identity (endpoint, native-host name, MCP name, supervisor names, config/policy/log dirs); default byte-identical; non-default gets isolated dirs + a native-host wrapper; enables dev/prod coexistence on one machine | Proposed |
 
 ## Conventions
 
