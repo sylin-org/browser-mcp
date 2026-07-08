@@ -17,3 +17,8 @@
 .DS_Store
 Thumbs.db
 /tests/e2e/node_modules/
+
+# Stray observability files, in case a debug run is ever pointed at the repo (they normally live
+# under the log dir; see src/observability.rs). Never source.
+/debug-state-*.json
+/debug-events-*.jsonl
