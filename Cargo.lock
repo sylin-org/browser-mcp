@@ -350,9 +350,23 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
- "getrandom 0.4.3",
+ "ghostlight-core",
  "ghostlight-transport",
- "hmac",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "ghostlight-core"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "ghostlight-transport",
  "libc",
  "serde",
  "serde_json",
@@ -360,7 +374,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "url",
  "uuid",
  "windows-sys",

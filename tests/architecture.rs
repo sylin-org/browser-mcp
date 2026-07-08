@@ -116,6 +116,8 @@ fn scan_line(line: &str) -> Vec<String> {
 /// the current working directory. `CARGO_MANIFEST_DIR` is the directory holding `Cargo.toml`.
 fn governance_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates")
+        .join("core")
         .join("src")
         .join("governance")
 }
