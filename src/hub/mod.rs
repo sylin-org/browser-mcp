@@ -166,7 +166,7 @@ pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
 /// via the `ghostlight service` subcommand: loads policy (the ONLY role that does), then serves
 /// forever until [`IDLE_GRACE`] elapses with no live sessions and the extension link gone. NEVER
 /// captures a parent or runs the ADR-0029 watchdog -- that lifecycle belongs to the ADAPTER now.
-pub fn run_service(manifest: Option<String>, debug_on: bool) -> Result<()> {
+pub fn run_service(manifest: Option<String>, debug_on: bool, keep_warm: bool) -> Result<()> {
     role::set_role(role::Role::Service);
 
     // Resolve the user-supplied manifest source (G12, shared format doc section 1.3): the
@@ -203,6 +203,7 @@ pub fn run_service(manifest: Option<String>, debug_on: bool) -> Result<()> {
         block_sink,
         loaded_policy,
         user_source,
+        keep_warm,
     ));
 
     sink.flush();
@@ -220,6 +221,7 @@ async fn run_service_loop(
     debug_sink: DebugSink,
     loaded_policy: LoadedPolicy,
     user_source: Option<String>,
+    keep_warm: bool,
 ) -> i32 {
     let adapter_listener = match ipc::claim_adapter_endpoint(&endpoint).await {
         Ok(listener) => listener,
@@ -288,9 +290,19 @@ async fn run_service_loop(
         );
     }
 
-    // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): the ONLY shutdown trigger. Never
-    // parent-death -- this process has no client parent to watch.
-    idle_grace_watch(ctx).await
+    // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): normally the ONLY shutdown trigger
+    // (never parent-death -- this process has no client parent to watch). With --keep-warm
+    // (ADR-0045), idle-grace is disabled so a terminal-run dev service stays up between actions
+    // instead of idle-shutting from under the developer; it then exits only when killed.
+    if keep_warm {
+        tracing::info!(
+            "--keep-warm: idle-grace shutdown disabled; the service stays up until it is killed"
+        );
+        drop(ctx);
+        std::future::pending::<i32>().await
+    } else {
+        idle_grace_watch(ctx).await
+    }
 }
 
 /// The idle-grace watcher (ADR-0030 Decision 8; PINS.md SS5.4, transcribed verbatim): the SERVICE

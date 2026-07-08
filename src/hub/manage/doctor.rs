@@ -41,6 +41,16 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
     println!("  {:<9}{}", "path", ctx.current_exe.display());
     println!("  {:<9}{}", "version", env!("CARGO_PKG_VERSION"));
 
+    // Which stack is this? (ADR-0044) The default instance prints `default`; a named instance
+    // prints its name and its suffixed server/host/dir identifiers.
+    let instance = crate::instance::Instance::resolve();
+    println!();
+    println!("Instance:");
+    println!("  {:<9}{}", "name", instance.label());
+    println!("  {:<9}{}", "server", instance.mcp_server_name());
+    println!("  {:<9}{}", "host", instance.host_name());
+    println!("  {:<9}{}", "dirs", instance.dir_leaf());
+
     let browsers = browser_rows(&ctx);
     println!();
     println!("Browsers:");

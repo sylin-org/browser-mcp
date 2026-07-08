@@ -45,6 +45,17 @@ struct Cli {
     /// `ghostlight status` reads. Equivalent to setting `GHOSTLIGHT_DEBUG=1`.
     #[arg(long)]
     debug: bool,
+
+    /// Select a named, isolated instance (ADR-0044): its own endpoint, native host, MCP server
+    /// name, supervisor, and user-config/log dirs, coexisting with the default deploy. Omit for the
+    /// default instance. Also settable via GHOSTLIGHT_INSTANCE.
+    #[arg(long, value_name = "NAME", global = true)]
+    instance: Option<String>,
+
+    /// (service role) Keep the service warm: skip the idle-grace shutdown so a terminal-run dev
+    /// service stays up between actions (ADR-0045). Supervisor-launched services keep idle-grace.
+    #[arg(long, global = true)]
+    keep_warm: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -309,6 +320,14 @@ fn main() -> Result<()> {
     let debug = debug_env || std::env::args().any(|a| a == "--debug");
     ghostlight::init_tracing(debug);
 
+    // Resolve the active instance (ADR-0044) BEFORE role detection, and fold the winner into
+    // GHOSTLIGHT_INSTANCE so every point-of-use derivation -- including the early-returning
+    // native-host role below -- agrees. A malformed name is fatal here, not silently degraded.
+    if let Err(e) = resolve_instance() {
+        eprintln!("ghostlight: {e}");
+        std::process::exit(2);
+    }
+
     // Role detection must precede clap: Chrome launches the native-messaging host with an extra
     // positional arg (the calling extension origin) that clap would reject.
     if std::env::args().any(|a| a.starts_with("chrome-extension://")) {
@@ -398,14 +417,68 @@ fn main() -> Result<()> {
             command: Some(Command::Service),
             manifest,
             debug: debug_flag,
-        } => ghostlight::hub::run_service(manifest, debug_flag || debug_env)?,
+            keep_warm,
+            ..
+        } => ghostlight::hub::run_service(manifest, debug_flag || debug_env, keep_warm)?,
         Cli {
             command: None,
             manifest,
             debug: debug_flag,
+            ..
         } => ghostlight::hub::run_mcp_server(manifest, debug_flag || debug_env)?,
     }
     Ok(())
+}
+
+/// Resolve the active instance (ADR-0044) and fold the winner into `GHOSTLIGHT_INSTANCE`, in
+/// precedence order: the `--instance` flag, then an already-set `GHOSTLIGHT_INSTANCE`, then the
+/// `argv[0]` basename (the multi-call native-host signal), then the default. Returns the
+/// validation error for a malformed name so `main` can exit non-zero with a clear message rather
+/// than silently degrading to the default (which could collide with a governed default install).
+fn resolve_instance() -> std::result::Result<(), String> {
+    use ghostlight::instance::Instance;
+    // 1. An explicit --instance flag wins. An empty value means the default (leave the env unset).
+    if let Some(flag) = instance_flag_value() {
+        let name = flag.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        Instance::validate(name)?;
+        std::env::set_var(Instance::ENV_VAR, name);
+        return Ok(());
+    }
+    // 2. An already-set GHOSTLIGHT_INSTANCE (from a test, the e2e harness, or an inherited env):
+    // validate it strictly and keep it.
+    if std::env::var_os(Instance::ENV_VAR).is_some() {
+        Instance::validate_env()?;
+        return Ok(());
+    }
+    // 3. The argv[0] basename: a `ghostlight-<n>` binary (the installer's per-instance copy that
+    // Chrome launches as the native host) selects instance `<n>`. Bare `ghostlight` is the default.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(inst) = Instance::from_exe_stem(&exe) {
+            if let Some(name) = inst.name() {
+                std::env::set_var(Instance::ENV_VAR, name);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scan argv for `--instance <value>` or `--instance=<value>`, returning the value if present.
+/// Done before clap (like the `--debug` scan) so the native-host role -- which never reaches clap
+/// -- and every other role resolve the instance identically.
+fn instance_flag_value() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(v) = a.strip_prefix("--instance=") {
+            return Some(v.to_string());
+        }
+        if a == "--instance" {
+            return args.next();
+        }
+    }
+    None
 }
 
 /// `ghostlight status`: read and print the running server's live inner state.

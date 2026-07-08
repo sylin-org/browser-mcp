@@ -47,10 +47,6 @@ const SERVICE_DISPLAY_BASE: &str = "Ghostlight Service";
 /// within OS socket-path limits (the Unix socket layer additionally hashes any overflow).
 pub const MAX_INSTANCE_NAME_LEN: usize = 32;
 
-/// The environment seam that carries the resolved instance to every point-of-use derivation and to
-/// Chrome-launched native-host processes (ADR-0044 Decision 1, Decision 4).
-pub const ENV_VAR: &str = "GHOSTLIGHT_INSTANCE";
-
 /// A resolved Ghostlight stack identity. `name == None` is the canonical DEFAULT instance, whose
 /// derivations are byte-identical to the single-instance identifiers the product shipped with; a
 /// `Some(name)` is an isolated non-default instance.
@@ -62,6 +58,10 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// The environment seam that carries the resolved instance to every point-of-use derivation
+    /// and to Chrome-launched native-host processes (ADR-0044 Decision 1, Decision 4).
+    pub const ENV_VAR: &str = "GHOSTLIGHT_INSTANCE";
+
     /// Validate a candidate instance name (ADR-0044 Decision 3 security posture): the name flows
     /// into filesystem paths, socket/pipe names, Windows registry keys, and OS supervisor unit
     /// names, so it is a system boundary that must be validated. Accepts lowercase ASCII letters,
@@ -112,7 +112,7 @@ impl Instance {
     /// `main` validates strictly up front ([`Instance::validate_env`]), so a real process never
     /// reaches here with an invalid value -- this leniency is only a library/test safety net.
     pub fn resolve() -> Self {
-        match std::env::var(ENV_VAR) {
+        match std::env::var(Self::ENV_VAR) {
             Ok(raw) if !raw.trim().is_empty() => {
                 let name = raw.trim();
                 Self::from_name(name).unwrap_or_else(|_| {
@@ -148,7 +148,7 @@ impl Instance {
     /// fast with a clear message instead of silently degrading to the default. An unset/empty var
     /// is fine (the default instance).
     pub fn validate_env() -> std::result::Result<(), String> {
-        match std::env::var(ENV_VAR) {
+        match std::env::var(Self::ENV_VAR) {
             Ok(raw) if !raw.trim().is_empty() => Self::validate(raw.trim()),
             _ => Ok(()),
         }
