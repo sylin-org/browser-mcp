@@ -5,13 +5,11 @@ task (or block); this file is the single source of truth for batch progress.
 
 ## RESUME HERE
 
-Next task: **T6** (`T6-ownership-liveness-gc.md`). Base: T5 landed at `170aaae`.
-NOTE for T6: T5 added `session_titles` to `SessionSeat` (see T5 deviation 1), so the seat already
-has THREE fields (guid, owned_tabs, session_titles). T6's PINS P6 says "the audit-test seat gains
-the third field (live_guids)" -- with T5's field in place, `live_guids` is actually the FOURTH
-field. Re-read the tree (BOOTSTRAP standing order) and add `live_guids` as an additional field to
-BOTH `SessionSeat` and the pipeline.rs audit-test seat literal; the ordinal is a hint, the intent
-(add live_guids to the seat + its literal) is what holds.
+**COMPLETE.** All six tasks landed (12 commits: 6 code + 6 ledger). Batch base was `2f6642a`;
+final code commit `8644f51`. V-ALL green at the final tree. The tab-identity batch (ADR-0047,
+Decisions D1-D6) is fully implemented and verified. Next step is OWNER-side, not executor: rebuild,
+reload the unpacked extension, and re-run the user-supervised e2e Stage 2 per `docs/DEV-LOOP.md`
+(expect the tab group titled with the ghost glyph + the client name). Nothing is pushed.
 
 ## Task table
 
@@ -22,7 +20,7 @@ BOTH `SessionSeat` and the pipeline.rs audit-test seat literal; the ordinal is a
 | T3 stable session guid | done | fb88795 | build-order note (deviation 1) |
 | T4 envelope guid + session ops | done | 7ee9b06 | deviations 1-3 |
 | T5 client-name titles + errors | done | 170aaae | deviations 1-3 |
-| T6 liveness + pruning + changelog | pending | - | |
+| T6 liveness + pruning + changelog | done | 8644f51 | deviations 1-2 |
 
 ## Per-task log
 
@@ -193,3 +191,46 @@ your reasoning, then the batch HALTS per BOOTSTRAP.)
   `all_open_golden` 3 (byte-identity intact), `tool_schema_fidelity` 10, `hub_isolation` 2,
   `hub_queue` 2; `cargo check --target x86_64-unknown-linux-gnu --workspace --all-targets` OK;
   `grep group_title crates/ src/ tests/` == 0.
+
+### T6 -- ownership liveness + dead-owner adoption + group-map pruning (ADR-0047 D5) -- DONE
+
+- Code commit: `8644f51`. Ten files, all pure ASCII.
+- STOP preconditions: both passed. `claim_tab_live`/`LiveGuidGuard`/`pruneDeadGroups` existed
+  nowhere; `serve_session` still constructs `LiveSessionGuard`.
+- Changes per PINS P6: `ServiceContext.live_guids` + init; `LiveGuidGuard` (RAII, beside
+  `LiveSessionGuard`) constructed in `serve_session` right after `_live_guard`; `SessionSeat`
+  gained `live_guids` (the FOURTH field -- T5 had already added `session_titles`; per the RESUME
+  note the ordinal in PINS P6's "third field" is a hint, the intent held); `claim_tab_live` +
+  the two pinned tests `dead_owner_tab_is_adoptable_by_a_live_session` /
+  `live_owner_tab_stays_refused` (`claim_tab`/`owns_or_adopts_tab` untouched); both gate sites
+  (`check_tab_ownership` + the tabs_create response claim) switched to `claim_tab_live` with a
+  threaded `live_guids`; the two ServiceContext test literals + the pipeline.rs audit-test seat
+  literal gained their one-line initializers; `pruneDeadGroups` (exported) in grouping.js, wired
+  into `rehydrate()` after the restore loop, the worker destructure + test require extended, and
+  the pinned `dead_groups_are_pruned_from_the_session_map` test with its INLINE fake; CHANGELOG
+  `## [Unreleased]` section created above `## [0.3.0]` with the pinned Fixed/Changed block.
+- CHANGELOG glyph handling: the file has NO emoji precedent (verified 0 non-ASCII bytes), so per
+  the task instruction the `<ghost>` placeholder became the words "the ghost glyph followed by",
+  never a literal emoji.
+- DEVIATION 1 (T6 ordinal, pre-flagged in RESUME by T5): `live_guids` is the seat's FOURTH field,
+  not the "third" P6 names, because T5 added `session_titles`. Added per intent; no impact.
+- DEVIATION 2 (isolation tests needed liveness seeding -- exceeds the "one line" hub_isolation
+  scope; forced by the pinned gate switch): switching the gate to `claim_tab_live` changed the
+  behavior of `tests/hub_isolation.rs::unowned_tab_is_refused_before_any_tab_url_probe` and
+  `::unknown_tab_result_leaks_no_host_or_existence`. Both seed session A's ownership DIRECTLY on
+  `owned_tabs` (the sanctioned H3 shortcut) but never drive A through `serve_session`, so A was
+  never live; under D5 a DEAD owner's tab is ADOPTABLE, so session B adopted instead of being
+  refused and the pinned "unknown tab" assertions failed (observed: 2 failed). Fix: seed A into
+  `ctx.live_guids` (count 1) in both tests, faithfully representing the tests' own premise
+  ("Session A owns tab 5" = a LIVE cross-session owner). This is SECURITY-CORRECT: D5 must keep a
+  LIVE owner's tabs isolated (it only relaxes isolation for dead owners), which is exactly what
+  these tests verify; the pinned "unknown tab" oracle is unchanged. The `+2` test bodies exceed
+  the T6 owned-scope note ("hub_isolation.rs ONE line") but are within a T6-owned FILE and are
+  compiler/behavior-forced by the pinned gate switch. RECOMMENDATION for the batch author: T6's
+  hub_isolation scope should have included the `live_guids` seeding, not just the field init.
+- Verification (all green): `node --check` both JS OK; `node --test grouping.test.js` = 4 pass
+  (incl. `dead_groups_are_pruned_from_the_session_map`); `cargo fmt --check` OK; clippy exit 0;
+  `cargo test -p ghostlight-core owner_tab` = 2 pass (the new liveness tests); `cargo test
+  --workspace --no-fail-fast` = 43 `test result: ok`, 0 failed; guardrails re-run green --
+  `all_open_golden` 3, `hub_isolation` 2 (post-fix), `hub_queue` 2, `tool_schema_fidelity` 10;
+  `cargo check --target x86_64-unknown-linux-gnu --workspace --all-targets` OK.
