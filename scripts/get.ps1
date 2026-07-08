@@ -16,15 +16,20 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 
 $BinDir = Join-Path $env:USERPROFILE ".ghostlight\bin"
 $Bin = Join-Path $BinDir "ghostlight.exe"
-$Url = "https://github.com/$Repo/releases/latest/download/ghostlight-x86_64-pc-windows-msvc.exe"
 
 New-Item -ItemType Directory -Force $BinDir | Out-Null
 Write-Host "ghostlight: downloading latest release..."
-$Tmp = "$Bin.download"
-Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing
-Move-Item -Force $Tmp $Bin
+# ADR-0046: three role executables ship together (ghostlight + the two thin adapters). They sit
+# in one dir, so `ghostlight install` finds the adapters as siblings.
+foreach ($b in "ghostlight", "ghostlight-adapter-agent", "ghostlight-adapter-browser") {
+    $Url = "https://github.com/$Repo/releases/latest/download/$b-x86_64-pc-windows-msvc.exe"
+    $Dest = Join-Path $BinDir "$b.exe"
+    $Tmp = "$Dest.download"
+    Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing
+    Move-Item -Force $Tmp $Dest
+}
 $Version = try { & $Bin --version } catch { "version unknown" }
-Write-Host "ghostlight: installed to $Bin ($Version)"
+Write-Host "ghostlight: installed to $BinDir ($Version)"
 
 if ($env:GHOSTLIGHT_NO_REGISTER -ne "1") {
     Write-Host "ghostlight: registering (native messaging host + detected MCP clients)..."

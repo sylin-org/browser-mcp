@@ -116,9 +116,11 @@ cd ghostlight
 cargo build --release
 ```
 
-The binary is at `target/release/ghostlight` (`ghostlight.exe` on Windows). All commands below run
-that binary. Every release archive carries a SHA-256 checksum and a signed build-provenance
-attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
+The build produces three role executables in `target/release/` (ADR-0046): `ghostlight` (the CLI
+you run below) plus the thin `ghostlight-adapter-agent` and `ghostlight-adapter-browser`
+pass-throughs your MCP client and Chrome launch; a prebuilt archive carries all three side by side.
+All commands below run the `ghostlight` binary. Every release archive carries a SHA-256 checksum
+and a signed build-provenance attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
 
 ### 2. Load the extension in Chrome
 

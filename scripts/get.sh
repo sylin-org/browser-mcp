@@ -24,14 +24,18 @@ esac
 
 BIN_DIR="${HOME}/.ghostlight/bin"
 BIN="${BIN_DIR}/ghostlight"
-URL="https://github.com/${REPO}/releases/latest/download/ghostlight-${TARGET}"
 
 mkdir -p "$BIN_DIR"
 echo "ghostlight: downloading latest release for ${TARGET}..."
-curl -fSL --proto '=https' --tlsv1.2 -o "${BIN}.download" "$URL"
-mv "${BIN}.download" "$BIN"
-chmod 0755 "$BIN"
-echo "ghostlight: installed to ${BIN} ($("$BIN" --version 2>/dev/null || echo version unknown))"
+# ADR-0046: three role executables ship together (ghostlight + the two thin adapters). They sit
+# in one dir, so `ghostlight install` finds the adapters as siblings.
+for b in ghostlight ghostlight-adapter-agent ghostlight-adapter-browser; do
+  URL="https://github.com/${REPO}/releases/latest/download/${b}-${TARGET}"
+  curl -fSL --proto '=https' --tlsv1.2 -o "${BIN_DIR}/${b}.download" "$URL"
+  mv "${BIN_DIR}/${b}.download" "${BIN_DIR}/${b}"
+  chmod 0755 "${BIN_DIR}/${b}"
+done
+echo "ghostlight: installed to ${BIN_DIR} ($("$BIN" --version 2>/dev/null || echo version unknown))"
 
 if [ "${GHOSTLIGHT_NO_REGISTER:-0}" != "1" ]; then
   echo "ghostlight: registering (native messaging host + detected MCP clients)..."

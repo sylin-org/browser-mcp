@@ -4,9 +4,12 @@ Governed browser automation over your own authenticated Chromium session, for AI
 agents: any MCP client, your real logged-in browser, with capability grants, sacred domains,
 and a structured audit trail. All-open by default; governance when you want it.
 
-This npm package is a thin launcher: on first run it downloads the version-matched
-`ghostlight` binary (a single Rust executable, no runtime dependencies) from the GitHub
-release and caches it under `~/.ghostlight/bin/`. Everything real lives in the binary.
+This npm package is a thin launcher: on first run it downloads the version-matched Ghostlight
+role executables from the GitHub release and caches them under `~/.ghostlight/bin/` (zero runtime
+dependencies). Since ADR-0046 there are three: `ghostlight` (the CLI + the persistent service) plus
+the two thin pass-throughs `ghostlight-adapter-agent` and `ghostlight-adapter-browser`. A bare
+`npx ghostlight` runs the MCP agent adapter (what your client relays through); `npx ghostlight
+install` runs the CLI installer. Everything real lives in the binaries.
 
 ## Quick start
 
