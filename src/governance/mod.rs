@@ -8,19 +8,19 @@
 //! renderer ([`explain`]), the audit-replay policy simulator ([`simulate`]), the embedded
 //! policy manifest templates ([`templates`]), the policy manifest ([`manifest`]), the audit
 //! flight recorder ([`audit`]), the policy-decision-point/policy-enforcement-point
-//! contract ([`ports`]), and (ADR-0030 Decision 9, H8) the `channels.webapi.from`
-//! connecting-source allowlist ([`channels`]). The dependency direction is strictly inward:
+//! contract ([`ports`]), and (ADR-0030 Decision 9, H8) the `inbound.web.from`
+//! connecting-source allowlist ([`inbound`]). The dependency direction is strictly inward:
 //! infra and the browser plugin may depend on this module; this module depends only on std and
 //! serde (plus `uuid`/`chrono`/`sha2` for audit, manifest identity, and denial ids). A
 //! fail-closed arch-test (task A7) enforces that.
 
 pub mod audit;
-pub mod channels;
 pub mod config;
 pub mod denial;
 pub mod dispatch;
 pub mod enforcement;
 pub mod explain;
+pub mod inbound;
 pub mod manifest;
 pub mod ports;
 pub mod simulate;

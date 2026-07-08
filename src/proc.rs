@@ -268,13 +268,14 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Command};
     use std::time::Duration;
 
     /// A child process that lives long enough to probe, without needing stdin.
     fn spawn_sleeper() -> Child {
         #[cfg(windows)]
         {
+            use std::process::Stdio;
             // ping runs ~30s and needs no console input; discard its output.
             Command::new("ping")
                 .args(["-n", "30", "127.0.0.1"])

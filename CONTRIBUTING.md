@@ -24,10 +24,16 @@ recorded vision, not taste of the day:
 - **User delight first; governance that never punishes the ungoverned.** All-open stays
   first-class. Features that make the free path worse to upsell the paid one are
   declined on principle.
-- **The sacred tool surface.** The 13 trained tool schemas are byte-pinned (plus
-  `explain`); requests to add, rename, or reshape MCP tools on that surface are
-  declined, whatever their merit ([ADR-0007](docs/adr/0007-sacred-tool-surface.md),
-  [ADR-0022](docs/adr/0022-intent-calibrated-capabilities.md)).
+- **The sacred tool surface.** The 13 trained tool schemas are the byte-pinned reference shape
+  ([ADR-0007](docs/adr/0007-sacred-tool-surface.md),
+  [ADR-0022](docs/adr/0022-intent-calibrated-capabilities.md)): their names, parameter names, types,
+  and descriptions are preserved exactly so a trained agent behaves as expected. Additive tools
+  (`wait_for`, `script`, `form_fill`) and additive optional parameters on existing tools (e.g.
+  `read_page` `diff`) are sanctioned via the capability registry
+  ([ADR-0034](docs/adr/0034-declarations-in-code-and-additive-growth.md) Decision 7;
+  [ADR-0035](docs/adr/0035-script-tool.md) -- [ADR-0038](docs/adr/0038-structured-results.md)).
+  Requests to rename or reshape the trained 13 are declined; requests to add new tools or additive
+  parameters are evaluated against the additive-growth criteria.
 - **Never phone home.** Telemetry, activation servers, and update pings are permanently
   out ([ADR-0028](docs/adr/0028-tripwire-licensing-and-continuity-promise.md)).
 - **Lean engine.** Fewer, more meaningful moving parts win over feature count. Scope

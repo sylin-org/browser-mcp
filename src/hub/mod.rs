@@ -18,7 +18,7 @@
 //! ADR-0030 Decision 3 ("D1 -- the honest singleton queue"): the single MV3 service worker plus
 //! the single native port is an ACCEPTED, TRUTHFUL serialization bottleneck -- fair ordering and
 //! truthful failure on a real drop, never a hidden work-around. H5 lands the three properties
-//! Decision 3 names: a bounded reconnect grace window (`transport::executor::Browser::attach`,
+//! Decision 3 names: a bounded reconnect grace window (`hub::outbound::browser::Browser::attach`,
 //! `GRACE_WINDOW`, strictly less than `TOOL_TIMEOUT`), a per-peer (never global) mint quota
 //! (below, [`try_mint`]/[`PER_PEER_MINT_CAP`]), and mandatory oversize-reply chunking on the
 //! service<->adapter/web hop (`transport::mcp::server::write_chunked`,
@@ -27,13 +27,13 @@
 //! cross-reference from the ORIGINAL single-session decision this multiplexes past.
 
 use crate::browser::pattern;
-use crate::debug::DebugSink;
 use crate::governance::audit::Recorder;
 use crate::governance::config::reload::ConfigStore;
 use crate::governance::manifest::source;
 use crate::governance::manifest::source::LoadedPolicy;
+use crate::hub::outbound::browser::Browser;
 use crate::native::ipc;
-use crate::transport::executor::Browser;
+use crate::observability::DebugSink;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -41,12 +41,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 pub mod antisquat;
-pub mod console_assets;
 pub mod handshake;
+pub mod inbound;
+pub mod manage;
+pub mod outbound;
 pub mod role;
 pub mod session;
 pub mod supervisor;
-pub mod webapi;
 
 /// Idle-grace shutdown window (ADR-0030 Decision 8; PINNED, PINS.md SS5.4): the SERVICE exits only
 /// after zero live sessions AND the extension link gone, CONTINUOUSLY, for this long. Never a
@@ -142,7 +143,7 @@ pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
     // orphaned predecessor ADAPTER whose editor exited but that did not terminate. The SERVICE has
     // no client parent and idle-graces instead (see `run_service_loop`), so it is never a reap
     // target. Best-effort and safe (only parent-dead orphans; see `doctor::reap`).
-    crate::doctor::sweep_orphans();
+    crate::hub::manage::doctor::sweep_orphans();
     // The MCP client that spawned us, captured before the runtime starts (ADR-0029). None (no
     // resolvable parent) simply skips the watchdog below and leaves stdin EOF as the sole exit
     // trigger.
@@ -244,7 +245,7 @@ async fn run_service_loop(
         );
     }
 
-    let browser = Browser::with_debug(debug_sink);
+    let browser = Browser::with_debug(debug_sink.clone());
 
     // The EXTENSION endpoint: UNCHANGED, server-speaks-first, no hello (ADR-0030 Decision 1;
     // PINS.md SS1).
@@ -265,7 +266,7 @@ async fn run_service_loop(
 
     // Build the SHARED ServiceContext ONCE (PINS.md SS1 pin 4); every multiplexed adapter session
     // `serve_adapters` spawns clones it.
-    let ctx = match ServiceContext::from_startup(browser, loaded_policy, user_source) {
+    let ctx = match ServiceContext::from_startup(browser, debug_sink, loaded_policy, user_source) {
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::error!(error = %e, "failed to build the shared service context");
@@ -273,21 +274,19 @@ async fn run_service_loop(
         }
     };
 
-    // The ADAPTER/CONTROL endpoint: accept sessions over the ALREADY-claimed listener (never
-    // re-claims the name -- PINS.md SS1 pin 1).
-    tokio::spawn({
-        let ctx = ctx.clone();
-        async move {
-            if let Err(e) = ipc::serve_adapters(ctx, adapter_listener).await {
-                tracing::error!(error = %e, "adapter/control endpoint failed");
-            }
-        }
-    });
+    // The inbound transports (ADR-0034): each transport is a blackbox that owns its listener
+    // lifecycle and feeds sessions into the pipeline. The pipe transport takes the
+    // already-claimed adapter listener; the web transport binds its own TCP listener.
+    let pipe = inbound::pipe::PipeTransport::new(adapter_listener);
+    tokio::spawn(pipe.run(ctx.clone()));
 
-    // The local web API (ADR-0030 Decision 9; H8): a SECOND, optional session source, exposed
-    // only through the service. A bind failure (e.g. the port is already in use) is logged and
-    // never fatal -- see `webapi::run`'s own doc comment.
-    tokio::spawn(webapi::run(ctx.clone()));
+    if inbound::web::enabled(&ctx.store) {
+        tokio::spawn(inbound::web::run(ctx.clone()));
+    } else {
+        tracing::info!(
+            "inbound.web transport disabled by policy (inbound.web.enabled = false); not binding"
+        );
+    }
 
     // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): the ONLY shutdown trigger. Never
     // parent-death -- this process has no client parent to watch.
@@ -361,7 +360,7 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
     if !debug {
         return DebugSink::disabled();
     }
-    let Some(dir) = crate::debug::log_dir() else {
+    let Some(dir) = crate::observability::log_dir() else {
         tracing::warn!("no log directory available; running without debug observability");
         return DebugSink::disabled();
     };
@@ -392,30 +391,23 @@ pub fn build_debug_sink(debug: bool, role: &'static str) -> DebugSink {
 #[derive(Clone)]
 pub struct ServiceContext {
     pub browser: Browser,
+    /// The capability registry (ADR-0034): the composition root's ordered list of outbound
+    /// capability executors. Aggregates each capability's tool directory + agent guide into the
+    /// single source consumed by `tools/list`, `explain`, enforcement, and the validator. Today
+    /// only the browser capability is registered; the `browser` field above stays for the
+    /// browser-specific dispatch paths (`call`, `tab_url`) the pipeline uses directly.
+    pub capabilities: outbound::Registry,
     pub store: Arc<ConfigStore>,
     pub recorder: Arc<Recorder>,
     pub initial_policy: LoadedPolicy,
-    /// H3 (PINS.md SS9): the GUID -> bound-peer admission table, shared by every session so a
-    /// re-presented GUID is checked against the SAME registry regardless of which adapter
-    /// connection presents it.
     pub session_registry: Arc<std::sync::Mutex<session::SessionRegistry>>,
-    /// H4 (ADR-0030 Decision 6; PINS.md SS9 forward guidance): the shared, opaque-keyed
-    /// owned-tab map (tabId -> owning [`session::SessionGuid`]), shared by every session so
-    /// `transport::mcp::server::serve_session`'s pre-dispatch ownership gate answers "do I own
-    /// it" / "can I adopt it" from the SAME map regardless of which session asks. Owned-handle
-    /// state lives here, in `src/hub`, NEVER in `src/governance` (a7: the core stays
-    /// handle-agnostic).
     pub owned_tabs: Arc<std::sync::Mutex<HashMap<i64, session::SessionGuid>>>,
-    /// H5 (ADR-0030 Decision 3 + Decision 4; PINS.md SS4): the per-peer (never global) mint-quota
-    /// table, shared by every adapter/control connection so `ipc::handle_adapter_connection`
-    /// checks/increments the SAME counter regardless of which connection presents a peer's
-    /// credential. See [`try_mint`].
     pub mint_quota: MintQuota,
-    /// H6 (ADR-0030 Decision 8; PINS.md SS5.4): the number of currently-live sessions, incremented
-    /// and decremented at the ONE governance chokepoint (`transport::mcp::server::serve_session`'s
-    /// RAII guard) so the idle-grace watcher (`idle_grace_watch`) can tell whether any session --
-    /// adapter today, web at H8 -- is live, with no per-transport bookkeeping duplicated.
     pub live_sessions: Arc<AtomicUsize>,
+    /// The service's observability sink (a clone of the one the browser holds). The inbound.web
+    /// transport publishes its actual bound port through this once its listener binds, so a reader
+    /// -- `status`, `doctor`, or a test -- learns the real port even when it was OS-assigned.
+    pub debug_sink: DebugSink,
 }
 
 impl ServiceContext {
@@ -426,6 +418,7 @@ impl ServiceContext {
     /// `mcp::server::run`, itself polled inside `run_mcp_server`'s `rt.block_on` above).
     pub fn from_startup(
         browser: Browser,
+        debug_sink: DebugSink,
         loaded_policy: LoadedPolicy,
         user_source: Option<String>,
     ) -> crate::Result<Self> {
@@ -457,8 +450,13 @@ impl ServiceContext {
             }
         });
 
+        let capabilities = outbound::Registry::new(vec![Arc::new(
+            outbound::browser::BrowserCapability::new(browser.clone()),
+        )]);
+
         Ok(Self {
             browser,
+            capabilities,
             store,
             recorder,
             initial_policy: loaded_policy.clone(),
@@ -466,6 +464,7 @@ impl ServiceContext {
             owned_tabs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mint_quota: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(AtomicUsize::new(0)),
+            debug_sink,
         })
     }
 }

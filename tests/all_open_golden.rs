@@ -19,17 +19,17 @@ use ghostlight::governance::dispatch::Governance;
 use ghostlight::governance::ports::{
     AuditRecord, AuditSink, Decision, EffectiveMode, GoverningResource,
 };
-use ghostlight::transport::mcp::tools::TOOLS_JSON;
+use ghostlight::transport::mcp::tools::advertised_tools_json;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// The 14 tool names in advertised order (the 13 trained tools plus ADR-0022 Decision 7's
-/// sanctioned `explain` addition, positioned last, landed in stage-3 task s07), copied from the
-/// parsed `TOOLS_JSON` fixture (the sacred fixture is the source of truth for the exact order).
-const GOLDEN_TOOL_NAMES: [&str; 14] = [
+/// The 17 tool names in advertised order (the 13 trained tools plus `wait_for`, `script`,
+/// `form_fill`, and ADR-0022 Decision 7's sanctioned `explain` addition, positioned last), copied
+/// from the code-declared registry (`browser::directory::REGISTRY`), in declared order.
+const GOLDEN_TOOL_NAMES: [&str; 17] = [
     "tabs_context_mcp",
     "tabs_create_mcp",
     "navigate",
@@ -43,17 +43,20 @@ const GOLDEN_TOOL_NAMES: [&str; 14] = [
     "read_page",
     "resize_window",
     "update_plan",
+    "wait_for",
+    "script",
+    "form_fill",
     "explain",
 ];
 
 #[test]
 fn tools_list_is_byte_stable_through_the_move() {
-    let v: Value = serde_json::from_str(TOOLS_JSON).expect("TOOLS_JSON parses");
+    let v = advertised_tools_json();
     let tools = v["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
         GOLDEN_TOOL_NAMES.len(),
-        "all 14 tools advertised (13 trained plus explain)"
+        "all 17 tools advertised (13 trained plus wait_for, script, form_fill, and explain)"
     );
     for (i, name) in GOLDEN_TOOL_NAMES.iter().enumerate() {
         assert_eq!(
@@ -118,7 +121,11 @@ fn read_page_redaction_is_still_wired_at_the_chokepoint() {
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{}}}),
+        // o04 (ADR-0031 Decision 4): inputSchema validation now runs before dispatch, so the
+        // read_page call needs a tabId to reach the redaction chokepoint (previously the empty
+        // arguments object was forwarded as-is; the validator now catches it earlier). The test's
+        // oracle -- the redacted text in the extension's reply -- is unchanged.
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{"tabId":1}}}),
     ];
     for req in &requests {
         stdin

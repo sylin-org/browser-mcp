@@ -1,16 +1,65 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Tool registry and `tools/list` advertisement.
+//! `tools/list` advertisement and the agent onboarding guide (ADR-0031 + ADR-0034 Decision 4).
 //!
-//! The tool **schemas are sacred**: they are byte-identical to the reference's advertised surface
-//! (captured in `src/mcp/schemas/`, guarded by `tests/tool_schema_fidelity.rs`). In all-open v1.0
-//! the full surface is advertised unconditionally -- the 13 preserved Claude-in-Chrome tools
-//! (`tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `computer`, `find`, `form_input`,
-//! `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`,
-//! `read_page`, `resize_window`, `update_plan`). The excluded stubs (`gif_creator`,
-//! `shortcuts_list`, `shortcuts_execute`, `switch_browser`, `upload_image`) are not advertised.
-//! Implemented in Phase 1.
+//! The tool advertisements live in code as `browser::directory::REGISTRY` entries (each
+//! `ToolDescriptor` carries its own `advertised_description`, `input_schema`, and `example`).
+//! This module renders them into the JSON shapes MCP expects. There is no separate fixture
+//! file; the registry IS the single source.
 
-/// The sacred `tools/list` surface: the 13 preserved tool schemas, embedded verbatim as raw JSON
-/// (a const literal, per CLAUDE.md, to prevent accidental drift). Provenance and fidelity notes
-/// are in `schemas/README.md`; `tests/tool_schema_fidelity.rs` guards it.
-pub const TOOLS_JSON: &str = include_str!("schemas/tools.json");
+use crate::browser::directory;
+
+/// The `tools/list` advertisement: the complete `tools` array with each tool's name,
+/// description, inputSchema, and example (when present), in registry order. Rendered from
+/// the code-declared registry -- no fixture file.
+pub fn advertised_tools_json() -> serde_json::Value {
+    directory::advertised_tools_json()
+}
+
+/// Render the agent onboarding guide (ADR-0031 Decision 1) into the single string MCP's
+/// `initialize.instructions` field expects.
+pub fn agent_guide_text() -> String {
+    directory::agent_guide_text()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0031 Decision 1: the guide renders all four fields, in order, separated cleanly.
+    #[test]
+    fn agent_guide_text_renders_all_four_fields_in_order() {
+        let text = agent_guide_text();
+        assert!(!text.is_empty(), "the guide is non-empty");
+        assert!(text.contains(directory::AGENT_GUIDE.summary));
+        assert!(text.contains(directory::AGENT_GUIDE.workflow));
+        assert!(text.contains(directory::AGENT_GUIDE.flow));
+        assert!(text.contains(directory::AGENT_GUIDE.denials));
+        assert!(
+            text.contains("tabId"),
+            "the workflow rule about tabId is present"
+        );
+    }
+
+    /// The flow line is labeled so a reader recognizes the spine.
+    #[test]
+    fn agent_guide_text_labels_the_flow_line() {
+        let text = agent_guide_text();
+        assert!(
+            text.contains("Typical flow:"),
+            "the flow field is labeled so a reader recognizes the spine"
+        );
+    }
+
+    /// The advertised tools JSON is well-formed and carries every registered tool.
+    #[test]
+    fn advertised_tools_json_carries_every_registered_tool() {
+        let v = advertised_tools_json();
+        let tools = v["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), directory::REGISTRY.len());
+        for (entry, desc) in tools.iter().zip(directory::REGISTRY.iter()) {
+            assert_eq!(entry["name"], desc.tool);
+            assert!(entry.get("description").is_some());
+            assert!(entry.get("inputSchema").is_some());
+        }
+    }
+}

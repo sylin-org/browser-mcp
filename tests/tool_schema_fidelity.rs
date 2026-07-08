@@ -1,16 +1,11 @@
-//! Fidelity guard for the sacred `tools/list` surface (`src/mcp/schemas/tools.json`).
+//! Regression snapshot for the `tools/list` surface, now code-declared in
+//! `browser::directory::REGISTRY` (ADR-0034 Decision 4: tool declarations in code, not JSON).
 //!
-//! Ensures the embedded schema fixture stays intact: exactly the 13 trained tools, byte-identical
-//! and in order, each with a non-empty description and an object inputSchema, PLUS exactly one
-//! sanctioned addition: `explain` (ADR-0022 Decision 7), positioned last. This file was amended
-//! ONCE, in stage-3 task s07, to pin that 13-plus-1 invariant; ADR-0022 Decision 7 explicitly
-//! relaxes ADR-0007's byte-parity story from "byte-identical to the official extension" to "the
-//! 13 trained tool schemas are byte-identical; exactly one additive, argument-less governance
-//! tool is sanctioned on top." Any further change to this file, or to
-//! `src/transport/mcp/schemas/tools.json`, is UNSANCTIONED -- s07 is the only task ever
-//! authorized to touch either.
+//! Pins the structural invariants: exactly the 13 trained tools + `explain`, in order, each with
+//! a non-empty description and an object inputSchema. The computer tool carries all 13 actions.
+//! This is a regression snapshot (visibility), not a drift-prevention contract between two files.
 
-use ghostlight::mcp::tools::TOOLS_JSON;
+use ghostlight::mcp::tools::advertised_tools_json;
 use serde_json::{json, Value};
 
 /// The 13 trained tools, in order. Changing this array is changing the sacred contract.
@@ -38,7 +33,7 @@ learn what you are allowed to do in this session. It does not read, summarize, o
 pages.";
 
 fn tools() -> Vec<Value> {
-    let v: Value = serde_json::from_str(TOOLS_JSON).expect("tools.json must be valid JSON");
+    let v = advertised_tools_json();
     v["tools"]
         .as_array()
         .expect("`tools` must be an array")
@@ -58,18 +53,21 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         .collect();
     assert_eq!(
         names.len(),
-        14,
-        "13 trained tools plus exactly one addition"
+        17,
+        "13 trained tools plus wait_for, script, form_fill, and explain"
     );
     assert_eq!(
         names[..13],
         EXPECTED_TRAINED,
         "the 13 trained tools must stay byte-identical and in order"
     );
+    assert_eq!(names[13], "wait_for", "the 14th tool is wait_for");
+    assert_eq!(names[14], "script", "the 15th tool is script");
     assert_eq!(
-        names[13], "explain",
-        "the 14th (and only sanctioned addition) must be named explain, positioned last"
+        names[15], "form_fill",
+        "the 16th tool is form_fill, immediately before explain"
     );
+    assert_eq!(names[16], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -107,8 +105,8 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        14,
-        "no tool other than explain was added to the sacred fixture"
+        17,
+        "no tool other than wait_for, script, form_fill, and explain was added to the sacred fixture"
     );
 }
 
@@ -264,4 +262,90 @@ fn descriptions_reference_bare_tab_tool_names() {
         tool("tabs_create_mcp")["name"].as_str(),
         Some("tabs_create_mcp")
     );
+}
+
+/// ADR-0031 Decision 5: the agentGuide section is present and well-formed. The four fields are
+/// the agent's workflow contract at handshake; a missing/empty one breaks the onboarding payload.
+#[test]
+fn agent_guide_is_present_with_all_four_non_empty_fields() {
+    let guide = ghostlight::browser::directory::AGENT_GUIDE;
+    for (key, val) in [
+        ("summary", guide.summary),
+        ("workflow", guide.workflow),
+        ("flow", guide.flow),
+        ("denials", guide.denials),
+    ] {
+        assert!(!val.is_empty(), "agentGuide.{key} must be non-empty");
+    }
+    // The load-bearing workflow rule must be present (this is the fact that, when missing, an
+    // untrained model gets wrong on the first call).
+    assert!(
+        guide.workflow.contains("tabId"),
+        "agentGuide.workflow must state the tabId-first rule"
+    );
+}
+
+/// ADR-0031 Decision 5: every trained tool's `example.call` VALIDATES against its own
+/// `inputSchema` (run through the same validator o04 wires into the pipeline). This is the
+/// "trimmed-for-readability examples are mechanically uncommittable" guardrail -- an example
+/// missing a required field, carrying an unknown property, or a wrong-typed value fails CI.
+#[test]
+fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
+    use ghostlight::transport::mcp::validation::{validate_arguments, ToolSchema};
+
+    for t in tools() {
+        let name = t["name"].as_str().expect("name");
+        // `explain` carries no example (argument-less, self-describing) -- skip it.
+        let Some(example) = t.get("example") else {
+            assert_eq!(
+                name, "explain",
+                "only explain is permitted to omit an example; {name} must carry one"
+            );
+            continue;
+        };
+        let call = example
+            .get("call")
+            .unwrap_or_else(|| panic!("{name}: example must carry a call object"));
+        // Build the schema the same way the pipeline does (o04) and validate.
+        let schema = ToolSchema {
+            input_schema: t["inputSchema"].clone(),
+            example_call: Some(call.clone()),
+        };
+        validate_arguments(&schema, call).unwrap_or_else(|e| {
+            panic!("{name}: example.call must validate against its own inputSchema, but: {e}")
+        });
+    }
+}
+
+/// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
+/// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
+/// each is a JSON-Schema object. C4 adds `wait_for`; C7 adds `script`; C10 adds `form_fill`.
+#[test]
+fn output_schemas_present_exactly_where_declared() {
+    let with_schema: Vec<String> = tools()
+        .iter()
+        .filter(|t| t.get("outputSchema").is_some())
+        .map(|t| t["name"].as_str().expect("name").to_string())
+        .collect();
+    assert_eq!(
+        with_schema,
+        vec![
+            "tabs_context_mcp",
+            "tabs_create_mcp",
+            "navigate",
+            "find",
+            "wait_for",
+            "script",
+            "form_fill"
+        ],
+        "outputSchema must be advertised for exactly these tools, in this order"
+    );
+    for name in &with_schema {
+        let schema = &tool(name)["outputSchema"];
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "{name}: outputSchema.type must be \"object\""
+        );
+    }
 }

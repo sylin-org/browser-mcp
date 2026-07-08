@@ -23,7 +23,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Extract version
         id: meta
         shell: bash
@@ -36,10 +36,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+      # --no-fail-fast: report EVERY failing test binary, not just the first (ADR-0032).
+      - run: cargo test --locked --no-fail-fast
 
   build:
     needs: [prepare]
@@ -57,7 +58,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -92,24 +93,35 @@ jobs:
             echo "ASSET=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
           fi
 
+          # The raw per-target binary, named WITHOUT the version. The npm wrapper and the
+          # get.sh/get.ps1 one-liners fetch these directly (the versioned tag lives in the
+          # download URL path, and `releases/latest/download/<raw>` needs no API parsing).
+          RAW="${BIN_NAME}-${TARGET}${BIN_SUFFIX}"
+          cp "target/${TARGET}/release/${BIN_NAME}${BIN_SUFFIX}" "$RAW"
+          echo "RAW=${RAW}" >> "$GITHUB_ENV"
+
       - name: Checksum
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+            sha256sum "${{ env.RAW }}" > "${{ env.RAW }}.sha256"
           else
             shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+            shasum -a 256 "${{ env.RAW }}" > "${{ env.RAW }}.sha256"
           fi
-          cat "${{ env.ASSET }}.sha256"
+          cat "${{ env.ASSET }}.sha256" "${{ env.RAW }}.sha256"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
+            ${{ env.RAW }}
+            ${{ env.RAW }}.sha256
           if-no-files-found: error
 
   release:
@@ -122,10 +134,10 @@ jobs:
       id-token: write # keyless (Sigstore) signing for build provenance
       attestations: write # write the attestations
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: release-*
@@ -142,7 +154,7 @@ jobs:
           cat "${EXT_ZIP}.sha256"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             artifacts/*.tar.gz

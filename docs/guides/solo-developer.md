@@ -6,11 +6,12 @@ safety rails. Everything on this page is free, forever, with no key and no regis
 ## What you get
 
 Your AI agent (Claude Code, Claude Desktop, Cursor, VS Code, or any MCP client) gets a
-real browser: your cookies, your logins, your tabs. Fourteen tools -- navigate, click,
-type, screenshot, read the page, fill forms, run JavaScript, inspect console and network
-traffic -- at byte-parity with the schemas the model was trained on. The agent works
-inside its own tab group (labeled with a ghost) so its activity is visually separate
-from yours.
+real browser: your cookies, your logins, your tabs. Seventeen tools -- navigate, click,
+type, screenshot, read the page, find elements, fill forms (by ref or by label), run
+JavaScript, inspect console and network traffic, wait for dynamic pages to settle,
+compose multi-step scripts, and manage tabs -- at byte-parity with the schemas the model
+was trained on, plus the composition tools. The agent works inside its own tab group
+(labeled with a ghost) so its activity is visually separate from yours.
 
 By default Ghostlight is all-open: no policy, no restrictions, no audit. Governance is
 an overlay you can opt into later, one setting at a time.

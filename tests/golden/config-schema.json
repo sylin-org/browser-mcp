@@ -26,6 +26,13 @@
           "maximum": 60000,
           "default": 5000
         },
+        "engine.script.budget_ms": {
+          "description": "Total wall-clock budget for one script tool call, in milliseconds.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 480000,
+          "default": 120000
+        },
         "content.security.secrets.redact": {
           "description": "Redact values of secret fields (password/OTP/payment) in read_page output.",
           "type": "boolean",
@@ -75,8 +82,39 @@
           ],
           "default": "enforce"
         },
-        "channels.webapi.from": {
-          "description": "Sources allowed to connect to the local web API (Console/HTTP). \"localhost\" only, unless opened to \"*\" or specific hosts.",
+        "inbound.web.from": {
+          "description": "Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). \"localhost\" only, unless opened to \"*\" or specific hosts.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "default": [
+            "localhost"
+          ]
+        },
+        "inbound.web.enabled": {
+          "description": "Whether the inbound.web adapter's TCP listener binds. An org-mandatory false denies the web adapter: no listener, no surface.",
+          "type": "boolean",
+          "default": true
+        },
+        "inbound.pipe.enabled": {
+          "description": "Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.",
+          "type": "boolean",
+          "default": true
+        },
+        "outbound.browser.enabled": {
+          "description": "Whether the outbound.browser executor participates.",
+          "type": "boolean",
+          "default": true
+        },
+        "manage.web.enabled": {
+          "description": "Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.",
+          "type": "boolean",
+          "default": true
+        },
+        "manage.web.from": {
+          "description": "Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.",
           "type": "array",
           "items": {
             "type": "string"

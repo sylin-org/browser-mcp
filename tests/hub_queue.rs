@@ -9,8 +9,8 @@
 //! shared port and starve honest sessions. We do not engineer around the singleton; we queue
 //! honestly."
 //!
-//! The bounded reconnect grace window itself (`transport::executor::Browser::attach`,
-//! `GRACE_WINDOW`) is exercised by `src/transport/executor.rs`'s own inline tests (not named by
+//! The bounded reconnect grace window itself (`hub::outbound::browser::Browser::attach`,
+//! `GRACE_WINDOW`) is exercised by `src/hub/outbound/browser.rs`'s own inline tests (not named by
 //! the task file for this integration suite); this file covers the two tests the task file DOES
 //! name by their exact names:
 //!
@@ -22,10 +22,10 @@
 
 use ghostlight::governance::audit::Recorder;
 use ghostlight::governance::manifest::source::LoadedPolicy;
+use ghostlight::hub::outbound::browser::Browser;
 use ghostlight::hub::session::{PeerUser, SessionGuid, SessionRegistry};
 use ghostlight::hub::{try_mint, ServiceContext, MINT_QUOTA_EXCEEDED, PER_PEER_MINT_CAP};
 use ghostlight::native::host;
-use ghostlight::transport::executor::Browser;
 use ghostlight::transport::mcp::server::serve_session;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -56,6 +56,9 @@ fn build_ctx(browser: Browser) -> ServiceContext {
     )
     .expect("load_initial resolves to all-open with no manifest present");
     ServiceContext {
+        capabilities: ghostlight::hub::outbound::Registry::new(vec![std::sync::Arc::new(
+            ghostlight::hub::outbound::browser::BrowserCapability::new(browser.clone()),
+        )]),
         browser,
         store,
         recorder: Arc::new(Recorder::disabled()),
@@ -68,6 +71,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
         live_sessions: Arc::new(AtomicUsize::new(0)),
+        debug_sink: ghostlight::observability::DebugSink::disabled(),
     }
 }
 
@@ -100,14 +104,36 @@ fn attach_fake_extension(
                 break;
             };
             let v: Value = serde_json::from_slice(&req).unwrap();
-            let seen_tool = v["tool"].as_str().unwrap_or_default();
-            if seen_tool != tool {
-                panic!("unexpected tool_request for '{seen_tool}'");
+            let frame_type = v["type"].as_str().unwrap_or_default();
+            // o04: a TabScoped tool call with a tabId triggers lazy extension probes
+            // (tab_url_request, request_group) for audit attribution even under all-open. Answer
+            // any non-tool frame generically so the call proceeds to the actual tool dispatch
+            // under test; only the tool_request carries the oversize reply this test measures.
+            if frame_type == "tool_request" {
+                let seen_tool = v["tool"].as_str().unwrap_or_default();
+                assert_eq!(seen_tool, tool, "unexpected tool_request for '{seen_tool}'");
+                let reply = json!({ "id": v["id"], "type": "tool_response", "result": result });
+                host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                    .await
+                    .unwrap();
+            } else {
+                // Echo the frame's id with a benign response shaped to its type.
+                let (resp_type, result) = match frame_type {
+                    "tab_url_request" => {
+                        ("tab_url_response", json!({ "url": "https://example.com/" }))
+                    }
+                    "request_group" | "group_request" => {
+                        ("group_response", json!({ "groupId": 1, "tabs": [] }))
+                    }
+                    other => {
+                        panic!("fake extension cannot answer frame type '{other}'; full frame: {v}")
+                    }
+                };
+                let reply = json!({ "id": v["id"], "type": resp_type, "result": result });
+                host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
+                    .await
+                    .unwrap();
             }
-            let reply = json!({ "id": v["id"], "type": "tool_response", "result": result });
-            host::write_message(&mut ext_side, &serde_json::to_vec(&reply).unwrap())
-                .await
-                .unwrap();
         }
     })
 }
@@ -256,7 +282,9 @@ async fn oversized_screenshot_is_chunked_not_head_of_line_blocking() {
         &mut client_1,
         &json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "computer", "arguments": { "action": "screenshot" } },
+            // o04 (ADR-0031 Decision 4): inputSchema validation now runs before dispatch; computer
+            // needs action + tabId.
+            "params": { "name": "computer", "arguments": { "action": "screenshot", "tabId": 1 } },
         }),
     )
     .await;

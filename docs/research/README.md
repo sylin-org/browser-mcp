@@ -51,6 +51,17 @@ re-derived the substance from primary sources (noted in-file). No track was sile
 | [09-web-research-primary-sources.md](09-web-research-primary-sources.md) | All | Inline web-search findings: Playwright MCP, WebMCP, MCP auth spec, Claude-in-Chrome injection numbers, token bloat, Operator/Atlas, MV3. |
 | [11-install-detection.md](11-install-detection.md) | Delight / Fork 4 | Install-flow auto-detection: per-OS native-messaging registration (Windows registry / macOS + Linux dirs) for every Chromium browser, MCP-client config detection + add-server mechanics, and the deterministic-extension-ID trick. Feeds the self-registering installer. |
 
+## Later research (post-implementation)
+
+These were written after the engine and governance layers shipped; they follow the same
+cited-sources discipline but are not part of the pre-Phase 0 discovery above.
+
+| File | What it covers |
+|---|---|
+| [12-official-extension-parity.md](12-official-extension-parity.md) | Re-baseline of the tool surface against the official Claude-in-Chrome extension (v1.0.78), which the community reference only approximates. |
+| [13-competitive-landscape.md](13-competitive-landscape.md) | Four-lens competitive sweep (2026-07): Camp A (real-session automation, no governance) vs Camp B (governance, no browser); the uncontested intersection; the rename recommendation. |
+| [14-post-evaluation-2026-07.md](14-post-evaluation-2026-07.md) | Post-evaluation (2026-07-07): Ghostlight state capture, how every tracked player moved (first-party Claude Code + Chrome, Microsoft Agent Governance Toolkit, browser-use's Rust core, MCP 2026-07-28, WebMCP origin trial), positioning re-test, and the ranked P1-P10 proposal list. |
+
 ## Status
 
 Discovery **complete**; the eight forks are **decided**. See

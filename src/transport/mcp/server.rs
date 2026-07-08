@@ -36,11 +36,11 @@ use crate::governance::enforcement::LocalPdp;
 use crate::governance::manifest::identity::ManifestIdentity;
 use crate::governance::manifest::source::LoadedPolicy;
 use crate::governance::ports::{AuditSink, Denial};
+use crate::hub::outbound::browser::Browser;
 use crate::hub::session::SessionGuid;
 use crate::hub::ServiceContext;
-use crate::transport::executor::Browser;
 use crate::transport::mcp::pipeline;
-use crate::transport::mcp::tools::TOOLS_JSON;
+use crate::transport::mcp::tools::{advertised_tools_json, agent_guide_text};
 use crate::transport::mcp::types::{text_content, JsonRpcResponse};
 use crate::Result;
 use serde_json::{json, Value};
@@ -194,6 +194,7 @@ where
 
     let ServiceContext {
         browser,
+        capabilities,
         store,
         recorder,
         initial_policy: loaded_policy,
@@ -201,6 +202,7 @@ where
         owned_tabs,
         mint_quota: _,
         live_sessions,
+        debug_sink: _,
     } = ctx;
 
     // H6 (ADR-0030 Decision 8; PINS.md SS5.4): count this session for the idle-grace watcher's
@@ -311,8 +313,7 @@ where
         let recorder = recorder.clone() as Arc<dyn AuditSink>;
         let mut policy_changes = store.policy();
         let tx = tx.clone();
-        let fixture: Value =
-            serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid");
+        let fixture = advertised_tools_json();
         async move {
             let mut ignored_in_force = policy_changes.borrow().user_manifest_ignored;
             while policy_changes.changed().await.is_ok() {
@@ -373,7 +374,9 @@ where
             let _ = tx.send(Outbound::Response(resp));
             continue;
         }
-        if let Some(resp) = handle_line(&browser, &store, &governance, line, &tx).await {
+        if let Some(resp) =
+            handle_line(&browser, &capabilities, &store, &governance, line, &tx).await
+        {
             let _ = tx.send(Outbound::Response(resp));
         }
     }
@@ -489,6 +492,7 @@ fn record_unowned_tab_denial(governance: &Governance, name: &str, args: Option<&
 /// private fn, since the two functions now live in sibling modules.
 pub(super) async fn handle_line(
     browser: &Browser,
+    capabilities: &crate::hub::outbound::Registry,
     store: &Arc<ConfigStore>,
     governance: &Arc<Governance>,
     line: &str,
@@ -563,7 +567,10 @@ pub(super) async fn handle_line(
                     }
                 }
             });
-            Some(JsonRpcResponse::success(id, initialize_result()))
+            Some(JsonRpcResponse::success(
+                id,
+                initialize_result(capabilities),
+            ))
         }
         "tools/list" => Some(JsonRpcResponse::success(id, tools_list_result(governance))),
         "tools/call" => {
@@ -605,11 +612,42 @@ fn capture_client_info(governance: &Governance, params: Option<&Value>) {
     }
 }
 
-fn initialize_result() -> Value {
+fn initialize_result(capabilities: &crate::hub::outbound::Registry) -> Value {
+    // The capability manifest (ADR-0034 Decision 6): a per-capability section so the model
+    // learns the landscape at handshake -- what capabilities exist, what each is for, which
+    // tools each owns, and the per-capability guidance. Additive alongside the existing
+    // `instructions`; MCP clients that ignore unknown fields still see the flat `tools/list`
+    // array and work perfectly.
+    let manifest: Vec<Value> = capabilities
+        .capabilities()
+        .iter()
+        .map(|cap| {
+            let tools: Vec<&str> = cap.directory().iter().map(|d| d.tool).collect();
+            let guide = cap.agent_guide();
+            json!({
+                "code": cap.code(),
+                "descriptor": cap.descriptor(),
+                "tools": tools,
+                "guidance": {
+                    "summary": guide.summary,
+                    "workflow": guide.workflow,
+                    "flow": guide.flow,
+                    "denials": guide.denials,
+                },
+            })
+        })
+        .collect();
+
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "ghostlight", "version": env!("CARGO_PKG_VERSION") },
+        // The agent onboarding guide (ADR-0031 Decision 1), composed from each capability's
+        // guide (ADR-0034 Decision 6). Today only the browser capability contributes; future
+        // capabilities enrich this additively.
+        "instructions": agent_guide_text(),
+        // The capability manifest (ADR-0034 Decision 6): per-capability metadata.
+        "ghostlight:capabilities": manifest,
     })
 }
 
@@ -618,7 +656,7 @@ fn initialize_result() -> Value {
 /// once one is active. Schema text is never altered; only which tools appear in the array
 /// changes.
 fn tools_list_result(governance: &Governance) -> Value {
-    let fixture: Value = serde_json::from_str(TOOLS_JSON).expect("embedded tools.json is valid");
+    let fixture = advertised_tools_json();
     advertise::advertised_tools(&fixture, governance.grants())
 }
 
@@ -643,13 +681,20 @@ mod tests {
 
     /// ADR-0025 Decision 4: the notification fires only when the ADVERTISED SET actually
     /// changes. Adding a read-only grant where there were none changes the set (unlocks the
-    /// whole read-only surface); splitting a read+write union across two grants versus one
-    /// combined grant does NOT change the set (every variant here requires at most one
-    /// capability, satisfied identically either way) -- the pinned "two grants collapsing to
-    /// the same capability union" no-op case.
+    /// whole read-only surface). Splitting a read+write union across two grants versus one
+    /// combined grant does NOT change the set for any tool whose variants require at most ONE
+    /// capability each (satisfied identically either way, since `requires.is_empty()` or a
+    /// subset of a SINGLE grant is unaffected by how the union is split across grants) --
+    /// EXCEPT `form_fill` (C10, ADR-0036 Decision 4), the first tool whose `action: None`
+    /// variant requires TWO capabilities (`[read, write]`) TOGETHER: reachability is a
+    /// single-grant subset check (`browser::advertise::tool_has_a_reachable_variant`), so two
+    /// SEPARATE single-capability grants never satisfy it (no one grant carries both), while one
+    /// grant carrying the union does. This is the mechanically-forced consequence of C10 adding
+    /// the batch's first multi-capability-requiring variant, surfaced by this pre-existing test;
+    /// the assertion below is corrected to name it explicitly rather than silently going stale.
     #[test]
     fn advertised_set_diff_gates_the_notification() {
-        let fixture: Value = serde_json::from_str(TOOLS_JSON).expect("fixture parses");
+        let fixture = advertised_tools_json();
 
         let none: Vec<Grant> = Vec::new();
         let read_only = vec![grant(&[Capability::Read])];
@@ -664,9 +709,38 @@ mod tests {
         let combined = vec![grant(&[Capability::Read, Capability::Write])];
         let split_set = advertise::advertised_tools(&fixture, Some(&split));
         let combined_set = advertise::advertised_tools(&fixture, Some(&combined));
+
+        fn names(v: &Value) -> Vec<String> {
+            v["tools"]
+                .as_array()
+                .expect("tools array")
+                .iter()
+                .map(|t| t["name"].as_str().expect("name").to_string())
+                .collect()
+        }
+        let split_names = names(&split_set);
+        let combined_names = names(&combined_set);
+
+        assert!(
+            !split_names.contains(&"form_fill".to_string()),
+            "form_fill needs read+write from a SINGLE grant; two separate single-capability \
+             grants never satisfy it: {split_names:?}"
+        );
+        assert!(
+            combined_names.contains(&"form_fill".to_string()),
+            "one grant carrying both read and write does satisfy form_fill's variant: \
+             {combined_names:?}"
+        );
+
+        let split_rest: Vec<&String> = split_names.iter().filter(|n| *n != "form_fill").collect();
+        let combined_rest: Vec<&String> = combined_names
+            .iter()
+            .filter(|n| *n != "form_fill")
+            .collect();
         assert_eq!(
-            split_set, combined_set,
-            "two grants collapsing to the same capability union advertise the identical set"
+            split_rest, combined_rest,
+            "every OTHER tool's variants require at most one capability each, satisfied \
+             identically either way two grants collapse to the same capability union"
         );
     }
 }

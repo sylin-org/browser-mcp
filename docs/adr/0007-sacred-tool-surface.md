@@ -1,7 +1,15 @@
 # 0007. Sacred tool surface: byte-parity with the official Claude-in-Chrome
 
-- Status: Accepted
+- Status: Accepted (amended 2026-07-05 by ADR-0031)
 - Date: 2026-07
+
+> **Amendment (ADR-0031):** the byte-parity freeze is scoped to the *trained* fields only --
+> `name`, `description`, `inputSchema` on each of the 13 trained tools. Additive agent-facing
+> content introduced by ADR-0031 (the per-tool `example` object and the top-level `agentGuide`
+> section) is ghostlight's own content, was never part of any model's training surface, and is
+> out of scope of this freeze. The fidelity test (`tests/tool_schema_fidelity.rs`) keeps its
+> existing assertions byte-stable and GROWS to validate the additive fields. The body below
+> otherwise stands unchanged.
 
 ## Context
 

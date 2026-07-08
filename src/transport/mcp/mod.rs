@@ -5,7 +5,12 @@
 //! must preserve an exact, byte-identical tool surface. Handles `initialize`, `tools/list`, and
 //! `tools/call`. Implemented in Phase 1.
 
+pub mod form_fill;
+pub mod outcome;
 pub mod pipeline;
+pub mod refs;
+pub mod script;
 pub mod server;
 pub mod tools;
 pub mod types;
+pub mod validation;

@@ -259,6 +259,18 @@ async function killSession() {
   updateHoldBadge(null); // the session (and any hold state) is gone; render it as unknown
 }
 
+// First install: open the install walkthrough so whichever half the user found first
+// (extension or binary) leads them to the other. Fires ONLY on reason "install" -- never on
+// updates or browser restarts -- and holds no state. Mechanism only; no policy, no phoning
+// home (a static page on the project's GitHub Pages).
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install") {
+    chrome.tabs.create({
+      url: "https://sylin-org.github.io/ghostlight/install.html?from=extension",
+    });
+  }
+});
+
 // Popup messages. Returns true to answer asynchronously; false for unrecognized types (the
 // popup treats a false/undefined response the same as "no active session").
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -631,7 +643,9 @@ async function effectiveTabId(rawTabId) {
 }
 function tabContext(tabs) {
   const available = tabs.map((t) => ({ tabId: t.id, title: t.title || "", url: t.url || "" }));
-  return text(JSON.stringify({ mcpGroupId: groupId, tabs: available }, null, 2));
+  const r = text(JSON.stringify({ mcpGroupId: groupId, tabs: available }, null, 2));
+  r.structuredContent = { mcpGroupId: groupId, tabs: available };
+  return r;
 }
 
 // --- Content-script bridge (inject on demand) ---
@@ -640,7 +654,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -658,6 +672,32 @@ function text(t) {
 }
 function textImage(t, base64) {
   return { content: [{ type: "text", text: t }, { type: "image", data: base64, mimeType: "image/jpeg" }] };
+}
+
+// --- Consequence digest wrapper (ADR-0037 D2, PINS.md SS10): wrap a mutating action so the page
+// is sampled before the action and 300ms after, and the action's text confirmation gains an
+// `observation:` block reporting what changed. `run` performs the action and returns the result
+// (text/textImage); the snap is taken first, then `run`, then the sample. The existing
+// confirmation text is untouched; the digest is appended after a "\n" separator. The structured
+// twin merges into structuredContent. Best-effort: a content-script failure (e.g. the page
+// navigated away) degrades to the plain confirmation -- the observation is additive, never
+// load-bearing.
+async function withObservation(tabId, run) {
+  let before = null;
+  try { before = await content(tabId, { type: "observeSnap" }); } catch { /* page may be mid-load */ }
+  const result = await run();
+  if (!before || !before.result) return result;
+  try {
+    const sample = await content(tabId, { type: "observeSample", before: before.result });
+    const obs = sample && sample.result;
+    if (obs && obs.digest) {
+      result.content[0].text += "\n" + obs.digest;
+      if (obs.structured) {
+        result.structuredContent = Object.assign({}, result.structuredContent || {}, obs.structured);
+      }
+    }
+  } catch { /* observation never masks the action's own result */ }
+  return result;
 }
 
 // --- Screenshot pipeline: capture native, downscale to the token budget, record ScreenshotContext ---
@@ -818,8 +858,11 @@ async function resolveCoords(tabId, args) {
   // ref coordinates come from getBoundingClientRect (already CSS viewport px) -> do NOT rescale.
   if (args.ref) {
     const r = await content(tabId, { type: "refCoordinates", ref: args.ref });
-    if (r && r.result) return [r.result.x, r.result.y];
-    // The engine is truthful: a stale ref is a failure, never a silent [0, 0] substitution.
+    if (r && r.result && !r.result.error) return [r.result.x, r.result.y];
+    // The engine is truthful: a stale ref is a failure, never a silent [0, 0] substitution. A
+    // stale-ref corrective message (render serial moved) is surfaced verbatim; a plain miss keeps
+    // the generic wording.
+    if (r && r.result && r.result.error) throw hopError("page", r.result.error);
     throw hopError("page", `Element ${args.ref} not found; the page may have changed since it was read`);
   }
   return null;
@@ -968,50 +1011,58 @@ async function computer(a) {
       if (!c) return text("coordinate or ref is required.");
       await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
       if (a.action === "hover") {
-        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
-        return text(`Hovered at (${c[0]}, ${c[1]}).`);
+        return withObservation(tabId, async () => {
+          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
+          return text(`Hovered at (${c[0]}, ${c[1]}).`);
+        });
       }
       const button = a.action === "right_click" ? "right" : "left";
       const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
-      await click(tabId, c[0], c[1], { button, clickCount, modifiers });
-      return text(`${a.action} at (${c[0]}, ${c[1]}).`);
+      return withObservation(tabId, async () => {
+        await click(tabId, c[0], c[1], { button, clickCount, modifiers });
+        return text(`${a.action} at (${c[0]}, ${c[1]}).`);
+      });
     }
     case "type": {
       if (!a.text) return text("text is required for type.");
-      await ensureAttached(tabId);
-      typeShimmer(tabId);
-      keystrokeCue(tabId, a.text, "type");
-      const chars = Array.from(a.text);
-      for (let i = 0; i < chars.length; i++) {
-        const ch = chars[i];
-        // Windows-style newlines: skip the \r, let the following \n press Enter once.
-        if (ch === "\r" && chars[i + 1] === "\n") continue;
-        const info = charKeyInfo(ch);
-        if (!info) {
-          await cdp(tabId, "Input.insertText", { text: ch });
+      return withObservation(tabId, async () => {
+        await ensureAttached(tabId);
+        typeShimmer(tabId);
+        keystrokeCue(tabId, a.text, "type");
+        const chars = Array.from(a.text);
+        for (let i = 0; i < chars.length; i++) {
+          const ch = chars[i];
+          // Windows-style newlines: skip the \r, let the following \n press Enter once.
+          if (ch === "\r" && chars[i + 1] === "\n") continue;
+          const info = charKeyInfo(ch);
+          if (!info) {
+            await cdp(tabId, "Input.insertText", { text: ch });
+            await sleep(8);
+            continue;
+          }
+          const mods = info.shift ? 8 : 0;
+          const evt = {
+            key: info.key, code: info.code, modifiers: mods,
+            windowsVirtualKeyCode: info.vk, nativeVirtualKeyCode: info.vk,
+          };
+          await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...evt, text: info.text, unmodifiedText: info.unmodifiedText });
+          await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...evt });
           await sleep(8);
-          continue;
         }
-        const mods = info.shift ? 8 : 0;
-        const evt = {
-          key: info.key, code: info.code, modifiers: mods,
-          windowsVirtualKeyCode: info.vk, nativeVirtualKeyCode: info.vk,
-        };
-        await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...evt, text: info.text, unmodifiedText: info.unmodifiedText });
-        await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...evt });
-        await sleep(8);
-      }
-      return text(`Typed ${a.text.length} character(s).`);
+        return text(`Typed ${a.text.length} character(s).`);
+      });
     }
     case "key": {
       if (!a.text) return text("text is required for key.");
-      await ensureAttached(tabId);
-      keystrokeCue(tabId, a.text, "key");
-      const repeat = Math.min(a.repeat || 1, 100);
-      for (let i = 0; i < repeat; i++) {
-        for (const combo of a.text.split(" ").filter(Boolean)) await pressKey(tabId, combo);
-      }
-      return text(`Pressed: ${a.text} (x${repeat}).`);
+      return withObservation(tabId, async () => {
+        await ensureAttached(tabId);
+        keystrokeCue(tabId, a.text, "key");
+        const repeat = Math.min(a.repeat || 1, 100);
+        for (let i = 0; i < repeat; i++) {
+          for (const combo of a.text.split(" ").filter(Boolean)) await pressKey(tabId, combo);
+        }
+        return text(`Pressed: ${a.text} (x${repeat}).`);
+      });
     }
     case "scroll": {
       const c = (await resolveCoords(tabId, a)) || [0, 0];
@@ -1061,37 +1112,43 @@ async function computer(a) {
       return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
     }
     case "scroll_to": {
-      if (a.ref) {
-        const r = await content(tabId, { type: "scrollToRef", ref: a.ref });
-        // The engine is truthful: a stale ref is a failure, never a false "Scrolled to target.".
-        if (!(r && r.result)) {
-          throw hopError("page", `Element ${a.ref} not found; the page may have changed since it was read`);
+      return withObservation(tabId, async () => {
+        if (a.ref) {
+          const r = await content(tabId, { type: "scrollToRef", ref: a.ref });
+          // The engine is truthful: a stale ref is a failure, never a false "Scrolled to target.".
+          // A stale-ref corrective message (render serial moved) is surfaced verbatim.
+          if (r && r.result && r.result.error) throw hopError("page", r.result.error);
+          if (!(r && r.result === true)) {
+            throw hopError("page", `Element ${a.ref} not found; the page may have changed since it was read`);
+          }
+        } else if (a.coordinate) {
+          await cdp(tabId, "Runtime.evaluate", { expression: `window.scrollTo(${a.coordinate[0]}, ${a.coordinate[1]})` });
         }
-      } else if (a.coordinate) {
-        await cdp(tabId, "Runtime.evaluate", { expression: `window.scrollTo(${a.coordinate[0]}, ${a.coordinate[1]})` });
-      }
-      await sleep(250);
-      return text("Scrolled to target.");
+        await sleep(250);
+        return text("Scrolled to target.");
+      });
     }
     case "left_click_drag": {
       if (!a.start_coordinate || !a.coordinate) return text("start_coordinate and coordinate are required.");
       // Both endpoints are model-provided (read off the screenshot) -> rescale to CSS px.
       const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
       const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
-      await moveCursor(tabId, sx, sy);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers, buttons: 0, force: 0 });
-      await sleep(CAPTURE_SETTLE_MS);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
-      await sleep(CAPTURE_SETTLE_MS);
-      for (let i = 1; i <= 10; i++) {
-        const tx = sx + ((ex - sx) * i) / 10, ty = sy + ((ey - sy) * i) / 10;
-        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: tx, y: ty, modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
-        dragTrail(tabId, tx, ty);
-        await sleep(16);
-      }
-      await moveCursor(tabId, ex, ey);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: ex, y: ey, button: "left", modifiers, buttons: 0, force: 0 });
-      return text(`Dragged (${sx}, ${sy}) -> (${ex}, ${ey}).`);
+      return withObservation(tabId, async () => {
+        await moveCursor(tabId, sx, sy);
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers, buttons: 0, force: 0 });
+        await sleep(CAPTURE_SETTLE_MS);
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: sx, y: sy, button: "left", modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
+        await sleep(CAPTURE_SETTLE_MS);
+        for (let i = 1; i <= 10; i++) {
+          const tx = sx + ((ex - sx) * i) / 10, ty = sy + ((ey - sy) * i) / 10;
+          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: tx, y: ty, modifiers, buttons: BUTTON_BITS.left, force: 0.5 });
+          dragTrail(tabId, tx, ty);
+          await sleep(16);
+        }
+        await moveCursor(tabId, ex, ey);
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: ex, y: ey, button: "left", modifiers, buttons: 0, force: 0 });
+        return text(`Dragged (${sx}, ${sy}) -> (${ex}, ${ey}).`);
+      });
     }
     default:
       return text(`Unknown computer action: ${a.action}`);
@@ -1112,6 +1169,7 @@ const handlers = {
     await persistSessionState();
     const r = tabContext(await groupTabs());
     r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
+    r.structuredContent = { tabId: tab.id, tabs: r.structuredContent.tabs };
     return r;
   },
   async navigate(a) {
@@ -1131,7 +1189,9 @@ const handlers = {
     await waitForLoad(tabId);
     const tab = await chrome.tabs.get(tabId);
     navigatePill(tabId, tab.url); // destination pill on the freshly loaded page
-    return text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
+    const r = text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
+    r.structuredContent = { tabId, url: tab.url, title: tab.title || "" };
+    return r;
   },
   computer,
   async read_page(a) {
@@ -1152,20 +1212,80 @@ const handlers = {
     const r = await content(tabId, { type: "find", query: a.query });
     const data = (r && r.result) || { results: [] };
     const results = data.results || [];
-    if (!results.length) return text(`No elements matching "${a.query}".`);
-    let out = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
-    if (data.more) out += "\n(more than 20 matches; refine your query for the rest)";
-    return text(out);
+    const more = !!data.more;
+    let out;
+    if (!results.length) {
+      out = text(`No elements matching "${a.query}".`);
+    } else {
+      let s = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
+      if (more) s += "\n(more than 20 matches; refine your query for the rest)";
+      out = text(s);
+    }
+    out.structuredContent = { results, more };
+    return out;
   },
   async form_input(a) {
     const tabId = await effectiveTabId(a.tabId);
-    const r = await content(tabId, { type: "setFormValue", ref: a.ref, value: a.value });
-    // The engine is truthful: a content-script failure is a failure, never a masqueraded success.
-    if (r && r.result && r.result.error) {
-      const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
-      throw hopError("page", msg);
+    return withObservation(tabId, async () => {
+      const r = await content(tabId, { type: "setFormValue", ref: a.ref, value: a.value });
+      // The engine is truthful: a content-script failure is a failure, never a masqueraded success.
+      if (r && r.result && r.result.error) {
+        const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+        throw hopError("page", msg);
+      }
+      return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
+    });
+  },
+  async wait_for(a) {
+    // Defaults (ADR-0037 D1/D6): settle ON, state visible, timeout 10s, min 0.
+    const state = a.state || "visible";
+    const timeout_ms = a.timeout_ms === undefined ? 10000 : a.timeout_ms;
+    const min_ms = a.min_ms === undefined ? 0 : a.min_ms;
+    const settle = a.settle === undefined ? true : a.settle;
+    const tabId = await effectiveTabId(a.tabId);
+    // Corrective validation (ADR-0031): the wait shape is taught, not guessed.
+    if (a.selector && a.text) {
+      throw hopError("page", "provide at most one of selector or text, not both");
     }
-    return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
+    if (state === "settled" && (a.selector || a.text)) {
+      throw hopError("page", 'state "settled" waits for the page to go quiet; do not also pass selector or text');
+    }
+    if (min_ms > timeout_ms) {
+      throw hopError("page", `min_ms (${min_ms}) must not exceed timeout_ms (${timeout_ms})`);
+    }
+    if (timeout_ms > 30000) {
+      throw hopError("page", `timeout_ms ${timeout_ms} exceeds the 30000ms cap`);
+    }
+    const spec = { selector: a.selector || null, text: a.text || null, state, timeout_ms, min_ms, settle };
+    const r = await content(tabId, { type: "waitFor", spec });
+    const res = (r && r.result) || {};
+    if (res.timeout) {
+      // A bare settle wait that never quiets reports the sustained rate; a condition wait names
+      // what WAS on the page (title + the closest matched ref, if any) so the model can adjust.
+      if (a.selector || a.text) {
+        throw hopError("page", `"${a.selector || a.text}" not visible within ${timeout_ms}ms. Page title: "${res.title}".`);
+      }
+      throw hopError("page", `did not settle within ${timeout_ms}ms (still changing at ~${res.rate} mutations/500ms)`);
+    }
+    waitPulse(tabId);
+    const elapsed = res.elapsedMs;
+    const peak = res.peakMutations;
+    let s;
+    if (a.selector || a.text) {
+      s = `Condition met after ${elapsed}ms (settled; peak ${peak} mutations/window).`;
+    } else {
+      s = `Page settled after ${elapsed}ms (peak ${peak} mutations/window).`;
+    }
+    const out = text(s);
+    const structured = { found: res.found, elapsed_ms: elapsed };
+    if (res.ref) structured.ref = res.ref;
+    if (settle) {
+      structured.settled = res.settled;
+      structured.peak_mutations = peak;
+      structured.final_rate = res.finalRate;
+    }
+    out.structuredContent = structured;
+    return out;
   },
   async javascript_tool(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1273,6 +1393,14 @@ const handlers = {
     const domains = (a.domains || []).join(", ");
     const approach = (a.approach || []).map((s) => `- ${s}`).join("\n");
     return text(`Plan (auto-approved by the v1.0 engine):\nDomains: ${domains}\n${approach}`);
+  },
+  // Internal read for form_fill (ADR-0036 D5, PINS.md SS12): NOT in the tool REGISTRY, so models
+  // cannot call it -- only form_fill's handler dials it via browser.call. Returns the value-free
+  // form identity (controls + submit candidates) as raw JSON, no prose rendering.
+  async form_structure_internal(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    const r = await content(tabId, { type: "formStructure" });
+    return text(JSON.stringify((r && r.result) || { forms: [], formless: [] }, null, 2));
   },
 };
 

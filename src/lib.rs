@@ -14,12 +14,11 @@
 //! (launched by Chrome via `connectNative`). They bridge over a named pipe / Unix domain socket.
 
 pub mod browser;
-pub mod debug;
-pub mod doctor;
 pub mod error;
 pub mod governance;
 pub mod hub;
 pub mod install;
+pub mod observability;
 pub mod origin;
 pub mod proc;
 pub mod transport;

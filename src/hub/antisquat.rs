@@ -3,19 +3,19 @@
 //!
 //! Defeats a NAIVE or CROSS-USER process that squats the well-known adapter/control endpoint name
 //! without knowing the per-install secret: the genuine SERVICE proves possession of a 32-byte,
-//! per-user secret (`hub-key`, under `crate::debug::log_dir()`) to every connecting ADAPTER via an
+//! per-user secret (`hub-key`, under `crate::observability::log_dir()`) to every connecting ADAPTER via an
 //! HMAC-SHA256 proof over the adapter's own hello bytes, before the adapter relays a single byte
 //! of its stdio. This is defense-in-depth, not a same-user sandbox: a determined same-user process
 //! can read any same-user file (Decision 8).
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// The per-install secret's filename under `crate::debug::log_dir()` (PINS.md SS5.3): PER-USER,
+/// The per-install secret's filename under `crate::observability::log_dir()` (PINS.md SS5.3): PER-USER,
 /// never a machine-wide directory (that corrected an earlier `%ProgramData%` draft). Created
 /// lazily on the first `run_service` start if absent.
 const HUB_KEY_FILE: &str = "hub-key";
@@ -27,7 +27,7 @@ const HUB_KEY_FILE: &str = "hub-key";
 pub const REFUSAL_MESSAGE: &str = "refusing to connect: the Ghostlight service on this endpoint is not the one this user installed";
 
 fn hub_key_path() -> std::io::Result<PathBuf> {
-    let dir = crate::debug::log_dir().ok_or_else(|| {
+    let dir = crate::observability::log_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no per-user data directory available for the hub-key",
@@ -69,7 +69,7 @@ pub fn load_or_create_hub_key() -> std::io::Result<[u8; 32]> {
         return Ok(key);
     }
     let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key).map_err(|e| std::io::Error::other(e.to_string()))?;
+    getrandom::fill(&mut key).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut file = std::fs::File::create(&path)?;
     file.write_all(&key)?;
     #[cfg(unix)]
@@ -90,7 +90,8 @@ pub fn read_hub_key() -> std::io::Result<[u8; 32]> {
 
 /// The lowercase-hex HMAC-SHA256 of `message` keyed by `key` (PINS.md SS5.3).
 pub fn compute_mac_hex(key: &[u8], message: &[u8]) -> String {
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha256 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(message);
     hex_encode(&mac.finalize().into_bytes())
 }

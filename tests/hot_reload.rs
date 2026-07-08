@@ -294,6 +294,8 @@ fn org_policy_hot_swap_end_to_end() {
         "read_page",
         "resize_window",
         "update_plan",
+        "wait_for",
+        "script",
         "explain",
     ];
     assert_eq!(tool_names(&list_resp), governed_read_only);
@@ -319,6 +321,11 @@ fn org_policy_hot_swap_end_to_end() {
         "read_page",
         "resize_window",
         "update_plan",
+        "wait_for",
+        "script",
+        // C10: form_fill's None-variant requires [read, write], a subset of this grant's
+        // [read, action, write] -- reachable now that write joined the grant.
+        "form_fill",
         "explain",
     ];
     let mut next_id = 3i64;
@@ -349,7 +356,7 @@ fn org_policy_hot_swap_end_to_end() {
     });
     consumed = idx;
 
-    // Delete the policy file: org removal is a legitimate transition back to all-open (14
+    // Delete the policy file: org removal is a legitimate transition back to all-open (17
     // tools), with a second notification.
     std::fs::remove_file(&policy_path).expect("delete the policy file");
     let full_set: Vec<&str> = vec![
@@ -366,6 +373,9 @@ fn org_policy_hot_swap_end_to_end() {
         "read_page",
         "resize_window",
         "update_plan",
+        "wait_for",
+        "script",
+        "form_fill",
         "explain",
     ];
     let _ = poll_tools_list_until(&mut stdin, &lines, consumed, &mut next_id, &full_set, 20);

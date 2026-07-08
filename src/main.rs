@@ -9,7 +9,7 @@
 //! - **adapter** (default, no subcommand) -- launched by the MCP client over stdio. A THIN relay:
 //!   connects to the already-running SERVICE (self-healing an OS-supervisor start if it is down,
 //!   `ghostlight::hub::supervisor`), relays its stdio, and dies with its editor. Never loads
-//!   policy, never builds a [`Browser`](ghostlight::transport::executor::Browser), never runs
+//!   policy, never builds a [`Browser`](ghostlight::hub::outbound::browser::Browser), never runs
 //!   governance.
 //! - **service** (`ghostlight service`) -- the STANDALONE, persistent Hub. Owns the browser IPC
 //!   endpoint and the adapter/control endpoint for its whole life, multiplexes any number of
@@ -25,7 +25,7 @@
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use ghostlight::doctor::DoctorOptions;
+use ghostlight::hub::manage::doctor::DoctorOptions;
 use ghostlight::install::{InstallOptions, Selection, UninstallOptions};
 use ghostlight::native::ipc;
 
@@ -328,7 +328,7 @@ fn main() -> Result<()> {
             command: Some(Command::Doctor(args)),
             ..
         } => {
-            if !ghostlight::doctor::run(args.into())? {
+            if !ghostlight::hub::manage::doctor::run(args.into())? {
                 std::process::exit(1);
             }
         }
@@ -411,12 +411,12 @@ fn main() -> Result<()> {
 /// `ghostlight status`: read and print the running server's live inner state.
 fn run_status(args: StatusArgs) {
     if args.json {
-        match ghostlight::debug::raw_state() {
+        match ghostlight::observability::raw_state() {
             Some(s) => print!("{s}"),
             None => println!("no debug state found (start the server with --debug)"),
         }
     } else {
-        println!("{}", ghostlight::debug::status_report());
+        println!("{}", ghostlight::observability::status_report());
     }
 }
 

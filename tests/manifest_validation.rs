@@ -250,6 +250,8 @@ fn org_policy_file_with_config_boots_the_server() {
             "read_page",
             "resize_window",
             "update_plan",
+            "wait_for",
+            "script",
             "explain",
         ]
     );

@@ -63,7 +63,11 @@ fn a_recorded_call_lands_as_one_wellformed_jsonl_line() {
             "denial_id",
             "duration_ms",
             "manifest",
-            "held"
+            "held",
+            "orchestrator",
+            "batch_id",
+            "step",
+            "dry_run"
         ],
         "field order matches the shared format"
     );
@@ -117,7 +121,7 @@ fn session_killed_writes_one_session_event_record() {
     ));
     governance.set_client("claude-code", "2.1.0");
 
-    let browser = ghostlight::transport::executor::Browser::new();
+    let browser = ghostlight::hub::outbound::browser::Browser::new();
     {
         let governance = Arc::clone(&governance);
         browser.on_session_killed(move || governance.record_session_killed());
@@ -184,6 +188,70 @@ fn session_killed_writes_one_session_event_record() {
             "{field} must not appear on a session event record"
         );
     }
+
+    std::fs::remove_file(&path).ok();
+}
+
+/// C1 (PINS SS3): with no orchestration ever stamped, a normal begin/complete record's
+/// serialized line ends with the four new keys, in order, all null/false.
+#[test]
+fn orchestration_keys_serialize_last_in_order() {
+    let path = temp_path("orchestration-keys");
+    let _ = std::fs::remove_file(&path);
+
+    let recorder = ghostlight::governance::audit::Recorder::to_file(path.clone());
+    let governance = Governance::all_open(Arc::new(recorder) as Arc<dyn AuditSink>);
+
+    let mut audit = governance.begin(
+        "computer",
+        Some("left_click"),
+        directory::requires("computer", Some("left_click")),
+    );
+    audit.dispatch_finished();
+    audit.complete();
+
+    let content = std::fs::read_to_string(&path).expect("audit file exists");
+    let line = content.lines().next().expect("one line");
+    assert!(
+        line.ends_with(
+            r#""held":false,"orchestrator":null,"batch_id":null,"step":null,"dry_run":false}"#
+        ),
+        "line: {line}"
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
+/// C1 (PINS SS3): `orchestrated`/`mark_dry_run`/`attribute_grant` each stamp their field, and
+/// all three stick through to the completed record.
+#[test]
+fn orchestrated_setters_stamp_fields() {
+    let path = temp_path("orchestrated-setters");
+    let _ = std::fs::remove_file(&path);
+
+    let recorder = ghostlight::governance::audit::Recorder::to_file(path.clone());
+    let governance = Governance::all_open(Arc::new(recorder) as Arc<dyn AuditSink>);
+
+    let mut audit = governance.begin(
+        "computer",
+        Some("left_click"),
+        directory::requires("computer", Some("left_click")),
+    );
+    audit.orchestrated("script", "00000000-0000-4000-8000-000000000001", Some(3));
+    audit.mark_dry_run();
+    audit.attribute_grant(Some("g-1".to_string()));
+    audit.complete();
+
+    let content = std::fs::read_to_string(&path).expect("audit file exists");
+    let line = content.lines().next().expect("one line");
+    assert!(line.contains(r#""orchestrator":"script""#), "line: {line}");
+    assert!(
+        line.contains(r#""batch_id":"00000000-0000-4000-8000-000000000001""#),
+        "line: {line}"
+    );
+    assert!(line.contains(r#""step":3"#), "line: {line}");
+    assert!(line.contains(r#""dry_run":true"#), "line: {line}");
+    assert!(line.contains(r#""grant_id":"g-1""#), "line: {line}");
 
     std::fs::remove_file(&path).ok();
 }

@@ -15,8 +15,12 @@ audit, layered configuration with org policy locks, manifest hot-reload, the `ex
 The **Implementation Phases** and **Repository Structure** sections below are the ORIGINAL design
 plan, kept as historical intent. Some module paths have since moved (notably the stage-2
 reorganization into `src/transport/`, `src/governance/`, and `src/browser/`); trust the live tree
-over the tree drawn below. The 13-trained-tools-plus-`explain` sacred surface constraint remains
-fully in force.
+over the tree drawn below. The sacred-surface constraint was AMENDED by ADR-0034 Decision 7
+(2026-07-06): the 13 trained tool schemas plus `explain` stay stable as the REFERENCE SHAPE
+(existing names, parameters, descriptions, and enums do not change), but additive growth is now
+sanctioned -- new tools join the directory via the capability registry (`script`, `form_fill`,
+`wait_for` per ADR-0035..0038), and additive optional parameters on existing tools are allowed
+(e.g. `read_page` `diff`). The fidelity test is a regression snapshot, not a byte-freeze.
 
 ## Project Identity
 
@@ -28,7 +32,7 @@ The authoritative design specification is `docs/SPEC.md`. Read it fully before w
 
 This is a clean-room Rust rewrite informed by [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome), a Node.js reimplementation of Anthropic's Claude in Chrome extension. The reference repo is cloned into `reference/open-claude-in-chrome/` for study. We are not forking it. We are understanding what it does and rebuilding the concept in Rust with a fundamentally different architecture (governance-first, single-binary, no Node.js dependency).
 
-**Critical constraint:** Preserve the exact MCP tool names, parameter signatures, and description strings from the reference implementation's tool schemas. Claude was trained against these schemas. The 13 trained tool schemas must stay byte-identical to what the official Claude in Chrome extension advertises; exactly one additive, argument-less governance tool named `explain` is sanctioned on top (ADR-0022 Decision 7). No other addition, removal, or edit is sanctioned. Our governance layer shapes which tools are visible and when they execute, but the trained schemas themselves are sacred.
+**Critical constraint (as amended by ADR-0034 Decision 7):** Preserve the exact MCP tool names, parameter signatures, and description strings from the reference implementation's tool schemas. Claude was trained against these schemas. The 13 trained tool schemas stay stable as the reference shape -- no rename, removal, paraphrase, or reorder of anything a trained model relies on. Growth is additive only: new tools join via the capability registry (`explain` per ADR-0022 Decision 7; `script`, `form_fill`, `wait_for` per ADR-0035..0038), and new OPTIONAL parameters may be added to existing tools without touching trained fields or enums. Our governance layer shapes which tools are visible and when they execute; the trained shape itself does not drift.
 
 ## Architecture (from spec §2)
 
@@ -182,7 +186,7 @@ The Chromium native messaging protocol is:
 The binary is both the native messaging host (extension connects to it) AND the MCP server (Claude Code connects via stdio). These two streams are multiplexed on the tokio runtime. A message from the MCP client triggers a command to the extension; the extension's response is routed back to the MCP client.
 
 ### Tool Schema Preservation
-The tool schemas must be extracted verbatim from the reference implementation. Every tool name, parameter name, type, description, and enum value must be byte-identical. Do not paraphrase descriptions. Do not rename parameters. Do not reorder fields. The model's trained behavior depends on exact schema matching. The one sanctioned exception is the additive `explain` directory tool (ADR-0022 Decision 7); it is not part of the trained surface and its schema is pinned by `tests/tool_schema_fidelity.rs`.
+The trained tool schemas are extracted verbatim from the reference implementation. Every trained tool name, parameter name, type, description, and enum value stays byte-identical: do not paraphrase descriptions, rename parameters, or reorder fields -- the model's trained behavior depends on exact schema matching. Per ADR-0034 Decision 7 this is a reference shape, not a freeze: additive tools (`explain` per ADR-0022 D7; `script`, `form_fill`, `wait_for` per ADR-0035..0038) and additive optional parameters (e.g. `read_page` `diff`, ADR-0037) are sanctioned, and the fidelity test (`tests/tool_schema_fidelity.rs`) is a regression snapshot over the whole declared surface.
 
 In the Rust code, define tool schemas as const string literals (the raw JSON) rather than building them programmatically. This prevents accidental drift.
 

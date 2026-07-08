@@ -26,10 +26,10 @@
 use ghostlight::governance::audit::Recorder;
 use ghostlight::governance::config::reload::ConfigStore;
 use ghostlight::governance::manifest::source::LoadedPolicy;
+use ghostlight::hub::outbound::browser::Browser;
 use ghostlight::hub::session::{SessionGuid, SessionRegistry};
 use ghostlight::hub::ServiceContext;
 use ghostlight::native::host;
-use ghostlight::transport::executor::Browser;
 use ghostlight::transport::mcp::server::serve_session;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -130,6 +130,9 @@ fn build_ctx(browser: Browser) -> ServiceContext {
     let store = ConfigStore::load_initial(ghostlight::browser::pattern::is_valid_pattern)
         .expect("load_initial resolves to all-open with no manifest present");
     ServiceContext {
+        capabilities: ghostlight::hub::outbound::Registry::new(vec![std::sync::Arc::new(
+            ghostlight::hub::outbound::browser::BrowserCapability::new(browser.clone()),
+        )]),
         browser,
         store,
         recorder: Arc::new(Recorder::disabled()),
@@ -142,6 +145,7 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
         live_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        debug_sink: ghostlight::observability::DebugSink::disabled(),
     }
 }
 

@@ -16,6 +16,16 @@ Upper bound on the first-call wait for the extension handshake.
 - Default (safe, = built-in Minimal): 5000
 - Default (restricted): 5000
 
+## `engine.script.budget_ms`
+
+Total wall-clock budget for one script tool call, in milliseconds.
+
+- Type: uint
+- Constraints: integer between 1000 and 480000
+- Default (fully_open): 120000
+- Default (safe, = built-in Minimal): 120000
+- Default (restricted): 120000
+
 ## `content.security.secrets.redact`
 
 Redact values of secret fields (password/OTP/payment) in read_page output.
@@ -86,9 +96,59 @@ Default enforcement mode when the active manifest does not set one: observe reco
 - Default (safe, = built-in Minimal): "enforce"
 - Default (restricted): "enforce"
 
-## `channels.webapi.from`
+## `inbound.web.from`
 
-Sources allowed to connect to the local web API (Console/HTTP). "localhost" only, unless opened to "*" or specific hosts.
+Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). "localhost" only, unless opened to "*" or specific hosts.
+
+- Type: string list
+- Constraints: unique string elements
+- Default (fully_open): ["localhost"]
+- Default (safe, = built-in Minimal): ["localhost"]
+- Default (restricted): ["localhost"]
+
+## `inbound.web.enabled`
+
+Whether the inbound.web adapter's TCP listener binds. An org-mandatory false denies the web adapter: no listener, no surface.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `inbound.pipe.enabled`
+
+Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `outbound.browser.enabled`
+
+Whether the outbound.browser executor participates.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `manage.web.enabled`
+
+Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.
+
+- Type: bool
+- Constraints: none
+- Default (fully_open): true
+- Default (safe, = built-in Minimal): true
+- Default (restricted): true
+
+## `manage.web.from`
+
+Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.
 
 - Type: string list
 - Constraints: unique string elements

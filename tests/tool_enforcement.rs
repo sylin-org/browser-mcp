@@ -392,8 +392,9 @@ fn union_rule_end_to_end() {
 }
 
 /// Test 8: the all-open invariant. With no `--manifest` at all, behavior is byte-identical to
-/// today (14 tools -- the 13 trained tools plus the ADR-0022 Decision 7 `explain` addition --
-/// fixture identity, `not connected` execution error) and no `Denied (` text ever appears.
+/// today (17 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, and the
+/// ADR-0022 Decision 7 `explain` addition -- fixture identity, `not connected` execution error)
+/// and no `Denied (` text ever appears.
 #[test]
 fn all_open_invariant_no_manifest_means_no_denials() {
     let responses = drive(
@@ -401,7 +402,8 @@ fn all_open_invariant_no_manifest_means_no_denials() {
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
+            // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
         ],
     );
     assert_eq!(responses.len(), 3, "got {responses:?}");
@@ -409,8 +411,12 @@ fn all_open_invariant_no_manifest_means_no_denials() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 14, "13 trained tools plus explain");
-    let fixture: Value = serde_json::from_str(ghostlight::mcp::tools::TOOLS_JSON).unwrap();
+    assert_eq!(
+        tools.len(),
+        17,
+        "13 trained tools plus wait_for, script, form_fill, and explain"
+    );
+    let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");
 
     let call_text = text_of(&responses[2]);
@@ -544,4 +550,172 @@ fn governed_unknown_computer_action_is_denied_unknown_action() {
 
     std::fs::remove_file(&audit_path).ok();
     std::fs::remove_file(&manifest).ok();
+}
+
+// --- C10 (ADR-0036, PINS.md SS13): form_fill's parent-level governance decision ---
+
+/// ADR-0036 Decision 4: `form_fill`'s ONE governance decision covers the whole interaction, at
+/// the parent call, before anything dispatches. A manifest whose only grant lacks `write` (the
+/// capability `form_fill`'s default variant requires alongside `read`) denies the parent call --
+/// exactly one denial, and (proven by the audit log) no internal execution ever started: no
+/// `form_structure`/`form_input` record exists alongside it.
+#[test]
+fn form_fill_denied_upfront_under_write_deny() {
+    let audit_path = temp_path("case-form-fill-write-deny-audit");
+    let grants = json!([{
+        "id": "read-action-only",
+        "hosts": {"allow": ["example.com"]},
+        "allowed": ["read", "action"]
+    }]);
+    let manifest = write_manifest(
+        "case-form-fill-write-deny",
+        &manifest_value("case-form-fill-write-deny", grants, &audit_path),
+    );
+
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call(
+            "form_fill",
+            json!({"tabId": 1, "fields": {"Email": "a@b.c"}}),
+        ),
+    );
+    let resp = by_id(&responses, 2);
+    assert_ne!(
+        resp["result"]["isError"], true,
+        "a denial is not isError: {resp:?}"
+    );
+    let text = text_of(resp);
+    assert!(text.starts_with("Denied (D-"), "{text}");
+
+    let lines = read_audit_lines(&audit_path);
+    assert_eq!(
+        lines.len(),
+        1,
+        "one denial record, no partial-fill internals: {lines:?}"
+    );
+    assert_eq!(lines[0]["tool"], "form_fill");
+    assert_eq!(lines[0]["decision"], "deny");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l["tool"] == "form_structure" || l["tool"] == "form_input"),
+        "no internal execution ever started: {lines:?}"
+    );
+
+    std::fs::remove_file(&audit_path).ok();
+    std::fs::remove_file(&manifest).ok();
+}
+
+/// ADR-0036 Decision 5/7: under ALL-OPEN (no manifest at all -- `form_fill` is `TabScoped`, so
+/// under any GOVERNED manifest a call with no extension connected fails closed before the
+/// handler ever runs, since the tab's URL cannot be resolved; this scenario needs the grant gate
+/// skipped entirely), the parent call reaches its handler, which dispatches the dedicated
+/// `form_structure` internal read; with no extension connected that dispatch itself fails, and
+/// the result is an isError text naming the extension hop. The correlated audit still carries
+/// BOTH the parent `form_fill` record (batch_id set, no action, capability from the `action: None`
+/// variant) and the `form_structure` step record (orchestrator `form_fill`, same batch_id, step
+/// 1, a real -- not hardcoded -- duration_ms, since the failed internal read still completes its
+/// own scope).
+///
+/// Audit cannot be turned on via a manifest here (any manifest at all makes the session governed,
+/// which would deny `form_fill` upfront per the note above): this drives the USER CONFIG FILE
+/// layer instead (`GHOSTLIGHT_USER_CONFIG_DIR`, `governance::config::load::user_config_path`),
+/// which enables audit while leaving the session manifest-less (`Governance::all_open`).
+#[test]
+fn form_fill_without_extension_fails_with_parent_audit() {
+    let pid = std::process::id();
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let audit_path = temp_path("case-form-fill-no-ext-audit");
+    let _ = std::fs::remove_file(&audit_path);
+
+    let user_config_dir = std::env::temp_dir().join(format!(
+        "ghostlight-tool-enforcement-no-ext-config-{pid}-{seq}"
+    ));
+    std::fs::create_dir_all(user_config_dir.join("ghostlight")).unwrap();
+    std::fs::write(
+        user_config_dir.join("ghostlight").join("config.json"),
+        serde_json::to_vec(&json!({
+            "config": {
+                "audit.enabled": true,
+                "audit.destination": "file",
+                "audit.file.path": audit_path.to_string_lossy(),
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let endpoint = format!("ghostlight-ge-noext-{pid}-{seq}");
+    // The web API listener is unused by this test, but
+    // `spawn_service_with_user_config_dir_and_webapi_port` is the one existing support helper that
+    // spawns an ALL-OPEN service (no `--manifest`) with an isolated `GHOSTLIGHT_USER_CONFIG_DIR`;
+    // it binds an OS-assigned port, which this test simply ignores.
+    let (mut service, _port) =
+        support::spawn_service_with_user_config_dir_and_webapi_port(&endpoint, &user_config_dir);
+    let mut adapter = support::spawn_adapter(&endpoint);
+
+    let mut stdin = adapter.stdin.take().expect("adapter stdin");
+    let requests = init_and_call(
+        "form_fill",
+        json!({"tabId": 0, "fields": {"Email": "a@b.c"}}),
+    );
+    for req in &requests {
+        stdin
+            .write_all(serde_json::to_string(req).unwrap().as_bytes())
+            .unwrap();
+        stdin.write_all(b"\n").unwrap();
+    }
+    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
+    let stdout = adapter.stdout.take().expect("adapter stdout");
+    let mut lines_reader = BufReader::new(stdout).lines();
+    let responses: Vec<Value> = (0..expected)
+        .map(|_| {
+            let line = lines_reader
+                .next()
+                .expect("the adapter's stdout closed before every expected reply arrived")
+                .unwrap();
+            serde_json::from_str(&line).expect("each stdout line is JSON")
+        })
+        .collect();
+
+    drop(stdin);
+    let _ = adapter.wait();
+    let _ = service.kill();
+    let _ = service.wait();
+
+    let call = by_id(&responses, 2);
+    assert_eq!(
+        call["result"]["isError"], true,
+        "no extension -> isError: {call:?}"
+    );
+    let text = text_of(call);
+    assert!(text.contains("extension"), "{text}");
+
+    let audit_lines = read_audit_lines(&audit_path);
+    let parent = audit_lines
+        .iter()
+        .find(|l| l["tool"] == "form_fill")
+        .unwrap_or_else(|| panic!("no form_fill parent record in {audit_lines:?}"));
+    assert!(parent["batch_id"].is_string(), "parent batch_id set");
+    assert!(parent["action"].is_null(), "parent action is null");
+    assert_eq!(
+        parent["capability"], "read",
+        "capability from the action:None variant [read, write]"
+    );
+    let batch_id = parent["batch_id"].as_str().unwrap();
+
+    let structure = audit_lines
+        .iter()
+        .find(|l| l["tool"] == "form_structure")
+        .unwrap_or_else(|| panic!("no form_structure step record in {audit_lines:?}"));
+    assert_eq!(structure["orchestrator"], "form_fill");
+    assert_eq!(structure["batch_id"], batch_id);
+    assert_eq!(structure["step"], 1);
+    assert!(
+        structure["duration_ms"].is_u64(),
+        "a real duration_ms, not hardcoded: {structure:?}"
+    );
+
+    std::fs::remove_file(&audit_path).ok();
+    std::fs::remove_dir_all(&user_config_dir).ok();
 }

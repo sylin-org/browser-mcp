@@ -102,7 +102,8 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}), // no response
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{}}}),
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
     ]);
 
     assert_eq!(
@@ -121,12 +122,12 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     let tools = list["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        14,
-        "13 trained tools plus the ADR-0022 Decision 7 explain addition"
+        17,
+        "13 trained tools plus wait_for, script, form_fill, and the explain addition"
     );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.
-    let fixture: Value = serde_json::from_str(ghostlight::mcp::tools::TOOLS_JSON).unwrap();
+    let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(
         list["result"], fixture,
         "tools/list must equal the sacred fixture"
@@ -325,7 +326,8 @@ fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com"}}}),
+        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
     ];
     for req in &requests {
         stdin

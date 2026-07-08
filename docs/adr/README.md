@@ -36,6 +36,21 @@ history live here.
 | [0026](0026-release-maturity-and-externalities.md) | Release maturity and externalities sequencing (license, CI, spec currency, syslog + managed://, extension JS coverage, live-verify) | Accepted |
 | [0027](0027-open-core-business-model-and-licensing.md) | Open-core business model and licensing (permissive engine, commercial source-available governance module) | Accepted (supersedes ADR-0021 whole-repo license stance) |
 | [0028](0028-tripwire-licensing-and-continuity-promise.md) | Tripwire licensing, tiers, and the Continuity Promise (purely observational license keys; never phone home) | Accepted |
+| [0029](0029-process-lifecycle-hygiene.md) | Process lifecycle hygiene: parent-death watchdog and doctor --fix reaper (re-scoped to the thin adapter by ADR-0030 Decision 8) | Accepted (amended by ADR-0030 D8) |
+| [0030](0030-ghostlight-hub-orchestrator.md) | Ghostlight Hub: the multi-client orchestrator service (persistent service, multiplexed adapter sessions, local web API + Console) | Accepted |
+| [0031](0031-agent-onboarding-contract.md) | Agent onboarding contract: tools.json as the single source of agent-facing truth (initialize.instructions workflow preamble, per-tool examples, corrective validation errors) | Accepted (amends ADR-0007) |
+| [0032](0032-test-at-seams-and-inject-config-sources.md) | Test at pure seams; inject config sources at the composition root | Accepted |
+| [0033](0033-inbound-outbound-manage-zones.md) | Inbound/outbound/manage zones: the honest SoC split (renames `channels`→`inbound`, separates the management plane from the web ingestion adapter, policy-controlled listeners) | Accepted (amends ADR-0030 D5/D9) |
+| [0034](0034-capability-transport-registry.md) | The Capability & Transport Registry (ICapability/ITransport traits, tool declarations in code, capability manifest at handshake, deprecates ADR-0007's byte-frozen mandate) | Accepted (amends ADR-0007, ADR-0030) |
+| [0035](0035-script-tool.md) | The `script` tool: sequential multi-tool composition with `$prev`/`$N` data flow over structured results, dry-run, idempotency, budget | Accepted (amended in place 2026-07-06, pre-implementation) |
+| [0036](0036-form-fill-tool.md) | The `form_fill` tool: semantic form interaction by label (one semantic Write decision, hardened matcher, dedicated form-structure read) | Accepted (amended in place 2026-07-06, pre-implementation) |
+| [0037](0037-page-state-awareness.md) | Page-state awareness: `wait_for`, consequence digests on mutating actions, `read_page` diff mode, stale-ref corrective errors | Accepted |
+| [0038](0038-structured-results.md) | Structured results (`structuredContent` + `outputSchema`, per-tool vocabulary) and cost-aware guidance; substrate for ADR-0035 references | Accepted |
+| [0039](0039-saved-scripts-governed-artifacts.md) | Saved scripts as governed artifacts: named, parameterized, hash-bound approved workflows | Accepted (ratified by [0041](0041-post-evaluation-response.md) D4; implementation deferred to its own batch) |
+| [0040](0040-pipeline-idempotency-gate.md) | Pipeline-level idempotency gate: universal pre-decision dedup with in-flight join (supersedes ADR-0035 D9's two-tool cache, not taken) | Proposed |
+| [0041](0041-post-evaluation-response.md) | Post-evaluation response: standards posture (alternatives, not competition), capability onboarding discipline, origin-flow focus, P1-P10 dispositions | Accepted |
+| [0042](0042-origin-flow-provenance.md) | Origin-flow provenance: the `sources` audit key (in-band `$prev`/`$N` flow attestation, honesty fence, consumer-side host join); enforcement direction-pinned for a future ADR | Accepted (phase 1) |
+| [0043](0043-webmcp-stance.md) | WebMCP stance: future governed consumer via the capability registry; no implementation during origin-trial flux; named re-evaluation triggers | Accepted |
 
 ## Conventions
 

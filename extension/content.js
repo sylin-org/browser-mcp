@@ -16,14 +16,20 @@
   window.__browserMcpLoaded = true;
 
   // --- Element refs (persist across calls; WeakRef so the page can still GC) ---
+  // Each ref also remembers the render serial at which it was minted (ADR-0037 D4): a deref miss on
+  // a ref whose serial is older than the current one is a stale ref (the page re-rendered), which
+  // gets a corrective error naming the re-render; a ref that was never minted keeps today's message.
   let refSeq = 0;
+  let renderSerial = 0;
   const refToEl = {}; // ref -> WeakRef<Element>
+  const refToSerial = {}; // ref -> render serial at mint time
   const elToRef = new WeakMap();
   function refFor(el) {
     const existing = elToRef.get(el);
     if (existing && refToEl[existing] && refToEl[existing].deref() === el) return existing;
     const ref = "ref_" + ++refSeq;
     refToEl[ref] = new WeakRef(el);
+    refToSerial[ref] = renderSerial;
     elToRef.set(el, ref);
     return ref;
   }
@@ -31,9 +37,53 @@
     const wr = refToEl[ref];
     if (!wr) return null;
     const el = wr.deref();
-    if (!el) { delete refToEl[ref]; return null; }
+    if (!el) { delete refToEl[ref]; return null; } // serial kept for stale-ref diagnosis below
     return el;
   }
+  // ADR-0037 D4 / PINS.md SS11: when a ref no longer resolves because the page re-rendered since
+  // the read that minted it (the ref's mint serial is older than the current render serial), the
+  // failure is corrective -- it names the re-render and the fix. A ref that was never minted (or
+  // minted in this same not-yet-re-rendered serial) keeps today's "not found" wording: there is no
+  // re-render to blame. Returns null when the plain message should stand.
+  function staleRefMessage(ref) {
+    const s = refToSerial[ref];
+    if (s === undefined || s >= renderSerial) return null;
+    return `${ref} no longer resolves: the page re-rendered since your last read (render serial ${s} -> ${renderSerial}). Call read_page (or read_page with diff: true) and use a fresh ref.`;
+  }
+
+  // --- Subtree mutation counter (shared by wait_for's settle detector and the consequence-digest
+  // sampler): one permanent MutationObserver, lazily started, that only increments a counter -- no
+  // node retention, so a hostile page cannot bloat memory. wait_for reads this in 500ms windows;
+  // the observe pair reads the delta across a 300ms settle sample (ADR-0037 D2/D5). ---
+  let mutationCounter = 0;
+  let rootObserver = null;
+  function ensureRootObserver() {
+    if (rootObserver) return;
+    rootObserver = new MutationObserver(() => { mutationCounter += 1; });
+    rootObserver.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+    // The render serial (ADR-0037 D3/D4) bumps once per 500ms window with >= 3 mutations, so a
+    // re-render large enough to invalidate prior refs is detectable. Lazy-started alongside the
+    // observer so the windowing begins the first time anything reads mutations.
+    let windowStart = Date.now();
+    let windowCount = 0;
+    let lastRead = 0;
+    setInterval(() => {
+      const cur = mutationCounter;
+      windowCount += cur - lastRead;
+      lastRead = cur;
+      if (windowCount >= 3) renderSerial += 1;
+      windowCount = 0;
+    }, 500);
+  }
+  function readMutations() {
+    ensureRootObserver();
+    return mutationCounter;
+  }
+
+  // --- read_page diff baseline (ADR-0037 D3): the last full-tree render's lines, kept per
+  // content-script instance (one per tab document). A read_page with diff:true diffs against this;
+  // the first read, or one after reinjection, has no baseline and falls back to a full tree. ---
+  let lastTreeLines = null;
 
   // --- Role / name / interactivity / visibility ---
   const TAG_ROLE = {
@@ -227,7 +277,10 @@
     let root = document.body;
     if (options.ref_id) {
       const el = deref(options.ref_id);
-      if (!el) return `Error: ref_id "${options.ref_id}" not found or was garbage-collected.`;
+      if (!el) {
+        const stale = staleRefMessage(options.ref_id);
+        return stale || `Error: ref_id "${options.ref_id}" not found or was garbage-collected.`;
+      }
       root = el;
     }
     const rootRecord = measure(root, 0, "");
@@ -292,6 +345,33 @@
       stopped = true;
     }
     if (rootRecord) emit(rootRecord, true);
+
+    // The diffable lines are the element/structure lines emitted above -- everything in `out`
+    // before the trailing summary and viewport footer. Split on "\n" and drop the empty tail.
+    const treeLines = out.split("\n").filter((l) => l.length > 0);
+
+    // read_page diff mode (ADR-0037 D3, PINS.md SS11): when diff:true and a baseline from a prior
+    // full read on this tab exists, answer with only the changed/removed/added lines (render order
+    // ~ / - / +) instead of the whole tree. The baseline is the prior full read's treeLines; this
+    // read's treeLines become the next baseline regardless (a diff read still refreshes it). A
+    // ref_id-rooted read does not establish a baseline (it is a subtree expansion, not the page).
+    // No baseline yet (first read, or the content script was reinjected): fall back to a full tree
+    // prefixed with the marker line so the model knows this is not a diff.
+    if (options.diff && !options.ref_id) {
+      if (lastTreeLines) {
+        const d = (self.GhostlightTreeDiff || GhostlightTreeDiff).diffLines(lastTreeLines, treeLines);
+        const diffOut = [];
+        for (const l of d.changed) diffOut.push("~ " + l);
+        for (const l of d.removed) diffOut.push("- " + l);
+        for (const l of d.added) diffOut.push("+ " + l);
+        if (!diffOut.length) diffOut.push("(no changes since your last read)");
+        lastTreeLines = treeLines;
+        return diffOut.join("\n") + `\n\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+      }
+      lastTreeLines = treeLines;
+      return "(no baseline; full tree)\n" + out + `\nViewport: ${window.innerWidth}x${window.innerHeight}`;
+    }
+    if (!options.ref_id) lastTreeLines = treeLines;
 
     const omitted = total - shown;
     if (capped && omitted > 0) {
@@ -413,7 +493,10 @@
   }
   function setFormValue(ref, value) {
     const el = deref(ref);
-    if (!el) return { error: `Element ${ref} not found or was garbage-collected.` };
+    if (!el) {
+      const stale = staleRefMessage(ref);
+      return { error: stale || `Element ${ref} not found or was garbage-collected.` };
+    }
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const target = innerInput(el) || el;
     const tag = target.tagName.toLowerCase();
@@ -447,9 +530,268 @@
 
   function refCoordinates(ref) {
     const el = deref(ref);
-    if (!el) return null;
+    if (!el) {
+      const stale = staleRefMessage(ref);
+      return stale ? { error: stale } : null;
+    }
     const rect = el.getBoundingClientRect();
     return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  }
+
+  // --- wait_for (ADR-0037): poll a condition at 250ms while a MutationObserver counter, binned
+  // into 500ms windows, feeds the adaptive settle detector (lib/settle.js). Resolves when the
+  // condition (if any) holds AND the settle gate (unless settle:false) has passed AND the minimum
+  // elapsed time has run; times out after timeout_ms. This is the content script's first
+  // long-running handler, so it owns sendResponse itself and returns true to hold the channel open. ---
+  function evaluateCondition(spec) {
+    // Returns the matched element's ref when the condition is satisfied, else null. A bare settle
+    // wait (no selector/text) reports a found:null condition as satisfied -- the settle gate alone
+    // decides -- and never mints a ref.
+    if (spec.state === "settled") return { ok: true, ref: null };
+    const wantPresent = spec.state === "visible" || spec.state === "present";
+    const wantGone = spec.state === "gone";
+    let matched = null;
+    if (spec.selector) {
+      // CSS selector path: query the whole document (shadow roots are opaque to querySelector, so a
+      // selector miss is a real miss -- the text path below walks shadow roots and is the fallback).
+      try {
+        const el = document.querySelector(spec.selector);
+        matched = el || null;
+      } catch {
+        matched = null; // invalid selector string -- treated as no match this poll.
+      }
+    } else if (spec.text) {
+      const q = spec.text.toLowerCase();
+      for (const el of collectAll(document)) {
+        if (!visible(el)) continue;
+        const tag = el.tagName.toLowerCase();
+        if (["script", "style", "noscript", "template"].includes(tag)) continue;
+        const hay = `${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)}`.toLowerCase();
+        if (hay.includes(q)) { matched = el; break; }
+      }
+    }
+    if (matched && wantPresent) {
+      const present = spec.state === "present" || visible(matched);
+      return present ? { ok: true, ref: refFor(matched) } : { ok: false, ref: null };
+    }
+    if (!matched && wantGone) return { ok: true, ref: null };
+    return { ok: false, ref: null };
+  }
+
+  function runWaitFor(spec) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const deadline = startedAt + spec.timeout_ms;
+      let lastRead = readMutations(); // baseline mutation count at wait start
+      let windowStart = startedAt;
+      let windowCount = 0;
+      let lastSettled = false; // the return of the detector's most recent push().
+      const detector = (self.GhostlightSettle || GhostlightSettle).createSettleDetector();
+      const poll = () => {
+        const now = Date.now();
+        const elapsed = now - startedAt;
+        // Fold this poll's mutations into the open 500ms window; close the window when it elapses.
+        const cur = readMutations();
+        windowCount += cur - lastRead;
+        lastRead = cur;
+        if (now - windowStart >= 500) {
+          lastSettled = detector.push(windowCount);
+          windowStart = now;
+          windowCount = 0;
+        }
+        const cond = evaluateCondition(spec);
+        const settled = lastSettled;
+        const minMet = elapsed >= spec.min_ms;
+        if (cond.ok && (!spec.settle || settled) && minMet) {
+          resolve({
+            found: cond.ok,
+            settled: spec.settle ? settled : undefined,
+            elapsedMs: elapsed,
+            ref: cond.ref,
+            peakMutations: spec.settle ? detector.peak : undefined,
+            finalRate: spec.settle ? detector.lastRate : undefined,
+          });
+          return;
+        }
+        if (now >= deadline) {
+          resolve({
+            timeout: true,
+            rate: detector.lastRate,
+            title: document.title || "",
+            excerpt: cond.ref || "",
+          });
+          return;
+        }
+        setTimeout(poll, 250);
+      };
+      setTimeout(poll, 250);
+    });
+  }
+
+  // --- Consequence digest sampler (ADR-0037 D2, PINS.md SS10): the SW calls observeSnap before a
+  // mutating action and observeSample after. observeSample waits the 300ms settle window, then
+  // diffs url/title/focus and counts mutations since the snap; alert/status elements whose text
+  // was NOT present at snap time are "newly appeared" (first 200 chars of textContent); a
+  // role=dialog present at sample but not at snap is reported. formatObservation (lib/observation.js,
+  // a content-script global via the manifest) renders the digest; this function returns the finished
+  // string and its structured twin so the SW appends the string verbatim. ---
+  function roleTexts(roles) {
+    const out = {};
+    for (const el of collectAll(document)) {
+      const r = el.getAttribute && el.getAttribute("role");
+      if (r && roles.includes(r) && visible(el)) {
+        const t = (el.textContent || "").trim().slice(0, 200);
+        if (t) {
+          (out[r] = out[r] || []).push(t);
+        }
+      }
+    }
+    return out;
+  }
+
+  function focusedName() {
+    const ae = document.activeElement;
+    if (!ae || ae.tagName && ae.tagName.toLowerCase() === "body") return "";
+    return (accessibleName(ae) || "").trim();
+  }
+
+  function observeSnap() {
+    const rt = roleTexts(["alert", "status", "dialog"]);
+    return {
+      url: location.href,
+      title: document.title || "",
+      focus: focusedName(),
+      mutations: readMutations(),
+      alerts: rt.alert || [],
+      statuses: rt.status || [],
+      dialogPresent: !!(rt.dialog && rt.dialog.length),
+    };
+  }
+
+  function observeSample(before) {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const url = location.href;
+        const title = document.title || "";
+        const focus = focusedName();
+        const mutations = readMutations() - (before.mutations || 0);
+        const rt = roleTexts(["alert", "status", "dialog"]);
+        const newAlert = (rt.alert || []).find((t) => !(before.alerts || []).includes(t)) || "";
+        const newStatus = (rt.status || []).find((t) => !(before.statuses || []).includes(t)) || "";
+        const dialogNow = !!(rt.dialog && rt.dialog.length);
+        const dialogAppeared = dialogNow && !before.dialogPresent;
+        const fmt = (self.GhostlightObservation || GhostlightObservation).formatObservation;
+        const sig = { mutations };
+        if (url !== before.url) sig.url = url;
+        if (title !== before.title) sig.title = title;
+        if (focus && focus !== before.focus) sig.focus = focus;
+        if (newAlert) sig.alert = newAlert;
+        if (newStatus) sig.status = newStatus;
+        if (dialogAppeared) sig.dialog = true;
+        const structured = { mutations };
+        if (sig.url) structured.url_changed = sig.url;
+        if (sig.title) structured.title_changed = sig.title;
+        if (sig.focus) structured.focus = sig.focus;
+        if (sig.alert) structured.alert = sig.alert;
+        if (sig.dialog) structured.dialog_appeared = true;
+        resolve({ digest: fmt(sig), structured });
+      }, 300);
+    });
+  }
+
+  // --- formStructure (ADR-0036 D5, PINS.md SS12): the value-free form identity read form_fill
+  // matches against. Returns the controls grouped by their containing <form> (document order,
+  // formIndex from 0) plus the formless controls, each control carrying only identity fields
+  // (label, placeholder, name, id, aria-label, type, disabled, readonly) -- NO field values read.
+  // Submit candidates are buttons whose accessible name exactly matches the pinned list, plus native
+  // submit inputs/buttons. Visibility-filtered; refs via the existing refFor. ---
+  const SUBMIT_LABELS = ["submit", "sign in", "log in", "save"];
+
+  // The label for matching: label[for] text, else a wrapping <label>'s text, else null. Deliberately
+  // NOT accessibleName (which collapses aria-label/placeholder/title into one string); form_fill
+  // matches against the label association the page itself declares, separate from the other fields.
+  function controlLabel(el) {
+    if (el.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (label && label.textContent.trim()) return label.textContent.trim();
+    }
+    const wrapping = el.closest && el.closest("label");
+    if (wrapping && wrapping.textContent.trim()) return wrapping.textContent.trim();
+    return null;
+  }
+
+  function controlType(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") return "textarea";
+    if (tag === "select") return "select";
+    if (tag === "input") return (el.type && el.type !== "hidden") ? el.type : "text";
+    return "text";
+  }
+
+  function isFormControl(el) {
+    const tag = el.tagName.toLowerCase();
+    return (tag === "input" && (el.type || "text") !== "hidden") || tag === "select" || tag === "textarea";
+  }
+
+  function readControl(el) {
+    return {
+      ref: refFor(el),
+      type: controlType(el),
+      label: controlLabel(el),
+      placeholder: typeof el.placeholder === "string" && el.placeholder ? el.placeholder : null,
+      name: el.name || null,
+      id: el.id || null,
+      ariaLabel: el.getAttribute("aria-label") || null,
+      disabled: !!el.disabled,
+      readonly: !!el.readOnly,
+    };
+  }
+
+  function submitKind(el) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || "").toLowerCase();
+    if (tag === "input" && type === "submit") return "input-submit";
+    if (tag === "button" && type === "submit") return "button-submit";
+    if (tag === "button") {
+      const name = (accessibleName(el) || "").toLowerCase().trim();
+      if (SUBMIT_LABELS.includes(name)) return "labeled-button";
+    }
+    return null;
+  }
+
+  function formStructure() {
+    const forms = [];
+    const formElements = collectAll(document).filter((el) => el.tagName.toLowerCase() === "form");
+    const seen = new WeakSet();
+    // Build each form's controls and submit candidates in document order.
+    for (let fi = 0; fi < formElements.length; fi++) {
+      const form = formElements[fi];
+      const controls = [];
+      const submits = [];
+      for (const el of collectAll(form)) {
+        if (seen.has(el) || !visible(el)) continue;
+        if (isFormControl(el)) {
+          seen.add(el);
+          controls.push(readControl(el));
+        }
+        const kind = submitKind(el);
+        if (kind) {
+          seen.add(el);
+          submits.push({ ref: refFor(el), label: accessibleName(el) || null, kind });
+        }
+      }
+      forms.push({ formIndex: fi, controls, submits });
+    }
+    // Formless controls (not inside any <form>).
+    const formless = [];
+    for (const el of collectAll(document)) {
+      if (seen.has(el) || !visible(el)) continue;
+      if (isFormControl(el)) {
+        seen.add(el);
+        formless.push(readControl(el));
+      }
+    }
+    return { forms, formless };
   }
 
   // --- Message handler ---
@@ -462,10 +804,25 @@
       case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;
       case "scrollToRef": {
         const el = deref(msg.ref);
-        if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
-        sendResponse({ result: Boolean(el) });
+        if (!el) {
+          const stale = staleRefMessage(msg.ref);
+          sendResponse({ result: stale ? { error: stale } : false });
+          return true;
+        }
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        sendResponse({ result: true });
         return true;
       }
+      case "waitFor": {
+        runWaitFor(msg.spec).then((result) => sendResponse({ result }));
+        return true;
+      }
+      case "observeSnap": sendResponse({ result: observeSnap() }); return true;
+      case "observeSample": {
+        observeSample(msg.before).then((result) => sendResponse({ result }));
+        return true;
+      }
+      case "formStructure": sendResponse({ result: formStructure() }); return true;
       default:
         return false; // not ours -- let the visual-indicator content script handle it
     }

@@ -117,7 +117,7 @@ async fn relay_adapter_sends_a_real_guid_not_a_placeholder() {
         .await
         .expect("claim the adapter/control endpoint as a fake test service");
 
-    let debug = ghostlight::debug::DebugSink::disabled();
+    let debug = ghostlight::observability::DebugSink::disabled();
     let relay_endpoint = endpoint.clone();
     // Fire-and-forget: past the hello, `relay_adapter` becomes a raw bidirectional relay of this
     // test process's own stdio, which never naturally completes here. We only need the ONE hello
