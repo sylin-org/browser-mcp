@@ -3,10 +3,10 @@
 //! free-licensed `src/hub` module hosting `HubCore`").
 //!
 //! ADR-0030 Decision 8 (amended 2026-07-04, "the always-ready-service amendment"): role is decided
-//! by ARGV, never a claim race. [`run_mcp_server`] is ALWAYS the thin ADAPTER (`ghostlight`, bare):
-//! it connects to an already-running SERVICE, relays its stdio as a pure byte pipe, and dies with
-//! its editor, asking the OS supervisor to self-heal-start the service if it is down
-//! ([`run_as_adapter`], `supervisor::start_service`). [`run_service`] is the STANDALONE SERVICE
+//! by ARGV, never a claim race. Since ADR-0046 the thin ADAPTER is a SEPARATE executable
+//! (`ghostlight-adapter-agent`): it connects to an already-running SERVICE, relays its stdio as a
+//! pure byte pipe, and dies with its editor, asking the OS supervisor to self-heal-start the
+//! service if it is down (`supervisor::start_service`). [`run_service`] is the STANDALONE SERVICE
 //! (`ghostlight service`): it owns the shared [`ServiceContext`], the extension endpoint, and the
 //! adapter/control endpoint for its whole life, runs NO parent-death watchdog, and shuts down only
 //! on a continuous idle-grace window ([`run_service_loop`]/`idle_grace_watch`). There is NO
@@ -117,47 +117,6 @@ pub fn try_mint(
         quota: Arc::clone(quota),
         peer: peer.clone(),
     })
-}
-
-/// The thin ADAPTER entry point (ADR-0030 Decision 1; Decision 8 amendment; PINS.md SS5.1). Role
-/// is decided by ARGV, never a claim race: a bare `ghostlight` invocation is ALWAYS the ADAPTER.
-/// It NEVER claims the adapter/control endpoint, loads policy, builds a [`Browser`], or builds a
-/// [`ServiceContext`] -- it only connects to an already-running SERVICE and relays. A `--manifest`
-/// here is a client-side no-op (the running service's policy governs every session); this REPEALS
-/// ADR-0004's degrade semantics at the MCP-client layer the other direction too: every MCP client,
-/// not just the first, multiplexes through the one real service ([`run_as_adapter`]).
-pub fn run_mcp_server(manifest: Option<String>, debug_on: bool) -> Result<()> {
-    role::set_role(role::Role::Adapter);
-
-    if manifest.is_some() || std::env::var_os("GHOSTLIGHT_MANIFEST").is_some() {
-        tracing::warn!(
-            "a --manifest on a client invocation is ignored; the running Ghostlight service's \
-             policy governs all sessions"
-        );
-    }
-
-    let sink = ghostlight_transport::observability::build_debug_sink(debug_on, "adapter");
-    // Startup self-heal (ADR-0029 part 4; ADR-0030 Decision 8 re-scope, PINS.md SS5.5): reap any
-    // orphaned predecessor ADAPTER whose editor exited but that did not terminate. The SERVICE has
-    // no client parent and idle-graces instead (see `run_service_loop`), so it is never a reap
-    // target. Best-effort and safe (only parent-dead orphans; see `doctor::reap`).
-    crate::hub::manage::doctor::sweep_orphans();
-    // The MCP client that spawned us, captured before the runtime starts (ADR-0029). None (no
-    // resolvable parent) simply skips the watchdog below and leaves stdin EOF as the sole exit
-    // trigger.
-    let parent = ghostlight_transport::proc::parent();
-
-    let rt = tokio::runtime::Runtime::new()?;
-    let block_sink = sink.clone();
-    let endpoint = ipc::default_endpoint();
-    let code = rt.block_on(run_as_adapter(&endpoint, block_sink, parent));
-
-    // The single ordered teardown. process::exit rather than unwinding: on a detector-triggered
-    // shutdown the stdin read may still be parked in a blocking ReadFile, and dropping the runtime
-    // would hang forever trying to join that thread (the same reason the native-host role exits
-    // directly). Flush the final observability snapshot first.
-    sink.flush();
-    std::process::exit(code)
 }
 
 /// The standalone SERVICE entry point (ADR-0030 Decision 8 amendment; PINS.md SS5.1), run only
@@ -321,45 +280,6 @@ async fn idle_grace_watch(ctx: ServiceContext) -> i32 {
             tracing::info!(idle_for = ?IDLE_GRACE, "idle-grace elapsed; the service is shutting down");
             return 0;
         }
-    }
-}
-
-/// The thin ADAPTER role's async body (ADR-0030 Decision 1; Decision 8 amendment): connect to the
-/// already-running SERVICE and relay this process's stdio to it -- a pure byte relay, never a
-/// rewriter (ADR-0030 "Preserved invariants"). If the service is not reachable,
-/// `ipc::relay_adapter` asks the OS supervisor to self-heal-start it (PINS.md SS5.2) before
-/// retrying. Dies with its editor via the SAME ADR-0029 parent-death watchdog the persistent
-/// service used to run (re-scoped here, PINS.md SS5.5): stdin EOF is still the ordinary exit
-/// trigger; the watchdog is the second, reliable one for an unclean kill.
-async fn run_as_adapter(
-    endpoint: &str,
-    debug_sink: DebugSink,
-    parent: Option<ghostlight_transport::proc::ProcId>,
-) -> i32 {
-    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
-    if let Some(parent) = parent {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            ghostlight_transport::watchdog::wait_until_orphaned(parent).await;
-            tracing::warn!(
-                parent_pid = parent.pid,
-                "MCP client exited; ordering shutdown"
-            );
-            shutdown.notify_one();
-        });
-    }
-
-    tokio::select! {
-        result = ipc::relay_adapter(endpoint, &debug_sink) => {
-            match result {
-                Ok(()) => 0,
-                Err(e) => {
-                    tracing::error!(error = %e, "adapter relay ended with an error");
-                    1
-                }
-            }
-        }
-        _ = shutdown.notified() => 0,
     }
 }
 

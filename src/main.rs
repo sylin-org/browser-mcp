@@ -4,21 +4,17 @@
 //! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0
 //! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
 //!
-//! The same executable runs in several roles, selected by ARGV, deterministically, never a claim
-//! race (ADR-0030 Decision 1; Decision 8's always-ready-service amendment):
-//! - **adapter** (default, no subcommand) -- launched by the MCP client over stdio. A THIN relay:
-//!   connects to the already-running SERVICE (self-healing an OS-supervisor start if it is down,
-//!   `ghostlight::hub::supervisor`), relays its stdio, and dies with its editor. Never loads
-//!   policy, never builds a [`Browser`](ghostlight::hub::outbound::browser::Browser), never runs
-//!   governance.
+//! Since ADR-0046 this executable is the CLI + the standalone SERVICE; the two thin pass-through
+//! adapters ship as SEPARATE executables, so a service rebuild never relinks (locks) them:
 //! - **service** (`ghostlight service`) -- the STANDALONE, persistent Hub. Owns the browser IPC
 //!   endpoint and the adapter/control endpoint for its whole life, multiplexes any number of
 //!   adapter sessions through the one governance chokepoint, and shuts down only on a continuous
 //!   idle-grace window (never on any client's death).
-//! - **native-host** -- launched by Chrome via `connectNative` (Chrome passes the calling
-//!   extension's origin, `chrome-extension://<id>/`, as an argument). Connects to the service's
-//!   browser IPC endpoint and relays native-messaging frames to/from the extension.
-//! - **install / uninstall / doctor** -- synchronous installer subcommands (no async runtime).
+//! - **install / uninstall / doctor / status / config / policy** -- synchronous subcommands.
+//! - a BARE `ghostlight` (no subcommand) no longer serves MCP: it prints guidance pointing at
+//!   `ghostlight-adapter-agent` and exits 2 (ADR-0046). The `ghostlight-adapter-agent` (MCP-client
+//!   pass-through) and `ghostlight-adapter-browser` (Chrome native-messaging pass-through) are
+//!   their own crates.
 //!
 //! `main` deliberately has no `#[tokio::main]`: the async roles each build their own runtime, and
 //! the installer needs none.
@@ -27,7 +23,6 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use ghostlight::hub::manage::doctor::DoctorOptions;
 use ghostlight::install::{InstallOptions, Selection, UninstallOptions};
-use ghostlight::native::ipc;
 
 /// Ghostlight -- the user's own authenticated browser, for AI agents.
 #[derive(Debug, Parser)]
@@ -320,18 +315,12 @@ fn main() -> Result<()> {
     let debug = debug_env || std::env::args().any(|a| a == "--debug");
     ghostlight::init_tracing(debug);
 
-    // Resolve the active instance (ADR-0044) BEFORE role detection, and fold the winner into
-    // GHOSTLIGHT_INSTANCE so every point-of-use derivation -- including the early-returning
-    // native-host role below -- agrees. A malformed name is fatal here, not silently degraded.
+    // Resolve the active instance (ADR-0044) BEFORE parsing the subcommand, and fold the winner
+    // into GHOSTLIGHT_INSTANCE so every point-of-use derivation agrees. A malformed name is fatal
+    // here, not silently degraded.
     if let Err(e) = resolve_instance() {
         eprintln!("ghostlight: {e}");
         std::process::exit(2);
-    }
-
-    // Role detection must precede clap: Chrome launches the native-messaging host with an extra
-    // positional arg (the calling extension origin) that clap would reject.
-    if std::env::args().any(|a| a.starts_with("chrome-extension://")) {
-        return run_native_host_role(debug);
     }
 
     match Cli::parse() {
@@ -420,12 +409,17 @@ fn main() -> Result<()> {
             keep_warm,
             ..
         } => ghostlight::hub::run_service(manifest, debug_flag || debug_env, keep_warm)?,
-        Cli {
-            command: None,
-            manifest,
-            debug: debug_flag,
-            ..
-        } => ghostlight::hub::run_mcp_server(manifest, debug_flag || debug_env)?,
+        Cli { command: None, .. } => {
+            // ADR-0046: the bare `ghostlight` no longer serves MCP -- the MCP client launches
+            // ghostlight-adapter-agent, which relays to the running service.
+            eprintln!(
+                "ghostlight no longer serves MCP directly; your MCP client launches ghostlight-adapter-agent."
+            );
+            eprintln!(
+                "Run `ghostlight install` to update client registrations, then restart your editor."
+            );
+            std::process::exit(2);
+        }
     }
     Ok(())
 }
@@ -491,30 +485,4 @@ fn run_status(args: StatusArgs) {
     } else {
         println!("{}", ghostlight::observability::status_report());
     }
-}
-
-/// Native-host role: relay native-messaging frames between Chrome (stdio) and the mcp-server (IPC).
-///
-/// `debug` comes from the same detection `main` uses for every role (env var or `--debug`
-/// argument), but Chrome itself never passes `--debug` when it launches this process -- it only
-/// inherits whatever environment Chrome was started with. So a native-host debug snapshot exists
-/// only when Chrome's own launching environment had `GHOSTLIGHT_DEBUG=1` set; its absence in a
-/// normal launch is expected, not a problem (see `doctor`'s wording).
-fn run_native_host_role(debug: bool) -> Result<()> {
-    tracing::info!("ghostlight starting (native-host role, launched by the browser)");
-    let sink = ghostlight::observability::build_debug_sink(debug, "native-host");
-    let rt = tokio::runtime::Runtime::new()?;
-    let result =
-        rt.block_on(async { ipc::relay_native_host(&ipc::default_endpoint(), &sink).await });
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "native-host relay ended with error");
-    }
-    sink.flush();
-    // The relay has ended (the mcp-server or the extension went away). Exit the process directly
-    // instead of returning: tokio's stdin reader parks a blocking thread in a ReadFile on Chrome's
-    // still-open stdin, and dropping the runtime would hang forever trying to join it. This role is
-    // a stateless relay with nothing else to flush, so an immediate exit is correct -- and it lets
-    // Chrome observe the disconnect and reconnect to the next mcp-server session (no zombie).
-    tracing::info!("native-host relay ended; exiting");
-    std::process::exit(0);
 }
