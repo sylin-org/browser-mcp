@@ -239,7 +239,24 @@ async function runLive(binaryPath, endpoint) {
   const { server, url: fixtureUrl } = await startFixtureServer();
   const { userDataDir } = buildProfile(endpoint, binaryPath);
 
+  // The hub model (ADR-0030): a standalone SERVICE owns the browser link, and both the
+  // extension's native-messaging host and this test's MCP client are thin ADAPTERS that dial it.
+  // In production the installer registers the service to auto-start; CI has no OS supervisor, so
+  // spawn it explicitly. Without it, an adapter's auto-start self-heal looks for a systemd unit
+  // that does not exist and the connection fails.
+  const service = spawn(binaryPath, ["service"], {
+    stdio: ["ignore", "inherit", "inherit"],
+    env: { ...process.env, GHOSTLIGHT_ENDPOINT: endpoint },
+  });
+  // Give the service a moment to claim its endpoint before the extension and adapter dial it.
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
   let cleanup = async () => {
+    try {
+      service.kill();
+    } catch {
+      // already dead
+    }
     server.close();
     cleanupProfile(userDataDir);
   };
@@ -286,6 +303,11 @@ async function runLive(binaryPath, endpoint) {
   cleanup = async () => {
     try {
       child.kill();
+    } catch {
+      // already dead
+    }
+    try {
+      service.kill();
     } catch {
       // already dead
     }
