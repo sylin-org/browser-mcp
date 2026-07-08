@@ -45,6 +45,15 @@ The adapter distinguishes WHO closed by which side of the raw relay ended, with 
   SERVICE dropped -> the adapter RECONNECTS: re-dial with the existing self-heal (ask the OS
   supervisor to start the service if it is down, PINS.md SS5.2), then resume relaying.
 
+The reconnect (and the first connect) retries the WHOLE connect+handshake, not just the dial,
+within that same bounded self-heal window. A restarting or cold-starting service may have already
+CLAIMED its endpoint (so the dial succeeds) while it is momentarily not yet serving, or has not yet
+written its per-install anti-squat key -- a transient handshake failure (a torn-down connection,
+Windows os error 232, or a not-yet-verifiable proof). Retrying the whole handshake makes that
+window survivable instead of a fatal adapter exit, which is what makes both a cold-start (self-heal)
+connection and a reconnect actually resilient. Security is preserved: a genuine squatter never
+yields a valid proof, so it simply keeps failing until the window elapses and the adapter exits.
+
 ### Decision 2: the adapter replays the MCP handshake on every reconnect
 
 A reconnected service is a fresh process that never saw this session's `initialize`. So the adapter

@@ -109,32 +109,250 @@ pub async fn relay_native_host(
     Ok(())
 }
 
-/// The thin ADAPTER role (ADR-0030 Decision 1; Decision 8 amendment): dial the SERVICE's
-/// ADAPTER/CONTROL endpoint (self-healing the dial if the service is not yet up, PINS.md SS5.2),
-/// send the `adapter` session-hello as ONE 4-byte-LE FRAMED message, verify the SERVICE's
-/// anti-squat proof (PINS.md SS5.3), then become a RAW bidirectional byte relay between this
-/// process's stdio and the service stream until either side closes.
-///
-/// CRITICAL (PINS.md SS1 pin 3): the session-hello (and the anti-squat proof that follows it) are
-/// the ONLY framed messages on this wire. The DATA phase after them is a RAW `tokio::io::copy` --
-/// NEVER a `host::write_message`/`read_message` framed copy -- because everything after is
-/// newline-delimited JSON-RPC, exactly what `serve_session`'s `BufReader::lines()` expects on the
-/// service side and what an MCP client writes on this side. Mirrors [`relay_native_host`] ONLY in
-/// lifecycle shape (the `select!` that exits on either side closing; deliberately no
-/// post-`select!` `shutdown().await`, which can hang forever on an already-dead Windows pipe): it
-/// NEVER frames the data phase the way `relay_native_host` does (that wire is framed end-to-end
-/// because it IS the Chrome native-messaging wire; this wire is framed for the hello and the
-/// proof only, then raw).
-///
-/// The GUID member (H3, ADR-0030 Decision 4): minted ONCE here, as a local variable, before the
-/// hello is built. `relay_adapter` runs exactly once per adapter process (called once from
-/// `run_as_adapter`, never in a loop), so this already satisfies "same adapter process reuses its
-/// GUID; a new adapter process mints a new one" with no `OnceLock` or extra plumbing needed.
-pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSink) -> Result<()> {
-    let adapter_endpoint = adapter_endpoint_name(endpoint);
-    let mut stream = dial_with_self_heal(&adapter_endpoint).await?;
-    debug.ipc_note("connected to the service's adapter/control endpoint");
+/// Which side of the adapter relay closed (ADR-0045): the classification that decides whether the
+/// adapter EXITS (its MCP client is gone) or RECONNECTS to a restarted service.
+enum RelaySide {
+    /// The MCP client closed its stdio -> the adapter process should exit.
+    ClientClosed,
+    /// The SERVICE dropped (restart, crash, upgrade, idle-grace) -> reconnect and replay.
+    ServiceClosed,
+}
 
+/// The captured MCP handshake preamble (ADR-0045 Decision 2): the client's `initialize` request
+/// and its `notifications/initialized` notification, cached verbatim so they can be replayed to a
+/// freshly restarted service, making a service restart invisible to the MCP client.
+#[derive(Default)]
+struct HandshakePreamble {
+    initialize: Option<Vec<u8>>,
+    initialized: Option<Vec<u8>>,
+}
+
+impl HandshakePreamble {
+    /// True once both handshake messages are captured (so [`observe`](Self::observe) can stop).
+    fn complete(&self) -> bool {
+        self.initialize.is_some() && self.initialized.is_some()
+    }
+
+    /// Observe one complete client->service line during the first connection, caching it if it is
+    /// the `initialize` request or the `initialized` notification. Everything after the handshake
+    /// is ordinary application traffic and is never cached. A non-JSON or method-less line is
+    /// ignored, never fatal.
+    fn observe(&mut self, line: &[u8]) {
+        if self.complete() {
+            return;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            return;
+        };
+        match v.get("method").and_then(Value::as_str) {
+            Some("initialize") if self.initialize.is_none() => {
+                self.initialize = Some(line.to_vec());
+            }
+            Some("notifications/initialized") if self.initialized.is_none() => {
+                self.initialized = Some(line.to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    /// Replay the captured handshake to a freshly connected service (ADR-0045 Decision 2): send
+    /// `initialize`, read and DISCARD the service's `initialize` result (the client already has
+    /// one from the first connection), then send `initialized`. The result is read byte-at-a-time
+    /// ([`read_line_unbuffered`]) so no subsequent service->client bytes are swallowed into a
+    /// throwaway buffer. A best-effort no-op if the handshake was never captured (a service that
+    /// died mid-handshake): the reconnect then behaves no worse than today's client reload.
+    async fn replay<R, W>(&self, ipc_read: &mut R, ipc_write: &mut W) -> Result<()>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+        if let Some(init) = &self.initialize {
+            ipc_write.write_all(init).await.map_err(Error::Io)?;
+            ipc_write.flush().await.map_err(Error::Io)?;
+            let _ = read_line_unbuffered(ipc_read).await.map_err(Error::Io)?;
+        }
+        if let Some(inited) = &self.initialized {
+            ipc_write.write_all(inited).await.map_err(Error::Io)?;
+            ipc_write.flush().await.map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+}
+
+/// Read exactly one newline-terminated line WITHOUT reading past it (unlike a `BufReader`, which
+/// reads ahead and would swallow subsequent bytes). Used to discard the replayed `initialize`
+/// result on reconnect. Returns the line including the trailing `\n`, or a short/empty line on EOF.
+async fn read_line_unbuffered<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte).await? == 0 {
+            break; // EOF
+        }
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    Ok(line)
+}
+
+/// Relay one service connection until one side closes (ADR-0045): forward queued client lines to
+/// the service (capturing the handshake on the first connection) while streaming service replies
+/// back to the client, and report WHICH side closed so the caller can exit or reconnect.
+///
+/// Cancellation safety is the crux. The client->service side reads COMPLETE lines from an mpsc
+/// channel (`rx.recv()` is cancellation-safe: an un-received line stays queued for the next
+/// reconnect, so a service drop never loses a queued request). The service->client side is a raw
+/// `tokio::io::copy`, so large replies (screenshots) stream through unbuffered. The single request
+/// that was mid-write to the service at the instant it dropped is lost and times out -- the
+/// accepted baseline (ADR-0045 Decision 3); the client retries.
+async fn relay_session<R, W, CO>(
+    rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ipc_read: &mut R,
+    ipc_write: &mut W,
+    client_out: &mut CO,
+    preamble: &mut HandshakePreamble,
+    capture: bool,
+) -> RelaySide
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    CO: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let up = async {
+        loop {
+            match rx.recv().await {
+                None => break RelaySide::ClientClosed, // the stdin reader ended (client closed)
+                Some(line) => {
+                    if capture {
+                        preamble.observe(&line);
+                    }
+                    if ipc_write.write_all(&line).await.is_err() || ipc_write.flush().await.is_err()
+                    {
+                        break RelaySide::ServiceClosed; // the service is gone
+                    }
+                }
+            }
+        }
+    };
+    let down = async {
+        match tokio::io::copy(ipc_read, client_out).await {
+            Ok(_) => RelaySide::ServiceClosed, // service EOF
+            Err(_) => RelaySide::ClientClosed, // writing to the client failed
+        }
+    };
+    tokio::select! {
+        side = up => side,
+        side = down => side,
+    }
+}
+
+/// The thin ADAPTER role (ADR-0030 Decision 1 + Decision 8; ADR-0045): dial the SERVICE's
+/// ADAPTER/CONTROL endpoint (self-healing the dial if the service is down, PINS.md SS5.2), send the
+/// `adapter` session-hello, verify the SERVICE's anti-squat proof (PINS.md SS5.3), then relay
+/// between this process's stdio and the service until one side closes.
+///
+/// RESILIENT (ADR-0045): unlike the pre-0045 adapter, which exited when the service stream closed
+/// (forcing an MCP client reload on every service restart), this reconnects when the SERVICE drops
+/// and replays the captured MCP handshake to the fresh service, so the client rides through a
+/// rebuild/upgrade/crash transparently. It exits only when the CLIENT closes (or the parent-death
+/// watchdog in `run_as_adapter` fires). The stdin reader lives in its OWN task feeding an mpsc
+/// channel, so its `read_until` is never cancelled mid-line by the relay `select!` (which would
+/// desync the JSON-RPC stream); queued client lines survive a reconnect.
+///
+/// The data phase is still newline-delimited JSON-RPC (never `host::write_message` framing) -- the
+/// hello and proof are the only framed messages (PINS.md SS1 pin 3). A fresh `SessionGuid` is
+/// minted per (re)connect: a reconnect is a NEW session to the service (the old one's slot freed
+/// when its connection dropped), which is exactly right.
+pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSink) -> Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    let adapter_endpoint = adapter_endpoint_name(endpoint);
+
+    // The long-lived stdin reader (ADR-0045): reads newline-delimited client lines and forwards
+    // each as a complete line over the channel. It is NEVER inside a `select!`, so `read_until` is
+    // never cancelled mid-line; lines buffer in the channel across a reconnect, so none are lost
+    // while the service is briefly down. On stdin EOF it drops `tx`, so the relay loop sees the
+    // client close.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    tokio::spawn(async move {
+        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+        loop {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line).await {
+                Ok(0) => break, // client closed stdin
+                Ok(_) => {
+                    if tx.send(line).await.is_err() {
+                        break; // the relay loop is gone
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut client_out = tokio::io::stdout();
+    let mut preamble = HandshakePreamble::default();
+    let mut first = true;
+
+    loop {
+        // Connect AND handshake with a bounded retry (see [`connect_and_handshake`]): a service
+        // that is mid-startup or mid-restart (endpoint claimed but not yet serving/proving) is
+        // tolerated, not a fatal exit -- the crux that makes a reconnect actually resilient.
+        let stream = connect_and_handshake(&adapter_endpoint).await?;
+        if first {
+            debug.ipc_note("connected to the service's adapter/control endpoint");
+        } else {
+            debug.ipc_note("service restart detected; reconnected");
+        }
+
+        let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
+
+        // On a reconnect, make the fresh service believe this session already initialized, so the
+        // client's subsequent (already-initialized) requests are accepted.
+        if !first {
+            preamble.replay(&mut ipc_read, &mut ipc_write).await?;
+        }
+
+        let outcome = relay_session(
+            &mut rx,
+            &mut ipc_read,
+            &mut ipc_write,
+            &mut client_out,
+            &mut preamble,
+            first,
+        )
+        .await;
+        first = false;
+
+        match outcome {
+            RelaySide::ClientClosed => {
+                debug.ipc_note("adapter relay ended (client closed)");
+                return Ok(());
+            }
+            RelaySide::ServiceClosed => {
+                debug.ipc_note("service dropped; reconnecting");
+                // loop back and re-dial (self-healing the service start if needed).
+            }
+        }
+    }
+}
+
+/// One connect + full session handshake attempt: dial the adapter/control endpoint, send the
+/// `adapter` session-hello (a fresh `SessionGuid` per attempt), and verify the SERVICE's anti-squat
+/// proof (ADR-0030 Decision 8; PINS.md SS5.3). Returns the handshake-completed stream, or an error
+/// if ANY step fails (a down service, a torn-down connection mid-handshake, or a failed proof).
+/// Grouping the handshake with the dial is what lets [`connect_and_handshake`] retry the WHOLE
+/// thing, not just the dial.
+async fn try_connect_once(
+    adapter_endpoint: &str,
+) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
+    let mut stream = dial_once(adapter_endpoint).await?;
     let guid = crate::hub::session::SessionGuid::mint();
     let hello = json!({
         "hub": crate::hub::handshake::HUB_PROTO,
@@ -144,40 +362,34 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSi
     let hello_bytes = serde_json::to_vec(&hello)
         .map_err(|e| Error::NativeMessaging(format!("failed to encode the adapter hello: {e}")))?;
     host::write_message(&mut stream, &hello_bytes).await?;
-
-    // Anti-squat (ADR-0030 Decision 8; PINS.md SS5.3): verify the SERVICE's proof before relaying
-    // a single byte of this process's stdio.
     verify_service_proof(&mut stream, &hello_bytes).await?;
-
-    let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
-    let mut client_in = tokio::io::stdin();
-    let mut client_out = tokio::io::stdout();
-
-    tokio::select! {
-        _ = tokio::io::copy(&mut client_in, &mut ipc_write) => {}
-        _ = tokio::io::copy(&mut ipc_read, &mut client_out) => {}
-    }
-    debug.ipc_note("adapter relay ended");
-    Ok(())
+    Ok(stream)
 }
 
-/// Self-heal-aware dial (ADR-0030 Decision 8 amendment; PINS.md SS5.2): a single dial attempt; on
-/// failure, best-effort ask the OS supervisor to start the service
-/// ([`crate::hub::supervisor::start_service`]) exactly once, then retry the dial every
-/// `SELF_HEAL_RETRY_INTERVAL` for up to `SELF_HEAL_RETRY_WINDOW`. If still unreachable, log the
-/// PINNED self-heal failure message and return an error (the process exits non-zero). Tests never
-/// exercise this path -- they spawn `ghostlight service` explicitly so the first dial succeeds.
-async fn dial_with_self_heal(
+/// Connect to the SERVICE and complete the handshake, retrying the WHOLE attempt within a bounded
+/// window (ADR-0030 Decision 8 amendment / self-heal, PINS.md SS5.2; extended for ADR-0045). On
+/// the first failure, best-effort ask the OS supervisor to start the service
+/// ([`crate::hub::supervisor::start_service`]) exactly once, then retry every
+/// `SELF_HEAL_RETRY_INTERVAL` for up to `SELF_HEAL_RETRY_WINDOW`.
+///
+/// The 0045 change: it retries the full connect+handshake, not just the dial. A service that is
+/// mid-startup or mid-restart may have CLAIMED the endpoint (so the dial succeeds) while it is not
+/// yet serving or its per-install hub-key is not yet written -- a transient failure (a torn-down
+/// connection, os error 232, or a not-yet-verifiable proof). Retrying the whole handshake makes
+/// that transient window survivable instead of a fatal adapter exit, which is exactly what makes a
+/// cold-start (self-heal) connection and a reconnect actually resilient. It never accepts a bad
+/// proof -- a genuine squatter simply keeps failing until the window elapses and the adapter exits.
+async fn connect_and_handshake(
     adapter_endpoint: &str,
 ) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
-    if let Ok(stream) = dial_once(adapter_endpoint).await {
+    if let Ok(stream) = try_connect_once(adapter_endpoint).await {
         return Ok(stream);
     }
     crate::hub::supervisor::start_service();
     let deadline = tokio::time::Instant::now() + crate::hub::supervisor::SELF_HEAL_RETRY_WINDOW;
     loop {
         sleep(crate::hub::supervisor::SELF_HEAL_RETRY_INTERVAL).await;
-        match dial_once(adapter_endpoint).await {
+        match try_connect_once(adapter_endpoint).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 if tokio::time::Instant::now() >= deadline {
@@ -1143,5 +1355,44 @@ mod tests {
             }
             sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[test]
+    fn preamble_captures_only_the_handshake() {
+        let mut p = HandshakePreamble::default();
+        assert!(!p.complete());
+        // A pre-handshake application request is ignored.
+        p.observe(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#);
+        assert!(p.initialize.is_none());
+        // initialize is captured verbatim.
+        let init = br#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#;
+        p.observe(init);
+        assert_eq!(p.initialize.as_deref(), Some(&init[..]));
+        assert!(!p.complete());
+        // Non-JSON is ignored, never fatal.
+        p.observe(b"not json at all");
+        // initialized completes the preamble.
+        let inited = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        p.observe(inited);
+        assert_eq!(p.initialized.as_deref(), Some(&inited[..]));
+        assert!(p.complete());
+        // Once complete, a second initialize never overwrites the captured one.
+        p.observe(br#"{"jsonrpc":"2.0","id":9,"method":"initialize"}"#);
+        assert_eq!(p.initialize.as_deref(), Some(&init[..]));
+    }
+
+    #[tokio::test]
+    async fn read_line_unbuffered_reads_exactly_one_line_and_leaves_the_rest() {
+        // Reading one line must NOT consume the following bytes (unlike a BufReader), so the
+        // service->client raw copy that follows a reconnect replay is not corrupted.
+        let mut reader: &[u8] = b"result\nLEFTOVER";
+        let line = read_line_unbuffered(&mut reader).await.unwrap();
+        assert_eq!(line, b"result\n".to_vec());
+        assert_eq!(reader, &b"LEFTOVER"[..]);
+        // A trailing line with no newline is returned on EOF; a further read yields empty.
+        let tail = read_line_unbuffered(&mut reader).await.unwrap();
+        assert_eq!(tail, b"LEFTOVER".to_vec());
+        let eof = read_line_unbuffered(&mut reader).await.unwrap();
+        assert!(eof.is_empty());
     }
 }
