@@ -8,8 +8,8 @@ history live here.
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-single-binary-thin-extension.md) | Single portable Rust binary + thin Chromium extension | Accepted |
-| [0002](0002-dual-role-binary-local-ipc.md) | Dual-role binary bridged over local IPC | Accepted |
+| [0001](0001-single-binary-thin-extension.md) | Single portable Rust binary + thin Chromium extension | Accepted (single-binary aspect superseded by [0046](0046-role-specific-executables.md)) |
+| [0002](0002-dual-role-binary-local-ipc.md) | Dual-role binary bridged over local IPC | Accepted (dual-role-binary aspect superseded by [0046](0046-role-specific-executables.md)) |
 | [0003](0003-tokio-native-ipc.md) | IPC transport: tokio-native named-pipe/UDS, single-session, no heartbeat | Accepted |
 | [0004](0004-reject-second-session.md) | Reject a second concurrent session | Accepted |
 | [0005](0005-policy-free-extension.md) | Policy-free extension; DOM reads in a content script | Accepted |
@@ -53,6 +53,7 @@ history live here.
 | [0043](0043-webmcp-stance.md) | WebMCP stance: future governed consumer via the capability registry; no implementation during origin-trial flux; named re-evaluation triggers | Accepted |
 | [0044](0044-named-instances.md) | Named instances: one `--instance`/`GHOSTLIGHT_INSTANCE` parameter derives all identity (endpoint, native-host name, MCP name, supervisor names, config/policy/log dirs); default byte-identical; non-default gets isolated dirs + a multi-call binary copy for the Chrome-launched native host; enables dev/prod coexistence on one machine | Accepted |
 | [0045](0045-resilient-reconnecting-adapter.md) | The resilient reconnecting adapter: the thin adapter reconnects to a restarted service and replays the MCP handshake so the client rides through transparently (raw-stream relay + timeout baseline; native-host stays Tier-B extension reconnect); makes dev rebuilds and prod upgrades/crashes seamless | Accepted (amends [0030](0030-ghostlight-hub-orchestrator.md)) |
+| [0046](0046-role-specific-executables.md) | Role-specific executables: split the single multi-role binary into `ghostlight` (CLI + service) + `ghostlight-adapter-agent` + `ghostlight-adapter-browser`, backed by a `ghostlight-transport` (stable) / `ghostlight-core` (churny) crate split so a service rebuild never relinks the adapters; fixes the exe-lock dev-loop fight and makes transparent upgrades real | Accepted (supersedes single-binary aspects of [0001](0001-single-binary-thin-extension.md)/[0002](0002-dual-role-binary-local-ipc.md); refines [0044](0044-named-instances.md)/[0045](0045-resilient-reconnecting-adapter.md)) |
 
 ## Conventions
 
