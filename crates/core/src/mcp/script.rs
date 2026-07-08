@@ -50,6 +50,7 @@ struct PipelineRunner<'a> {
     browser: &'a Browser,
     store: &'a Arc<ConfigStore>,
     governance: &'a Governance,
+    guid: &'a str,
 }
 
 impl<'a> StepRunner for PipelineRunner<'a> {
@@ -72,6 +73,7 @@ impl<'a> StepRunner for PipelineRunner<'a> {
             self.browser,
             self.store,
             self.governance,
+            self.guid,
         )
     }
 }
@@ -486,6 +488,7 @@ pub(crate) fn script_handler(ctx: LocalCtx<'_>) -> LocalFuture<'_> {
             browser: ctx.browser,
             store: ctx.store,
             governance: ctx.governance,
+            guid: ctx.guid,
         };
         let mut compact = interpret(
             ctx.args,
@@ -527,6 +530,9 @@ pub(crate) fn script_handler(ctx: LocalCtx<'_>) -> LocalFuture<'_> {
 // Re-enter run_tool_call from within the boxed interpreter future. Tokio's current-thread handle is
 // available because the whole pipeline runs on a tokio runtime; this bridges the sync StepRunner
 // trait to the async run_tool_call without forcing the interpreter itself to be async-generic.
+// ADR-0047 D3 threads the session `guid` through to run_tool_call, pushing this bridge to 8
+// params; the arity mirrors run_tool_call's pinned signature, so the lint is allowed here too.
+#[allow(clippy::too_many_arguments)]
 fn futures_await_block(
     name: &str,
     args: &Value,
@@ -535,6 +541,7 @@ fn futures_await_block(
     browser: &Browser,
     store: &Arc<ConfigStore>,
     governance: &Governance,
+    guid: &str,
 ) -> CallOutcome {
     tokio::task::block_in_place(|| {
         let handle = tokio::runtime::Handle::current();
@@ -542,6 +549,7 @@ fn futures_await_block(
             browser,
             store,
             governance,
+            guid,
             name,
             args,
             orchestration,

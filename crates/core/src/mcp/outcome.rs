@@ -72,6 +72,9 @@ pub struct LocalCtx<'a> {
     pub browser: &'a Browser,
     pub store: &'a Arc<ConfigStore>,
     pub governance: &'a Governance,
+    /// The calling session's guid (ADR-0047 D3), so a local handler that re-enters the pipeline
+    /// (`script`, `form_fill`) threads the SAME session identity onto its `Browser::call` envelopes.
+    pub guid: &'a str,
     pub config: &'a Config,
     pub args: &'a Value,
 }

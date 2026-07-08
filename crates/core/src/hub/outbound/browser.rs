@@ -277,11 +277,21 @@ impl Browser {
 
     /// Invoke `tool` with `args` on the extension and await its result.
     ///
+    /// `guid` is the calling session's [`SessionGuid`] string (ADR-0047 D3), written verbatim into
+    /// the additive `tool_request` envelope field. Trained tool schemas are untouched; the extension
+    /// consumes `guid` only for session-scoped tab operations (`tabs_create_mcp`/`tabs_context_mcp`)
+    /// and ignores it for every other tool.
+    ///
     /// Every failure is a hop-attributed [`ToolError`]: no extension connected, an encoding
     /// failure before the request left the process, the extension reporting a tool error (tagged
     /// `cdp`, `page`, or untagged and attributed to the `extension` hop), a mid-call disconnect,
     /// or a timeout.
-    pub async fn call(&self, tool: &str, args: &Value) -> std::result::Result<Value, ToolError> {
+    pub async fn call(
+        &self,
+        guid: &str,
+        tool: &str,
+        args: &Value,
+    ) -> std::result::Result<Value, ToolError> {
         // The killed check precedes everything else, including the pending-map insert and the
         // not-connected check (g11 constraint 12): after a kill the port drops and `outgoing`
         // becomes `None`, so the generic not-connected error would otherwise win by accident.
@@ -292,7 +302,8 @@ impl Browser {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let request = json!({ "id": id, "type": "tool_request", "tool": tool, "args": args });
+        let request =
+            json!({ "id": id, "type": "tool_request", "tool": tool, "args": args, "guid": guid });
         let framed = match serde_json::to_vec(&request)
             .map_err(|e| e.to_string())
             .and_then(|bytes| host::encode(&bytes).map_err(|e| e.to_string()))
@@ -712,7 +723,11 @@ mod tests {
 
         wait_connected(&browser).await;
         let result = browser
-            .call("navigate", &json!({ "url": "https://example.com" }))
+            .call(
+                "test-guid",
+                "navigate",
+                &json!({ "url": "https://example.com" }),
+            )
             .await
             .unwrap();
         assert_eq!(result, json!({ "echoed": "navigate" }));
@@ -737,7 +752,7 @@ mod tests {
 
         wait_connected(&browser).await;
         let err = browser
-            .call("javascript_tool", &json!({}))
+            .call("test-guid", "javascript_tool", &json!({}))
             .await
             .unwrap_err();
         let text = err.to_string();
@@ -748,7 +763,10 @@ mod tests {
     #[tokio::test]
     async fn call_without_a_connection_fails_fast() {
         let browser = Browser::new();
-        let err = browser.call("navigate", &json!({})).await.unwrap_err();
+        let err = browser
+            .call("test-guid", "navigate", &json!({}))
+            .await
+            .unwrap_err();
         let text = err.to_string();
         assert!(text.starts_with("[hop: extension]"), "{text}");
         assert!(text.contains("not connected"), "{text}");
@@ -805,7 +823,10 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let result = browser.call("navigate", &json!({})).await.unwrap();
+        let result = browser
+            .call("test-guid", "navigate", &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result, json!({ "ok": true }));
         fake_ext.await.unwrap();
     }
@@ -833,7 +854,10 @@ mod tests {
         });
 
         wait_connected(&browser).await;
-        let err = browser.call("computer", &json!({})).await.unwrap_err();
+        let err = browser
+            .call("test-guid", "computer", &json!({}))
+            .await
+            .unwrap_err();
         let text = err.to_string();
         assert!(text.starts_with("[hop: cdp]"), "{text}");
         assert!(text.contains("Input.dispatchMouseEvent failed"), "{text}");
@@ -862,7 +886,10 @@ mod tests {
         });
 
         wait_connected(&browser).await;
-        let err = browser.call("form_input", &json!({})).await.unwrap_err();
+        let err = browser
+            .call("test-guid", "form_input", &json!({}))
+            .await
+            .unwrap_err();
         let text = err.to_string();
         assert!(text.starts_with("[hop: page]"), "{text}");
         assert!(text.contains("Element ref_5 not found"), "{text}");
@@ -918,7 +945,10 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let result = browser.call("navigate", &json!({})).await.unwrap();
+        let result = browser
+            .call("test-guid", "navigate", &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result, json!({ "ok": true }));
         ext.await.unwrap();
     }
@@ -1034,7 +1064,8 @@ mod tests {
         wait_connected(&browser).await;
 
         let caller = browser.clone();
-        let call_task = tokio::spawn(async move { caller.call("navigate", &json!({})).await });
+        let call_task =
+            tokio::spawn(async move { caller.call("test-guid", "navigate", &json!({})).await });
 
         let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
         let _: Value = serde_json::from_slice(&req).unwrap();
@@ -1080,10 +1111,12 @@ mod tests {
         }
         assert!(browser.is_killed());
 
-        let result =
-            tokio::time::timeout(Duration::from_secs(1), browser.call("navigate", &json!({})))
-                .await
-                .expect("a killed call must fail immediately, not time out");
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            browser.call("test-guid", "navigate", &json!({})),
+        )
+        .await
+        .expect("a killed call must fail immediately, not time out");
         let text = result.unwrap_err().to_string();
         assert!(
             text.contains("The user ended the browser session (kill switch)"),
@@ -1111,7 +1144,10 @@ mod tests {
         drop(ext_side);
         let _ = attach_task.await.unwrap();
 
-        let err = browser.call("navigate", &json!({})).await.unwrap_err();
+        let err = browser
+            .call("test-guid", "navigate", &json!({}))
+            .await
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("The user ended the browser session (kill switch)"),
@@ -1165,7 +1201,10 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let result = browser.call("navigate", &json!({})).await.unwrap();
+        let result = browser
+            .call("test-guid", "navigate", &json!({}))
+            .await
+            .unwrap();
         assert_eq!(result, json!({ "ok": true }));
         fake_ext.await.unwrap();
     }

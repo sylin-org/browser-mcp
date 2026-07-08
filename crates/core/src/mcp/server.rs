@@ -355,6 +355,15 @@ where
         }
     });
 
+    // ADR-0047 D3: one seat carrying this session's identity + owned-tab handle, threaded into the
+    // dispatch arm so a spawned tools/call can claim a tab the session creates (tabs_create_mcp).
+    // Holds its own clones (a cheap Arc clone + guid clone) so the loop's own `&owned_tabs`/`&guid`
+    // borrows for `check_tab_ownership` stay valid alongside it.
+    let seat = SessionSeat {
+        guid: guid.clone(),
+        owned_tabs: Arc::clone(&owned_tabs),
+    };
+
     while let Some(line) = lines.next_line().await? {
         let line = line.trim();
         if line.is_empty() {
@@ -374,8 +383,16 @@ where
             let _ = tx.send(Outbound::Response(resp));
             continue;
         }
-        if let Some(resp) =
-            handle_line(&browser, &capabilities, &store, &governance, line, &tx).await
+        if let Some(resp) = handle_line(
+            &browser,
+            &capabilities,
+            &store,
+            &governance,
+            &seat,
+            line,
+            &tx,
+        )
+        .await
         {
             let _ = tx.send(Outbound::Response(resp));
         }
@@ -480,6 +497,13 @@ fn record_unowned_tab_denial(governance: &Governance, name: &str, args: Option<&
     audit.sacred_deny(&denial, None);
 }
 
+/// One session's identity + shared-state handles (ADR-0047 D3), threaded from `serve_session`
+/// into the dispatch arms so a spawned tools/call can claim tabs the session creates.
+pub(super) struct SessionSeat {
+    pub(super) guid: SessionGuid,
+    pub(super) owned_tabs: Arc<Mutex<HashMap<i64, SessionGuid>>>,
+}
+
 /// Parse and route one JSON-RPC line.
 ///
 /// Returns `Some(response)` for requests (an `id` member is present, even if `null`) and `None` for
@@ -495,6 +519,7 @@ pub(super) async fn handle_line(
     capabilities: &crate::hub::outbound::Registry,
     store: &Arc<ConfigStore>,
     governance: &Arc<Governance>,
+    seat: &SessionSeat,
     line: &str,
     tx: &mpsc::UnboundedSender<Outbound>,
 ) -> Option<JsonRpcResponse> {
@@ -579,10 +604,41 @@ pub(super) async fn handle_line(
             let governance = Arc::clone(governance);
             let tx = tx.clone();
             let params = raw.get("params").cloned();
+            // ADR-0047 D3: the session's guid rides the tool envelope, and a tab this session
+            // CREATES via tabs_create_mcp is claimed from the response so no other session can
+            // first-touch-steal it; a newly adopted tab fires the group-request presentation.
+            let guid = seat.guid.clone();
+            let owned_tabs = Arc::clone(&seat.owned_tabs);
+            let tool_name = params
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             tokio::spawn(async move {
-                let resp =
-                    pipeline::handle_tools_call(&browser, &store, &governance, id, params.as_ref())
-                        .await;
+                let resp = pipeline::handle_tools_call(
+                    &browser,
+                    &store,
+                    &governance,
+                    guid.as_str(),
+                    id,
+                    params.as_ref(),
+                )
+                .await;
+                if tool_name.as_deref() == Some("tabs_create_mcp") {
+                    if let Some(tab_id) = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("structuredContent"))
+                        .and_then(|s| s.get("tabId"))
+                        .and_then(Value::as_i64)
+                    {
+                        if let crate::hub::session::TabClaim::Adopted =
+                            crate::hub::session::claim_tab(&owned_tabs, &guid, tab_id)
+                        {
+                            emit_group_request(&browser, &owned_tabs, &guid);
+                        }
+                    }
+                }
                 let _ = tx.send(Outbound::Response(resp));
             });
             None

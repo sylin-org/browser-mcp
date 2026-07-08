@@ -121,7 +121,7 @@ async function connect() {
           fail(msg.id, hopError("extension", "The user ended the browser session (kill switch)"));
           return;
         }
-        dispatch(msg.id, msg.tool, msg.args || {});
+        dispatch(msg.id, msg.tool, msg.args || {}, msg.guid);
         return;
       }
       // Tab-URL query (g13): mechanism only. Reports chrome.tabs.get(tabId).url verbatim (or
@@ -592,6 +592,30 @@ async function ensureGroup(create) {
   groupId = gid;
   await persistSessionState();
 }
+
+// Session-group birth (ADR-0047 D3): create a tab directly inside `guid`'s group. First tab of
+// a session: one focused window whose single fresh tab becomes the group (no about:blank
+// litter); later tabs: a tab in the group's window, grouped immediately. The GROUP_TITLE
+// placeholder is retitled by the service's next group_request (client-name title, ADR-0047 D4).
+async function createTabInSessionGroup(guid) {
+  let gid = sessionGroups.has(guid) ? sessionGroups.get(guid) : null;
+  if (gid !== null) {
+    try { await chrome.tabGroups.get(gid); } catch { gid = null; }
+  }
+  let tab;
+  if (gid === null) {
+    const win = await chrome.windows.create({ focused: true });
+    tab = win.tabs[0];
+    gid = await chrome.tabs.group({ tabIds: [tab.id] });
+    await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: "blue" });
+  } else {
+    const group = await chrome.tabGroups.get(gid);
+    tab = await chrome.tabs.create({ active: true, windowId: group.windowId });
+    await chrome.tabs.group({ tabIds: [tab.id], groupId: gid });
+  }
+  sessionGroups.set(guid, gid);
+  return { tab, gid };
+}
 async function groupTabs() {
   const ids = managedGroupIds(groupId, sessionGroups);
   const all = [];
@@ -678,10 +702,11 @@ async function effectiveTabId(rawTabId) {
   }
   return best.id;
 }
-function tabContext(tabs) {
+function tabContext(tabs, reportGroupId) {
+  const gid = reportGroupId === undefined ? groupId : reportGroupId;
   const available = tabs.map((t) => ({ tabId: t.id, title: t.title || "", url: t.url || "" }));
-  const r = text(JSON.stringify({ mcpGroupId: groupId, tabs: available }, null, 2));
-  r.structuredContent = { mcpGroupId: groupId, tabs: available };
+  const r = text(JSON.stringify({ mcpGroupId: gid, tabs: available }, null, 2));
+  r.structuredContent = { mcpGroupId: gid, tabs: available };
   return r;
 }
 
@@ -1193,18 +1218,48 @@ async function computer(a) {
 }
 
 // --- Tool handlers ---
+// Pre-0047 tabs_create_mcp behavior, kept verbatim for guid-less legacy/native callers
+// (ADR-0047 D3): global-group birth via ensureGroup(true).
+async function tabsCreateLegacy() {
+  await ensureGroup(true);
+  const tab = await chrome.tabs.create({ active: true });
+  await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  await persistSessionState();
+  const r = tabContext(await groupTabs());
+  r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
+  r.structuredContent = { tabId: tab.id, tabs: r.structuredContent.tabs };
+  return r;
+}
+
+// Pre-0047 tabs_context_mcp behavior, kept verbatim for guid-less legacy/native callers
+// (ADR-0047 D3): the global group's view.
+async function tabsContextLegacy(a) {
+  await ensureGroup(a.createIfEmpty);
+  if (groupId === null) return text(`No ${GROUP_TITLE} tab group. Call with createIfEmpty: true.`);
+  return tabContext(await groupTabs());
+}
+
 const handlers = {
-  async tabs_context_mcp(a) {
-    await ensureGroup(a.createIfEmpty);
-    if (groupId === null) return text(`No ${GROUP_TITLE} tab group. Call with createIfEmpty: true.`);
-    return tabContext(await groupTabs());
+  async tabs_context_mcp(a, guid) {
+    if (typeof guid !== "string" || !guid) return tabsContextLegacy(a);
+    let gid = sessionGroups.has(guid) ? sessionGroups.get(guid) : null;
+    if (gid !== null) {
+      try { await chrome.tabGroups.get(gid); } catch { gid = null; }
+    }
+    if (gid === null) {
+      if (!a.createIfEmpty) {
+        return text("No Ghostlight tab group for this session. Call tabs_context_mcp with createIfEmpty: true, or create a tab with tabs_create_mcp.");
+      }
+      gid = (await createTabInSessionGroup(guid)).gid;
+      await persistSessionState();
+    }
+    return tabContext(await chrome.tabs.query({ groupId: gid }), gid);
   },
-  async tabs_create_mcp() {
-    await ensureGroup(true);
-    const tab = await chrome.tabs.create({ active: true });
-    await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  async tabs_create_mcp(_a, guid) {
+    if (typeof guid !== "string" || !guid) return tabsCreateLegacy();
+    const { tab, gid } = await createTabInSessionGroup(guid);
     await persistSessionState();
-    const r = tabContext(await groupTabs());
+    const r = tabContext(await chrome.tabs.query({ groupId: gid }), gid);
     r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
     r.structuredContent = { tabId: tab.id, tabs: r.structuredContent.tabs };
     return r;
@@ -1441,12 +1496,12 @@ const handlers = {
   },
 };
 
-async function dispatch(id, tool, args) {
+async function dispatch(id, tool, args, guid) {
   await ready; // never run a tool against un-rehydrated state
   const handler = handlers[tool];
   if (!handler) return fail(id, `Unknown tool: ${tool}`);
   try {
-    reply(id, await handler(args));
+    reply(id, await handler(args, guid));
   } catch (e) {
     if (e instanceof TabAccessError) return reply(id, text(e.message));
     // Hop-tagged errors (cdp/page) pass through as-is; untagged errors keep the tool-name prefix.

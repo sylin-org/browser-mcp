@@ -54,6 +54,7 @@ pub(crate) async fn handle_tools_call(
     browser: &Browser,
     store: &Arc<ConfigStore>,
     governance: &Governance,
+    guid: &str,
     id: Option<Value>,
     params: Option<&Value>,
 ) -> JsonRpcResponse {
@@ -67,7 +68,7 @@ pub(crate) async fn handle_tools_call(
         .cloned()
         .unwrap_or(Value::Null);
 
-    let outcome = run_tool_call(browser, store, governance, name, &args, None, false).await;
+    let outcome = run_tool_call(browser, store, governance, guid, name, &args, None, false).await;
     render_outcome(id, outcome)
 }
 
@@ -167,10 +168,14 @@ fn extract_action<'a>(action_key: Option<&'a str>, args: &'a Value) -> Option<&'
 ///    post-grant position, else `Browser::call`.
 /// 9. `PostDispatch::NavigateLanding`: the landing re-check and park-on-real-deny.
 /// 10. `descriptor.postprocess`, the wait-note, and `audit.complete()`.
+// ADR-0047 D3 threads the session `guid` through this pinned dispatch signature, pushing it to 8
+// params; the signature is fixed by the ADR, so the arity lint is allowed rather than reshaped.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_tool_call(
     browser: &Browser,
     store: &Arc<ConfigStore>,
     governance: &Governance,
+    guid: &str,
     name: &str,
     args: &Value,
     orchestration: Option<(&'static str, &str, u32)>,
@@ -305,6 +310,7 @@ pub(crate) async fn run_tool_call(
             browser,
             store,
             governance,
+            guid,
             config: &config,
             args,
         };
@@ -431,6 +437,7 @@ pub(crate) async fn run_tool_call(
             browser,
             store,
             governance,
+            guid,
             config: &config,
             args,
         };
@@ -451,7 +458,7 @@ pub(crate) async fn run_tool_call(
         return outcome;
     }
 
-    let outcome = browser.call(name, args).await;
+    let outcome = browser.call(guid, name, args).await;
     audit.dispatch_finished();
 
     // Point 5 (g13/g15): after a dispatched `navigate` succeeds, re-check the FINAL
@@ -465,6 +472,7 @@ pub(crate) async fn run_tool_call(
             let (landing, landing_domain) = post_navigate_landing_check(
                 browser,
                 governance,
+                guid,
                 descriptor.tool,
                 lookup.unwrap_or(&[]),
                 tab_id,
@@ -658,6 +666,7 @@ async fn resolve_governing_resource(
 async fn post_navigate_landing_check(
     browser: &Browser,
     governance: &Governance,
+    guid: &str,
     tool: &str,
     requires: &[Capability],
     tab_id: i64,
@@ -675,6 +684,7 @@ async fn post_navigate_landing_check(
     if let Decision::Deny(_) = &decision {
         let _ = browser
             .call(
+                guid,
                 "navigate",
                 &json!({ "url": "about:blank", "tabId": tab_id }),
             )
@@ -924,9 +934,15 @@ mod tests {
         ];
         for (tool, args) in cases {
             let params = json!({ "name": tool, "arguments": args });
-            let resp =
-                handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params))
-                    .await;
+            let resp = handle_tools_call(
+                &browser,
+                &store,
+                &governance,
+                "test-guid",
+                Some(json!(1)),
+                Some(&params),
+            )
+            .await;
             let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
                 .as_str()
                 .expect("text content block");
@@ -981,6 +997,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(1)),
             Some(&denied_params),
         )
@@ -1003,6 +1020,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&allowed_params),
         )
@@ -1036,8 +1054,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -1057,6 +1082,7 @@ mod tests {
             &unconnected,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&params2),
         )
@@ -1087,8 +1113,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let _ =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let _ = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
 
         let lines = read_lines(&path);
         assert_eq!(
@@ -1139,8 +1172,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(
             result["isError"], true,
@@ -1174,8 +1214,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -1216,13 +1263,34 @@ mod tests {
         let caps = crate::hub::outbound::Registry::new(vec![std::sync::Arc::new(
             crate::hub::outbound::browser::BrowserCapability::new(browser.clone()),
         )]);
-        crate::mcp::server::handle_line(&browser, &caps, &store, &governance, &init_line, &tx)
-            .await;
+        let seat = crate::mcp::server::SessionSeat {
+            guid: crate::hub::session::SessionGuid::mint(),
+            owned_tabs: std::sync::Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
+        };
+        crate::mcp::server::handle_line(
+            &browser,
+            &caps,
+            &store,
+            &governance,
+            &seat,
+            &init_line,
+            &tx,
+        )
+        .await;
 
         // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
         let params = json!({ "name": "navigate", "arguments": { "url": "https://example.com", "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(2)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block")
@@ -1261,8 +1329,15 @@ mod tests {
         // o04: inputSchema validation now runs before dispatch; computer needs action + tabId.
         let params =
             json!({ "name": "computer", "arguments": { "action": "screenshot", "tabId": 5 } });
-        let _ =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let _ = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
 
         let lines = read_lines(&path);
         assert_eq!(lines.len(), 1, "exactly one audit record");
@@ -1285,8 +1360,15 @@ mod tests {
         let browser = Browser::new();
 
         let params = json!({ "arguments": {} });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         assert_eq!(resp.error.as_ref().expect("error present")["code"], -32602);
         assert!(!path.exists(), "no audit file must be created");
     }
@@ -1307,8 +1389,15 @@ mod tests {
         // o04: inputSchema validation now runs before dispatch; computer needs action + tabId.
         let params =
             json!({ "name": "computer", "arguments": { "action": "screenshot", "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         assert!(resp.error.is_none(), "a held reply is a JSON-RPC success");
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(
@@ -1328,6 +1417,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(3)),
             Some(&explain_params),
         )
@@ -1344,8 +1434,15 @@ mod tests {
         assert!(explain_text.contains("'explain' call"), "{explain_text}");
 
         browser.set_held(false);
-        let resp2 =
-            handle_tools_call(&browser, &store, &governance, Some(json!(2)), Some(&params)).await;
+        let resp2 = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(2)),
+            Some(&params),
+        )
+        .await;
         let result2 = resp2.result.as_ref().expect("tool result present");
         assert_eq!(
             result2["isError"], true,
@@ -1375,6 +1472,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(1)),
             Some(&held_params),
         )
@@ -1387,6 +1485,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&allowed_params),
         )
@@ -1472,8 +1571,15 @@ mod tests {
             "name": "navigate",
             "arguments": { "url": "https://example.com/", "tabId": 5 },
         });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -1514,8 +1620,15 @@ mod tests {
             "name": "navigate",
             "arguments": { "url": "https://example.com/", "tabId": 5 },
         });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -1572,8 +1685,15 @@ mod tests {
             "name": "computer",
             "arguments": { "action": "wait", "tabId": 7, "duration": 1 },
         });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(
             result["isError"], true,
@@ -1616,8 +1736,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(
             result["isError"], true,
@@ -1659,8 +1786,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "read_page", "arguments": { "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -1716,6 +1850,7 @@ mod tests {
             &browser,
             &store,
             &enforce_governance,
+            "test-guid",
             Some(json!(1)),
             Some(&params),
         )
@@ -1750,6 +1885,7 @@ mod tests {
             &observe_browser,
             &store,
             &observe_governance,
+            "test-guid",
             Some(json!(1)),
             Some(&params),
         )
@@ -1884,8 +2020,15 @@ mod tests {
         assert!(!browser.is_connected());
 
         let params = json!({ "name": "explain", "arguments": {} });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(result["isError"], true, "explain must never be isError");
         let text = result["content"][0]["text"]
@@ -1923,8 +2066,15 @@ mod tests {
         let browser = Browser::new();
 
         let params = json!({ "name": "bogus_tool", "arguments": {} });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_eq!(result["isError"], true, "unknown tool -> isError");
         let text = result["content"][0]["text"]
@@ -1945,6 +2095,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&explain_params),
         )
@@ -1998,6 +2149,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(1)),
             Some(&read_page_params),
         )
@@ -2027,6 +2179,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&find_params),
         )
@@ -2066,8 +2219,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "tabs_context_mcp", "arguments": {} });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let result = resp.result.as_ref().expect("tool result present");
         assert_ne!(
             result["isError"], true,
@@ -2089,6 +2249,7 @@ mod tests {
             &browser,
             &store,
             &governance,
+            "test-guid",
             Some(json!(2)),
             Some(&denied_params),
         )
@@ -2137,8 +2298,15 @@ mod tests {
         wait_connected(&browser).await;
 
         let params = json!({ "name": "navigate", "arguments": { "url": "back", "tabId": 5 } });
-        let resp =
-            handle_tools_call(&browser, &store, &governance, Some(json!(1)), Some(&params)).await;
+        let resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(1)),
+            Some(&params),
+        )
+        .await;
         let text = resp.result.as_ref().expect("tool result present")["content"][0]["text"]
             .as_str()
             .expect("text content block");
@@ -2259,6 +2427,7 @@ mod tests {
             browser: &browser,
             store: &store,
             governance: &governance,
+            guid: "test-guid",
             config: &config,
             args: &args,
         };

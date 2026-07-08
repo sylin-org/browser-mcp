@@ -683,6 +683,10 @@ mod tests {
         let fake = tokio::spawn(async move {
             let req = host::read_message(&mut rd).await.unwrap().unwrap();
             let v: Value = serde_json::from_slice(&req).unwrap();
+            assert_eq!(
+                v["guid"], "test-guid",
+                "the tool envelope carries the session guid"
+            );
             let reply = json!({ "id": v["id"], "type": "tool_response", "result": { "echoed": v["tool"] } });
             host::write_message(&mut wr, &serde_json::to_vec(&reply).unwrap())
                 .await
@@ -696,7 +700,7 @@ mod tests {
             sleep(Duration::from_millis(5)).await;
         }
         let result = browser
-            .call("navigate", &json!({}))
+            .call("test-guid", "navigate", &json!({}))
             .await
             .expect("tool call round-trips over the real IPC");
         assert_eq!(result["echoed"], "navigate");

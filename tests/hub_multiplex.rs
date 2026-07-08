@@ -85,8 +85,8 @@ async fn two_sessions_route_replies_independently() {
     let args_a = json!({});
     let args_b = json!({});
     let (result_a, result_b) = tokio::join!(
-        session_a.call("navigate", &args_a),
-        session_b.call("find", &args_b)
+        session_a.call("session-a", "navigate", &args_a),
+        session_b.call("session-b", "find", &args_b)
     );
 
     let result_a = result_a.expect("session A's call succeeds");
