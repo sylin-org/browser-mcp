@@ -773,15 +773,45 @@ mod win_security {
 
 // --- Unix: domain sockets ---
 
+/// A short, deterministic hash of an endpoint (16 hex chars = the first 8 bytes of its SHA-256),
+/// used as a socket filename when the readable name would overflow the platform's socket-path
+/// limit. Deterministic so every process (service, adapter, `doctor`) that resolves the same
+/// endpoint computes the same path.
+#[cfg(unix)]
+fn short_endpoint_hash(endpoint: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(endpoint.as_bytes());
+    let mut hex = String::with_capacity(16);
+    for byte in &digest[..8] {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
 /// The Unix socket path: a user-owned `<runtime-or-cache-dir>/ghostlight/<endpoint>.sock`. The
 /// parent dir is created 0700 and the socket 0600, so only the current user can reach it (unlike the
 /// abstract namespace, which carries no filesystem permissions).
+///
+/// A `sockaddr_un` caps the path at ~104 bytes including the NUL terminator (103 usable on macOS,
+/// 107 on Linux); a long endpoint under a long base -- notably macOS, where `dirs::cache_dir` is
+/// `~/Library/Caches` -- overflows it and `bind` fails with `ENAMETOOLONG`. The readable name is
+/// kept whenever it fits (production endpoints are short); otherwise it falls back to a short
+/// deterministic hash so the socket always binds. The hash keeps distinct endpoints distinct (the
+/// `-adapter` control socket and the bare extension socket hash to different names).
 #[cfg(unix)]
 fn socket_path(endpoint: &str) -> Result<std::path::PathBuf> {
     let base = dirs::runtime_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| Error::Ipc("no user runtime/cache directory for the socket".into()))?;
-    Ok(base.join("ghostlight").join(format!("{endpoint}.sock")))
+    let dir = base.join("ghostlight");
+    let readable = dir.join(format!("{endpoint}.sock"));
+    // A conservative threshold under the smallest (macOS) usable limit, leaving margin for the NUL.
+    const MAX_SOCKET_PATH: usize = 100;
+    if readable.as_os_str().len() <= MAX_SOCKET_PATH {
+        Ok(readable)
+    } else {
+        Ok(dir.join(format!("gl-{}.sock", short_endpoint_hash(endpoint))))
+    }
 }
 
 /// Synchronously probe the Unix domain socket (no tokio; used by `ghostlight doctor`, which runs
