@@ -40,14 +40,11 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-pub mod antisquat;
-pub mod handshake;
+pub use ghostlight_transport::{antisquat, handshake, role, supervisor};
 pub mod inbound;
 pub mod manage;
 pub mod outbound;
-pub use ghostlight_transport::role;
 pub mod session;
-pub mod supervisor;
 
 /// Idle-grace shutdown window (ADR-0030 Decision 8; PINNED, PINS.md SS5.4): the SERVICE exits only
 /// after zero live sessions AND the extension link gone, CONTINUOUSLY, for this long. Never a

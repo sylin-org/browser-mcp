@@ -7,7 +7,7 @@
 //! before retrying the dial -- never spawning an in-job child itself (that mechanism is deleted;
 //! ADR-0030 Decision 8 Provenance, "the always-ready-service amendment").
 
-use crate::hub::role;
+use crate::role;
 use std::time::Duration;
 
 /// Windows Task Scheduler task name for the active instance (ADR-0044). The default instance

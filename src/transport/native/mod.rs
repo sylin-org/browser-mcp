@@ -12,6 +12,6 @@
 //! The first instance to acquire the IPC endpoint owns the browser; a second is rejected with
 //! [`crate::Error::SessionBusy`] (single active session in v1.0; multi-session sharing deferred).
 
-pub mod host;
+pub use ghostlight_transport::host;
 pub mod ipc;
 pub mod messages;

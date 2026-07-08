@@ -372,13 +372,17 @@ name = "ghostlight-transport"
 version = "0.3.0"
 dependencies = [
  "dirs",
+ "getrandom 0.4.3",
+ "hmac",
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "windows-sys",
 ]
 

@@ -4,11 +4,17 @@
 //! The adapters depend on THIS crate only; a dependency on ghostlight-core here or in an
 //! adapter is a design error (it would reintroduce the exe-lock ADR-0046 removes).
 
+pub mod antisquat;
 pub mod error;
+pub mod handshake;
+pub mod host;
 pub mod instance;
+pub mod ipc;
 pub mod observability;
 pub mod proc;
 pub mod role;
+pub mod session_guid;
+pub mod supervisor;
 pub mod watchdog;
 
 pub use error::{Error, Result, ToolError};

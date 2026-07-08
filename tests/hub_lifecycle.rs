@@ -133,8 +133,9 @@ fn adapter_cannot_complete_handshake_with_an_impostor_service() {
 #[test]
 fn supervisor_start_asserts_adapter_role() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates")
+        .join("transport")
         .join("src")
-        .join("hub")
         .join("supervisor.rs");
     let source =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
