@@ -5,7 +5,7 @@ task (or block); this file is the single source of truth for batch progress.
 
 ## RESUME HERE
 
-Next task: **T3** (`T3-stable-session-guid.md`). Base: T2 landed at `293dfd1`.
+Next task: **T4** (`T4-session-scoped-tab-operations.md`). Base: T3 landed at `fb88795`.
 
 ## Task table
 
@@ -13,7 +13,7 @@ Next task: **T3** (`T3-stable-session-guid.md`). Base: T2 landed at `293dfd1`.
 |---|---|---|---|
 | T1 managed-surface predicate | done | 31049f2 | |
 | T2 down-classifier | done | 293dfd1 | |
-| T3 stable session guid | pending | - | |
+| T3 stable session guid | done | fb88795 | build-order note (deviation 1) |
 | T4 envelope guid + session ops | pending | - | |
 | T5 client-name titles + errors | pending | - | |
 | T6 liveness + pruning + changelog | pending | - | |
@@ -70,3 +70,38 @@ your reasoning, then the batch HALTS per BOOTSTRAP.)
   pure ASCII.
 - Deviations from task/PINS: NONE beyond the `matches!` choice noted above (a transcription
   choice, not a semantic deviation).
+
+### T3 -- stable per-process SessionGuid (ADR-0047 D2) -- DONE
+
+- Code commit: `fb88795`.
+- STOP preconditions: all passed. Every anchor present; `grep "fn adapter_hello"` empty;
+  `spawn_adapter` did NOT set `GHOSTLIGHT_DEBUG` (the line-60 `GHOSTLIGHT_DEBUG` belongs to
+  `service_cmd`), so per the task's sanctioned edit I added `.env("GHOSTLIGHT_DEBUG", "1")` to
+  `spawn_adapter`. Confirmed constants for the pinned test: `HUB_PROTO: u32 = 1`,
+  `ROLE_ADAPTER = "adapter"`.
+- Changes exactly per PINS P3: extracted `adapter_hello(guid)`; `try_connect_once` gained the
+  `guid` param and dropped its local mint; `connect_and_handshake` gained the `guid` param and
+  threads it to both call sites; `relay_adapter` mints ONE guid before the loop, emits the pinned
+  note, and passes `&session_guid` into `connect_and_handshake`; rewrote the two stale
+  doc-comment passages to cite ADR-0047 D2; added `hello_carries_the_caller_guid`; extended the
+  restart integration test (mint-note count == 1, reconnect-note count >= 1) leaving the 5s-gap
+  test untouched; APPENDED the ADR-0045 D2 amendment.
+- DEVIATION 1 (verification-recipe gap, worked around; NOT a code change): the pinned T3
+  verification lists `cargo test --test adapter_reconnect` and `cargo test --workspace` but NONE
+  of the pinned commands rebuild the DELIVERABLE `target/debug/ghostlight-adapter-agent.exe` that
+  `adapter_bin()` spawns by PATH (it is not referenced via `CARGO_BIN_EXE_*`, unlike the
+  `ghostlight` bin). `cargo test --workspace` builds each crate's TEST harness, not the sibling
+  deliverable bin, so the reconnect test first ran a stale (pre-T3) adapter and my new mint-note
+  assertion failed (observed left:0 right:1; the surviving log_dir's adapter events file had the
+  old notes but not the mint note; the on-disk exe was timestamped 16:10 and did not embed the
+  new string). Fix: ran `cargo build --workspace` to refresh the deliverable bins, after which
+  `cargo test --test adapter_reconnect` = 2 passed and `cargo test --workspace` = all green. The
+  code is correct as pinned; only an extra `cargo build --workspace` step is needed before the
+  reconnect test. RECOMMENDATION for the batch author: add `cargo build --workspace` to the T3
+  verification block ahead of the reconnect test.
+- Verification (all green after the build step): `cargo fmt --check` OK; clippy exit 0;
+  `cargo test -p ghostlight-transport` = 61 passed incl. `hello_carries_the_caller_guid`;
+  `cargo test --test adapter_reconnect` = 2 passed (mint-note + reconnect assertions live);
+  `cargo test --workspace --no-fail-fast` = 43 `test result: ok`, 0 failed;
+  `cargo check --target x86_64-unknown-linux-gnu --workspace --all-targets` OK. All three files
+  pure ASCII.
