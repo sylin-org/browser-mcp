@@ -114,10 +114,38 @@ pub fn server_entry(exe: &Path) -> ServerEntry {
     };
     ServerEntry {
         name: instance.mcp_server_name(),
-        command: super::native_host::normalize_exe_path(exe)
+        command: super::native_host::sibling_bin(exe, "ghostlight-adapter-agent")
             .to_string_lossy()
             .into_owned(),
         args,
         env: BTreeMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// The client entry launches the AGENT ADAPTER sibling (ADR-0046), never the `ghostlight`
+    /// binary itself: MCP clients speak to `ghostlight-adapter-agent`, which relays to the service.
+    #[test]
+    fn server_entry_points_at_the_agent_adapter_sibling() {
+        let exe = Path::new("/opt/gl/ghostlight");
+        let cmd = server_entry(exe).command;
+        assert!(
+            cmd.contains("ghostlight-adapter-agent"),
+            "command names the agent adapter: {cmd}"
+        );
+        let suffix = if cfg!(windows) {
+            "ghostlight-adapter-agent.exe"
+        } else {
+            "ghostlight-adapter-agent"
+        };
+        assert!(cmd.ends_with(suffix), "command ends with {suffix}: {cmd}");
+        assert!(
+            cmd.contains("gl"),
+            "command retains the parent dir /opt/gl: {cmd}"
+        );
     }
 }

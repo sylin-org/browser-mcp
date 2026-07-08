@@ -26,6 +26,20 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
+/// The `ghostlight-adapter-agent` sibling of the `ghostlight` test binary (ADR-0046); built by
+/// `cargo test --workspace` into the same `target/<profile>/` directory.
+fn adapter_bin() -> PathBuf {
+    let dir = Path::new(bin())
+        .parent()
+        .expect("the test binary has a parent directory");
+    let name = if cfg!(windows) {
+        "ghostlight-adapter-agent.exe"
+    } else {
+        "ghostlight-adapter-agent"
+    };
+    dir.join(name)
+}
+
 /// A fresh (endpoint, instance, log_dir) triple for one test run.
 fn unique() -> (String, String, PathBuf) {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -77,7 +91,7 @@ fn wait_for_state(log_dir: &Path, within: Duration) {
 }
 
 fn spawn_adapter(endpoint: &str, instance: &str, log_dir: &Path) -> Child {
-    Command::new(bin())
+    Command::new(adapter_bin())
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_INSTANCE", instance)
         .env("GHOSTLIGHT_LOG_DIR", log_dir)

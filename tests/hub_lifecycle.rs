@@ -77,7 +77,7 @@ fn adapter_cannot_complete_handshake_with_an_impostor_service() {
         std::env::temp_dir().join(format!("ghostlight-test-logdir-{endpoint}-adapter-side"));
     let _ = std::fs::remove_dir_all(&adapter_log_dir);
 
-    let mut adapter = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
+    let mut adapter = Command::new(support::adapter_bin())
         .env("GHOSTLIGHT_ENDPOINT", &endpoint)
         .env("GHOSTLIGHT_LOG_DIR", &adapter_log_dir)
         .stdin(Stdio::piped())

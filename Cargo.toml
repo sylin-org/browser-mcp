@@ -21,7 +21,7 @@ pkg-fmt = "tgz"
 pkg-fmt = "zip"
 
 [workspace]
-members = [".", "crates/transport", "crates/core"]
+members = [".", "crates/transport", "crates/core", "crates/adapter-agent"]
 resolver = "2"
 
 [dependencies]

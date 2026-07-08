@@ -122,6 +122,20 @@ pub fn normalize_exe_path(p: &Path) -> PathBuf {
     }
 }
 
+/// The path of a sibling role executable next to the running one (ADR-0046): same directory,
+/// platform suffix appended on Windows.
+pub fn sibling_bin(current_exe: &Path, name: &str) -> PathBuf {
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    normalize_exe_path(current_exe)
+        .parent()
+        .map(|d| d.join(&file))
+        .unwrap_or_else(|| PathBuf::from(file))
+}
+
 // --- Host manifest ---
 
 /// The native-messaging host manifest the installer generates (doc 11 A.0).
