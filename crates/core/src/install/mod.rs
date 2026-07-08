@@ -49,6 +49,9 @@ pub struct InstallOptions {
     pub clients: Selection,
     /// Register the server to run in debug mode (adds `GHOSTLIGHT_DEBUG=1` to its env).
     pub debug: bool,
+    /// Skip registering the OS auto-start supervisor (dev instances run `ghostlight service` in a
+    /// terminal instead of an auto-started one that would hold the exe lock during rebuilds).
+    pub no_supervisor: bool,
 }
 #[derive(Debug, Clone)]
 pub struct UninstallOptions {
@@ -760,11 +763,17 @@ pub fn run_install(opts: InstallOptions) -> Result<()> {
     // folded into `tally`/`exit_result` -- a failure here warns (see supervisor::apply_steps) and
     // never turns an otherwise-successful install into a failure.
     println!("\nSupervisor (auto-start):");
-    supervisor::apply_steps(
-        &ghostlight_transport::supervisor::supervisor_task_name(),
-        &supervisor::register_steps(&ctx.current_exe, &ctx),
-        opts.dry_run,
-    );
+    if opts.no_supervisor {
+        // ADR-0046 dev loop: an auto-started dev service would hold the exe lock during a rebuild;
+        // the developer runs `ghostlight service` in a terminal instead (see docs/DEV-LOOP.md).
+        println!("  (skipped: --no-supervisor)");
+    } else {
+        supervisor::apply_steps(
+            &ghostlight_transport::supervisor::supervisor_task_name(),
+            &supervisor::register_steps(&ctx.current_exe, &ctx),
+            opts.dry_run,
+        );
+    }
     finish(opts.dry_run, &tally);
     if opts.dry_run {
         println!("\nDry run -- nothing was written.");

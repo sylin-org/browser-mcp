@@ -67,3 +67,32 @@ fn dev_install_plan_copies_a_named_binary_and_suffixes_the_whole_stack() {
         "the dev plan registers a suffixed supervisor: {plan}"
     );
 }
+
+#[test]
+fn no_supervisor_flag_plans_no_supervisor_steps() {
+    // ADR-0046 dev loop: --no-supervisor skips OS auto-start registration entirely, so an
+    // auto-started dev service never holds the exe lock during a rebuild.
+    let out = Command::new(bin())
+        .args([
+            "install",
+            "--dry-run",
+            "--no-supervisor",
+            "--all-browsers",
+            "--all-clients",
+            "--extension-id",
+            &"a".repeat(32),
+        ])
+        .output()
+        .expect("run ghostlight install --dry-run --no-supervisor");
+    let plan = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        plan.contains("(skipped: --no-supervisor)"),
+        "the supervisor section is skipped: {plan}"
+    );
+    for os_cmd in ["schtasks", "launchctl", "systemctl"] {
+        assert!(
+            !plan.contains(os_cmd),
+            "no supervisor OS command is planned ({os_cmd}): {plan}"
+        );
+    }
+}

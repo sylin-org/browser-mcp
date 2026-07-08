@@ -222,6 +222,10 @@ struct InstallArgs {
     /// Register the server to run in debug mode (sets GHOSTLIGHT_DEBUG=1 in its env).
     #[arg(long)]
     debug: bool,
+    /// Skip registering the OS auto-start supervisor (dev instances run 'ghostlight service' in
+    /// a terminal instead).
+    #[arg(long)]
+    no_supervisor: bool,
 }
 
 #[derive(Debug, Args)]
@@ -284,6 +288,7 @@ impl From<InstallArgs> for InstallOptions {
             browsers: selection(a.browsers, a.all_browsers),
             clients: selection(a.clients, a.all_clients),
             debug: a.debug,
+            no_supervisor: a.no_supervisor,
         }
     }
 }
