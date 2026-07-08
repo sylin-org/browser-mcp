@@ -5,10 +5,10 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 
 ## RESUME HERE
 
-- Next task: **S9** (`S9-no-supervisor-and-dev-loop-doc.md`)
+- Next task: **S10** (`S10-packaging-and-distribution.md`)
 - Base commit: `fccca60` on `dev` (tree green at batch authoring; later docs-only commits carry
   the batch itself)
-- Batch state: IN PROGRESS (S1..S8 complete)
+- Batch state: IN PROGRESS (S1..S9 complete)
 
 ## Task table
 
@@ -22,7 +22,7 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 | S6 | ghostlight-adapter-browser bin + host install rework | done | 4a95f68 |
 | S7 | Retire roles from the ghostlight bin | done | 583a25a |
 | S8 | Reconnect patience (120s) + ADR-0045 amendment | done | cbe3761 |
-| S9 | --no-supervisor + DEV-LOOP.md | pending | - |
+| S9 | --no-supervisor + DEV-LOOP.md | done | ef7dc75 |
 | S10 | Packaging + distribution sweep | pending | - |
 
 ## Log
@@ -97,6 +97,12 @@ Durable batch progress. One task = one CODE commit + one ledger commit = one log
 - Verification: fmt OK / clippy OK / test --workspace OK / linux cross-check OK. S8-specific oracle: `cargo build -p ghostlight-adapter-agent` then `cargo test --test adapter_reconnect` 3x -- each run 2 passed (restart + the new 5s-gap test), 0 failed (~5-6s per run, i.e. the 5s gap is really exercised).
 - Deviations:
   1. none of substance. connect_and_handshake's first-connect path is byte-identical (interval/window resolve to SELF_HEAL_RETRY_INTERVAL/SELF_HEAL_RETRY_WINDOW when `reconnect == false`); relay_adapter passes `!first`. The two new pub consts sit at the top of transport/ipc.rs (module level, after the imports). The 5s-gap test was DUPLICATED from the restart test (per the task's "otherwise duplicate"; the setup was not trivial to factor without obscuring both) with the two pinned changes: a 5s `thread::sleep` between kill and respawn, and a 30s post-restart recv timeout.
+
+### S9 -- --no-supervisor + DEV-LOOP.md
+- Commit: ef7dc75
+- Verification: fmt OK / clippy OK / test --workspace OK (full suite green incl. new no_supervisor_flag_plans_no_supervisor_steps) / linux cross-check OK. docs/DEV-LOOP.md verified pure ASCII (python byte scan, no em-dashes).
+- Deviations:
+  1. none. `no_supervisor: bool` added to InstallArgs (root main.rs, the SPEC 10 doc string) + InstallOptions (core install/mod.rs) + the single From<InstallArgs> constructor. run_install prints the existing `\nSupervisor (auto-start):` header then `  (skipped: --no-supervisor)` and skips supervisor::apply_steps when set; run_uninstall's separate supervisor block is untouched. docs/DEV-LOOP.md covers the five pinned topics (build -p ghostlight, dev install --no-supervisor, terminal service --keep-warm, the Ctrl-C/build/rerun loop with the 120s reconnect, and why -p ghostlight avoids relinking the adapters).
 
 ## Blocked
 
