@@ -96,6 +96,12 @@ fn enable_remote_writes_the_pinned_value() {
 
 /// PINS.md CS4: a successful write records exactly one `config_changed` session-event audit
 /// record with the frozen 6-key shape and `identity`/`client`/`manifest` all `null`.
+// Windows-only: this drives the mandatory `audit.*` config in through an injected org policy,
+// and `org_policy_path()` only honors the `ProgramData` env override on Windows (macOS/Linux
+// hardcode /Library/Application Support and /etc). Same platform constraint as
+// `manifest_validation::org_policy_file_with_config_boots_the_server` and the whole
+// `hot_reload` module. The config_changed audit path itself is platform-independent.
+#[cfg(windows)]
 #[test]
 fn enable_remote_records_one_config_changed_event() {
     let pid = std::process::id();
@@ -172,6 +178,11 @@ fn enable_remote_records_one_config_changed_event() {
 /// PINS.md CS5: an org-mandatory lock on `inbound.web.from` refuses the write with a `409`
 /// and the exact transcribed lock-refusal message; the isolated user config file is never
 /// created, and no audit event is recorded.
+// Windows-only for the same reason as the audit test above: the lock is injected through an
+// org policy, and only Windows honors the `ProgramData` env override in `org_policy_path()`.
+// The lock-refusal logic (config `set` vs a mandatory layer) is exercised platform-independently
+// by the `governance::config` unit tests.
+#[cfg(windows)]
 #[test]
 fn enable_remote_refuses_cleanly_under_an_org_mandatory_lock() {
     let pid = std::process::id();
