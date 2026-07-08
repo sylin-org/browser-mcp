@@ -315,6 +315,10 @@ pub struct ServiceContext {
     pub session_titles: Arc<std::sync::Mutex<HashMap<String, String>>>,
     pub mint_quota: MintQuota,
     pub live_sessions: Arc<AtomicUsize>,
+    /// Reference count of LIVE connections per guid (ADR-0047 D5): a tab owned by a guid with a
+    /// zero (or absent) count is adoptable by another session. Counted, not boolean, so a
+    /// reconnect's new connection can briefly overlap the old one's teardown without a liveness gap.
+    pub live_guids: Arc<std::sync::Mutex<HashMap<String, usize>>>,
     /// The service's observability sink (a clone of the one the browser holds). The inbound.web
     /// transport publishes its actual bound port through this once its listener binds, so a reader
     /// -- `status`, `doctor`, or a test -- learns the real port even when it was OS-assigned.
@@ -376,6 +380,7 @@ impl ServiceContext {
             session_titles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mint_quota: Arc::new(Mutex::new(HashMap::new())),
             live_sessions: Arc::new(AtomicUsize::new(0)),
+            live_guids: Arc::new(std::sync::Mutex::new(HashMap::new())),
             debug_sink,
         })
     }

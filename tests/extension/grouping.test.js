@@ -13,7 +13,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { groupSessionTabs, managedGroupIds, isManagedGroupId } = require("../../extension/lib/grouping.js");
+const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups } = require("../../extension/lib/grouping.js");
 
 // A minimal fake `chrome.tabs`/`chrome.tabGroups` recording every `chrome.tabs.group` call
 // (`groupCalls`, in the shape `{ tabIds: [...], groupId: <number|null> }`) and every
@@ -141,4 +141,23 @@ test("managed_surface_rejects_foreign_and_ungrouped", () => {
   assert.strictEqual(isManagedGroupId(-1, 7, m), false);
   assert.strictEqual(isManagedGroupId(5, null, new Map()), false);
   assert.strictEqual(managedGroupIds(null, new Map()).size, 0);
+});
+
+// ADR-0047 D5 (PINS P6): pruneDeadGroups drops session-map entries whose Chrome group is gone,
+// returns true when it removed anything (the caller persists), and is a no-op returning false on a
+// clean map. An INLINE fake here (not the shared fakeChrome helper, whose liveGroupIds set cannot
+// express a pre-existing live group) reports group 9 alive and every other group dead.
+test("dead_groups_are_pruned_from_the_session_map", async () => {
+  const chrome = {
+    tabGroups: {
+      async get(groupId) {
+        if (groupId !== 9) throw new Error(`no such group ${groupId}`);
+        return { id: 9 };
+      },
+    },
+  };
+  const sessionGroups = new Map([["S", 9], ["T", 12]]);
+  assert.strictEqual(await pruneDeadGroups(chrome, sessionGroups), true);
+  assert.deepStrictEqual(Array.from(sessionGroups.entries()), [["S", 9]]);
+  assert.strictEqual(await pruneDeadGroups(chrome, sessionGroups), false);
 });

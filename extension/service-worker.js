@@ -29,7 +29,8 @@ const {
 } = self.GhostlightConstants;
 // The H7 grouping DECISION (lib/grouping.js): pure, unit-tested in isolation
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
-const { groupSessionTabs, managedGroupIds, isManagedGroupId } = self.GhostlightGrouping;
+const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups } =
+  self.GhostlightGrouping;
 
 // Native-messaging host name. An unpacked/dev extension (installType "development") targets the
 // `dev` named instance, so the dev loop (docs/DEV-LOOP.md) reaches a service run from
@@ -655,6 +656,9 @@ async function rehydrate() {
     if (Array.isArray(stored && stored.sessionGroupsState)) {
       for (const [guid, gid] of stored.sessionGroupsState) sessionGroups.set(guid, gid);
     }
+    // ADR-0047 D5: drop any restored session groups whose Chrome group died while the worker was
+    // asleep, so the managed surface never names a stale group id.
+    if (await pruneDeadGroups(chrome, sessionGroups)) await persistSessionState();
     if (!sessionState) return; // genuinely fresh start: nothing more to recover
     const priorSession =
       sessionState.groupId !== null ||

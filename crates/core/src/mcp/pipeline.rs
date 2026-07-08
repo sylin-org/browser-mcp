@@ -1271,6 +1271,9 @@ mod tests {
             session_titles: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            live_guids: std::sync::Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
         };
         crate::mcp::server::handle_line(
             &browser,

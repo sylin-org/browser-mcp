@@ -79,7 +79,28 @@ function isManagedGroupId(groupId, globalGroupId, sessionGroups) {
   return managedGroupIds(globalGroupId, sessionGroups).has(groupId);
 }
 
-const GhostlightGrouping = { groupSessionTabs, managedGroupIds, isManagedGroupId };
+// ADR-0047 D5 hygiene: drop sessionGroups entries whose Chrome group no longer exists. Returns
+// true when anything was removed (the caller persists). Probes group liveness only; reads no
+// tab or group content.
+async function pruneDeadGroups(chrome, sessionGroups) {
+  let changed = false;
+  for (const [guid, gid] of Array.from(sessionGroups.entries())) {
+    try {
+      await chrome.tabGroups.get(gid);
+    } catch {
+      sessionGroups.delete(guid);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+const GhostlightGrouping = {
+  groupSessionTabs,
+  managedGroupIds,
+  isManagedGroupId,
+  pruneDeadGroups,
+};
 if (typeof module !== "undefined" && module.exports) {
   module.exports = GhostlightGrouping;
 } else {

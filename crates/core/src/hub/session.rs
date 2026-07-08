@@ -68,6 +68,42 @@ pub fn claim_tab(
     }
 }
 
+/// ADR-0047 D5: [`claim_tab`] with liveness-aware refusal -- a DIFFERENT owner only refuses the
+/// claim while that owner has a live session; a dead session's tab is reassigned to the claimer
+/// (first-touch adoption from the dead, reported as `Adopted` so the group request fires). An
+/// unowned tab and a same-owner tab behave exactly as [`claim_tab`]; only the "different owner"
+/// arm consults `live_guids` (the reference count [`ServiceContext::live_guids`] holds).
+pub fn claim_tab_live(
+    owned_tabs: &Mutex<HashMap<i64, SessionGuid>>,
+    live_guids: &Mutex<HashMap<String, usize>>,
+    guid: &SessionGuid,
+    tab_id: i64,
+) -> TabClaim {
+    let mut map = owned_tabs.lock().unwrap_or_else(PoisonError::into_inner);
+    match map.get(&tab_id) {
+        Some(owner) if owner == guid => TabClaim::Owned,
+        Some(owner) => {
+            let live = live_guids
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(owner.as_str())
+                .copied()
+                .unwrap_or(0)
+                > 0;
+            if live {
+                TabClaim::Refused
+            } else {
+                map.insert(tab_id, guid.clone());
+                TabClaim::Adopted
+            }
+        }
+        None => {
+            map.insert(tab_id, guid.clone());
+            TabClaim::Adopted
+        }
+    }
+}
+
 /// H7 (ADR-0030 Decision 6/7; PINS.md SS9): the FULL set of tabIds `guid` currently owns, read
 /// from the shared map -- not just the tabId that just triggered a [`TabClaim::Adopted`]. The
 /// group-request emit path names this whole set on every emit, so the extension's group for this
@@ -322,6 +358,34 @@ mod tests {
             "\u{1F47B} Claude Code"
         );
         assert_eq!(session_title(&t, &g3, None), "\u{1F47B} Ghostlight");
+    }
+
+    /// ADR-0047 D5 (PINS P6): a tab owned by a session with no live connection is adoptable by a
+    /// live session; once the new owner is live, the old owner cannot take it back.
+    #[test]
+    fn dead_owner_tab_is_adoptable_by_a_live_session() {
+        let owned = Mutex::new(HashMap::new());
+        let live = Mutex::new(HashMap::new());
+        let a = SessionGuid::mint();
+        let b = SessionGuid::mint();
+        assert_eq!(claim_tab_live(&owned, &live, &a, 5), TabClaim::Adopted);
+        // A holds no live connection (empty live map), so B adopts A's tab.
+        assert_eq!(claim_tab_live(&owned, &live, &b, 5), TabClaim::Adopted);
+        // Now B is live; A cannot take it back.
+        live.lock().unwrap().insert(b.as_str().to_string(), 1);
+        assert_eq!(claim_tab_live(&owned, &live, &a, 5), TabClaim::Refused);
+    }
+
+    /// ADR-0047 D5 (PINS P6): a live owner's tab stays refused to a different session.
+    #[test]
+    fn live_owner_tab_stays_refused() {
+        let owned = Mutex::new(HashMap::new());
+        let live = Mutex::new(HashMap::new());
+        let a = SessionGuid::mint();
+        let b = SessionGuid::mint();
+        live.lock().unwrap().insert(a.as_str().to_string(), 1);
+        assert_eq!(claim_tab_live(&owned, &live, &a, 5), TabClaim::Adopted);
+        assert_eq!(claim_tab_live(&owned, &live, &b, 5), TabClaim::Refused);
     }
 
     #[test]

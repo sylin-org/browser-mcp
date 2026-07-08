@@ -121,6 +121,40 @@ impl Drop for LiveSessionGuard {
     }
 }
 
+/// Marks this session's guid live for the ownership gate (ADR-0047 D5): a tab owned by a guid
+/// with NO live session is adoptable by another session. Counted (not boolean) because a
+/// reconnect's new connection can briefly overlap the old one's teardown.
+struct LiveGuidGuard {
+    live_guids: Arc<Mutex<HashMap<String, usize>>>,
+    guid: String,
+}
+
+impl LiveGuidGuard {
+    fn new(live_guids: Arc<Mutex<HashMap<String, usize>>>, guid: String) -> Self {
+        *live_guids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(guid.clone())
+            .or_insert(0) += 1;
+        Self { live_guids, guid }
+    }
+}
+
+impl Drop for LiveGuidGuard {
+    fn drop(&mut self) {
+        let mut map = self
+            .live_guids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = map.get_mut(&self.guid) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&self.guid);
+            }
+        }
+    }
+}
+
 /// Build the live `Governance` facade from a resolved policy (ADR-0025 Decision 2): all-open
 /// when no manifest is active, a governed overlay otherwise. Exactly the wiring `run` performed
 /// inline at startup before this task, extracted so the policy-subscription task (below) can
@@ -203,6 +237,7 @@ where
         session_titles,
         mint_quota: _,
         live_sessions,
+        live_guids,
         debug_sink: _,
     } = ctx;
 
@@ -210,6 +245,10 @@ where
     // whole duration -- the ONE chokepoint every transport (adapter today, web at H8) passes
     // through. Adds no output; a no-op for the all-open byte-identity invariant.
     let _live_guard = LiveSessionGuard::new(live_sessions);
+
+    // ADR-0047 D5: mark this session's guid live for the ownership gate, so a DIFFERENT session can
+    // adopt this guid's tabs only once this connection is gone (dead-owner reassignment, no timers).
+    let _live_guid_guard = LiveGuidGuard::new(Arc::clone(&live_guids), guid.as_str().to_string());
 
     let (read_half, write_half) = tokio::io::split(stream);
     // Hot-reload substrate (ADR-0019, extended by ADR-0025 to the manifest): the resolved
@@ -364,6 +403,7 @@ where
         guid: guid.clone(),
         owned_tabs: Arc::clone(&owned_tabs),
         session_titles: Arc::clone(&session_titles),
+        live_guids: Arc::clone(&live_guids),
     };
 
     while let Some(line) = lines.next_line().await? {
@@ -384,6 +424,7 @@ where
         if let Some(resp) = check_tab_ownership(
             line,
             &owned_tabs,
+            &live_guids,
             &session_titles,
             &guid,
             &governance,
@@ -439,6 +480,7 @@ where
 fn check_tab_ownership(
     line: &str,
     owned_tabs: &Arc<Mutex<HashMap<i64, SessionGuid>>>,
+    live_guids: &Mutex<HashMap<String, usize>>,
     titles: &Mutex<HashMap<String, String>>,
     guid: &SessionGuid,
     governance: &Governance,
@@ -454,7 +496,7 @@ fn check_tab_ownership(
     let args = params.get("arguments");
     let tab_id = args.and_then(|a| a.get("tabId")).and_then(Value::as_i64)?;
 
-    match crate::hub::session::claim_tab(owned_tabs, guid, tab_id) {
+    match crate::hub::session::claim_tab_live(owned_tabs, live_guids, guid, tab_id) {
         crate::hub::session::TabClaim::Owned => None,
         crate::hub::session::TabClaim::Adopted => {
             emit_group_request(browser, owned_tabs, titles, governance, guid);
@@ -524,6 +566,7 @@ pub(super) struct SessionSeat {
     pub(super) guid: SessionGuid,
     pub(super) owned_tabs: Arc<Mutex<HashMap<i64, SessionGuid>>>,
     pub(super) session_titles: Arc<Mutex<HashMap<String, String>>>,
+    pub(super) live_guids: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 /// Parse and route one JSON-RPC line.
@@ -632,6 +675,7 @@ pub(super) async fn handle_line(
             let guid = seat.guid.clone();
             let owned_tabs = Arc::clone(&seat.owned_tabs);
             let session_titles = Arc::clone(&seat.session_titles);
+            let live_guids = Arc::clone(&seat.live_guids);
             let tool_name = params
                 .as_ref()
                 .and_then(|p| p.get("name"))
@@ -656,7 +700,12 @@ pub(super) async fn handle_line(
                         .and_then(Value::as_i64)
                     {
                         if let crate::hub::session::TabClaim::Adopted =
-                            crate::hub::session::claim_tab(&owned_tabs, &guid, tab_id)
+                            crate::hub::session::claim_tab_live(
+                                &owned_tabs,
+                                &live_guids,
+                                &guid,
+                                tab_id,
+                            )
                         {
                             emit_group_request(
                                 &browser,
