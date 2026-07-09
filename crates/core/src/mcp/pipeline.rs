@@ -1996,6 +1996,8 @@ mod tests {
              own submit control.",
             "file_upload: requires write. Upload files (base64 bytes) to a file input \
              located by read_page or find, via its ref.",
+            "browser_batch: requires nothing. Run a sequence of tool calls in one round trip; \
+             each item is name+input, authorized per item.",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]

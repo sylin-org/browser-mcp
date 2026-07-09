@@ -256,6 +256,7 @@ fn org_policy_hot_swap_end_to_end() {
         "update_plan",
         "wait_for",
         "script",
+        "browser_batch",
         "explain",
     ];
     assert_eq!(tool_names(&list_resp), governed_read_only);
@@ -288,6 +289,8 @@ fn org_policy_hot_swap_end_to_end() {
         "form_fill",
         // ADR-0050 D2: file_upload requires [write], a subset of this grant, so it unlocks here.
         "file_upload",
+        // ADR-0050 D3: browser_batch requires nothing, so it is advertised under every grant.
+        "browser_batch",
         "explain",
     ];
     let mut next_id = 3i64;

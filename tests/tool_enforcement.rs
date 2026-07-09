@@ -172,7 +172,11 @@ async fn denied_capability_names_the_grant_and_the_missing_capability() {
     }]);
     let manifest = manifest_value("case3", grants, &audit_path);
 
-    let responses = drive(Some(&manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("tabs_context_mcp", json!({})),
+    )
+    .await;
     let denied_text = text_of(by_id(&responses, 2));
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
     assert!(denied_text.contains("research-write"), "{denied_text}");
@@ -253,7 +257,11 @@ async fn fail_closed_when_tab_url_is_unknowable() {
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
     let manifest = manifest_value("case5", grants, &audit_path);
 
-    let responses = drive(Some(&manifest), &init_and_call("read_page", json!({"tabId": 1}))).await;
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("read_page", json!({"tabId": 1})),
+    )
+    .await;
     let text = text_of(by_id(&responses, 2));
     assert!(text.starts_with("Denied (D-"), "{text}");
     assert!(!text.contains("not connected"), "{text}");
@@ -275,7 +283,11 @@ async fn union_rule_end_to_end() {
         "allowed": ["read", "action", "write"]
     }]);
     let all_manifest = manifest_value("case6-all", all_grants, &all_audit);
-    let responses = drive(Some(&all_manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let responses = drive(
+        Some(&all_manifest),
+        &init_and_call("tabs_context_mcp", json!({})),
+    )
+    .await;
     let allowed_text = text_of(by_id(&responses, 2));
     assert!(
         allowed_text.starts_with("[hop: extension]") && allowed_text.contains("not connected"),
@@ -289,7 +301,11 @@ async fn union_rule_end_to_end() {
         "allowed": ["action", "write"]
     }]);
     let write_manifest = manifest_value("case6-write", write_grants, &write_audit);
-    let responses = drive(Some(&write_manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let responses = drive(
+        Some(&write_manifest),
+        &init_and_call("tabs_context_mcp", json!({})),
+    )
+    .await;
     let denied_text = text_of(by_id(&responses, 2));
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
 
@@ -299,9 +315,10 @@ async fn union_rule_end_to_end() {
 }
 
 /// Test 8: the all-open invariant. With no `--manifest` at all, behavior is byte-identical to
-/// today (18 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
-/// and the ADR-0022 Decision 7 `explain` addition -- fixture identity, `not connected` execution error)
-/// and no `Denied (` text ever appears.
+/// today (19 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
+/// `browser_batch`, and the ADR-0022 Decision 7 `explain` addition -- fixture identity, `not
+/// connected` execution error) and no `Denied (` text ever appears (the count itself derives from
+/// `directory::advertised_tool_count()`, so this narration is descriptive, not a pin).
 #[tokio::test]
 async fn all_open_invariant_no_manifest_means_no_denials() {
     let responses = drive(
@@ -384,7 +401,11 @@ async fn requires_empty_call_records_capability_none() {
     let audit_path = temp_path("case-requires-empty-audit");
     let manifest = manifest_value("case-requires-empty", json!([]), &audit_path);
 
-    let responses = drive(Some(&manifest), &init_and_call("tabs_create_mcp", json!({}))).await;
+    let responses = drive(
+        Some(&manifest),
+        &init_and_call("tabs_create_mcp", json!({})),
+    )
+    .await;
     let resp = by_id(&responses, 2);
     assert_eq!(
         resp["result"]["isError"], true,
@@ -462,7 +483,10 @@ async fn form_fill_denied_upfront_under_write_deny() {
 
     let responses = drive(
         Some(&manifest),
-        &init_and_call("form_fill", json!({"tabId": 1, "fields": {"Email": "a@b.c"}})),
+        &init_and_call(
+            "form_fill",
+            json!({"tabId": 1, "fields": {"Email": "a@b.c"}}),
+        ),
     )
     .await;
     let resp = by_id(&responses, 2);
@@ -544,7 +568,10 @@ fn form_fill_without_extension_fails_with_parent_audit() {
     let mut adapter = support::spawn_adapter(&endpoint);
 
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    let requests = init_and_call("form_fill", json!({"tabId": 0, "fields": {"Email": "a@b.c"}}));
+    let requests = init_and_call(
+        "form_fill",
+        json!({"tabId": 0, "fields": {"Email": "a@b.c"}}),
+    );
     for req in &requests {
         stdin
             .write_all(serde_json::to_string(req).unwrap().as_bytes())

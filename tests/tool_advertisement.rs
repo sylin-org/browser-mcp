@@ -58,6 +58,7 @@ async fn read_only_manifest_advertises_everything_except_write_and_execute_tools
             "update_plan",
             "wait_for",
             "script",
+            "browser_batch",
             "explain",
         ]
     );
@@ -95,6 +96,7 @@ async fn empty_grants_manifest_advertises_exactly_the_requires_empty_set() {
             "resize_window",
             "update_plan",
             "script",
+            "browser_batch",
             "explain",
         ]
     );

@@ -17,6 +17,24 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
   local spawn tier serially with closed stdin and no live `ghostlight service`
   (`cargo test ... -- --test-threads=1 < /dev/null`), else it hangs/flakes environmentally.
 
+- **RE-PIN (ADR-0051 P1.1/P4.2 landed AFTER this batch was authored; supersedes every task's
+  count-bump steps):** the advertised count now DERIVES from
+  `directory::advertised_tool_count()` / `advertised_tool_names()` at ALL behavior sites, which no
+  longer carry a literal to bump: `tests/mcp_protocol.rs`, `tests/tool_enforcement.rs`,
+  `crates/core/src/hub/outbound/mod.rs` (x2), `tests/adapter_override.rs`,
+  `tests/adapter_reconnect.rs`, `tests/hot_reload.rs`. So T2 Part D items 6/8/9, and the analogous
+  count-assert steps in T3/T4/T5, are OBSOLETE -- do NOT edit those assertions. The ONLY sites an
+  additive tool still hand-edits are: (1) `crates/core/src/browser/directory.rs` -- the REGISTRY row,
+  the `EXPECTED` + `EXPECTED_TOOLS` `#[cfg(test)]` tables, the `total_variants` literal, and the two
+  doc-comment counts (`N descriptors`, `N rows`); (2) `tests/tool_schema_fidelity.rs` -- `names.len()`
+  + `all.len()` literals and the tail position asserts; (3) `tests/all_open_golden.rs` --
+  `GOLDEN_TOOL_NAMES` array + its `[&str; N]` len + count message + doc; (4)
+  `crates/core/src/mcp/pipeline.rs` -- the frozen `pinned_explain_text()` literal (the prompts OMIT
+  this; add the new tool's `"<tool>: requires <cap>. <directory_description>"` line before `explain`).
+  Stale DOC-COMMENT counts elsewhere (e.g. `tool_enforcement.rs`'s "18 tools" narration,
+  hub/outbound's "N-declaration REGISTRY" prose) are cosmetic -- update for accuracy, but they are not
+  assertions and never block V-ALL.
+
 ## Task log
 
 (Each entry, filled on completion or BLOCK:)
@@ -55,11 +73,41 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
   the owner-requested architecture evaluation, committed separately from T1.
 
 ### T2 -- browser_batch (overload; script kept)
-- Status: pending
-- Commit(s):
-- V-ALL:
+- Status: DONE
+- Commit(s): (filled at commit)
+- V-ALL: pass (isolated CARGO_TARGET_DIR -- a live client relay locks the normal target/debug after
+  the dev re-install). fmt --check clean; clippy --workspace --all-targets -D warnings clean; full
+  workspace `cargo test -- --include-ignored --test-threads=1` = 44/44 binaries green (core lib 483
+  incl. the 5 new browser_batch tests + all script.rs regression tests unchanged; the four oracle
+  suites; the batch-reject test now asserting `browser_batch`; and the e2e tier).
 - Deviations:
-- Notes:
+  1. Per the RESUME-HERE RE-PIN (ADR-0051 P1.1/P4.2 landed after authoring): Part D items 6/8/9 were
+     OBSOLETE -- mcp_protocol/hub-outbound/tool_enforcement count asserts DERIVE from
+     `advertised_tool_count()` now and carry no literal to bump. Left untouched (only their cosmetic
+     doc-comment "18 tools" narration updated to 19).
+  2. The prompt (like T1) omitted `crates/core/src/mcp/pipeline.rs`'s frozen `pinned_explain_text()`
+     literal. Added the `browser_batch: requires nothing. Run a sequence of tool calls ...` line
+     before explain (matching the real formatter: `&[]` -> "requires nothing").
+  3. The prompt omitted `crates/core/src/browser/advertise.rs`'s OWN inline unit tests (the
+     read-only + empty-grants advertised-set goldens the tool_advertisement.rs integration test defers
+     to). browser_batch requires nothing, so it joins EVERY advertised set; added it to both.
+  4. The prompt omitted the scattered advertised-set pins in the e2e/spawn tests: `hot_reload.rs`
+     (`governed_read_only` + `expanded`), `manifest_validation.rs` (read-only), and
+     `tool_advertisement.rs` (read-only + empty-grants). Added `browser_batch` before `explain` in all.
+     (This is exactly the class the RESUME-HERE note warns about; the grep-the-whole-tree step found
+     them.)
+  5. SANCTIONED design deviation: `run_batch`'s signature gained `orchestrator: &'static str` (the
+     prompt's A1 signature omitted it, hardcoding "script"). browser_batch's internal step audit
+     records must be attributed to `"browser_batch"`, not `"script"` -- honest audit attribution in a
+     governance tool. `interpret` (script) passes "script", so script's audit + compact output are
+     byte-identical (proven by the unchanged script.rs regression suite).
+- Notes: Part A refactor is behavior-preserving for `script`: the shared loop is now
+  `run_batch -> BatchRun{steps: Vec<StepOutcome>, summary, duration_ms, batch_id}`, where
+  `StepOutcome.result` keeps each step's FULL MCP result (content + structuredContent) so
+  browser_batch preserves images; `build_compact(BatchRun)` derives the compact text/structured from
+  it. `interpret = build_compact(run_batch(.., "script"))`. `StepRunner`/`PipelineRunner` are now
+  `pub(crate)` so browser_batch wires the same engine. Nesting is symmetric (a `script` OR
+  `browser_batch` step is rejected in either batcher).
 
 ### T3 -- upload_image (screenshot cache + drag-drop)
 - Status: pending

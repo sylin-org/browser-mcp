@@ -52,8 +52,9 @@ async fn drive_raw(lines: &[&str], expected: usize) -> Vec<Value> {
     Harness::all_open().drive_raw(lines, expected).await
 }
 
-/// ADR-0049: a JSON-RPC batch (a top-level array of requests) is rejected with -32600 and a
-/// teaching message (send one per line; use `script` for multi-step), not dropped silently.
+/// ADR-0049 (as amended by ADR-0050 D3): a JSON-RPC batch (a top-level array of requests) is
+/// rejected with -32600 and a teaching message (send one per line; use `browser_batch` for
+/// multi-step), not dropped silently.
 #[tokio::test]
 async fn batch_array_frame_is_rejected_with_a_teaching_message() {
     let batch =
@@ -68,8 +69,8 @@ async fn batch_array_frame_is_rejected_with_a_teaching_message() {
         "teaches the one-per-line rule: {msg}"
     );
     assert!(
-        msg.contains("`script`"),
-        "teaches the script-tool alternative: {msg}"
+        msg.contains("`browser_batch`"),
+        "teaches the browser_batch alternative: {msg}"
     );
 }
 
@@ -95,7 +96,11 @@ async fn initialize_tools_list_and_tool_call_over_stdio() {
     ])
     .await;
 
-    assert_eq!(responses.len(), 3, "expected 3 responses, got {responses:?}");
+    assert_eq!(
+        responses.len(),
+        3,
+        "expected 3 responses, got {responses:?}"
+    );
 
     let init = &responses[0];
     assert_eq!(init["id"], 1);

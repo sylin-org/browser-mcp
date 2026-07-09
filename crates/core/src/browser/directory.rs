@@ -143,8 +143,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 18 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
-/// and `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
+/// The tool registry: 19 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
+/// `file_upload`, `browser_batch`, and `explain`), in the order they appear in `tools/list`.
+/// `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
@@ -1126,6 +1127,46 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         output_schema: None,
     },
     ToolDescriptor {
+        tool: "browser_batch",
+        advertised_description: "Execute a sequence of browser tool calls in ONE round trip. Each item is {name, input} where input is exactly what you'd pass to that tool standalone. Actions execute SEQUENTIALLY (not in parallel) and stop on the first error. Use this tool extensively to quickly execute work whenever you can predict two or more steps ahead -- e.g. navigate, click a field, type, press Return, screenshot. Each tool's own permission check runs per item -- if an action navigates to a domain without permission, the next item's check fails and the batch stops. Screenshots and other images are returned interleaved with outputs; coordinates you write in THIS batch refer to the screenshot taken BEFORE this call. browser_batch cannot be nested.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Tool name (e.g. computer, navigate, find, tabs_create). browser_batch cannot be nested." },
+                            "input": { "type": "object", "description": "That tool's input -- same shape you'd pass when calling it directly." }
+                        },
+                        "required": ["name", "input"]
+                    },
+                    "description": "List of tool calls to execute sequentially. Example: [{\"name\":\"computer\",\"input\":{\"action\":\"left_click\",\"coordinate\":[100,200],\"tabId\":123}}, {\"name\":\"computer\",\"input\":{\"action\":\"type\",\"text\":\"hello\",\"tabId\":123}}, {\"name\":\"navigate\",\"input\":{\"url\":\"https://example.com\",\"tabId\":123}}]"
+                }
+            },
+            "required": ["actions"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"actions":[{"name":"navigate","input":{"url":"https://example.com","tabId":0}},{"name":"computer","input":{"action":"screenshot","tabId":0}}]}"#,
+            returns: Some("Each action's output, with screenshots interleaved, in order; stops on the first error."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[],
+            directory_description:
+                "Run a sequence of tool calls in one round trip; each item is name+input, authorized per item.",
+        }],
+        resource: ResourceShape::DomainLess,
+        handler: Handler::Local(crate::mcp::browser_batch::browser_batch_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -1227,7 +1268,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 18 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 19 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1402,7 +1443,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 31);
+        assert_eq!(total_variants, 32);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1454,6 +1495,7 @@ mod tests {
                 &[Capability::Read, Capability::Write, Capability::Action],
             ),
             ("file_upload", None, &[Capability::Write]),
+            ("browser_batch", None, &[]),
             ("explain", None, &[]),
         ];
 
@@ -1683,6 +1725,14 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "browser_batch",
+                None,
+                ResourceShape::DomainLess,
+                true,
                 false,
                 PostDispatch::None,
             ),

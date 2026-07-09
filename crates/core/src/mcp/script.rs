@@ -22,20 +22,66 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// One step's outcome as the interpreter records it. `structured` is the step's
-/// `structuredContent` (None if the tool declares none or the step did not succeed).
-struct StepRecord {
-    step: u32,
-    tool: String,
-    status: &'static str, // "ok" | "error" | "denied" | "held" | "not_run"
-    text: Option<String>,
-    structured: Option<Value>,
+/// One step's outcome as the shared batch engine records it (ADR-0050 D3): the step's FULL MCP
+/// result Value (content array + optional `structuredContent`), so a batch front door that wants
+/// images (`browser_batch`) can preserve every content block, while `script`'s compact formatter
+/// derives its truncated text + structured twin from the same source. `result` is `Value::Null` for
+/// a `not_run` step. For a Failure/Denied/Held step it is a synthesized
+/// `{"content":[{"type":"text","text": <message>}]}` (the honest per-step message), so the derived
+/// text is byte-identical to the previous `step_text`-based record.
+pub(crate) struct StepOutcome {
+    pub step: u32,
+    pub tool: String,
+    pub status: &'static str, // "ok" | "error" | "denied" | "held" | "not_run"
+    pub result: Value,
+}
+
+/// The raw result of running a batch of steps through the shared engine, BEFORE any front-door
+/// formatting (ADR-0050 D3). `script` renders this via [`build_compact`]; `browser_batch` renders it
+/// via its own flattening formatter that keeps image blocks.
+pub(crate) struct BatchRun {
+    pub steps: Vec<StepOutcome>,
+    pub summary: String,
+    pub duration_ms: u64,
+    pub batch_id: String,
+}
+
+/// The first content-array text block of a step's result Value, or None (a `not_run`/Null result, or
+/// a result with no text block). Mirrors the Success branch of [`step_text`] and, for a synthesized
+/// error result, returns the message -- so [`build_compact`] derives the same text the old
+/// `StepRecord.text` carried.
+fn first_result_text(result: &Value) -> Option<String> {
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.first())
+        .and_then(|b| b.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The full MCP result Value for a step outcome, as [`StepOutcome::result`] stores it: a Success
+/// keeps its whole result (content + structuredContent, so images survive); a Failure/Denied/Held
+/// becomes a synthesized single-text-block result carrying its honest message.
+fn outcome_result(outcome: &CallOutcome) -> Value {
+    match outcome {
+        CallOutcome::Success { result } => result.clone(),
+        _ => json!({
+            "content": [ { "type": "text", "text": step_text(outcome).unwrap_or_default() } ]
+        }),
+    }
+}
+
+/// A synthesized single-text-block result for an engine-level step error (nesting rejection, a
+/// reference-resolution failure) that never reached a runner outcome.
+fn error_result(message: &str) -> Value {
+    json!({ "content": [ { "type": "text", "text": message } ] })
 }
 
 /// The testability seam: run one resolved step through the governance chokepoint and return its
 /// outcome. `dry_run` forwards to `run_tool_call` so a dry-run step gets the real verdict without
 /// dispatch. The production impl re-enters `run_tool_call`; tests supply fixed outcomes.
-trait StepRunner {
+pub(crate) trait StepRunner {
     fn run(
         &mut self,
         name: &str,
@@ -45,12 +91,14 @@ trait StepRunner {
     ) -> CallOutcome;
 }
 
-/// The production step runner: re-enters the pipeline chokepoint for one step.
-struct PipelineRunner<'a> {
-    browser: &'a Browser,
-    store: &'a Arc<ConfigStore>,
-    governance: &'a Governance,
-    guid: &'a str,
+/// The production step runner: re-enters the pipeline chokepoint for one step. `pub(crate)` (with
+/// `pub(crate)` fields) so the `browser_batch` front door can wire one from its `LocalCtx` and drive
+/// the SAME shared engine (ADR-0050 D3), exactly as `script_handler` does.
+pub(crate) struct PipelineRunner<'a> {
+    pub(crate) browser: &'a Browser,
+    pub(crate) store: &'a Arc<ConfigStore>,
+    pub(crate) governance: &'a Governance,
+    pub(crate) guid: &'a str,
 }
 
 impl<'a> StepRunner for PipelineRunner<'a> {
@@ -134,14 +182,17 @@ fn status_of(outcome: &CallOutcome, dry_run: bool) -> &'static str {
 const STEP_TEXT_BUDGET: usize = 2000;
 const COMPACT_BUDGET: usize = 25000;
 
-/// Drive the interpreter over `args.steps` with `runner`, returning the compact result object.
-/// Pure over the runner: the production handler wires `run_tool_call`, tests wire a stub.
-fn interpret<R: StepRunner>(
+/// Drive the shared batch engine over `args.steps` with `runner`, returning the raw [`BatchRun`]
+/// (per-step full results + summary + duration + batch_id) BEFORE any front-door formatting
+/// (ADR-0050 D3). `script` renders it via [`build_compact`]; `browser_batch` via its own flattening
+/// formatter. Pure over the runner: the production handlers wire `run_tool_call`, tests wire a stub.
+pub(crate) fn run_batch<R: StepRunner>(
     args: &Value,
     runner: &mut R,
     config_budget_ms: u64,
     dry_run: bool,
-) -> Value {
+    orchestrator: &'static str,
+) -> BatchRun {
     let started = Instant::now();
     let tab_id = args.get("tabId").cloned();
     let on_error = args
@@ -160,14 +211,14 @@ fn interpret<R: StepRunner>(
     let deadline = started + Duration::from_millis(budget_ms);
 
     let Some(steps) = args.get("steps").and_then(Value::as_array) else {
-        return error_compact("script requires a 'steps' array");
+        return error_batch("script requires a 'steps' array");
     };
     let total = steps.len() as u32;
     if total == 0 {
-        return error_compact("script requires at least one step");
+        return error_batch("script requires at least one step");
     }
 
-    let mut records: Vec<StepRecord> = Vec::with_capacity(steps.len());
+    let mut records: Vec<StepOutcome> = Vec::with_capacity(steps.len());
     // The structured results so far, indexed by step (1-indexed via `structured[i-1]`). None when a
     // step failed, was skipped, or its tool declares no vocabulary -- exactly what resolve_refs reads.
     let mut structured: Vec<Option<Value>> = Vec::with_capacity(steps.len());
@@ -192,12 +243,11 @@ fn interpret<R: StepRunner>(
                     .and_then(Value::as_str)
                     .unwrap_or("?")
                     .to_string();
-                records.push(StepRecord {
+                records.push(StepOutcome {
                     step: (records.len() + 1) as u32,
                     tool,
                     status: "not_run",
-                    text: None,
-                    structured: None,
+                    result: Value::Null,
                 });
                 structured.push(None);
             }
@@ -212,14 +262,19 @@ fn interpret<R: StepRunner>(
             .unwrap_or("")
             .to_string();
 
-        // No nesting: a script step may not invoke script itself.
-        if tool == "script" {
-            records.push(StepRecord {
+        // No nesting (ADR-0050 D3, symmetric): neither batch front door may appear as a step of
+        // either batcher -- a `script` step or a `browser_batch` step is rejected before dispatch.
+        if tool == "script" || tool == "browser_batch" {
+            let message = if tool == "script" {
+                "script steps may not include script itself"
+            } else {
+                "browser_batch steps may not include a batch tool"
+            };
+            records.push(StepOutcome {
                 step: step_no,
                 tool,
                 status: "error",
-                text: Some("script steps may not include script itself".to_string()),
-                structured: None,
+                result: error_result(message),
             });
             structured.push(None);
             stopped_at = Some(step_no);
@@ -242,12 +297,11 @@ fn interpret<R: StepRunner>(
         let step_args = match resolved {
             Ok(a) => a,
             Err(msg) => {
-                records.push(StepRecord {
+                records.push(StepOutcome {
                     step: step_no,
                     tool,
                     status: "error",
-                    text: Some(msg),
-                    structured: None,
+                    result: error_result(&msg),
                 });
                 structured.push(None);
                 if dry_run || on_continue {
@@ -262,7 +316,7 @@ fn interpret<R: StepRunner>(
         let outcome = runner.run(
             &tool,
             &step_args,
-            Some(("script", &batch_id, step_no)),
+            Some((orchestrator, &batch_id, step_no)),
             dry_run,
         );
         let status = status_of(&outcome, dry_run);
@@ -271,12 +325,11 @@ fn interpret<R: StepRunner>(
         // wheel; burning through more steps that each answer "held" would be technically correct and
         // humanly wrong.
         if status == "held" {
-            records.push(StepRecord {
+            records.push(StepOutcome {
                 step: step_no,
                 tool,
                 status,
-                text: step_text(&outcome),
-                structured: None,
+                result: outcome_result(&outcome),
             });
             structured.push(None);
             stopped_at = Some(step_no);
@@ -285,12 +338,11 @@ fn interpret<R: StepRunner>(
         }
 
         let structured_for_ref = step_structured(&outcome);
-        records.push(StepRecord {
+        records.push(StepOutcome {
             step: step_no,
             tool: tool.clone(),
             status,
-            text: step_text(&outcome),
-            structured: structured_for_ref.clone(),
+            result: outcome_result(&outcome),
         });
         structured.push(structured_for_ref);
 
@@ -316,12 +368,11 @@ fn interpret<R: StepRunner>(
                     .and_then(Value::as_str)
                     .unwrap_or("?")
                     .to_string();
-                records.push(StepRecord {
+                records.push(StepOutcome {
                     step: (j + 1) as u32,
                     tool,
                     status: "not_run",
-                    text: None,
-                    structured: None,
+                    result: Value::Null,
                 });
                 structured.push(None);
             }
@@ -332,7 +383,24 @@ fn interpret<R: StepRunner>(
     let summary = summarize(stop_reason, stopped_at, completed, total);
     let duration_ms = started.elapsed().as_millis() as u64;
 
-    build_compact(records, &summary, duration_ms, &batch_id)
+    BatchRun {
+        steps: records,
+        summary,
+        duration_ms,
+        batch_id,
+    }
+}
+
+/// The `script` front door: run the shared engine and render its compact result (ADR-0035, SS7).
+/// Behavior-preserving wrapper around [`run_batch`] + [`build_compact`].
+fn interpret<R: StepRunner>(
+    args: &Value,
+    runner: &mut R,
+    config_budget_ms: u64,
+    dry_run: bool,
+) -> Value {
+    let run = run_batch(args, runner, config_budget_ms, dry_run, "script");
+    build_compact(run)
 }
 
 #[derive(Clone, Copy)]
@@ -381,24 +449,23 @@ fn summarize(reason: StopReason, stopped_at: Option<u32>, completed: u32, total:
 /// Assemble the compact result object: the `results` array (per-step records with truncated text
 /// and optional structured twin), the `summary`, the `duration_ms`, and the `_batch_id` side
 /// channel the free-action arm strips before rendering. The whole JSON is capped at 25000 chars.
-fn build_compact(
-    records: Vec<StepRecord>,
-    summary: &str,
-    duration_ms: u64,
-    batch_id: &str,
-) -> Value {
-    let results: Vec<Value> = records
+fn build_compact(run: BatchRun) -> Value {
+    let results: Vec<Value> = run
+        .steps
         .iter()
-        .map(|r| {
+        .map(|o| {
             let mut entry = json!({
-                "step": r.step,
-                "tool": r.tool,
-                "status": r.status,
+                "step": o.step,
+                "tool": o.tool,
+                "status": o.status,
             });
-            if let Some(t) = &r.text {
-                entry["result"] = json!(truncate_step_text(t));
+            // Derive the compact text from the step's full result (the same first-text-block value
+            // the old `StepRecord.text` carried), truncated to the step budget.
+            if let Some(t) = first_result_text(&o.result) {
+                entry["result"] = json!(truncate_step_text(&t));
             }
-            if let Some(s) = &r.structured {
+            // The structured twin is the step's `structuredContent`, if any (Success steps only).
+            if let Some(s) = o.result.get("structuredContent") {
                 entry["structured"] = s.clone();
             }
             entry
@@ -406,9 +473,9 @@ fn build_compact(
         .collect();
     let mut compact = json!({
         "results": results,
-        "summary": summary,
-        "duration_ms": duration_ms,
-        "_batch_id": batch_id,
+        "summary": run.summary,
+        "duration_ms": run.duration_ms,
+        "_batch_id": run.batch_id,
     });
     cap_compact(&mut compact);
     compact
@@ -462,14 +529,16 @@ fn cap_compact(compact: &mut Value) {
     }
 }
 
-/// A minimal compact object for a top-level interpreter error (malformed steps array).
-fn error_compact(msg: &str) -> Value {
-    json!({
-        "results": [],
-        "summary": msg,
-        "duration_ms": 0u64,
-        "_batch_id": uuid::Uuid::new_v4().to_string(),
-    })
+/// A minimal empty [`BatchRun`] for a top-level engine error (malformed/empty steps array); its
+/// [`build_compact`] renders the same `{results:[], summary, duration_ms:0, _batch_id}` the old
+/// `error_compact` produced.
+fn error_batch(msg: &str) -> BatchRun {
+    BatchRun {
+        steps: Vec::new(),
+        summary: msg.to_string(),
+        duration_ms: 0,
+        batch_id: uuid::Uuid::new_v4().to_string(),
+    }
 }
 
 /// The `script` tool's `Handler::Local` entry point: runs the interpreter over the pipeline

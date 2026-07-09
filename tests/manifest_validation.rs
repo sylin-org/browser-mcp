@@ -253,6 +253,7 @@ fn org_policy_file_with_config_boots_the_server() {
             "update_plan",
             "wait_for",
             "script",
+            "browser_batch",
             "explain",
         ]
     );
