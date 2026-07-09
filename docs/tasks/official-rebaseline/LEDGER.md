@@ -5,9 +5,18 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 
 ## RESUME HERE
 
-- Status: **BATCH COMPLETE** -- T1 + T2 + T3 + T4-Phase-1 + T5 all DONE. The only remaining item is
-  T4 Phase 2 (coordinate drag-drop GIF export), explicitly DEFERRED (see the T4 entry). Advertised
-  count 21; the official v1.0.80 extension is the sole reference.
+- Status: T1..T5 DONE (batch body complete, count 21). **NOW IN PROGRESS: T4 Phase 2 -- coordinate
+  drag-drop GIF export.** Plan (docs/tasks/official-rebaseline/T4-gif-creator.md "Phase 2"): the
+  `gif_creator` `export` handler's `coordinate` branch (currently returns the Phase-1 "not yet
+  supported (Phase 2)" text at service-worker.js) must instead ENCODE the GIF (`encodeRecording`)
+  and drag-drop it as an `image/gif` File at the coordinate by REUSING T3's `content(tabId,
+  {type:"setImage", coordinate, data, filename, mimeType})` path (content.js `setImage` already does
+  the DragEvent drop for a coordinate). NO schema change (the `coordinate` param is already declared),
+  NO Rust change, NO new count/variant pins -- `export` already classifies Write (covers download +
+  coordinate). It is EXTENSION-ONLY + live-verified (the DragEvent path is not node-testable, same as
+  T3's setImage coordinate branch); verify service-worker.js parses (`node --check`) + extension node
+  tests still 12/12. Commit: `feat(tools): gif_creator phase 2 -- drag-drop GIF export`. Overlays +
+  richer color quantization stay DEFERRED (out of scope for Phase 2).
 - Base commit for the batch: `d52e0df`. T2 = `72f9b8a`, T3 = `b9b5dbb`, T4 = (this commit).
 - Advertised tool count is now **21** (`file_upload`, `browser_batch`, `upload_image`, `gif_creator`,
   then `explain`); `total_variants == 37`, `with_action_key == 3`. Before T5, re-read the tree.
