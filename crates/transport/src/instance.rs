@@ -445,9 +445,11 @@ mod tests {
         // Forward-slash paths only: a backslash is NOT a separator on Unix, so a Windows-style
         // literal here would break the Linux/macOS CI (this exact mistake reddened CI once already).
         let base = "ghostlight-relay";
-        assert!(Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay"), base)
-            .unwrap()
-            .is_default());
+        assert!(
+            Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay"), base)
+                .unwrap()
+                .is_default()
+        );
         assert_eq!(
             Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay-dev.exe"), base)
                 .unwrap()

@@ -85,8 +85,9 @@ jobs:
             BIN_SUFFIX=".exe"
           fi
 
-          # ADR-0046: three role executables ship together (ghostlight + the two adapters).
-          BINS=(ghostlight ghostlight-adapter-agent ghostlight-adapter-browser)
+          # ADR-0046 + ADR-0051 Phase 3: two executables ship together -- the ghostlight brain and
+          # the single ghostlight-relay pass-through (it carries both former adapter roles).
+          BINS=(ghostlight ghostlight-relay)
           for b in "${BINS[@]}"; do
             cp "target/${TARGET}/release/${b}${BIN_SUFFIX}" "$ARCHIVE_DIR/"
           done
@@ -120,7 +121,7 @@ jobs:
             BIN_SUFFIX=""
           fi
           $SHA "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
-          for b in ghostlight ghostlight-adapter-agent ghostlight-adapter-browser; do
+          for b in ghostlight ghostlight-relay; do
             RAW="${b}-${{ matrix.target }}${BIN_SUFFIX}"
             $SHA "$RAW" > "${RAW}.sha256"
           done
@@ -134,8 +135,7 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
             ghostlight-${{ matrix.target }}*
-            ghostlight-adapter-agent-${{ matrix.target }}*
-            ghostlight-adapter-browser-${{ matrix.target }}*
+            ghostlight-relay-${{ matrix.target }}*
           if-no-files-found: error
 
   release:

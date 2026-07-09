@@ -19,9 +19,9 @@ $Bin = Join-Path $BinDir "ghostlight.exe"
 
 New-Item -ItemType Directory -Force $BinDir | Out-Null
 Write-Host "ghostlight: downloading latest release..."
-# ADR-0046: three role executables ship together (ghostlight + the two thin adapters). They sit
-# in one dir, so `ghostlight install` finds the adapters as siblings.
-foreach ($b in "ghostlight", "ghostlight-adapter-agent", "ghostlight-adapter-browser") {
+# ADR-0046 + ADR-0051 Phase 3: two executables ship together (the ghostlight brain + the single
+# ghostlight-relay pass-through). They sit in one dir, so `ghostlight install` finds the relay sibling.
+foreach ($b in "ghostlight", "ghostlight-relay") {
     $Url = "https://github.com/$Repo/releases/latest/download/$b-x86_64-pc-windows-msvc.exe"
     $Dest = Join-Path $BinDir "$b.exe"
     $Tmp = "$Dest.download"

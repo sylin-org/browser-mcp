@@ -10,7 +10,7 @@
       "extract_dir": "ghostlight-v0.4.1-x86_64-pc-windows-msvc"
     }
   },
-  "bin": ["ghostlight.exe", "ghostlight-adapter-agent.exe", "ghostlight-adapter-browser.exe"],
+  "bin": ["ghostlight.exe", "ghostlight-relay.exe"],
   "post_install": [
     "Write-Host 'Connect the browser: run ghostlight install, then add the Ghostlight in Browser extension.'",
     "Write-Host 'Walkthrough: https://sylin-org.github.io/ghostlight/install.html'"

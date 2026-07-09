@@ -19,10 +19,8 @@ NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: ghostlight-v0.4.1-x86_64-pc-windows-msvc\ghostlight.exe
     PortableCommandAlias: ghostlight
-  - RelativeFilePath: ghostlight-v0.4.1-x86_64-pc-windows-msvc\ghostlight-adapter-agent.exe
-    PortableCommandAlias: ghostlight-adapter-agent
-  - RelativeFilePath: ghostlight-v0.4.1-x86_64-pc-windows-msvc\ghostlight-adapter-browser.exe
-    PortableCommandAlias: ghostlight-adapter-browser
+  - RelativeFilePath: ghostlight-v0.4.1-x86_64-pc-windows-msvc\ghostlight-relay.exe
+    PortableCommandAlias: ghostlight-relay
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/sylin-org/ghostlight/releases/download/v0.4.1/ghostlight-v0.4.1-x86_64-pc-windows-msvc.zip

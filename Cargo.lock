@@ -360,24 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghostlight-adapter-agent"
-version = "0.4.1"
-dependencies = [
- "ghostlight-transport",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "ghostlight-adapter-browser"
-version = "0.4.1"
-dependencies = [
- "ghostlight-transport",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "ghostlight-core"
 version = "0.4.1"
 dependencies = [
