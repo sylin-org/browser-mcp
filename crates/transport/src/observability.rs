@@ -746,7 +746,8 @@ impl DebugSink {
                     ts_ms: now_ms(),
                     kind: "ipc",
                     dir: "-",
-                    summary: "session identity minted (stable for this adapter process)".to_string(),
+                    summary: "session identity minted (stable for this adapter process)"
+                        .to_string(),
                     detail: None,
                 },
                 true,

@@ -56,7 +56,10 @@ async fn all_open_call_reaches_dispatch_without_an_extension() {
     assert_eq!(call["result"]["isError"], true, "no extension -> isError");
     let text = text_of(call);
     assert!(text.contains("not connected"), "reached dispatch: {text}");
-    assert!(!text.starts_with("Denied ("), "no denial under all-open: {text}");
+    assert!(
+        !text.starts_with("Denied ("),
+        "no denial under all-open: {text}"
+    );
 }
 
 /// A governed manifest whose grants do not cover the target domain denies the call before dispatch,
@@ -95,9 +98,9 @@ async fn governed_denies_an_uncovered_domain_before_dispatch() {
 async fn attached_extension_answers_a_dispatched_call() {
     let harness = Harness::all_open();
     harness
-        .attach_fake_extension(|_req| {
-            json!({ "content": [ { "type": "text", "text": "extension answered" } ] })
-        })
+        .attach_fake_extension(
+            |_req| json!({ "content": [ { "type": "text", "text": "extension answered" } ] }),
+        )
         .await;
 
     let responses = harness

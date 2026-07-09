@@ -82,8 +82,10 @@ fn denied_call_requests() -> Vec<Value> {
 #[tokio::test]
 async fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     let enforce_audit = temp_path("enforce-audit");
-    let enforce_harness =
-        Harness::governed(manifest_from_value(&manifest_value("enforce", &enforce_audit)));
+    let enforce_harness = Harness::governed(manifest_from_value(&manifest_value(
+        "enforce",
+        &enforce_audit,
+    )));
     let enforce_responses = enforce_harness.drive(&denied_call_requests()).await;
     assert_eq!(enforce_responses.len(), 2, "got {enforce_responses:?}");
 
@@ -108,8 +110,10 @@ async fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     assert!(enforce_text.contains(&enforce_denial_id));
 
     let observe_audit = temp_path("observe-audit");
-    let observe_harness =
-        Harness::governed(manifest_from_value(&manifest_value("observe", &observe_audit)));
+    let observe_harness = Harness::governed(manifest_from_value(&manifest_value(
+        "observe",
+        &observe_audit,
+    )));
     let observe_responses = observe_harness.drive(&denied_call_requests()).await;
     assert_eq!(observe_responses.len(), 2, "got {observe_responses:?}");
 

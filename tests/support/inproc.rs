@@ -54,8 +54,12 @@ fn ensure_service_role() {
 /// source would, so a governed [`Harness`] can be built from the exact manifest shape the
 /// spawn-based tests already author. Panics if the manifest is invalid (a test bug).
 pub fn manifest_from_value(value: &Value) -> Manifest {
-    parse_manifest(&value.to_string(), "in-proc-test-manifest", is_valid_pattern)
-        .expect("the in-process test manifest parses and validates")
+    parse_manifest(
+        &value.to_string(),
+        "in-proc-test-manifest",
+        is_valid_pattern,
+    )
+    .expect("the in-process test manifest parses and validates")
 }
 
 /// A real, in-process service session substrate: one [`ServiceContext`] (built once via
@@ -156,7 +160,10 @@ impl Harness {
         for req in requests {
             let mut line = serde_json::to_vec(req).expect("serialize request");
             line.push(b'\n');
-            write_half.write_all(&line).await.expect("write request line");
+            write_half
+                .write_all(&line)
+                .await
+                .expect("write request line");
         }
         write_half.flush().await.ok();
 

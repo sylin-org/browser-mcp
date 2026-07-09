@@ -213,9 +213,10 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
     );
     // ADR-0051 P4.3b: the first connect resolved to candidate 1/2 -- read from the adapter's
     // STRUCTURED debug state (role-filtered), not a log-text scrape.
-    let phase1 = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
-        v["counters"]["resolved_candidate"].as_u64() == Some(1)
-    });
+    let phase1 =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+            v["counters"]["resolved_candidate"].as_u64() == Some(1)
+        });
     assert_eq!(
         phase1["counters"]["candidate_total"], 2,
         "two candidates in the override: {phase1}"
@@ -247,9 +248,10 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
     // ADR-0051 P4.3b: after the failover the adapter's STRUCTURED debug state shows it resolved to
     // candidate 2/2 (it had resolved to candidate 1/2 on the first connect, asserted above) --
     // read the ADAPTER's own role-filtered state, not a log-text scrape.
-    let phase2 = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(15), |v| {
-        v["counters"]["resolved_candidate"].as_u64() == Some(2)
-    });
+    let phase2 =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(15), |v| {
+            v["counters"]["resolved_candidate"].as_u64() == Some(2)
+        });
     assert_eq!(
         phase2["counters"]["candidate_total"], 2,
         "two candidates in the override: {phase2}"

@@ -212,9 +212,10 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     // never once per connect) and completed at least one reconnect across the restart
     // (`reconnects >= 1`). Read the ADAPTER's own state file (role-filtered: the service writes one
     // too), polling briefly since the adapter forces the snapshot on the reconnect note.
-    let state = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
-        v["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1
-    });
+    let state =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+            v["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1
+        });
     assert_eq!(
         state["counters"]["identity_mints"], 1,
         "the adapter mints its session identity exactly once per process: {state}"

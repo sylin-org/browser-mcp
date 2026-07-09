@@ -62,8 +62,10 @@ fn read_audit_lines(path: &Path) -> Vec<Value> {
 async fn script_reports_step_error_and_not_run_with_correlated_audit() {
     let audit_path = temp_path("script-audit");
     let _ = std::fs::remove_file(&audit_path);
-    let harness =
-        Harness::governed(manifest_from_value(&manifest_with_audit("script-audit", &audit_path)));
+    let harness = Harness::governed(manifest_from_value(&manifest_with_audit(
+        "script-audit",
+        &audit_path,
+    )));
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
@@ -151,8 +153,10 @@ async fn script_reports_step_error_and_not_run_with_correlated_audit() {
 async fn dry_run_verdicts_without_step_records() {
     let audit_path = temp_path("script-dry-audit");
     let _ = std::fs::remove_file(&audit_path);
-    let harness =
-        Harness::governed(manifest_from_value(&manifest_with_audit("script-dry", &audit_path)));
+    let harness = Harness::governed(manifest_from_value(&manifest_with_audit(
+        "script-dry",
+        &audit_path,
+    )));
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
