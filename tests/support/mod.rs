@@ -9,6 +9,11 @@
 
 #![allow(dead_code)]
 
+/// The in-process session fixture (ADR-0051 Phase 4): drives the real `serve_session` chokepoint
+/// over an in-memory duplex, no spawned process. The migration target for the incidentally-E2E
+/// wiring tests.
+pub mod inproc;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
