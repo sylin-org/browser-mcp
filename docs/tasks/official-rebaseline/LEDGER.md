@@ -5,9 +5,39 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 
 ## RESUME HERE
 
-- Status: **BATCH FULLY COMPLETE** -- T1..T5 + T4 Phase 2 all DONE (count 21). The ONLY remaining
-  gif_creator deferrals are visual OVERLAYS (click cues/labels/watermark/progress) and richer color
-  QUANTIZATION (Phase 1 uses a fixed 3-3-2 palette). Everything else in ADR-0050 is shipped.
+- Status: **BATCH FULLY COMPLETE** -- T1..T5 + T4 Phase 2 all DONE (count 21). Everything in ADR-0050
+  is shipped. **NEXT (post-batch, owner-requested): gif_creator REFINEMENTS** -- see the plan below.
+
+## Post-batch: gif_creator refinements plan (owner-requested)
+
+Two independent tracks; each is EXTENSION-ONLY (no Rust/schema/pin change -- the schema + governance
+already exist), keep everything self-contained ASCII JS (MV3: no runtime fetch), and DETERMINISTIC
+(no Math.random -- it throws in our test harness context and breaks reproducibility). Land each as its
+own commit with node --test coverage where the logic is pure.
+
+- TRACK 1 -- richer color QUANTIZATION (do FIRST; contained, node-testable, biggest visual win).
+  Today `extension/lib/gifenc.js` uses a FIXED 3-3-2 uniform palette (`palette332` + `frameToIndices`
+  by bit-truncation) -- coarse for photographic screenshots. Replace with an ADAPTIVE palette built
+  from the actual frames: sample all frames' pixels, median-cut (deterministic, ~100 lines, no RNG)
+  to <=256 colors, then map each pixel to the nearest palette entry (cache/box-lookup for speed).
+  GIF uses ONE global color table in our encoder, so build ONE global palette across all frames.
+  Keep `encodeGif(frames,{width,height,delayMs})` signature; the LZW stays as-is (already
+  roundtrip-tested). New tests in `tests/extension/gifenc.test.js`: feed known N<=256 distinct colors
+  -> palette reproduces them exactly + indices round-trip; feed a gradient -> bounded average error.
+  The existing exact-2x2 oracle test assumes the 3-3-2 mapping (black->index 0) -- UPDATE it for the
+  adaptive palette (recompute the oracle, or assert via decode round-trip instead of exact bytes).
+
+- TRACK 2 -- visual OVERLAYS (larger; part live-only). Official renders click indicators, action
+  labels, a progress bar, and a watermark onto frames; the `options` object (open `{"type":"object"}`
+  in our schema; official says its sub-fields "all default to true") gates them. Needs TWO parts:
+  (a) capture action METADATA per frame -- `recbuffer` frames currently store only base64; extend the
+  frame shape to `{base64, action?, coordinate?, label?}` and have `maybeCaptureGifFrame(tabId, meta)`
+  (called from `dispatch` after computer/navigate) pass the tool + coordinate; (b) COMPOSITE overlays
+  onto each frame in `encodeRecording` (service-worker.js) via OffscreenCanvas before quantizing --
+  draw a ring at the click coordinate, the action label, a progress bar (frame i/N), and a watermark.
+  Extract the pure per-frame overlay math (ring/label/bar positions) where you can and node-test it
+  against an ImageData; the canvas draw itself is live-verified. Honor `options.*` (default all on).
+  Update the T4 LEDGER "deferred" note as each ships.
 - (Historical) T4 Phase 2 plan, now done: the
   `gif_creator` `export` handler's `coordinate` branch (currently returns the Phase-1 "not yet
   supported (Phase 2)" text at service-worker.js) must instead ENCODE the GIF (`encodeRecording`)
