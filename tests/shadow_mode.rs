@@ -2,10 +2,15 @@
 //! Integration tests for G15 shadow enforcement: the SAME denied call, under two manifests
 //! identical except for the top-level `mode`, blocks under `enforce` and runs-but-records
 //! under `observe`. No extension is ever connected (mirrors `tests/tool_enforcement.rs`'s own
-//! subprocess pattern): under `enforce` the call never dispatches (`Denied (` text,
-//! `duration_ms: 0`); under `observe` it DOES dispatch and fails at the ordinary "not
-//! connected" execution error after the bounded handshake wait -- a real, non-zero
-//! `duration_ms` that proves the tool actually ran, not merely that the response text differs.
+//! pattern): under `enforce` the call never dispatches (`Denied (` text, `duration_ms: 0`);
+//! under `observe` it DOES dispatch and fails at the ordinary "not connected" execution error
+//! after the bounded handshake wait -- a real, non-zero `duration_ms` that proves the tool
+//! actually ran, not merely that the response text differs.
+//!
+//! ADR-0051 Phase 4 (P4.2): migrated from spawn-a-service-plus-adapter onto the in-process
+//! `support::inproc::Harness`. The manifest still carries its own `audit.*` config pointing at a
+//! temp file, and the harness's user-layer config resolution writes there exactly as a `--manifest
+//! file://` spawn would -- so the audit reads below are unchanged, still with no OS process.
 //!
 //! This file does NOT assert the two runs share a denial id (see the comment at the assertion
 //! site): a manifest's own `mode` field is itself hashed into `manifest_hash`, so two manifest
@@ -16,19 +21,11 @@
 mod support;
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use support::inproc::{by_id, manifest_from_value, text_of, Harness};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
-
-fn file_uri(path: &Path) -> String {
-    let forward = path.to_string_lossy().replace('\\', "/");
-    match forward.strip_prefix('/') {
-        Some(rest) => format!("file:///{rest}"),
-        None => format!("file:///{forward}"),
-    }
-}
 
 fn temp_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -61,70 +58,12 @@ fn manifest_value(mode: &str, audit_path: &Path) -> Value {
     })
 }
 
-fn write_manifest(tag: &str, value: &Value) -> PathBuf {
-    let path = temp_path(&format!("{tag}-manifest")).with_extension("json");
-    std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
-    path
-}
-
 fn read_audit_lines(path: &Path) -> Vec<Value> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     content
         .lines()
         .map(|l| serde_json::from_str(l).expect("each audit line is a JSON object"))
         .collect()
-}
-
-/// D (H6, forced): only the standalone SERVICE loads policy now (ADR-0030 Decision 8 amendment,
-/// PINS.md SS5.1); a bare `ghostlight` invocation is ALWAYS the thin ADAPTER and ignores
-/// `--manifest`. Spawns `ghostlight service --manifest <uri>` (`support::spawn_service_with_manifest`)
-/// plus a thin adapter dialing it (`support::spawn_adapter`), preserving every pinned assertion
-/// verbatim (same category of forced fix as `tests/hub_multiplex.rs`'s own H6 deviation note).
-/// Reads exactly the expected `id`-bearing replies BEFORE closing the adapter's stdin (mirrors
-/// `tests/mcp_protocol.rs::drive`'s own H6 fix): `relay_adapter` races its two copy directions, so
-/// an early close could tear the relay down before a still-in-flight reply is delivered.
-fn drive(manifest_path: &Path, requests: &[Value]) -> Vec<Value> {
-    let endpoint = format!(
-        "ghostlight-shadow-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut service =
-        support::spawn_service_with_manifest(&endpoint, Some(&file_uri(manifest_path)));
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    for req in requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let responses: Vec<Value> = (0..expected)
-        .map(|_| {
-            let line = lines
-                .next()
-                .expect("the adapter's stdout closed before every expected reply arrived")
-                .unwrap();
-            serde_json::from_str(&line).expect("each stdout line is JSON")
-        })
-        .collect();
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-    responses
-}
-
-fn text_of(resp: &Value) -> &str {
-    resp["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no text content block in {resp:?}"))
 }
 
 /// A call requiring `read` (`tabs_context_mcp`, domain-less, denied via the union rule; the
@@ -140,17 +79,19 @@ fn denied_call_requests() -> Vec<Value> {
     ]
 }
 
-#[test]
-fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
+#[tokio::test]
+async fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     let enforce_audit = temp_path("enforce-audit");
-    let enforce_manifest = write_manifest("enforce", &manifest_value("enforce", &enforce_audit));
-    let enforce_responses = drive(&enforce_manifest, &denied_call_requests());
+    let enforce_harness =
+        Harness::governed(manifest_from_value(&manifest_value("enforce", &enforce_audit)));
+    let enforce_responses = enforce_harness.drive(&denied_call_requests()).await;
     assert_eq!(enforce_responses.len(), 2, "got {enforce_responses:?}");
 
-    let enforce_text = text_of(&enforce_responses[1]);
+    let enforce_call = by_id(&enforce_responses, 2);
+    let enforce_text = text_of(enforce_call);
     assert!(enforce_text.starts_with("Denied (D-"), "{enforce_text}");
     assert_ne!(
-        enforce_responses[1]["result"]["isError"], true,
+        enforce_call["result"]["isError"], true,
         "a denial is not isError"
     );
 
@@ -167,11 +108,13 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     assert!(enforce_text.contains(&enforce_denial_id));
 
     let observe_audit = temp_path("observe-audit");
-    let observe_manifest = write_manifest("observe", &manifest_value("observe", &observe_audit));
-    let observe_responses = drive(&observe_manifest, &denied_call_requests());
+    let observe_harness =
+        Harness::governed(manifest_from_value(&manifest_value("observe", &observe_audit)));
+    let observe_responses = observe_harness.drive(&denied_call_requests()).await;
     assert_eq!(observe_responses.len(), 2, "got {observe_responses:?}");
 
-    let observe_text = text_of(&observe_responses[1]);
+    let observe_call = by_id(&observe_responses, 2);
+    let observe_text = text_of(observe_call);
     assert!(
         !observe_text.starts_with("Denied ("),
         "shadow mode must not leak denial text: {observe_text}"
@@ -181,7 +124,7 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
         "the call dispatched and failed at ordinary execution: {observe_text}"
     );
     assert_eq!(
-        observe_responses[1]["result"]["isError"], true,
+        observe_call["result"]["isError"], true,
         "the dispatched-but-failed call is isError, same as any other execution failure"
     );
 
@@ -211,7 +154,5 @@ fn enforce_blocks_observe_dispatches_and_records_shadow_deny() {
     // `manifest_mode` parameter `Governance::governed` takes.
 
     std::fs::remove_file(&enforce_audit).ok();
-    std::fs::remove_file(&enforce_manifest).ok();
     std::fs::remove_file(&observe_audit).ok();
-    std::fs::remove_file(&observe_manifest).ok();
 }
