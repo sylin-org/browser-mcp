@@ -147,6 +147,14 @@
     return out;
   }
 
+  // Pop the action a newly KEPT frame should carry (ADR-0052 D4): the oldest pending action whose
+  // timestamp is at or before the frame's -- the frame where that action's effect first painted.
+  // Mutates `pending` (it is a queue); returns null when nothing is due yet.
+  function takeActionForFrame(pending, frameTs) {
+    if (!pending || pending.length === 0 || pending[0].ts > frameTs) return null;
+    return pending.shift();
+  }
+
   // Decide WHICH overlays a frame gets, mirroring the reference applyActionIndicators routing:
   //   click/scroll with a coordinate -> ring (+ label near it);
   //   left_click_drag with both coords -> drag path (+ label near the end);
@@ -194,6 +202,7 @@
     progressBarRect: progressBarRect,
     overlayPlan: overlayPlan,
     computeFrameDelays: computeFrameDelays,
+    takeActionForFrame: takeActionForFrame,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = GhostlightGifoverlay;

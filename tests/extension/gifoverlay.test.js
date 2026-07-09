@@ -93,6 +93,16 @@ test("computeFrameDelays clamps real deltas and holds the last frame", () => {
   assert.deepStrictEqual(O.computeFrameDelays([2000, 1500]), [100, 2800]);
 });
 
+test("takeActionForFrame pops the oldest due action, exactly once", () => {
+  const q = [{ ts: 100, type: "left_click" }, { ts: 300, type: "type" }];
+  assert.strictEqual(O.takeActionForFrame(q, 50), null, "nothing due before the first action");
+  assert.strictEqual(O.takeActionForFrame(q, 150).type, "left_click", "first due action pops");
+  assert.strictEqual(O.takeActionForFrame(q, 150), null, "the next action is not due yet");
+  assert.strictEqual(O.takeActionForFrame(q, 400).type, "type");
+  assert.strictEqual(O.takeActionForFrame(q, 500), null, "queue drained");
+  assert.strictEqual(O.takeActionForFrame(null, 100), null, "no queue at all");
+});
+
 test("overlayPlan routes each action type to the right overlays", () => {
   // Click -> ring + label near it.
   const click = O.overlayPlan({ type: "left_click", coordinate: [50, 60], description: "left_click" }, {});

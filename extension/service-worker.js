@@ -28,12 +28,17 @@ importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/groupin
 // worker restart. The encoder is lib/gifenc.js.
 const gifRec = new Map();
 const GIF_MAX_FRAMES = 100;
+// Keep at most one screencast frame per interval (ADR-0052 D1): the compositor can emit many frames
+// per second during animation; ~5 fps is plenty for an action GIF and bounds frames x size.
+const GIF_MIN_FRAME_INTERVAL_MS = 200;
+// Screencast JPEG quality at the source (the GIF re-quantizes to 256 colors anyway).
+const GIF_SCREENCAST_QUALITY = 70;
 
 // Operational tunables (lib/constants.js), destructured once for use throughout this worker.
 const {
   MAX_SCREENSHOT_B64, JPEG_QUALITY, JPEG_QUALITY_FALLBACK, JPEG_QUALITY_FULL,
   KEEPALIVE_PERIOD_MINUTES, RECONNECT_DELAY_MS, HOLD_REQUEST_TIMEOUT_MS,
-  CAPTURE_SETTLE_MS, CLICK_GAP_MS, NAV_SETTLE_TIMEOUT_MS,
+  CAPTURE_SETTLE_MS, CLICK_GAP_MS, NAV_SETTLE_TIMEOUT_MS, MAX_SIDE,
 } = self.GhostlightConstants;
 // The H7 grouping DECISION (lib/grouping.js): pure, unit-tested in isolation
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
@@ -565,22 +570,43 @@ async function gifAppendFrame(tabId, state, blob, extra) {
   }
   return state.nextSeq - state.firstSeq;
 }
-// Capture a frame for an active recording on `tabId`, best-effort (no-op when not recording or a
-// screenshot fails). Called after a mutating tool while recording. `meta` carries the action's
-// overlay metadata (type/description and coordinate(s) already rescaled to CSS viewport px).
-async function maybeCaptureGifFrame(tabId, meta) {
+// While a recording is active, note a dispatched action: timestamp + overlay metadata, coordinates
+// already rescaled to CSS viewport px. The next kept screencast frame carries it (ADR-0052 D4).
+// Metadata-only -- frames come from the screencast stream (D1), not from per-action screenshots.
+async function recordGifAction(tabId, tool, args) {
+  const state = await gifState(tabId);
+  if (!state || !state.active) return;
+  const meta = gifFrameMeta(tool, args, tabId);
+  if (!meta) return;
+  meta.ts = Date.now();
+  if (!state.pendingActions) state.pendingActions = [];
+  state.pendingActions.push(meta);
+  // Bound the queue: an action this far behind the kept-frame stream will never tag a frame.
+  while (state.pendingActions.length > 20) state.pendingActions.shift();
+}
+// One screencast frame arrived for a tab (ADR-0052 D1). Always ack first -- unacked frames stall
+// the compositor's screencast pipeline -- then keep at most one frame per GIF_MIN_FRAME_INTERVAL_MS
+// up to the cap, tagging it with the action whose paint it shows (D4).
+async function handleScreencastFrame(tabId, params) {
+  try {
+    await cdp(tabId, "Page.screencastFrameAck", { sessionId: params.sessionId });
+  } catch (e) {
+    /* ack is best-effort: a detaching tab has nothing left to stall */
+  }
   try {
     const state = await gifState(tabId);
     if (!state || !state.active) return;
-    // Read the viewport width from the context the model just acted against, BEFORE this capture's
-    // screenshot() overwrites it -- the overlay scaleFactor needs canvas.width / vpW.
-    const prev = screenshotCtx.get(tabId);
-    const vpW = prev && prev.vpW;
-    const shot = await screenshot(tabId);
-    const blob = new Blob([bytesFromBase64(shot.base64)], { type: "image/jpeg" });
-    await gifAppendFrame(tabId, state, blob, Object.assign({ ts: Date.now() }, vpW ? { vpW } : {}, meta || {}));
+    const now = Date.now();
+    if (now - (state.lastKeptTs || 0) < GIF_MIN_FRAME_INTERVAL_MS) return;
+    state.lastKeptTs = now;
+    const meta = (self.GhostlightGifoverlay || GhostlightGifoverlay).takeActionForFrame(state.pendingActions, now);
+    // deviceWidth is the viewport width in CSS px per the screencast metadata; the probed width
+    // from start_recording is the fallback.
+    const vpW = (params.metadata && params.metadata.deviceWidth) || state.vpW;
+    const blob = new Blob([bytesFromBase64(params.data)], { type: "image/jpeg" });
+    await gifAppendFrame(tabId, state, blob, Object.assign({ ts: now }, vpW ? { vpW } : {}, meta || {}));
   } catch (e) {
-    /* best-effort: a failed frame never breaks the tool that triggered it */
+    /* best-effort: a dropped frame never breaks the stream */
   }
 }
 // Build a frame's overlay metadata from a dispatched tool call, converting model coordinates (read
@@ -677,6 +703,11 @@ function exceptionText(details, fallbackUrl) {
 }
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
+  if (method === "Page.screencastFrame") {
+    // gif_creator capture (ADR-0052 D1): fire-and-forget; the handler acks + keeps/drops the frame.
+    handleScreencastFrame(tabId, params);
+    return;
+  }
   if (method === "Runtime.consoleAPICalled") {
     // Single console source. Both the Runtime domain (Runtime.consoleAPICalled) and the
     // deprecated Console domain (Console.messageAdded) report the same console.* call, so
@@ -1549,9 +1580,11 @@ const handlers = {
       return text(r.result.output);
     });
   },
-  // gif_creator (ADR-0050 Decision 5): record frames, then export the GIF (download or coordinate
-  // drag-drop). Frames are captured on start and after each computer/navigate while recording
-  // (maybeCaptureGifFrame), each carrying action metadata; export composites the visual overlays
+  // gif_creator (ADR-0050 Decision 5, capture redesigned by ADR-0052): record frames, then export
+  // the GIF (download or coordinate drag-drop). Capture is screencast-driven -- the compositor emits
+  // a frame only when the page visually changes (seeded with one screenshot at start) -- and frames
+  // persist in IndexedDB, so a worker restart never loses a recording. Dispatched computer/navigate
+  // actions tag the frame their paint produces (ring/label); export composites the visual overlays
   // (click cues, action labels, progress bar, watermark) gated by the `options` object.
   async gif_creator(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1561,19 +1594,36 @@ const handlers = {
         // A fresh recording discards any prior frames for the tab (durable-store semantics match
         // the old in-memory start: begin-or-restart).
         await store.clear(tabId).catch(() => {});
-        const state = { active: true, firstSeq: 0, nextSeq: 0 };
+        const state = { active: true, firstSeq: 0, nextSeq: 0, lastKeptTs: 0, pendingActions: [] };
         gifRec.set(tabId, state);
         await store.putState({ tabId, active: true }).catch(() => {});
+        // Seed the initial state deterministically -- an idle page paints nothing, so the screencast
+        // alone might not produce a first frame. The seed screenshot also probes and records the
+        // viewport width; the min-interval filter dedups an immediate first screencast frame.
         let seeded = 0;
         try {
-          const prev = screenshotCtx.get(tabId);
-          const vpW = prev && prev.vpW;
           const shot = await screenshot(tabId);
+          const ctx2 = screenshotCtx.get(tabId);
+          if (ctx2 && ctx2.vpW) state.vpW = ctx2.vpW;
           const blob = new Blob([bytesFromBase64(shot.base64)], { type: "image/jpeg" });
-          // Seed frame is the initial state -- pixels + viewport width, but no action metadata.
-          seeded = await gifAppendFrame(tabId, state, blob, Object.assign({ ts: Date.now() }, vpW ? { vpW } : {}));
+          state.lastKeptTs = Date.now();
+          seeded = await gifAppendFrame(tabId, state, blob, Object.assign({ ts: state.lastKeptTs }, state.vpW ? { vpW: state.vpW } : {}));
         } catch (e) {
           /* the seed is best-effort; the recording is active either way */
+        }
+        // Change-driven capture (ADR-0052 D1): the compositor emits a frame only when the page
+        // visually changes, downscaled at the source to the screenshot token-budget cap.
+        try {
+          await ensureAttached(tabId);
+          await enableDomain(tabId, "Page");
+          await cdp(tabId, "Page.startScreencast", {
+            format: "jpeg",
+            quality: GIF_SCREENCAST_QUALITY,
+            maxWidth: MAX_SIDE,
+            maxHeight: MAX_SIDE,
+          });
+        } catch (e) {
+          return text("Recording started (" + seeded + " frame(s) captured), but live frame capture could not start: " + ((e && e.message) || e));
         }
         return text("Recording started (" + seeded + " frame(s) captured). Perform actions, then stop_recording and export with download:true.");
       }
@@ -1581,10 +1631,16 @@ const handlers = {
         const state = await gifState(tabId);
         if (!state) return text("No active recording for this tab.");
         state.active = false;
+        if (attached.has(tabId)) {
+          try { await cdp(tabId, "Page.stopScreencast", {}); } catch (e) { /* already detached */ }
+        }
         await store.putState({ tabId, active: false }).catch(() => {});
         return text("Recording stopped; " + (state.nextSeq - state.firstSeq) + " frame(s) kept. Use export with download:true to get the GIF.");
       }
       case "clear": {
+        if (attached.has(tabId)) {
+          try { await cdp(tabId, "Page.stopScreencast", {}); } catch (e) { /* not screencasting */ }
+        }
         gifRec.set(tabId, null);
         await store.clear(tabId).catch(() => {});
         return text("Recording cleared.");
@@ -1798,19 +1854,17 @@ async function dispatch(id, tool, args, guid) {
   const handler = handlers[tool];
   if (!handler) return fail(id, `Unknown tool: ${tool}`);
   try {
-    reply(id, await handler(args, guid));
-    // gif_creator (ADR-0050 D5): after a mutating tool while a recording is active, capture a frame
-    // (best-effort, after the reply is already sent, so it never delays or fails the tool response).
+    // gif_creator (ADR-0052 D4): note the action BEFORE it runs (metadata only; capture itself is
+    // screencast-driven), so the frame its paint produces is the frame that carries its ring/label.
+    // Best-effort and cheap: after the first call per tab the recording state is a Map hit.
     if (tool === "computer" || tool === "navigate") {
       try {
-        const tid = await effectiveTabId(args.tabId);
-        // Build the overlay metadata against the pre-capture context (the coordinate the model used).
-        const meta = gifFrameMeta(tool, args, tid);
-        await maybeCaptureGifFrame(tid, meta);
+        await recordGifAction(await effectiveTabId(args.tabId), tool, args);
       } catch (e) {
-        /* best-effort frame capture */
+        /* best-effort action note */
       }
     }
+    reply(id, await handler(args, guid));
   } catch (e) {
     if (e instanceof TabAccessError) return reply(id, text(e.message));
     // Hop-tagged errors (cdp/page) pass through as-is; untagged errors keep the tool-name prefix.
