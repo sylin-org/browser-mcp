@@ -88,13 +88,19 @@ impact). Each sub-step leaves a green tree and its own commit.
   (44/44 binaries); e2e tier (`-- --ignored`) green.
 - P4.3b NOT STARTED (the remaining focused follow-up; polish on PASSING tests, not load-bearing):
   fold former-P1.3 structured observability. `adapter_reconnect` / `adapter_override` currently scrape
-  the debug-EVENTS log text (`observability.rs` Event.summary: "session identity minted (stable for
-  this adapter process)", "service restart detected; reconnected", "override resolution: connected to
-  candidate N/M"). Replace with STRUCTURED debug-STATE fields on the `Snapshot` (mint-once bool /
-  reconnect counter / resolved-candidate index) that the relay updates alongside the event, and have
-  the two tests read them via `support::newest_state` + JSON field access. Spans transport
-  observability + the relay reconnect/override emit sites + the 2 (slow, spawn) tests -- do it focused
-  with its own verify cycle.
+  the debug-EVENTS jsonl text for `Event.summary` substrings. The three emit sites are all in
+  `crates/transport/src/ipc.rs`: `debug.ipc_note("session identity minted (stable for this adapter
+  process)")` (~L428), `debug.ipc_note("service restart detected; reconnected")` (~L439), and
+  `debug.ipc_note(format!("override resolution: connected to candidate {}/{}", ...))` (~L443).
+  Turnkey plan: add structured fields to `observability.rs` (`Snapshot` + `Counters`, or a small new
+  struct) -- `identity_mints: u64` (must be 1), `reconnects: u64` (>=1), `resolved_candidate:
+  Option<(u32,u32)>`; add DebugSink methods that BOTH increment the field AND keep the `ipc_note`
+  (human events log stays); call them at the three sites. Then rewrite the two tests to read the
+  ADAPTER's own `debug-state-<pid>.json` (NOT `support::newest_state`, which may return the SERVICE's
+  file -- add a role-aware state read to `tests/support`, filtering on `"role":"adapter"`/native-host)
+  and assert the structured fields. Spans transport observability + the 3 ipc.rs sites + a new test
+  helper + the 2 (slow, spawn, e2e-tier) tests -- do it focused with its own verify cycle
+  (`scripts/test-e2e.* -- --ignored` or the e2e CI job).
 
 ## Guardrails
 
