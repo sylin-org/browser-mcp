@@ -559,6 +559,62 @@
     };
   }
 
+  // upload_image (ADR-0050 Decision 4): place a previously captured screenshot (base64 bytes passed
+  // in by the binary from its per-session cache) into a file <input> located by ref -- the SAME
+  // DataTransfer/event tail setFiles uses -- OR drag-drop it at a viewport coordinate. Never touches
+  // the host filesystem; the caller supplies the bytes.
+  function setImage(ref, coordinate, dataB64, filename, mimeType) {
+    const name = (typeof filename === "string" && filename.length > 0) ? filename : "image.png";
+    const type = (typeof mimeType === "string" && mimeType.length > 0) ? mimeType : "image/png";
+    const decoded = (self.GhostlightFileset || GhostlightFileset).decodeFiles([{ data: dataB64, name, mimeType: type }]);
+    if (!decoded.ok) return { error: decoded.error };
+    const dt = new DataTransfer();
+    dt.items.add(new File([decoded.decoded[0].bytes], name, { type, lastModified: Date.now() }));
+
+    if (ref) {
+      const el = deref(ref);
+      if (!el) {
+        const stale = staleRefMessage(ref);
+        return { error: stale || `Element ${ref} not found or was garbage-collected.` };
+      }
+      const target = innerInput(el) || el;
+      if (target.tagName !== "INPUT" || target.type !== "file") {
+        return { error: "Element is not a file input. Found: <" + target.tagName.toLowerCase() + ">." };
+      }
+      target.files = dt.files;
+      target.focus();
+      target.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      return { success: true, output: "Uploaded screenshot (" + name + ") to file input." };
+    }
+
+    if (Array.isArray(coordinate) && coordinate.length === 2) {
+      const x = coordinate[0], y = coordinate[1];
+      let el = document.elementFromPoint(x, y);
+      // IFRAME descent (official v1.0.80 technique): if the point lands on a same-origin iframe,
+      // resolve the element inside it at the frame-relative coordinate. Cross-origin frames are
+      // unreachable and fall back to the frame element itself.
+      while (el && el.tagName === "IFRAME") {
+        try {
+          const doc = el.contentDocument;
+          if (!doc) break;
+          const rect = el.getBoundingClientRect();
+          const inner = doc.elementFromPoint(x - rect.left, y - rect.top);
+          if (!inner || inner === el) break;
+          el = inner;
+        } catch (e) { break; }
+      }
+      if (!el) return { error: "No element at coordinate [" + x + ", " + y + "]." };
+      const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: dt };
+      el.dispatchEvent(new DragEvent("dragenter", opts));
+      el.dispatchEvent(new DragEvent("dragover", opts));
+      el.dispatchEvent(new DragEvent("drop", opts));
+      return { success: true, output: "Dropped screenshot (" + name + ") at [" + x + ", " + y + "]." };
+    }
+
+    return { error: "Either ref or coordinate is required." };
+  }
+
   function refCoordinates(ref) {
     const el = deref(ref);
     if (!el) {
@@ -833,6 +889,7 @@
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
       case "setFiles": sendResponse({ result: setFiles(msg.ref, msg.files) }); return true;
+      case "setImage": sendResponse({ result: setImage(msg.ref, msg.coordinate, msg.data, msg.filename, msg.mimeType) }); return true;
       case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;
       case "scrollToRef": {
         const el = deref(msg.ref);

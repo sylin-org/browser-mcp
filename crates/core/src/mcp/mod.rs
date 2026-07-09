@@ -14,4 +14,5 @@ pub mod script;
 pub mod server;
 pub mod tools;
 pub mod types;
+pub mod upload_image;
 pub mod validation;

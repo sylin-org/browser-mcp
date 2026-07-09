@@ -5,11 +5,11 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 
 ## RESUME HERE
 
-- Status: T1 + T2 DONE. Next task: **T3 -- upload_image**.
-- Base commit for the batch: `d52e0df` (the ADR-0050 + batch authoring commit). T2 = `72f9b8a`.
-- Advertised tool count is now **19** (`file_upload`, then `browser_batch`, both before `explain`).
-  `tests/tool_schema_fidelity.rs` pins `names[16]=="file_upload"`, `[17]=="browser_batch"`,
-  `[18]=="explain"`. Before T3, re-read the tree.
+- Status: T1 + T2 + T3 DONE. Next task: **T4 -- gif_creator**.
+- Base commit for the batch: `d52e0df`. T2 = `72f9b8a`, T3 = (this commit).
+- Advertised tool count is now **20** (`file_upload`, `browser_batch`, `upload_image`, then `explain`).
+  `tests/tool_schema_fidelity.rs` pins `names[16..=19] == file_upload, browser_batch, upload_image,
+  explain`. Before T4, re-read the tree.
 - BUILD NOTE (post dev re-install): live MCP clients continuously respawn `ghostlight-relay` and lock
   the normal `target/debug`, so the FULL V-ALL (which builds relay + spawns for the e2e tier) must run
   in an ISOLATED `CARGO_TARGET_DIR` (`CARGO_TARGET_DIR=$TMP/gl-target cargo build --workspace && cargo
@@ -117,11 +117,34 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
   `browser_batch` step is rejected in either batcher).
 
 ### T3 -- upload_image (screenshot cache + drag-drop)
-- Status: pending
-- Commit(s):
-- V-ALL:
+- Status: DONE (NOT split -- one commit)
+- Commit(s): (filled at commit)
+- V-ALL: pass (isolated CARGO_TARGET_DIR). fmt --check + clippy --all-targets -D warnings clean;
+  core lib 487 (the screenshot-cache test + 3 upload_image arg-guard tests); extension node --test
+  7/7; full workspace `cargo test -- --include-ignored --test-threads=1` = 44/44 binaries green
+  (incl. the e2e tier with `upload_image` in the all-open + write-grant advertised sets).
 - Deviations:
-- Notes:
+  1. Re-pin (RESUME note): Part E items for `mcp_protocol` / `hub/outbound/mod.rs` / `tool_enforcement`
+     count asserts are OBSOLETE (they derive post-ADR-0051); left untouched (cosmetic doc counts only).
+  2. Prompt omitted `pipeline.rs`'s `pinned_explain_text()` literal (same gap as T1/T2). Added
+     `"upload_image: requires write. Upload a previously captured screenshot ..."` before explain.
+  3. Advertised-SET goldens (prompt lists only the count pins): `upload_image` requires `[Write]`, so
+     it joins `all_open_golden` (all-open full set) and `hot_reload.rs`'s `expanded` (write grant); it
+     is correctly ABSENT from the read-only / empty-grants sets (advertise.rs, tool_advertisement,
+     hot_reload governed_read_only, manifest_validation) -- no edit there.
+  4. The Part F Browser test is named `screenshot_cache_round_trips_and_injects_image_id` (snake_case)
+     rather than the prompt's `..._imageId`, to satisfy `-D warnings` (non_snake_case).
+  5. No NEW extension node test: `setImage`'s decode REUSES `lib/fileset.js`'s `decodeFiles` (already
+     covered by `fileset.test.js`); `setImage` itself is DOM-only (DataTransfer/DragEvent), not
+     node-testable. The arg guard is tested via the pure `validate_target` in upload_image.rs.
+- Notes: injection site = `Browser::call`, AFTER `send_and_await` succeeds, for `tool == "computer"`
+  with an `image` content block `{type:"image", data:<base64>, mimeType:<...>}` (confirmed shape;
+  service-worker `textImage`). No pre-existing test pinned the computer screenshot content shape, so a
+  Browser-level test was added. Cache: per-guid `VecDeque` bound N=8 on `Browser`, imageId =
+  `"img_" + uuid::simple`. upload_image handler forwards to the extension's `upload_image_exec`
+  (not advertised), mirroring form_fill's internal-call idiom; the parent call is governed once
+  (requires Write). `computer` INPUT schema + descriptor row UNCHANGED (only the output gains the
+  trailing imageId text block, ADR-0050 D4's one sanctioned trained-output change).
 
 ### T4 -- gif_creator (phased; Phase 1 floor)
 - Status: pending

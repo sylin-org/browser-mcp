@@ -315,10 +315,10 @@ async fn union_rule_end_to_end() {
 }
 
 /// Test 8: the all-open invariant. With no `--manifest` at all, behavior is byte-identical to
-/// today (19 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
-/// `browser_batch`, and the ADR-0022 Decision 7 `explain` addition -- fixture identity, `not
-/// connected` execution error) and no `Denied (` text ever appears (the count itself derives from
-/// `directory::advertised_tool_count()`, so this narration is descriptive, not a pin).
+/// today (20 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
+/// `browser_batch`, `upload_image`, and the ADR-0022 Decision 7 `explain` addition -- fixture
+/// identity, `not connected` execution error) and no `Denied (` text ever appears (the count itself
+/// derives from `directory::advertised_tool_count()`, so this narration is descriptive, not a pin).
 #[tokio::test]
 async fn all_open_invariant_no_manifest_means_no_denials() {
     let responses = drive(

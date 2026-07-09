@@ -291,6 +291,8 @@ fn org_policy_hot_swap_end_to_end() {
         "file_upload",
         // ADR-0050 D3: browser_batch requires nothing, so it is advertised under every grant.
         "browser_batch",
+        // ADR-0050 D4: upload_image requires [write], a subset of this grant, so it unlocks here.
+        "upload_image",
         "explain",
     ];
     let mut next_id = 3i64;

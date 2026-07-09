@@ -1998,6 +1998,8 @@ mod tests {
              located by read_page or find, via its ref.",
             "browser_batch: requires nothing. Run a sequence of tool calls in one round trip; \
              each item is name+input, authorized per item.",
+            "upload_image: requires write. Upload a previously captured screenshot to a file \
+             input (ref) or drag-drop target (coordinate).",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]

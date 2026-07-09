@@ -1326,6 +1326,31 @@ const handlers = {
       return text(r.result.output);
     });
   },
+  // upload_image (ADR-0050 Decision 4): place a previously captured screenshot -- the binary
+  // resolves it from its per-session cache and passes the base64 `data`/`mimeType` here (never a
+  // host path) -- into a file input (ref) or a drag-drop target (coordinate). Not an advertised
+  // tool; dispatched by the binary's upload_image_handler. Mirrors file_upload.
+  async upload_image_exec(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    if (!a.data) {
+      throw hopError("binary", "upload_image_exec requires base64 image data");
+    }
+    return withObservation(tabId, async () => {
+      const r = await content(tabId, {
+        type: "setImage",
+        ref: a.ref,
+        coordinate: a.coordinate,
+        data: a.data,
+        filename: a.filename,
+        mimeType: a.mimeType,
+      });
+      if (r && r.result && r.result.error) {
+        const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+        throw hopError("page", msg);
+      }
+      return text(r.result.output);
+    });
+  },
   async wait_for(a) {
     // Defaults (ADR-0037 D1/D6): settle ON, state visible, timeout 10s, min 0.
     const state = a.state || "visible";

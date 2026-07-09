@@ -143,9 +143,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 19 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
-/// `file_upload`, `browser_batch`, and `explain`), in the order they appear in `tools/list`.
-/// `computer`'s 13 variants are in the
+/// The tool registry: 20 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
+/// `file_upload`, `browser_batch`, `upload_image`, and `explain`), in the order they appear in
+/// `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
@@ -1167,6 +1167,38 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         output_schema: None,
     },
     ToolDescriptor {
+        tool: "upload_image",
+        advertised_description: "Upload a previously captured screenshot to a file input or drag & drop target. Supports two approaches: (1) ref -- for targeting specific elements, especially hidden file inputs, (2) coordinate -- for drag & drop to visible locations like Google Docs. Provide either ref or coordinate, not both.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "imageId": { "type": "string", "description": "ID of a previously captured screenshot (from the computer tool's screenshot action), e.g. \"img_...\" as reported in the screenshot result." },
+                "ref": { "type": "string", "description": "Element reference ID from read_page or find tools (e.g., \"ref_1\", \"ref_2\"). Use this for file inputs (especially hidden ones). Provide either ref or coordinate, not both." },
+                "coordinate": { "type": "array", "description": "Viewport coordinates [x, y] for drag & drop to a visible location like Google Docs. Provide either ref or coordinate, not both." },
+                "tabId": { "type": "number", "description": "Tab ID where the target element is located. This is where the image will be uploaded to." },
+                "filename": { "type": "string", "description": "Optional filename for the uploaded file (default: \"image.png\")." }
+            },
+            "required": ["imageId", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"imageId":"img_example","ref":"ref_1","tabId":0}"#,
+            returns: Some("Uploads the cached screenshot to the file input at ref (or drag-drops it at coordinate); returns a text confirmation."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[Capability::Write],
+            directory_description:
+                "Upload a previously captured screenshot to a file input (ref) or drag-drop target (coordinate).",
+        }],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::Local(crate::mcp::upload_image::upload_image_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -1268,7 +1300,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 19 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 20 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1443,7 +1475,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 32);
+        assert_eq!(total_variants, 33);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1496,6 +1528,7 @@ mod tests {
             ),
             ("file_upload", None, &[Capability::Write]),
             ("browser_batch", None, &[]),
+            ("upload_image", None, &[Capability::Write]),
             ("explain", None, &[]),
         ];
 
@@ -1732,6 +1765,14 @@ mod tests {
                 "browser_batch",
                 None,
                 ResourceShape::DomainLess,
+                true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "upload_image",
+                None,
+                ResourceShape::TabScoped,
                 true,
                 false,
                 PostDispatch::None,
