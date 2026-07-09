@@ -254,90 +254,110 @@ fn scope_of(system: bool) -> Scope {
 // --- Plan: install ---
 
 fn plan_install(opts: &InstallOptions, ctx: &PlanCtx) -> Result<Vec<Action>> {
-    // ADR-0044 Decision 4: the DEFAULT instance's manifest points at the bare binary; a non-default
-    // instance's points at a per-instance copy Chrome launches by name (argv[0]).
-    let (launcher, needs_copy) = native_host::instance_launcher(ctx);
-    let manifest = HostManifest::resolve(&launcher, opts.extension_id.as_deref())?;
-    let manifest_json = manifest.to_json();
+    plan_install_for(
+        opts,
+        ctx,
+        &ghostlight_transport::instance::Instance::resolve(),
+    )
+}
+
+fn plan_install_for(
+    opts: &InstallOptions,
+    ctx: &PlanCtx,
+    instance: &ghostlight_transport::instance::Instance,
+) -> Result<Vec<Action>> {
     let scope = scope_of(opts.system);
     let mut actions = Vec::new();
 
-    // Place the per-instance binary copy FIRST (before the manifest that references it). Overwrite
-    // so a re-install refreshes it; a size match is treated as already-current for the report.
-    if needs_copy {
-        // ADR-0046: the per-instance copy is of the browser ADAPTER (the tiny pass-through Chrome
-        // launches by name), never the multi-MB `ghostlight` brain -- so a service rebuild never
-        // needs the copy refreshed.
-        let copy_from = native_host::sibling_bin(&ctx.current_exe, "ghostlight-adapter-browser");
-        let up_to_date = std::fs::metadata(&launcher)
-            .ok()
-            .zip(std::fs::metadata(&copy_from).ok())
-            .map(|(a, b)| a.len() == b.len())
-            .unwrap_or(false);
-        actions.push(Action {
-            label: "native host (instance binary)".into(),
-            detail: launcher.display().to_string(),
-            noop: up_to_date.then_some("already present"),
-            manual: format!("copy {} to {}", copy_from.display(), launcher.display()),
-            op: Op::CopyBinary {
-                from: copy_from,
-                to: launcher.clone(),
-            },
-        });
-    }
+    // ADR-0048 D6: the reserved dev instance is reached through the UNIFIED browser surface the
+    // default install registers, so its install is THIN -- pinned MCP-client entries only. (Dev
+    // UNINSTALL still cleans up any legacy per-instance artifacts from pre-0048 installs.)
+    let dev_thin = instance.name() == Some(ghostlight_transport::instance::DEV_INSTANCE);
+    if !dev_thin {
+        // ADR-0044 Decision 4: the DEFAULT instance's manifest points at the bare binary; a
+        // non-default instance's points at a per-instance copy Chrome launches by name (argv[0]).
+        let (launcher, needs_copy) = native_host::instance_launcher(ctx);
+        let manifest = HostManifest::resolve(&launcher, opts.extension_id.as_deref())?;
+        let manifest_json = manifest.to_json();
 
-    // --- native host, per selected browser ---
-    if cfg!(windows) {
-        // One shared manifest file, then a registry key per browser pointing at it.
-        let manifest_path = native_host::win_manifest_path(ctx);
-        let file_noop = file_matches(&manifest_path, &manifest_json);
-        actions.push(Action {
-            label: "native host (manifest)".into(),
-            detail: manifest_path.display().to_string(),
-            noop: file_noop.then_some("already up to date"),
-            manual: format!(
-                "write this JSON to {}:\n{manifest_json}",
-                manifest_path.display()
-            ),
-            op: Op::WriteFile {
-                path: manifest_path.clone(),
-                contents: manifest_json.clone(),
-            },
-        });
-        let value = manifest_path.to_string_lossy().into_owned();
-        let hive = native_host::hive_for(scope);
-        let wow = native_host::wow_for(scope);
-        for b in selected_browsers(&opts.browsers, ctx) {
-            let key = native_host::win_reg_key(b);
-            let noop =
-                native_host::read_default(hive, &key, wow).as_deref() == Some(value.as_str());
+        // Place the per-instance binary copy FIRST (before the manifest that references it). Overwrite
+        // so a re-install refreshes it; a size match is treated as already-current for the report.
+        if needs_copy {
+            // ADR-0046: the per-instance copy is of the browser ADAPTER (the tiny pass-through Chrome
+            // launches by name), never the multi-MB `ghostlight` brain -- so a service rebuild never
+            // needs the copy refreshed.
+            let copy_from =
+                native_host::sibling_bin(&ctx.current_exe, "ghostlight-adapter-browser");
+            let up_to_date = std::fs::metadata(&launcher)
+                .ok()
+                .zip(std::fs::metadata(&copy_from).ok())
+                .map(|(a, b)| a.len() == b.len())
+                .unwrap_or(false);
             actions.push(Action {
-                label: format!("{} (native host)", b.display),
-                detail: format!("{hive:?} {key}"),
-                noop: noop.then_some("already registered"),
-                manual: format!("set (Default) of {hive:?}\\{key} to {value}"),
-                op: Op::SetReg {
-                    hive,
-                    key,
-                    wow,
-                    value: value.clone(),
+                label: "native host (instance binary)".into(),
+                detail: launcher.display().to_string(),
+                noop: up_to_date.then_some("already present"),
+                manual: format!("copy {} to {}", copy_from.display(), launcher.display()),
+                op: Op::CopyBinary {
+                    from: copy_from,
+                    to: launcher.clone(),
                 },
             });
         }
-    } else {
-        for b in selected_browsers(&opts.browsers, ctx) {
-            let path = host_file_path(b, ctx);
-            let noop = file_matches(&path, &manifest_json);
+
+        // --- native host, per selected browser ---
+        if cfg!(windows) {
+            // One shared manifest file, then a registry key per browser pointing at it.
+            let manifest_path = native_host::win_manifest_path(ctx);
+            let file_noop = file_matches(&manifest_path, &manifest_json);
             actions.push(Action {
-                label: format!("{} (native host)", b.display),
-                detail: path.display().to_string(),
-                noop: noop.then_some("already up to date"),
-                manual: format!("write this JSON to {}:\n{manifest_json}", path.display()),
+                label: "native host (manifest)".into(),
+                detail: manifest_path.display().to_string(),
+                noop: file_noop.then_some("already up to date"),
+                manual: format!(
+                    "write this JSON to {}:\n{manifest_json}",
+                    manifest_path.display()
+                ),
                 op: Op::WriteFile {
-                    path,
+                    path: manifest_path.clone(),
                     contents: manifest_json.clone(),
                 },
             });
+            let value = manifest_path.to_string_lossy().into_owned();
+            let hive = native_host::hive_for(scope);
+            let wow = native_host::wow_for(scope);
+            for b in selected_browsers(&opts.browsers, ctx) {
+                let key = native_host::win_reg_key(b);
+                let noop =
+                    native_host::read_default(hive, &key, wow).as_deref() == Some(value.as_str());
+                actions.push(Action {
+                    label: format!("{} (native host)", b.display),
+                    detail: format!("{hive:?} {key}"),
+                    noop: noop.then_some("already registered"),
+                    manual: format!("set (Default) of {hive:?}\\{key} to {value}"),
+                    op: Op::SetReg {
+                        hive,
+                        key,
+                        wow,
+                        value: value.clone(),
+                    },
+                });
+            }
+        } else {
+            for b in selected_browsers(&opts.browsers, ctx) {
+                let path = host_file_path(b, ctx);
+                let noop = file_matches(&path, &manifest_json);
+                actions.push(Action {
+                    label: format!("{} (native host)", b.display),
+                    detail: path.display().to_string(),
+                    noop: noop.then_some("already up to date"),
+                    manual: format!("write this JSON to {}:\n{manifest_json}", path.display()),
+                    op: Op::WriteFile {
+                        path,
+                        contents: manifest_json.clone(),
+                    },
+                });
+            }
         }
     }
 
@@ -767,6 +787,11 @@ pub fn run_install(opts: InstallOptions) -> Result<()> {
         // ADR-0046 dev loop: an auto-started dev service would hold the exe lock during a rebuild;
         // the developer runs `ghostlight service` in a terminal instead (see docs/DEV-LOOP.md).
         println!("  (skipped: --no-supervisor)");
+    } else if ghostlight_transport::instance::Instance::resolve().name()
+        == Some(ghostlight_transport::instance::DEV_INSTANCE)
+    {
+        // ADR-0048 D6: a dev service runs in a terminal (docs/DEV-LOOP.md); never auto-started.
+        println!("  (skipped: the dev instance runs its service in a terminal; ADR-0048)");
     } else {
         supervisor::apply_steps(
             &ghostlight_transport::supervisor::supervisor_task_name(),
@@ -1042,5 +1067,39 @@ mod tests {
         let t3 = apply(&[ok, blk], true);
         assert_eq!((t3.noop, t3.failed), (1, 1));
         assert!(exit_result(&t3).is_ok());
+    }
+
+    #[test]
+    fn plan_install_for_the_dev_instance_is_client_entries_only() {
+        let dir = std::env::temp_dir().join(format!("ghostlight-devthin-{}", std::process::id()));
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".claude.json"), "{}").unwrap();
+        let ctx = PlanCtx {
+            current_exe: PathBuf::from("/abs/ghostlight"),
+            home,
+            config: dir.join("config"),
+            local: dir.join("local"),
+        };
+        let dev = ghostlight_transport::instance::Instance::from_name("dev").unwrap();
+        let opts = InstallOptions {
+            extension_id: None,
+            dry_run: true,
+            system: false,
+            browsers: Selection::ForceAll,
+            clients: Selection::Only(vec!["claude-code".into()]),
+            debug: false,
+            no_supervisor: true,
+        };
+        let actions = plan_install_for(&opts, &ctx, &dev).unwrap();
+        assert!(
+            actions.iter().all(|a| !a.label.contains("native host")),
+            "a dev install plans no native-host action"
+        );
+        assert!(
+            actions.iter().any(|a| a.label.contains("(client)")),
+            "a dev install still plans MCP-client entries"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -102,6 +102,12 @@ pub fn validate_extension_id(id: &str) -> Result<()> {
     }
 }
 
+/// The Chrome Web Store extension id (the published "Ghostlight in Browser" listing).
+pub const STORE_EXTENSION_ID: &str = "lejccfmoeogmhemakeknjjdhkfkgncdl";
+
+/// The unpacked-dev extension id, pinned by the committed manifest `key` (ADR-0016).
+pub const DEV_EXTENSION_ID: &str = "cjcmhepmagomefjggkcohdbfemacojoa";
+
 /// The exact allowed origin for an extension id (trailing slash required; no wildcards, doc 11 A.5).
 pub fn origin_for(id: &str) -> String {
     format!("chrome-extension://{id}/")
@@ -146,13 +152,23 @@ pub struct HostManifest {
 }
 
 impl HostManifest {
-    /// Build from the binary path + the (required, until a build-time `key`) extension id.
+    /// Build from the binary path plus an OPTIONAL extra extension id (ADR-0048 D5): the two
+    /// shipped identities ([`STORE_EXTENSION_ID`], [`DEV_EXTENSION_ID`]) are always allowed, so
+    /// a default install needs no flag; `--extension-id` appends one more origin (validated,
+    /// deduplicated) for a fork or an enterprise-packaged extension.
     pub fn resolve(current_exe: &Path, extension_id: Option<&str>) -> Result<Self> {
-        let id = extension_id.ok_or(Error::MissingExtensionId)?;
-        validate_extension_id(id)?;
+        let mut allowed_origins =
+            vec![origin_for(STORE_EXTENSION_ID), origin_for(DEV_EXTENSION_ID)];
+        if let Some(id) = extension_id {
+            validate_extension_id(id)?;
+            let origin = origin_for(id);
+            if !allowed_origins.contains(&origin) {
+                allowed_origins.push(origin);
+            }
+        }
         Ok(Self {
             path: normalize_exe_path(current_exe),
-            allowed_origins: vec![origin_for(id)],
+            allowed_origins,
         })
     }
 
@@ -461,11 +477,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&m.to_json()).unwrap();
         assert_eq!(v["name"], host_name());
         assert_eq!(v["type"], "stdio");
+        let origins = v["allowed_origins"].as_array().unwrap();
+        assert_eq!(origins.len(), 3);
         assert_eq!(
-            v["allowed_origins"][0],
+            origins[0],
+            format!("chrome-extension://{STORE_EXTENSION_ID}/")
+        );
+        assert_eq!(
+            origins[1],
+            format!("chrome-extension://{DEV_EXTENSION_ID}/")
+        );
+        assert_eq!(
+            origins[2],
             format!("chrome-extension://{}/", "a".repeat(32))
         );
-        assert_eq!(v["allowed_origins"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -479,12 +504,20 @@ mod tests {
         assert!(validate_extension_id("").is_err());
     }
 
+    /// ADR-0048 D5: no --extension-id needed -- both shipped identities are always allowed, and
+    /// re-passing one of them never duplicates the origin.
     #[test]
-    fn missing_extension_id_is_an_error() {
-        assert!(matches!(
-            HostManifest::resolve(Path::new("/x"), None),
-            Err(Error::MissingExtensionId)
-        ));
+    fn resolve_without_an_id_allows_the_two_shipped_extensions() {
+        let m = HostManifest::resolve(Path::new("/x"), None).unwrap();
+        assert_eq!(
+            m.allowed_origins,
+            vec![
+                format!("chrome-extension://{STORE_EXTENSION_ID}/"),
+                format!("chrome-extension://{DEV_EXTENSION_ID}/"),
+            ]
+        );
+        let dup = HostManifest::resolve(Path::new("/x"), Some(DEV_EXTENSION_ID)).unwrap();
+        assert_eq!(dup.allowed_origins.len(), 2);
     }
 
     #[test]

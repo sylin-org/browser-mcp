@@ -198,7 +198,7 @@ impl From<ConfigArgs> for ghostlight::governance::config::cli::ConfigCommand {
 
 #[derive(Debug, Args)]
 struct InstallArgs {
-    /// Unpacked-dev extension id (32 chars, a-p). Required until a build-time key ships.
+    /// Extra extension id to allow (the Web Store and unpacked-dev ids are always allowed).
     #[arg(long, value_name = "ID")]
     extension_id: Option<String>,
     /// Compute and print the plan; write nothing.

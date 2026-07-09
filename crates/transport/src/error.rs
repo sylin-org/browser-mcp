@@ -33,10 +33,6 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    /// The installer needs the unpacked extension ID (no build-time `key` yet); pass --extension-id.
-    #[error("extension id required: pass --extension-id <id> (see docs/research/11-install-detection.md)")]
-    MissingExtensionId,
-
     /// The provided extension id is not a valid 32-char a-p Chrome id.
     #[error("invalid extension id: {0}")]
     InvalidExtensionId(String),
