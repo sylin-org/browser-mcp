@@ -92,6 +92,23 @@ pub fn adapter_endpoint_name(endpoint: &str) -> String {
     format!("{endpoint}-adapter")
 }
 
+/// Pick the native-host connect target from ordered candidates (ADR-0048 D4): the first whose
+/// endpoint EXISTS right now (probe != Absent -- a busy pipe is still a live service) wins; when
+/// every candidate is absent, the LAST one (the default instance in the unpinned order), whose
+/// `connect()` retry patience then covers a service that is still starting up. `probe` is
+/// injected so this stays a pure, unit-testable decision.
+fn pick_native_host_endpoint(
+    endpoints: &[String],
+    probe: impl Fn(&str) -> EndpointProbe,
+) -> String {
+    for ep in endpoints {
+        if probe(ep) != EndpointProbe::Absent {
+            return ep.clone();
+        }
+    }
+    endpoints.last().cloned().unwrap_or_default()
+}
+
 /// native-host role: connect to the mcp-server endpoint and relay frames between Chrome native
 /// messaging (this process's stdin/stdout) and the mcp-server, until either side closes. Transport
 /// agnostic: works over whichever local socket [`connect`] returns.
@@ -105,11 +122,16 @@ pub fn adapter_endpoint_name(endpoint: &str) -> String {
 /// `debug` is env-gated (see `main::run_native_host_role`): Chrome inherits its own environment
 /// when it launches this process and never passes `--debug`, so a native-host debug snapshot only
 /// exists when Chrome itself was started with `GHOSTLIGHT_DEBUG=1`. Its absence is normal.
+///
+/// ADR-0048 D4: `endpoints` is the ordered candidate list; the first candidate whose endpoint
+/// exists is dialed (a fresh pick happens naturally per connect episode, because Chrome respawns
+/// this process on every native-messaging reconnect).
 pub async fn relay_native_host(
-    endpoint: &str,
+    endpoints: &[String],
     debug: &crate::observability::DebugSink,
 ) -> Result<()> {
-    let stream = connect(endpoint).await?;
+    let endpoint = pick_native_host_endpoint(endpoints, probe_endpoint);
+    let stream = connect(&endpoint).await?;
     debug.ipc_note("connected to mcp-server endpoint");
     let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
     let mut chrome_in = tokio::io::stdin();
@@ -783,6 +805,44 @@ mod tests {
         assert_eq!(
             candidates_from(Some("  "), None, &pinned),
             vec!["org.sylin.ghostlight.qa.v1".to_string()]
+        );
+    }
+
+    /// ADR-0048 D4: the first PRESENT candidate wins; busy still counts as present.
+    #[test]
+    fn pick_native_host_endpoint_prefers_the_first_present_candidate() {
+        let eps = vec!["dev-ep".to_string(), "default-ep".to_string()];
+        let picked = pick_native_host_endpoint(&eps, |ep| {
+            if ep == "dev-ep" {
+                EndpointProbe::Accepts
+            } else {
+                EndpointProbe::Absent
+            }
+        });
+        assert_eq!(picked, "dev-ep");
+        let picked = pick_native_host_endpoint(&eps, |ep| {
+            if ep == "dev-ep" {
+                EndpointProbe::Rejects("busy".into())
+            } else {
+                EndpointProbe::Accepts
+            }
+        });
+        assert_eq!(picked, "dev-ep");
+    }
+
+    /// ADR-0048 D4: all-absent falls to the LAST candidate (the default), preserving connect()'s
+    /// startup patience toward the canonical target.
+    #[test]
+    fn pick_native_host_endpoint_falls_to_the_last_when_all_are_absent() {
+        let eps = vec!["dev-ep".to_string(), "default-ep".to_string()];
+        assert_eq!(
+            pick_native_host_endpoint(&eps, |_| EndpointProbe::Absent),
+            "default-ep"
+        );
+        let one = vec!["only-ep".to_string()];
+        assert_eq!(
+            pick_native_host_endpoint(&one, |_| EndpointProbe::Absent),
+            "only-ep"
         );
     }
 
