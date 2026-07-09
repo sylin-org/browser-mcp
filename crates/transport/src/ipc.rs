@@ -42,6 +42,48 @@ pub fn default_endpoint() -> String {
         .unwrap_or_else(|_| crate::instance::Instance::resolve().endpoint())
 }
 
+/// The ordered MAIN-endpoint candidates an adapter dials (ADR-0048 D2/D3), pure core: the
+/// single-endpoint override wins, then the list override, then the selection's instances. Split
+/// from [`endpoint_candidates`] so it is unit-testable without racing parallel tests over
+/// process-global env state.
+fn candidates_from(
+    single: Option<&str>,
+    list: Option<&str>,
+    selection: &crate::instance::Selection,
+) -> Vec<String> {
+    if let Some(ep) = single.map(str::trim).filter(|s| !s.is_empty()) {
+        return vec![ep.to_string()];
+    }
+    if let Some(raw) = list {
+        let eps: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !eps.is_empty() {
+            return eps;
+        }
+    }
+    selection
+        .candidates()
+        .iter()
+        .map(crate::instance::Instance::endpoint)
+        .collect()
+}
+
+/// The ordered endpoint candidates for `selection` (ADR-0048 D2/D3): `GHOSTLIGHT_ENDPOINT` (one
+/// pinned endpoint; tests and advanced deployments) wins, then `GHOSTLIGHT_ENDPOINTS` (a
+/// comma-separated pinned candidate LIST -- the override integration tests' seam), then the
+/// selection's instances' endpoints (`[dev, default]` when unpinned, exactly one when pinned).
+pub fn endpoint_candidates(selection: &crate::instance::Selection) -> Vec<String> {
+    candidates_from(
+        std::env::var("GHOSTLIGHT_ENDPOINT").ok().as_deref(),
+        std::env::var("GHOSTLIGHT_ENDPOINTS").ok().as_deref(),
+        selection,
+    )
+}
+
 /// The ADAPTER/CONTROL endpoint's name (ADR-0030 Decision 1; PINS.md SS1): the extension
 /// endpoint's base name with the literal suffix `-adapter`, then wrapped by the SAME
 /// `pipe_path`/`socket_path` helper the extension endpoint uses -- so a test-unique
@@ -286,9 +328,18 @@ where
 /// fresh-guid-per-reconnect posture): the service's `SessionRegistry` sanctions the same user
 /// re-presenting an identity, so tab ownership and this session's Chrome tab group survive the
 /// service gap instead of being orphaned when the connection drops.
-pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSink) -> Result<()> {
+///
+/// ADR-0048 D3: `endpoints` is the ORDERED main-endpoint candidate list (exactly one when
+/// pinned; `[dev, default]` when unpinned). Every connect episode -- the first connect and each
+/// reconnect tick -- walks the list in order, so a live dev instance shadows the default and a
+/// dead one fails over to it at reconnect speed.
+pub async fn relay_adapter(
+    endpoints: &[String],
+    debug: &crate::observability::DebugSink,
+) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    let adapter_endpoint = adapter_endpoint_name(endpoint);
+    let adapter_endpoints: Vec<String> =
+        endpoints.iter().map(|e| adapter_endpoint_name(e)).collect();
 
     // The long-lived stdin reader (ADR-0045): reads newline-delimited client lines and forwards
     // each as a complete line over the channel. It is NEVER inside a `select!`, so `read_until` is
@@ -325,11 +376,19 @@ pub async fn relay_adapter(endpoint: &str, debug: &crate::observability::DebugSi
         // Connect AND handshake with a bounded retry (see [`connect_and_handshake`]): a service
         // that is mid-startup or mid-restart (endpoint claimed but not yet serving/proving) is
         // tolerated, not a fatal exit -- the crux that makes a reconnect actually resilient.
-        let stream = connect_and_handshake(&adapter_endpoint, !first, &session_guid).await?;
+        let (stream, which) =
+            connect_and_handshake(&adapter_endpoints, !first, &session_guid).await?;
         if first {
             debug.ipc_note("connected to the service's adapter/control endpoint");
         } else {
             debug.ipc_note("service restart detected; reconnected");
+        }
+        if adapter_endpoints.len() > 1 {
+            debug.ipc_note(&format!(
+                "override resolution: connected to candidate {}/{}",
+                which + 1,
+                adapter_endpoints.len()
+            ));
         }
 
         let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
@@ -408,13 +467,24 @@ fn adapter_hello(guid: &crate::session_guid::SessionGuid) -> serde_json::Value {
 /// that transient window survivable instead of a fatal adapter exit, which is exactly what makes a
 /// cold-start (self-heal) connection and a reconnect actually resilient. It never accepts a bad
 /// proof -- a genuine squatter simply keeps failing until the window elapses and the adapter exits.
+///
+/// Walks the ordered candidate list on every attempt (ADR-0048 D3) and returns the winning
+/// candidate's index alongside the stream.
 async fn connect_and_handshake(
-    adapter_endpoint: &str,
+    adapter_endpoints: &[String],
     reconnect: bool,
     guid: &crate::session_guid::SessionGuid,
-) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
-    if let Ok(stream) = try_connect_once(adapter_endpoint, guid).await {
-        return Ok(stream);
+) -> Result<(
+    impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    usize,
+)> {
+    debug_assert!(!adapter_endpoints.is_empty());
+    let mut last_err: Option<Error> = None;
+    for (which, ep) in adapter_endpoints.iter().enumerate() {
+        match try_connect_once(ep, guid).await {
+            Ok(stream) => return Ok((stream, which)),
+            Err(e) => last_err = Some(e),
+        }
     }
     crate::supervisor::start_service();
     // Reconnect patience (ADR-0045 amendment): the FIRST connect stays fail-fast (3s) so a
@@ -431,14 +501,15 @@ async fn connect_and_handshake(
     let deadline = tokio::time::Instant::now() + window;
     loop {
         sleep(interval).await;
-        match try_connect_once(adapter_endpoint, guid).await {
-            Ok(stream) => return Ok(stream),
-            Err(e) => {
-                if tokio::time::Instant::now() >= deadline {
-                    tracing::error!("{}", crate::supervisor::SELF_HEAL_FAILURE_MESSAGE);
-                    return Err(e);
-                }
+        for (which, ep) in adapter_endpoints.iter().enumerate() {
+            match try_connect_once(ep, guid).await {
+                Ok(stream) => return Ok((stream, which)),
+                Err(e) => last_err = Some(e),
             }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::error!("{}", crate::supervisor::SELF_HEAL_FAILURE_MESSAGE);
+            return Err(last_err.expect("at least one candidate was tried"));
         }
     }
 }
@@ -680,6 +751,39 @@ mod tests {
     fn probe_reports_absent_for_an_unused_endpoint() {
         let endpoint = format!("ghostlight-test-probe-absent-{}", std::process::id());
         assert_eq!(probe_endpoint(&endpoint), EndpointProbe::Absent);
+    }
+
+    /// ADR-0048 D2: candidate precedence -- the single override, the list override, then the
+    /// selection's instances (dev first when unpinned). Pure: no env access.
+    #[test]
+    fn candidates_from_honors_the_precedence_order() {
+        use crate::instance::{Instance, Selection};
+        let unpinned = Selection::Unpinned;
+        assert_eq!(
+            candidates_from(Some("ep-one"), Some("a,b"), &unpinned),
+            vec!["ep-one".to_string()]
+        );
+        assert_eq!(
+            candidates_from(None, Some(" a , b ,,"), &unpinned),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            candidates_from(None, None, &unpinned),
+            vec![
+                "org.sylin.ghostlight.dev.v1".to_string(),
+                "org.sylin.ghostlight.v1".to_string()
+            ]
+        );
+        let pinned = Selection::Pinned(Instance::from_name("qa").unwrap());
+        assert_eq!(
+            candidates_from(None, None, &pinned),
+            vec!["org.sylin.ghostlight.qa.v1".to_string()]
+        );
+        // Blank overrides fall through rather than pinning an empty endpoint.
+        assert_eq!(
+            candidates_from(Some("  "), None, &pinned),
+            vec!["org.sylin.ghostlight.qa.v1".to_string()]
+        );
     }
 
     #[test]

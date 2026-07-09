@@ -239,6 +239,73 @@ impl Instance {
     }
 }
 
+/// The reserved development-override instance name (ADR-0048 D1): when an ADAPTER is unpinned,
+/// a live `dev` instance shadows the default.
+pub const DEV_INSTANCE: &str = "dev";
+
+/// An adapter's instance selection (ADR-0048 D2). Only ADAPTERS have an [`Selection::Unpinned`]
+/// state (connect-time resolution, dev first); the service and the installer always operate on
+/// exactly one instance via [`Instance::resolve`], where an absent name IS the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    /// Explicitly bound to one instance (a named one, or the reserved word `default`): no
+    /// override, connect to exactly this instance.
+    Pinned(Instance),
+    /// No instance named anywhere: resolve at connect time, preferring a live dev instance.
+    Unpinned,
+}
+
+impl Selection {
+    /// Classify one raw instance source (a `--instance` value or the env var's content) into a
+    /// selection (ADR-0048 D2). Pure (no environment access), so it is unit-testable without
+    /// racing parallel tests over process-global env state: `None`/blank is Unpinned; the
+    /// reserved word `default` (any case) pins the DEFAULT instance; a valid name pins that
+    /// named instance; anything else returns the validation error verbatim.
+    fn classify(source: Option<&str>) -> std::result::Result<Self, String> {
+        match source.map(str::trim) {
+            None | Some("") => Ok(Selection::Unpinned),
+            Some(s) if s.eq_ignore_ascii_case("default") => {
+                Ok(Selection::Pinned(Instance::default()))
+            }
+            Some(s) => Instance::from_name(s).map(Selection::Pinned),
+        }
+    }
+
+    /// Resolve an adapter's selection from an optional `--instance` flag value, falling back to
+    /// [`Instance::ENV_VAR`] (ADR-0048 D2; a blank flag value is treated as absent), and
+    /// NORMALIZE the environment so every downstream point-of-use `Instance::resolve()` agrees:
+    /// a pinned NAMED instance writes its name back; pinned-default and unpinned REMOVE the
+    /// variable (both leave downstream derivations on the default identity -- an unpinned
+    /// adapter's own logs live under the default dirs, ADR-0048 D8).
+    pub fn resolve_from(flag: Option<&str>) -> std::result::Result<Self, String> {
+        let env = std::env::var(Instance::ENV_VAR).ok();
+        let source = match flag.map(str::trim) {
+            Some(f) if !f.is_empty() => Some(f.to_string()),
+            _ => env,
+        };
+        let selection = Self::classify(source.as_deref())?;
+        match &selection {
+            Selection::Pinned(i) if !i.is_default() => {
+                std::env::set_var(Instance::ENV_VAR, i.name().expect("a named instance"));
+            }
+            _ => std::env::remove_var(Instance::ENV_VAR),
+        }
+        Ok(selection)
+    }
+
+    /// The connect-order instance candidates (ADR-0048 D1/D3): pinned names exactly its
+    /// instance; unpinned tries the dev override first, then the default.
+    pub fn candidates(&self) -> Vec<Instance> {
+        match self {
+            Selection::Pinned(i) => vec![i.clone()],
+            Selection::Unpinned => vec![
+                Instance::from_name(DEV_INSTANCE).expect("'dev' is a valid instance name"),
+                Instance::default(),
+            ],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +470,41 @@ mod tests {
         );
         // The bare `ghostlight` binary is NOT in this family.
         assert!(Instance::from_exe_stem_with_base(Path::new("/x/ghostlight"), base).is_none());
+    }
+
+    /// ADR-0048 D2: the three selection states, from one raw source string.
+    #[test]
+    fn selection_classify_maps_the_three_states() {
+        assert_eq!(Selection::classify(None).unwrap(), Selection::Unpinned);
+        assert_eq!(Selection::classify(Some("")).unwrap(), Selection::Unpinned);
+        assert_eq!(
+            Selection::classify(Some("  ")).unwrap(),
+            Selection::Unpinned
+        );
+        assert_eq!(
+            Selection::classify(Some("default")).unwrap(),
+            Selection::Pinned(Instance::default())
+        );
+        assert_eq!(
+            Selection::classify(Some("DEFAULT")).unwrap(),
+            Selection::Pinned(Instance::default())
+        );
+        assert_eq!(
+            Selection::classify(Some("dev")).unwrap(),
+            Selection::Pinned(Instance::from_name("dev").unwrap())
+        );
+        assert!(Selection::classify(Some("Not Valid")).is_err());
+    }
+
+    /// ADR-0048 D1: unpinned candidate order is dev, then default; pinned is exactly one.
+    #[test]
+    fn unpinned_candidates_are_dev_then_default() {
+        let c = Selection::Unpinned.candidates();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].name(), Some("dev"));
+        assert!(c[1].is_default());
+        let p = Selection::Pinned(Instance::from_name("qa").unwrap()).candidates();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].name(), Some("qa"));
     }
 }

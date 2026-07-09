@@ -7,7 +7,7 @@
 //! parent-death watchdog. It holds NO governance and depends ONLY on ghostlight-transport, so a
 //! service rebuild never relinks (locks) this binary (ADR-0046 Decision 2).
 
-use ghostlight_transport::instance::Instance;
+use ghostlight_transport::instance::Selection;
 use ghostlight_transport::observability::{build_debug_sink, DebugSink};
 use ghostlight_transport::proc::{self, ProcId};
 use ghostlight_transport::role::{self, Role};
@@ -16,7 +16,7 @@ use ghostlight_transport::{ipc, watchdog};
 fn main() {
     // Resolve the instance from the same precedence root `ghostlight` uses (ADR-0044) and fold the
     // winner back into GHOSTLIGHT_INSTANCE so every point-of-use `Instance::resolve()` agrees.
-    resolve_instance();
+    let selection = resolve_selection();
 
     let args: Vec<String> = std::env::args().collect();
     let debug =
@@ -42,8 +42,8 @@ fn main() {
 
     let rt = tokio::runtime::Runtime::new().expect("build the adapter tokio runtime");
     let block_sink = sink.clone();
-    let endpoint = ipc::default_endpoint();
-    let code = rt.block_on(relay_with_watchdog(&endpoint, block_sink, parent));
+    let endpoints = ipc::endpoint_candidates(&selection);
+    let code = rt.block_on(relay_with_watchdog(&endpoints, block_sink, parent));
 
     // The single ordered teardown. process::exit rather than unwinding: the stdin read may still be
     // parked in a blocking ReadFile, and dropping the runtime would hang joining that thread. Flush
@@ -52,26 +52,15 @@ fn main() {
     std::process::exit(code)
 }
 
-/// Resolve `--instance <name>` / `--instance=<name>` / `GHOSTLIGHT_INSTANCE`, validate it, and fold
-/// the winner back into `GHOSTLIGHT_INSTANCE` (mirrors the root `ghostlight` binary's resolver,
-/// minus the argv[0] step: this bin is always launched WITH args by the MCP client, so a named
-/// instance rides the flag/env; the argv[0] copy signal is the browser adapter's job, ADR-0046).
-/// An invalid name is fatal: print the validation error and exit 2.
-fn resolve_instance() {
-    if let Some(flag) = instance_flag_value() {
-        let name = flag.trim();
-        if name.is_empty() {
-            return; // default instance
-        }
-        if let Err(e) = Instance::validate(name) {
-            eprintln!("ghostlight-adapter-agent: {e}");
-            std::process::exit(2);
-        }
-        std::env::set_var(Instance::ENV_VAR, name);
-        return;
-    }
-    if std::env::var_os(Instance::ENV_VAR).is_some() {
-        if let Err(e) = Instance::validate_env() {
+/// Resolve the adapter's instance SELECTION (ADR-0048 D2): `--instance <name>` /
+/// `--instance=<name>` wins over `GHOSTLIGHT_INSTANCE`; the reserved word `default` pins the
+/// default instance (no override); NOTHING pins nothing -- the adapter resolves at connect time,
+/// preferring a live dev instance (ADR-0048 D1). An invalid name is fatal: print the validation
+/// error and exit 2.
+fn resolve_selection() -> Selection {
+    match Selection::resolve_from(instance_flag_value().as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
             eprintln!("ghostlight-adapter-agent: {e}");
             std::process::exit(2);
         }
@@ -96,7 +85,11 @@ fn instance_flag_value() -> Option<String> {
 /// Relay the client's stdio to the service, ending when the client closes OR the parent-death
 /// watchdog fires (ADR-0029/0045). Transcribed from the former core `run_as_adapter`; returns the
 /// process exit code (0 on a clean end or watchdog trigger, 1 on a relay error).
-async fn relay_with_watchdog(endpoint: &str, debug_sink: DebugSink, parent: Option<ProcId>) -> i32 {
+async fn relay_with_watchdog(
+    endpoints: &[String],
+    debug_sink: DebugSink,
+    parent: Option<ProcId>,
+) -> i32 {
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
     if let Some(parent) = parent {
         let shutdown = shutdown.clone();
@@ -111,7 +104,7 @@ async fn relay_with_watchdog(endpoint: &str, debug_sink: DebugSink, parent: Opti
     }
 
     tokio::select! {
-        result = ipc::relay_adapter(endpoint, &debug_sink) => {
+        result = ipc::relay_adapter(endpoints, &debug_sink) => {
             match result {
                 Ok(()) => 0,
                 Err(e) => {
