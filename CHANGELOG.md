@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-09
+
+A distribution-plumbing patch: it makes Ghostlight publishable to the official MCP Registry and
+fills out the package-manager manifests. No runtime behavior changes.
+
+### Added
+- npm `mcpName` marker (`org.sylin/ghostlight`) in the launcher package, the ownership proof the
+  MCP Registry requires to link the `org.sylin/ghostlight` server entry to its npm package.
+
+### Changed
+- `server.json` targets the current registry schema (`2025-12-11`) and tracks this release.
+- The winget, scoop, and homebrew manifests carry the real per-artifact sha256 sums for this
+  release instead of placeholders.
+
 ## [0.4.0] - 2026-07-09
 
 The multi-instance, resilience, and conformance release. The single binary splits into three role
