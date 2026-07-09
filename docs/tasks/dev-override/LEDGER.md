@@ -5,7 +5,7 @@ task (or block); this file is the single source of truth for batch progress.
 
 ## RESUME HERE
 
-Next task: **T3** (`T3-extension-single-host.md`). T1 landed at `e80bec9`, T2 at `ababf4a`.
+Next task: **T4** (`T4-installer-unified-surface.md`). T1 `e80bec9`, T2 `ababf4a`, T3 `77ad837`.
 
 ## Task table
 
@@ -13,7 +13,7 @@ Next task: **T3** (`T3-extension-single-host.md`). T1 landed at `e80bec9`, T2 at
 |---|---|---|---|
 | T1 agent override resolution | done | e80bec9 | V-ALL green; adapter_override + adapter_reconnect both pass |
 | T2 browser adapter resolution | done | ababf4a | V-ALL green; transport tests 64 -> 66 (two pick_native_host tests) |
-| T3 extension single host | pending | - | |
+| T3 extension single host | done | 77ad837 | node --check x3 + grouping test pass; P3 post-grep zero; no dev-host in ext JS |
 | T4 installer unified surface | pending | - | |
 | T5 doctor + docs + changelog | pending | - | |
 
@@ -76,3 +76,23 @@ Deviations:
 1. The `relay_native_host` doc paragraph PINS specifies ("APPEND this paragraph to its doc
    comment") was added as a new trailing `///` paragraph (a blank `///` separator then the three
    lines), matching the same rendering choice logged for T1. Semantics identical.
+
+### T3 -- one extension host (ADR-0048 D5)
+
+Code commit: `77ad837`. STOP preconditions all passed (every anchor present and matching;
+`org.sylin.ghostlight.dev` appeared ONLY at service-worker.js's NATIVE_HOST_DEV line). Files
+staged (exactly the three owned): extension/service-worker.js, extension/popup.js,
+extension/options.js.
+
+Verification (all green):
+- node --check extension/service-worker.js / popup.js / options.js: all clean
+- node --test tests/extension/grouping.test.js: 4 pass, 0 fail
+- pinned P3 post-condition grep (nativeHost|boundInstance|NATIVE_HOST_DEV|NATIVE_HOST_DEFAULT|
+  state.instance across the three files): ZERO matches
+- cross-cutting pin: `org.sylin.ghostlight.dev` absent from extension/*.js after T3
+- cargo fmt --check / clippy / build / test --workspace (0 failed) / linux check: all green
+  (unchanged tree; the task is JS-only)
+
+Deviations: none. (The extension JS files are CRLF in the working tree and Git normalizes them to
+LF on commit -- a pre-existing repo characteristic, not a change this task introduced; the diff is
+exactly the pinned label/host edits.)
