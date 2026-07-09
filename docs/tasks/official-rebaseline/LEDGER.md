@@ -5,11 +5,35 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 
 ## RESUME HERE
 
-- Status: T1 + T2 + T3 DONE. Next task: **T4 -- gif_creator**.
-- Base commit for the batch: `d52e0df`. T2 = `72f9b8a`, T3 = (this commit).
+- Status: T1 + T2 + T3 DONE. Next task: **T4 -- gif_creator** (the LARGEST; phased).
+- Base commit for the batch: `d52e0df`. T2 = `72f9b8a`, T3 = `b9b5dbb`.
 - Advertised tool count is now **20** (`file_upload`, `browser_batch`, `upload_image`, then `explain`).
   `tests/tool_schema_fidelity.rs` pins `names[16..=19] == file_upload, browser_batch, upload_image,
   explain`. Before T4, re-read the tree.
+- **T4 PRE-FLIGHT FINDINGS (2026-07-09, before starting T4):**
+  - **Part A schema source is GONE:** `scratchpad/harvest/HARVEST-1.0.80.md` (the ephemeral harvest
+    that pinned gif_creator's description + params) no longer exists (a prior session's scratchpad).
+    ADR-0050 D5 does NOT carry the full schema (it defers to "the T4 task prompt", which defers to the
+    now-missing harvest). So T4 must EITHER re-extract from the installed official extension (id
+    `fcoeoabgfenejglbffodgkkbkcdhcgfn`, `assets/mcpPermissions-*.js`, search `name:"gif_creator"` --
+    an interactive/founder step) OR RECONSTRUCT a reasonable schema (acceptable: gif_creator is a NEW
+    additive tool, NOT one of the 13 trained, and the fidelity test is a regression snapshot, so
+    exact-official match is not load-bearing -- but flag the `options` gap per the prompt's fallback).
+  - **Capability discrepancy RESOLVED to the PROMPT:** ADR-0050 D5 says a download-export classifies
+    Read; the T4 prompt Part B classifies `export` as `[Write]` (fail-closed -- the variant keys on
+    `action`, not the `download` flag, and Phase-2 coordinate export IS a page write). Use `[Write]`
+    (the prompt's `EXPECTED` table pins `("gif_creator", Some("export"), &[Capability::Write])`); the
+    ADR's "Read" was the earlier thought. Note the discrepancy in the T4 entry.
+  - **The RISK is the vendored LZW GIF89a encoder** (`extension/lib/gifenc.js`): a from-scratch port
+    of an omggif/gif.js-style encoder (~200 lines of bit-packed LZW). The Part E test oracle is WEAK
+    (only checks the `GIF89a` header bytes + non-trivial length -- it would NOT catch an LZW bug that
+    produces a corrupt-but-header-valid GIF). Consider strengthening it (a decode round-trip, or port
+    an encoder that ships known test vectors) rather than trusting the header check.
+  - Frame capture reuses `service-worker.js`'s `async function screenshot(tabId)` (line ~749).
+  - Post-T3 STOP numbers to re-confirm before applying Part D deltas: `total_variants == 33`,
+    `with_action_key.len() == 2`. Deltas: total_variants 33->37 (+4 variants), with_action_key 2->3,
+    count 20->21 (only directory.rs pins + tool_schema_fidelity + all_open_golden + pipeline.rs
+    explain literal; the mcp_protocol/hub-outbound/tool_enforcement count asserts DERIVE -- skip).
 - BUILD NOTE (post dev re-install): live MCP clients continuously respawn `ghostlight-relay` and lock
   the normal `target/debug`, so the FULL V-ALL (which builds relay + spawns for the e2e tier) must run
   in an ISOLATED `CARGO_TARGET_DIR` (`CARGO_TARGET_DIR=$TMP/gl-target cargo build --workspace && cargo
