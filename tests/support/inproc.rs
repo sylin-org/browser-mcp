@@ -13,6 +13,14 @@
 //! The two seams this generalizes previously lived inline: a `Browser` over `tokio::io::duplex`
 //! plus a fake extension (`tests/hub_multiplex.rs`), and an all-open `Governance` reached through
 //! the server loop (`tests/all_open_golden.rs`). Here they are one reusable [`Harness`].
+//!
+//! RUNTIME FLAVOR: a test that drives a tool which ORCHESTRATES internal sub-calls -- `script`, and
+//! a non-denied `form_fill` -- must use `#[tokio::test(flavor = "multi_thread", worker_threads =
+//! 2)]`. Those tools re-enter the runtime via `tokio::task::block_in_place` +
+//! `Handle::block_on` (`crates/core/src/mcp/script.rs`), which panics on the default current-thread
+//! test runtime; the panic surfaces inside the spawned `tools/call` task, so the only visible
+//! symptom is that [`Harness::drive`] hangs waiting for a reply that never comes. Plain
+//! (non-orchestrating) tool calls and denied-before-dispatch cases run fine on the default runtime.
 
 #![allow(dead_code)]
 
@@ -169,6 +177,45 @@ impl Harness {
 
         drop(write_half);
         drop(lines);
+        let _ = session.await;
+        responses
+    }
+
+    /// Like [`Harness::drive`], but writes each `&str` line VERBATIM (so a malformed frame or a
+    /// JSON-RPC batch array can be exercised) and reads EXACTLY `expected` responses. The ADR-0049
+    /// parse-error / batch rejects reply with `id: null`, so they cannot be counted by id-presence
+    /// the way [`Harness::drive`] does; the caller states `expected` directly.
+    pub async fn drive_raw(&self, lines: &[&str], expected: usize) -> Vec<Value> {
+        let (client, server) = tokio::io::duplex(256 * 1024);
+        let ctx = self.ctx.clone();
+        let guid = SessionGuid::mint();
+        let session = tokio::spawn(async move {
+            let _ = serve_session(server, ctx, guid).await;
+        });
+
+        let (read_half, mut write_half) = tokio::io::split(client);
+        for line in lines {
+            write_half
+                .write_all(line.as_bytes())
+                .await
+                .expect("write raw line");
+            write_half.write_all(b"\n").await.expect("write newline");
+        }
+        write_half.flush().await.ok();
+
+        let mut reader = BufReader::new(read_half).lines();
+        let mut responses = Vec::with_capacity(expected);
+        for _ in 0..expected {
+            let line = reader
+                .next_line()
+                .await
+                .expect("read a response line")
+                .expect("the session closed before every expected reply arrived");
+            responses.push(serde_json::from_str(&line).expect("each response line is JSON"));
+        }
+
+        drop(write_half);
+        drop(reader);
         let _ = session.await;
         responses
     }
