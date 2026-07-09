@@ -77,7 +77,7 @@ fn adapter_cannot_complete_handshake_with_an_impostor_service() {
         std::env::temp_dir().join(format!("ghostlight-test-logdir-{endpoint}-adapter-side"));
     let _ = std::fs::remove_dir_all(&adapter_log_dir);
 
-    let mut adapter = Command::new(env!("CARGO_BIN_EXE_ghostlight"))
+    let mut adapter = Command::new(support::adapter_bin())
         .env("GHOSTLIGHT_ENDPOINT", &endpoint)
         .env("GHOSTLIGHT_LOG_DIR", &adapter_log_dir)
         .stdin(Stdio::piped())
@@ -133,8 +133,9 @@ fn adapter_cannot_complete_handshake_with_an_impostor_service() {
 #[test]
 fn supervisor_start_asserts_adapter_role() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates")
+        .join("transport")
         .join("src")
-        .join("hub")
         .join("supervisor.rs");
     let source =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));

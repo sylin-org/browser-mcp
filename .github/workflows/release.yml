@@ -40,7 +40,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # --no-fail-fast: report EVERY failing test binary, not just the first (ADR-0032).
-      - run: cargo test --locked --no-fail-fast
+      - run: cargo test --locked --no-fail-fast --workspace
 
   build:
     needs: [prepare]
@@ -66,7 +66,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo build --release --locked --workspace --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -81,7 +81,12 @@ jobs:
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             BIN_SUFFIX=".exe"
           fi
-          cp "target/${TARGET}/release/${BIN_NAME}${BIN_SUFFIX}" "$ARCHIVE_DIR/"
+
+          # ADR-0046: three role executables ship together (ghostlight + the two adapters).
+          BINS=(ghostlight ghostlight-adapter-agent ghostlight-adapter-browser)
+          for b in "${BINS[@]}"; do
+            cp "target/${TARGET}/release/${b}${BIN_SUFFIX}" "$ARCHIVE_DIR/"
+          done
           cp README.md "$ARCHIVE_DIR/" 2>/dev/null || true
           cp LICENSE* "$ARCHIVE_DIR/" 2>/dev/null || true
 
@@ -93,25 +98,30 @@ jobs:
             echo "ASSET=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
           fi
 
-          # The raw per-target binary, named WITHOUT the version. The npm wrapper and the
+          # The raw per-target binaries, named WITHOUT the version. The npm wrapper and the
           # get.sh/get.ps1 one-liners fetch these directly (the versioned tag lives in the
           # download URL path, and `releases/latest/download/<raw>` needs no API parsing).
-          RAW="${BIN_NAME}-${TARGET}${BIN_SUFFIX}"
-          cp "target/${TARGET}/release/${BIN_NAME}${BIN_SUFFIX}" "$RAW"
-          echo "RAW=${RAW}" >> "$GITHUB_ENV"
+          for b in "${BINS[@]}"; do
+            cp "target/${TARGET}/release/${b}${BIN_SUFFIX}" "${b}-${TARGET}${BIN_SUFFIX}"
+          done
 
       - name: Checksum
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
-            sha256sum "${{ env.RAW }}" > "${{ env.RAW }}.sha256"
+            SHA="sha256sum"
+            BIN_SUFFIX=".exe"
           else
-            shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
-            shasum -a 256 "${{ env.RAW }}" > "${{ env.RAW }}.sha256"
+            SHA="shasum -a 256"
+            BIN_SUFFIX=""
           fi
-          cat "${{ env.ASSET }}.sha256" "${{ env.RAW }}.sha256"
+          $SHA "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          for b in ghostlight ghostlight-adapter-agent ghostlight-adapter-browser; do
+            RAW="${b}-${{ matrix.target }}${BIN_SUFFIX}"
+            $SHA "$RAW" > "${RAW}.sha256"
+          done
+          cat ./*.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -120,8 +130,9 @@ jobs:
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
-            ${{ env.RAW }}
-            ${{ env.RAW }}.sha256
+            ghostlight-${{ matrix.target }}*
+            ghostlight-adapter-agent-${{ matrix.target }}*
+            ghostlight-adapter-browser-${{ matrix.target }}*
           if-no-files-found: error
 
   release:

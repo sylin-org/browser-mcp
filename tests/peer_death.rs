@@ -16,10 +16,6 @@ mod support;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ghostlight")
-}
-
 #[test]
 fn native_host_exits_when_server_dies() {
     let endpoint = format!("ghostlight-peerdeath-{}", std::process::id());
@@ -31,7 +27,7 @@ fn native_host_exits_when_server_dies() {
 
     // native-host role: the chrome-extension:// positional arg selects the relay role. stdin held
     // open so the upstream (Chrome -> IPC) reader does not EOF.
-    let mut host = Command::new(bin())
+    let mut host = Command::new(support::browser_bin())
         .arg(format!("chrome-extension://{}/", "a".repeat(32)))
         .env("GHOSTLIGHT_ENDPOINT", &endpoint)
         .stdin(Stdio::piped())

@@ -37,10 +37,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # --no-fail-fast: report EVERY failing test binary, not just the first (ADR-0032 Context:
       # cargo's default fail-fast masked the true cross-platform scope behind the first failure).
-      - run: cargo test --locked --no-fail-fast
+      - run: cargo test --locked --no-fail-fast --workspace
 
   extension-unit:
     strategy:
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-      - run: cargo build --locked
+      - run: cargo build --locked --workspace
       - run: npm ci --prefix tests/e2e || npm install --prefix tests/e2e
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
       - run: node tests/e2e/run-smoke.mjs

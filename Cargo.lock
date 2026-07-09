@@ -344,11 +344,64 @@ dependencies = [
 
 [[package]]
 name = "ghostlight"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
+ "ghostlight-core",
+ "ghostlight-transport",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "ghostlight-adapter-agent"
+version = "0.4.0"
+dependencies = [
+ "ghostlight-transport",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ghostlight-adapter-browser"
+version = "0.4.0"
+dependencies = [
+ "ghostlight-transport",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ghostlight-core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "ghostlight-transport",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "windows-sys",
+ "winreg",
+]
+
+[[package]]
+name = "ghostlight-transport"
+version = "0.4.0"
+dependencies = [
  "dirs",
  "getrandom 0.4.3",
  "hmac",
@@ -360,10 +413,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "url",
  "uuid",
  "windows-sys",
- "winreg",
 ]
 
 [[package]]

@@ -123,7 +123,8 @@ async fn relay_adapter_sends_a_real_guid_not_a_placeholder() {
     // test process's own stdio, which never naturally completes here. We only need the ONE hello
     // frame it sends before that; the task is simply dropped (never awaited) once we have it.
     tokio::spawn(async move {
-        let _ = ghostlight::native::ipc::relay_adapter(&relay_endpoint, &debug).await;
+        let eps = [relay_endpoint];
+        let _ = ghostlight::native::ipc::relay_adapter(&eps, &debug).await;
     });
 
     let hello_bytes = accept_one_hello(listener).await;

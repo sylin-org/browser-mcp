@@ -13,7 +13,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { groupSessionTabs } = require("../../extension/lib/grouping.js");
+const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups } = require("../../extension/lib/grouping.js");
 
 // A minimal fake `chrome.tabs`/`chrome.tabGroups` recording every `chrome.tabs.group` call
 // (`groupCalls`, in the shape `{ tabIds: [...], groupId: <number|null> }`) and every
@@ -121,4 +121,43 @@ test("owned_tabs_are_grouped_on_service_request_only", async () => {
 
   const groupIdT = await groupSessionTabs(chromeS, sessionGroups, "T", [101], "title-T");
   assert.notStrictEqual(groupIdT, groupIdS1, "a distinct guid gets a distinct group");
+});
+
+// ADR-0047 D1 -- the managed-surface predicate (PINS P1). The gate recognizes a tab as in-surface
+// when it sits in ANY Ghostlight-managed group: the legacy global group OR any per-session group.
+test("managed_surface_accepts_global_and_session_groups", () => {
+  const m = new Map([["S", 9], ["T", 12]]);
+  assert.deepStrictEqual(
+    Array.from(managedGroupIds(7, m)).sort((a, b) => a - b),
+    [7, 9, 12]
+  );
+  assert.strictEqual(isManagedGroupId(9, 7, m), true);
+  assert.strictEqual(isManagedGroupId(7, 7, m), true);
+});
+
+test("managed_surface_rejects_foreign_and_ungrouped", () => {
+  const m = new Map([["S", 9], ["T", 12]]);
+  assert.strictEqual(isManagedGroupId(8, 7, m), false);
+  assert.strictEqual(isManagedGroupId(-1, 7, m), false);
+  assert.strictEqual(isManagedGroupId(5, null, new Map()), false);
+  assert.strictEqual(managedGroupIds(null, new Map()).size, 0);
+});
+
+// ADR-0047 D5 (PINS P6): pruneDeadGroups drops session-map entries whose Chrome group is gone,
+// returns true when it removed anything (the caller persists), and is a no-op returning false on a
+// clean map. An INLINE fake here (not the shared fakeChrome helper, whose liveGroupIds set cannot
+// express a pre-existing live group) reports group 9 alive and every other group dead.
+test("dead_groups_are_pruned_from_the_session_map", async () => {
+  const chrome = {
+    tabGroups: {
+      async get(groupId) {
+        if (groupId !== 9) throw new Error(`no such group ${groupId}`);
+        return { id: 9 };
+      },
+    },
+  };
+  const sessionGroups = new Map([["S", 9], ["T", 12]]);
+  assert.strictEqual(await pruneDeadGroups(chrome, sessionGroups), true);
+  assert.deepStrictEqual(Array.from(sessionGroups.entries()), [["S", 9]]);
+  assert.strictEqual(await pruneDeadGroups(chrome, sessionGroups), false);
 });

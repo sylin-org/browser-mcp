@@ -1,0 +1,38 @@
+[package]
+name = "ghostlight-core"
+version = "0.4.0"
+edition = "2021"
+description = "Ghostlight core: governance, tools, browser protocol, hub composition, and the installer (ADR-0046)."
+publish = false
+# Open-core (ADR-0027): this crate contains src/governance/, the Ghostlight Commercial License
+# module; the root LICENSE holds the split notice.
+license-file = "../../LICENSE"
+
+[dependencies]
+ghostlight-transport = { path = "../transport" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync", "time", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+dirs = "6"
+sha2 = "0.11"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# WHATWG URL parser -- domain matching must never hand-roll URL/host parsing (CVE-2025-47241 class).
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

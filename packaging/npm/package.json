@@ -1,6 +1,6 @@
 {
   "name": "ghostlight",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Governed browser automation over your own authenticated Chromium session, for AI coding agents. Thin npm launcher for the ghostlight binary.",
   "bin": {
     "ghostlight": "bin/ghostlight.js"

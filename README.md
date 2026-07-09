@@ -116,18 +116,19 @@ cd ghostlight
 cargo build --release
 ```
 
-The binary is at `target/release/ghostlight` (`ghostlight.exe` on Windows). All commands below run
-that binary. Every release archive carries a SHA-256 checksum and a signed build-provenance
-attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
+The build produces three role executables in `target/release/` (ADR-0046): `ghostlight` (the CLI
+you run below) plus the thin `ghostlight-adapter-agent` and `ghostlight-adapter-browser`
+pass-throughs your MCP client and Chrome launch; a prebuilt archive carries all three side by side.
+All commands below run the `ghostlight` binary. Every release archive carries a SHA-256 checksum
+and a signed build-provenance attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
 
 ### 2. Load the extension in Chrome
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (top right).
 3. Click **Load unpacked** and select the `extension/` directory of this repo.
-4. Note the extension ID that Chrome assigns. The committed manifest key pins it to a stable value:
-   `cjcmhepmagomefjggkcohdbfemacojoa`. Confirm the ID shown matches; you will pass it to the
-   installer.
+4. The committed manifest key pins the extension ID to `cjcmhepmagomefjggkcohdbfemacojoa`; the
+   installer already allows it (and the Web Store ID), so there is nothing to copy.
 
 ### 3. Register the native host and your MCP client
 
@@ -135,7 +136,7 @@ Run the installer from the binary you just built. It registers the native-messag
 detected browsers and adds the MCP server entry to your detected MCP clients:
 
 ```sh
-./target/release/ghostlight install --extension-id cjcmhepmagomefjggkcohdbfemacojoa
+./target/release/ghostlight install
 ```
 
 Useful flags:
@@ -273,7 +274,8 @@ The binary has no-subcommand and subcommand modes:
 - **Start with `doctor`.** It pinpoints most problems: a browser or client that is not registered,
   no server running, a stale process holding the endpoint, or an extension that never connected.
 - **Extension shows disconnected.** Reload it at `chrome://extensions`, make sure the browser is
-  running, and confirm the extension ID matches what you passed to `install`.
+  running, and check `ghostlight doctor` (the host manifest already allows both shipped extension
+  ids).
 - **Turn on observability.** Install with `--debug` (or set `GHOSTLIGHT_DEBUG=1` in the server's
   environment), then run `ghostlight status` to see live counters and per-session state.
 - **Rebuilding the binary on Windows.** A running server locks `ghostlight.exe`. Stop the MCP

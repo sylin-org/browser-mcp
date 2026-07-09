@@ -143,6 +143,8 @@ fn build_ctx(browser: Browser) -> ServiceContext {
         },
         session_registry: Arc::new(Mutex::new(SessionRegistry::new())),
         owned_tabs: Arc::new(Mutex::new(HashMap::new())),
+        session_titles: Arc::new(Mutex::new(HashMap::new())),
+        live_guids: Arc::new(Mutex::new(HashMap::new())),
         mint_quota: Arc::new(Mutex::new(HashMap::new())),
         live_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         debug_sink: ghostlight::observability::DebugSink::disabled(),
@@ -218,7 +220,14 @@ async fn unowned_tab_is_refused_before_any_tab_url_probe() {
     let guid_b = SessionGuid::mint();
     // Session A owns tab 5 -- the task file's own sanctioned shortcut ("the H3-established
     // ownership path"), bypassing a live `tabs_create_mcp` round trip for A.
-    ctx.owned_tabs.lock().unwrap().insert(5, guid_a);
+    ctx.owned_tabs.lock().unwrap().insert(5, guid_a.clone());
+    // ADR-0047 D5: A is a LIVE owner (the test's premise), so B's cross-session reference to A's
+    // tab is REFUSED, not adopted (dead-owner adoption applies only to a guid with no live
+    // connection). Seed A's liveness directly, mirroring the direct ownership seed above.
+    ctx.live_guids
+        .lock()
+        .unwrap()
+        .insert(guid_a.as_str().to_string(), 1);
 
     let client_b = drive_session(ctx, guid_b);
     let mut reader_b = BufReader::new(client_b);
@@ -273,6 +282,13 @@ async fn unknown_tab_result_leaks_no_host_or_existence() {
     // Tab 5 exists (on the distinctive host); tab 999 is absent from every table (the fake
     // extension has zero configuration for it -- "no extension knows [it]"). Both are owned by
     // A, so B's reference to either is refused by the SAME cross-session-ownership mechanism.
+    // ADR-0047 D5: A is a LIVE owner, so B's references to A's tabs are REFUSED, not adopted
+    // (dead-owner adoption applies only to a guid with no live connection). Seed A's liveness
+    // directly, mirroring the direct ownership seeds below.
+    ctx.live_guids
+        .lock()
+        .unwrap()
+        .insert(guid_a.as_str().to_string(), 1);
     {
         let mut owned = ctx.owned_tabs.lock().unwrap();
         owned.insert(5, guid_a.clone());

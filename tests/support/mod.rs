@@ -18,6 +18,35 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
+/// The `ghostlight-adapter-agent` executable beside the `ghostlight` test binary (ADR-0046). Cargo
+/// does not expose a `CARGO_BIN_EXE_*` for another workspace member's bin, so derive the sibling
+/// path in the same `target/<profile>/` directory; `cargo test --workspace` builds it before tests.
+pub fn adapter_bin() -> PathBuf {
+    let dir = Path::new(bin())
+        .parent()
+        .expect("the test binary has a parent directory");
+    let name = if cfg!(windows) {
+        "ghostlight-adapter-agent.exe"
+    } else {
+        "ghostlight-adapter-agent"
+    };
+    dir.join(name)
+}
+
+/// The `ghostlight-adapter-browser` executable beside the `ghostlight` test binary (ADR-0046),
+/// derived the same way as [`adapter_bin`] (the browser-side pass-through Chrome launches).
+pub fn browser_bin() -> PathBuf {
+    let dir = Path::new(bin())
+        .parent()
+        .expect("the test binary has a parent directory");
+    let name = if cfg!(windows) {
+        "ghostlight-adapter-browser.exe"
+    } else {
+        "ghostlight-adapter-browser"
+    };
+    dir.join(name)
+}
+
 /// The isolated `GHOSTLIGHT_LOG_DIR` a given test's service uses, deterministic from `endpoint`
 /// (which every caller already makes unique per test): lets a caller poll the SAME service's debug
 /// state after [`spawn_service`] hands back only a bare `Child`.
@@ -229,7 +258,7 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
 /// both sides to read the SAME per-install `hub-key`, so a mismatched log dir here would make
 /// every real adapter/service pair fail the proof, not just an intentional impostor scenario.
 pub fn spawn_adapter(endpoint: &str) -> Child {
-    Command::new(bin())
+    Command::new(adapter_bin())
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_LOG_DIR", log_dir_for(endpoint))
         .stdin(Stdio::piped())

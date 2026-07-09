@@ -5,6 +5,69 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.4.0] - 2026-07-09
+
+The multi-instance, resilience, and conformance release. The single binary splits into three role
+executables; named instances run fully isolated stacks; a live `dev` build shadows the release
+install for unpinned clients; the adapter rides through a service restart, rebuild, or crash with no
+client reload; and an MCP protocol-conformance pass brings the handshake up to the current spec.
+
+### Added
+- Named instances (ADR-0044): `--instance <name>` runs a fully isolated Ghostlight stack (a `dev`
+  alongside the default deploy) with its own identity, directories, host registration, and
+  supervisor; `--keep-warm` keeps a service up between actions instead of idle-exiting.
+- The development override (ADR-0048): an MCP client or browser registered WITHOUT an explicit
+  instance now resolves at connect time, preferring a live `dev` instance and falling back to
+  the default -- run a dev service and every unpinned client routes to it; stop it and they
+  return to the release install on their next connect.
+- One browser surface: the native-host manifest always allows both the Web Store and the pinned
+  unpacked-dev extension ids, so `ghostlight install` needs no --extension-id and one
+  registration serves a store install and a dev checkout at once.
+- `ghostlight doctor` reports whether a live dev instance is currently shadowing the default for
+  unpinned clients.
+- MCP `protocolVersion` negotiation (ADR-0049): `initialize` echoes the client's requested revision
+  when supported and offers the latest (`2025-11-25`) otherwise, instead of a hardcoded
+  `2024-11-05`.
+- `--no-supervisor` install flag (ADR-0046): skip registering the OS auto-start service (the dev
+  loop runs the service in a terminal instead), documented in docs/DEV-LOOP.md.
+
+### Changed
+- Three role executables (ADR-0046): the single binary is now `ghostlight` (the CLI + persistent
+  service) plus two thin pass-throughs, `ghostlight-adapter-agent` (the MCP-client side) and
+  `ghostlight-adapter-browser` (the Chrome native-messaging side). A service rebuild no longer
+  relinks the adapters, and `install` places all three side by side.
+- Resilient reconnecting adapter (ADR-0045): a service restart, rebuild, upgrade, or crash no
+  longer forces an MCP-client reload -- the adapter reconnects (a patient window, up to 120s) and
+  replays the captured MCP handshake, so the client rides through transparently.
+- Session identity is stable across reconnects: the agent adapter re-presents one guid per
+  process, so tab ownership and the session's Chrome tab group survive a service restart
+  (ADR-0047 D2).
+- New tabs are born directly in the calling session's tab group (no more about:blank bootstrap
+  litter), and tabs_context_mcp reports that session's group (ADR-0047 D3).
+- Tab groups are titled by the MCP client's name (for example, the ghost glyph followed by
+  "Claude Code"), deduped across sessions, instead of a truncated session id (ADR-0047 D4).
+- A tab owned by a session that is no longer connected can be adopted by a live session, and
+  dead group-map entries are pruned on service-worker restart (ADR-0047 D5).
+- `--instance dev install` is now thin (ADR-0048 D6): it registers only the pinned
+  `ghostlight-dev` MCP-client entries; browser traffic rides the unified default host.
+- The extension always connects to the `org.sylin.ghostlight` host; the installType-based
+  dev-host selection is superseded by adapter-side resolution (ADR-0048 D5).
+- MCP conformance (ADR-0049): `initialize` advertises `tools.listChanged` (the server does emit it
+  on manifest hot-reload); a malformed JSON-RPC frame gets an addressable `-32700` instead of a
+  silent drop; and a JSON-RPC batch (array frame, removed from MCP in 2025-06-18) is rejected with
+  a message pointing at the `script` tool.
+
+### Fixed
+- Tab tools no longer refuse tabs that sit in a per-session Ghostlight group: the extension's
+  gate now recognizes every Ghostlight-managed group (ADR-0047 D1; the e2e F4 desync).
+- A service-side read error in the agent adapter reconnects instead of exiting, so an abrupt
+  service death never forces an MCP-client reload (ADR-0047 D6).
+- The anti-squat hub-key is now per-user, not per-instance, so an unpinned adapter (default
+  identity) can verify a live `dev` service's proof -- the development override no longer fails the
+  "not the one this user installed" refusal (ADR-0048 amendment).
+
 ## [0.3.0] - 2026-07-07
 
 The composition batch (ADR-0035 through ADR-0038): sequential multi-step scripting, semantic form

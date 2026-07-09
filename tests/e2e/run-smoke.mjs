@@ -38,11 +38,18 @@ function resolveBinaryPath() {
   const exeName = process.platform === "win32" ? "ghostlight.exe" : "ghostlight";
   const binPath = path.join(REPO_ROOT, "target", "debug", exeName);
   if (existsSync(binPath)) return binPath;
-  const build = spawnSync("cargo", ["build"], { cwd: REPO_ROOT, stdio: "inherit" });
+  const build = spawnSync("cargo", ["build", "--workspace"], { cwd: REPO_ROOT, stdio: "inherit" });
   if (build.status !== 0 || !existsSync(binPath)) {
     fail(`cargo build did not produce ${binPath}`);
   }
   return binPath;
+}
+
+// Derive a sibling role executable (ADR-0046) beside the resolved `ghostlight` binary: same dir,
+// platform suffix. `cargo build --workspace` builds all three bins into target/debug.
+function siblingBin(binaryPath, name) {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  return path.join(path.dirname(binaryPath), exe);
 }
 
 // Step 4: a plain static server for the one fixture page, on an OS-assigned loopback port.
@@ -216,8 +223,10 @@ function reExecUnderXvfb() {
 }
 
 async function runDryRun(binaryPath, endpoint) {
+  // Chrome launches the native host, so the manifest/wrapper wraps the BROWSER adapter (ADR-0046).
+  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
   const { server, url: fixtureUrl } = await startFixtureServer();
-  const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, binaryPath);
+  const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, browserBin);
   const plan = {
     repoRoot: REPO_ROOT,
     binaryPath,
@@ -236,8 +245,12 @@ async function runDryRun(binaryPath, endpoint) {
 }
 
 async function runLive(binaryPath, endpoint) {
+  // ADR-0046: Chrome launches the BROWSER adapter (wrapped by the native-messaging manifest); the
+  // MCP client launches the AGENT adapter; the `service` spawn below stays on the `ghostlight` bin.
+  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
+  const agentBin = siblingBin(binaryPath, "ghostlight-adapter-agent");
   const { server, url: fixtureUrl } = await startFixtureServer();
-  const { userDataDir } = buildProfile(endpoint, binaryPath);
+  const { userDataDir } = buildProfile(endpoint, browserBin);
 
   // The hub model (ADR-0030): a standalone SERVICE owns the browser link, and both the
   // extension's native-messaging host and this test's MCP client are thin ADAPTERS that dial it.
@@ -294,7 +307,7 @@ async function runLive(binaryPath, endpoint) {
     fail("no extension service worker appeared within the retry budget", 3);
   }
 
-  const child = spawn(binaryPath, [], {
+  const child = spawn(agentBin, [], {
     stdio: ["pipe", "pipe", "inherit"],
     env: { ...process.env, GHOSTLIGHT_ENDPOINT: endpoint },
   });
