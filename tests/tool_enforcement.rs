@@ -392,8 +392,8 @@ fn union_rule_end_to_end() {
 }
 
 /// Test 8: the all-open invariant. With no `--manifest` at all, behavior is byte-identical to
-/// today (17 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, and the
-/// ADR-0022 Decision 7 `explain` addition -- fixture identity, `not connected` execution error)
+/// today (18 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
+/// and the ADR-0022 Decision 7 `explain` addition -- fixture identity, `not connected` execution error)
 /// and no `Denied (` text ever appears.
 #[test]
 fn all_open_invariant_no_manifest_means_no_denials() {
@@ -413,8 +413,8 @@ fn all_open_invariant_no_manifest_means_no_denials() {
         .expect("tools array");
     assert_eq!(
         tools.len(),
-        17,
-        "13 trained tools plus wait_for, script, form_fill, and explain"
+        18,
+        "13 trained tools plus wait_for, script, form_fill, file_upload, and explain"
     );
     let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");

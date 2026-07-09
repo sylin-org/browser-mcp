@@ -207,7 +207,7 @@ fn poll_tools_list_until(
 
 /// ADR-0025 end to end: a governed session's advertised set expands live when the org policy
 /// file is rewritten to grant more capabilities, with exactly one `list_changed` notification;
-/// then, when the policy file is deleted, the set returns to the full all-open 14 with a second
+/// then, when the policy file is deleted, the set returns to the full all-open 18 with a second
 /// notification. The audit stream carries exactly two `manifest_reload` session events (the
 /// second with `manifest: null`), and a `tools/call` issued after the swap still carries the
 /// `initialize` request's own `clientInfo` on its audit record (client identity survives the
@@ -326,6 +326,8 @@ fn org_policy_hot_swap_end_to_end() {
         // C10: form_fill's None-variant requires [read, write], a subset of this grant's
         // [read, action, write] -- reachable now that write joined the grant.
         "form_fill",
+        // ADR-0050 D2: file_upload requires [write], a subset of this grant, so it unlocks here.
+        "file_upload",
         "explain",
     ];
     let mut next_id = 3i64;
@@ -356,7 +358,7 @@ fn org_policy_hot_swap_end_to_end() {
     });
     consumed = idx;
 
-    // Delete the policy file: org removal is a legitimate transition back to all-open (17
+    // Delete the policy file: org removal is a legitimate transition back to all-open (18
     // tools), with a second notification.
     std::fs::remove_file(&policy_path).expect("delete the policy file");
     let full_set: Vec<&str> = vec![
@@ -376,6 +378,7 @@ fn org_policy_hot_swap_end_to_end() {
         "wait_for",
         "script",
         "form_fill",
+        "file_upload",
         "explain",
     ];
     let _ = poll_tools_list_until(&mut stdin, &lines, consumed, &mut next_id, &full_set, 20);

@@ -53,8 +53,8 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         .collect();
     assert_eq!(
         names.len(),
-        17,
-        "13 trained tools plus wait_for, script, form_fill, and explain"
+        18,
+        "13 trained tools plus wait_for, script, form_fill, file_upload, and explain"
     );
     assert_eq!(
         names[..13],
@@ -67,7 +67,11 @@ fn advertises_exactly_the_thirteen_trained_tools_plus_explain_positioned_last() 
         names[15], "form_fill",
         "the 16th tool is form_fill, immediately before explain"
     );
-    assert_eq!(names[16], "explain", "explain stays positioned last");
+    assert_eq!(
+        names[16], "file_upload",
+        "the 17th tool is file_upload, immediately before explain"
+    );
+    assert_eq!(names[17], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -105,8 +109,8 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        17,
-        "no tool other than wait_for, script, form_fill, and explain was added to the sacred fixture"
+        18,
+        "no tool other than wait_for, script, form_fill, file_upload, and explain was added to the sacred fixture"
     );
 }
 

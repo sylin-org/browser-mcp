@@ -697,7 +697,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1307,6 +1307,23 @@ const handlers = {
         throw hopError("page", msg);
       }
       return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
+    });
+  },
+  async file_upload(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    if (!a.files || a.files.length === 0) {
+      if (a.paths && a.paths.length > 0) {
+        throw hopError("binary", "file_upload no longer accepts host filesystem paths. The MCP controller must read the file and pass its contents via the `files` parameter.");
+      }
+      throw hopError("binary", "files parameter is required and must be a non-empty array");
+    }
+    return withObservation(tabId, async () => {
+      const r = await content(tabId, { type: "setFiles", ref: a.ref, files: a.files });
+      if (r && r.result && r.result.error) {
+        const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+        throw hopError("page", msg);
+      }
+      return text(r.result.output);
     });
   },
   async wait_for(a) {

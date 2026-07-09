@@ -528,6 +528,37 @@
     return { success: true, value: target.value };
   }
 
+  // file_upload (ADR-0050 Decision 2): decode the base64 `files` into File objects and assign them
+  // to a file <input> located by ref, via an in-page DataTransfer -- the same event tail
+  // setFormValue uses. Never touches the host filesystem; the caller supplies the bytes.
+  function setFiles(ref, files) {
+    const el = deref(ref);
+    if (!el) {
+      const stale = staleRefMessage(ref);
+      return { error: stale || `Element ${ref} not found or was garbage-collected.` };
+    }
+    const target = innerInput(el) || el;
+    if (target.tagName !== "INPUT" || target.type !== "file") {
+      return { error: "Element is not a file input. Found: <" + target.tagName.toLowerCase() + ">." };
+    }
+    const r = (self.GhostlightFileset || GhostlightFileset).decodeFiles(files);
+    if (!r.ok) return { error: r.error };
+    const dt = new DataTransfer();
+    for (const item of r.decoded) {
+      dt.items.add(new File([item.bytes], item.name, { type: item.type, lastModified: Date.now() }));
+    }
+    target.files = dt.files;
+    target.focus();
+    target.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return {
+      success: true,
+      output: "Uploaded " + r.decoded.length + " file(s) to file input: "
+        + r.decoded.map((f) => f.name).join(", ")
+        + " (" + Math.round(r.totalBytes / 1024) + " KB total)",
+    };
+  }
+
   function refCoordinates(ref) {
     const el = deref(ref);
     if (!el) {
@@ -801,6 +832,7 @@
       case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
+      case "setFiles": sendResponse({ result: setFiles(msg.ref, msg.files) }); return true;
       case "refCoordinates": sendResponse({ result: refCoordinates(msg.ref) }); return true;
       case "scrollToRef": {
         const el = deref(msg.ref);

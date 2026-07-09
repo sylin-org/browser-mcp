@@ -113,8 +113,8 @@ mod tests {
         let cap = browser::BrowserCapability::new(browser::Browser::new());
         assert_eq!(cap.code(), "browser");
         assert!(!cap.descriptor().is_empty());
-        // The browser's directory is the 17-declaration REGISTRY.
-        assert_eq!(cap.directory().len(), 17);
+        // The browser's directory is the 18-declaration REGISTRY.
+        assert_eq!(cap.directory().len(), 18);
         // The agent guide carries all four fields.
         let guide = cap.agent_guide();
         assert!(!guide.summary.is_empty());
@@ -129,7 +129,7 @@ mod tests {
             Arc::new(browser::BrowserCapability::new(browser::Browser::new()));
         let reg = Registry::new(vec![cap]);
         assert_eq!(reg.capabilities().len(), 1);
-        assert_eq!(reg.aggregated_directory().len(), 17);
+        assert_eq!(reg.aggregated_directory().len(), 18);
     }
 
     #[test]

@@ -143,7 +143,7 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 17 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
+/// The tool registry: 18 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
 /// and `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
@@ -1073,6 +1073,59 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
     },
     ToolDescriptor {
+        tool: "file_upload",
+        advertised_description: "Upload one or multiple files to a file input element on the page. Do not click on file upload buttons or file inputs -- clicking opens a native file picker dialog that you cannot see or interact with. Instead, use read_page or find to locate the file input element, then use this tool with its ref to upload files directly.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "data": { "type": "string" },
+                            "name": { "type": "string" },
+                            "mimeType": { "type": "string" }
+                        },
+                        "required": ["data", "name"]
+                    },
+                    "description": "Files to upload, as base64-encoded bytes."
+                },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "DEPRECATED. Use `files` instead."
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Element reference ID of the file input from read_page or find tools (e.g., \"ref_1\", \"ref_2\")."
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID where the file input is located. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["ref", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"ref":"ref_1","tabId":0,"files":[{"data":"aGVsbG8=","name":"hello.txt"}]}"#,
+            returns: Some("Uploads the base64-decoded file(s) to the file input at ref; returns a text confirmation with the file names and total size."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[Capability::Write],
+            directory_description:
+                "Upload files (base64 bytes) to a file input located by read_page or find, via its ref.",
+        }],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::ExtensionForward,
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -1174,7 +1227,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 17 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 18 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1332,7 +1385,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 30);
+        assert_eq!(total_variants, 31);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1383,6 +1436,7 @@ mod tests {
                 Some("submit"),
                 &[Capability::Read, Capability::Write, Capability::Action],
             ),
+            ("file_upload", None, &[Capability::Write]),
             ("explain", None, &[]),
         ];
 
@@ -1604,6 +1658,14 @@ mod tests {
                 Some("submit"),
                 ResourceShape::TabScoped,
                 true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "file_upload",
+                None,
+                ResourceShape::TabScoped,
+                false,
                 false,
                 PostDispatch::None,
             ),

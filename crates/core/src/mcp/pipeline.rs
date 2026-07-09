@@ -1994,6 +1994,8 @@ mod tests {
              controls and fills them.",
             "form_fill (submit): requires read. Fill form fields by label and click the form's \
              own submit control.",
+            "file_upload: requires write. Upload files (base64 bytes) to a file input \
+             located by read_page or find, via its ref.",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]

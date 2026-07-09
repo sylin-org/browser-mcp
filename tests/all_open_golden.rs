@@ -14,10 +14,10 @@
 
 mod support;
 
-use ghostlight::browser::directory::descriptor;
+use ghostlight::browser::directory::{descriptor, requires};
 use ghostlight::governance::dispatch::Governance;
 use ghostlight::governance::ports::{
-    AuditRecord, AuditSink, Decision, EffectiveMode, GoverningResource,
+    AuditRecord, AuditSink, Capability, Decision, EffectiveMode, GoverningResource,
 };
 use ghostlight::transport::mcp::tools::advertised_tools_json;
 use serde_json::{json, Value};
@@ -26,10 +26,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// The 17 tool names in advertised order (the 13 trained tools plus `wait_for`, `script`,
-/// `form_fill`, and ADR-0022 Decision 7's sanctioned `explain` addition, positioned last), copied
-/// from the code-declared registry (`browser::directory::REGISTRY`), in declared order.
-const GOLDEN_TOOL_NAMES: [&str; 17] = [
+/// The 18 tool names in advertised order (the 13 trained tools plus `wait_for`, `script`,
+/// `form_fill`, `file_upload` (ADR-0050 Decision 2), and ADR-0022 Decision 7's sanctioned `explain`
+/// addition, positioned last), copied from the code-declared registry
+/// (`browser::directory::REGISTRY`), in declared order.
+const GOLDEN_TOOL_NAMES: [&str; 18] = [
     "tabs_context_mcp",
     "tabs_create_mcp",
     "navigate",
@@ -46,6 +47,7 @@ const GOLDEN_TOOL_NAMES: [&str; 17] = [
     "wait_for",
     "script",
     "form_fill",
+    "file_upload",
     "explain",
 ];
 
@@ -56,7 +58,7 @@ fn tools_list_is_byte_stable_through_the_move() {
     assert_eq!(
         tools.len(),
         GOLDEN_TOOL_NAMES.len(),
-        "all 17 tools advertised (13 trained plus wait_for, script, form_fill, and explain)"
+        "all 18 tools advertised (13 trained plus wait_for, script, form_fill, file_upload, and explain)"
     );
     for (i, name) in GOLDEN_TOOL_NAMES.iter().enumerate() {
         assert_eq!(
@@ -97,6 +99,32 @@ fn facade_decide_is_all_open_after_the_move() {
             "{name} must be allowed in the all-open engine"
         );
     }
+}
+
+/// ADR-0050 Decision 2: `file_upload` is a new additive tool. It is allowed under the all-open
+/// engine (no manifest = no denials) and classifies as a Write capability (bytes leave the user's
+/// control into a web destination; the `ref` was located by a separately-governed read).
+#[test]
+fn file_upload_is_all_open_allowed_and_classifies_write() {
+    let governance = Governance::all_open(std::sync::Arc::new(NullAuditSink));
+    assert!(
+        matches!(
+            governance.decide(
+                "file_upload",
+                None,
+                &[],
+                GoverningResource::None,
+                EffectiveMode::Enforce
+            ),
+            Decision::Allow { grant_id: None }
+        ),
+        "file_upload must be allowed in the all-open engine"
+    );
+    assert_eq!(
+        requires("file_upload", None),
+        Some(&[Capability::Write][..]),
+        "file_upload classifies as a Write capability"
+    );
 }
 
 /// Proves the facade change at the dispatch chokepoint did not disturb the `read_page`
