@@ -203,3 +203,28 @@ one line.
 - The extension carries no instance logic: decided here; cd77bf5 is superseded.
 - `--extension-id` optional with both shipped ids baked in: decided here (Decision 5).
 - Dev install thins; dev uninstall keeps full legacy cleanup: decided here (Decision 6).
+
+## Amendment (post-execution, 2026-07-09) -- the anti-squat hub-key is per-user, not per-instance
+
+Live verification surfaced a defect the execution batch's tests masked. The ADR-0030 Decision 8
+anti-squat handshake keys its HMAC proof on a `hub-key` secret that the implementation stored under
+the per-INSTANCE `observability::log_dir()` (`<data-local>/ghostlight` for default,
+`<data-local>/ghostlight-dev` for dev). The development override, by design, has an UNPINNED adapter
+(default identity, hence the default hub-key) connect to a live `dev` service (which proves with the
+dev hub-key). The two secrets differ, so every override connect failed the proof with the pinned
+refusal ("the Ghostlight service on this endpoint is not the one this user installed") -- exactly
+the cowork symptom this ADR set out to fix. A pinned `ghostlight-dev` client worked only because it
+resolved the matching dev key.
+
+Resolution: the hub-key moves to an instance-INDEPENDENT `observability::shared_data_dir` (the
+default leaf, regardless of the current instance; `GHOSTLIGHT_LOG_DIR` still overrides it for test
+isolation), so all of a user's instances share ONE key. This is strictly correct for the threat
+model -- the anti-squat defends against CROSS-USER squatting (the key file is user-ACL'd), and
+per-instance separation bought no same-user defense, since any same-user process can already read
+any of that user's key files. The `antisquat.rs` module doc already called the secret "per-user";
+this aligns the implementation with that stated intent.
+
+Why the batch missed it: `tests/adapter_override.rs` (and `adapter_reconnect.rs`) give every process
+one shared `GHOSTLIGHT_LOG_DIR`, so every process shared one hub-key regardless of instance -- the
+cross-instance-dir case never arose. The regression guard is now a pure unit test on the
+instance-independent resolver (`observability::shared_data_dir_from`).
