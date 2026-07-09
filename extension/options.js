@@ -35,7 +35,6 @@ const linkText = document.getElementById("link-text");
 const linkSub = document.getElementById("link-sub");
 
 function renderLink(state) {
-  const inst = state.instance ? ` (${state.instance})` : "";
   if (state.killed) {
     linkPill.className = "pill";
     linkText.textContent = "Session ended";
@@ -43,7 +42,7 @@ function renderLink(state) {
       "Browser access is severed. Start a new session from the toolbar popup to reconnect.";
   } else if (state.connected) {
     linkPill.className = "pill on";
-    linkText.textContent = `Connected${inst}`;
+    linkText.textContent = "Connected";
     linkSub.textContent = "The agent can reach this browser.";
   } else {
     linkPill.className = "pill wait";
@@ -55,7 +54,7 @@ function renderLink(state) {
 
 function refreshLink() {
   chrome.runtime.sendMessage({ type: "GET_SESSION_STATE" }, (state) => {
-    renderLink(state || { killed: false, connected: false, attachedTabs: 0, instance: null });
+    renderLink(state || { killed: false, connected: false, attachedTabs: 0 });
   });
 }
 

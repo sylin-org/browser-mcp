@@ -53,9 +53,7 @@ function renderLinkDot(state) {
     linkDot.title = "Session ended";
   } else if (state.connected) {
     linkDot.className = "on";
-    linkDot.title = state.instance
-      ? `Connected to Ghostlight (${state.instance})`
-      : "Connected to Ghostlight";
+    linkDot.title = "Connected to Ghostlight";
   } else {
     linkDot.className = "wait";
     linkDot.title = "Waiting for the Ghostlight service...";
@@ -73,9 +71,8 @@ function renderSession(state) {
     sessionButtonEl.disabled = false;
     return;
   }
-  const inst = state.instance ? ` (${state.instance})` : "";
   const connectedLine = state.connected
-    ? `Connected to Ghostlight${inst}.`
+    ? "Connected to Ghostlight."
     : "Waiting for the Ghostlight service...";
   sessionStatusEl.textContent = `${connectedLine} Debugger attached to ${state.attachedTabs} tab(s).`;
   sessionButtonEl.id = "kill-button";
