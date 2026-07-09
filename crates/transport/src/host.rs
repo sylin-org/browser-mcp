@@ -3,7 +3,8 @@
 //!
 //! Framing: a 4-byte little-endian `u32` length prefix followed by exactly that many bytes of
 //! UTF-8 JSON. Chrome speaks this framing on the process's stdin/stdout when it launches the
-//! executable as a native-messaging host. See `reference/ANALYSIS.md` sec 3.
+//! executable as a native-messaging host (Chrome native-messaging protocol; the harvested
+//! technique is recorded in docs/research/12 and ADR-0050 Decision 1).
 
 use crate::{Error, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
