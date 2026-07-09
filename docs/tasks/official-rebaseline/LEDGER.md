@@ -5,10 +5,17 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 
 ## RESUME HERE
 
-- Status: T1 DONE. Next task: **T2 -- browser_batch**.
-- Base commit for the batch: `d52e0df` (the ADR-0050 + batch authoring commit).
-- Advertised tool count is now **18** (`file_upload` inserted before `explain`). Before T2, re-confirm
-  `tests/tool_schema_fidelity.rs` pins `names[16] == "file_upload"` and `names[17] == "explain"`.
+- Status: T1 + T2 DONE. Next task: **T3 -- upload_image**.
+- Base commit for the batch: `d52e0df` (the ADR-0050 + batch authoring commit). T2 = `72f9b8a`.
+- Advertised tool count is now **19** (`file_upload`, then `browser_batch`, both before `explain`).
+  `tests/tool_schema_fidelity.rs` pins `names[16]=="file_upload"`, `[17]=="browser_batch"`,
+  `[18]=="explain"`. Before T3, re-read the tree.
+- BUILD NOTE (post dev re-install): live MCP clients continuously respawn `ghostlight-relay` and lock
+  the normal `target/debug`, so the FULL V-ALL (which builds relay + spawns for the e2e tier) must run
+  in an ISOLATED `CARGO_TARGET_DIR` (`CARGO_TARGET_DIR=$TMP/gl-target cargo build --workspace && cargo
+  test --workspace -- --include-ignored --test-threads=1 < /dev/null`). Kill orphan `ghostlight.exe`
+  first if a prior isolated run left a service locking the isolated dir. Core-lib-only checks
+  (`cargo test -p ghostlight-core --lib`) run fine in the normal dir (no exe link).
 - IMPORTANT verification note (see ADR-0051 + docs/design/verification-topology-evaluation.md): the
   advertised count/name set is pinned in MANY scattered spawn tests the prompts do NOT all enumerate
   (adapter_override, adapter_reconnect x3, hot_reload's expanded+full_set, pipeline.rs's explain
