@@ -425,7 +425,8 @@ where
     // ADR-0047 D2: one identity for this adapter's whole life, re-presented on every reconnect so
     // the service-side ownership map and the extension's per-session groups survive a restart.
     let session_guid = crate::session_guid::SessionGuid::mint();
-    debug.ipc_note("session identity minted (stable for this adapter process)");
+    // ADR-0051 P4.3b: records the structured `counters.identity_mints` AND the human event.
+    debug.note_identity_minted();
 
     loop {
         // Connect AND handshake with a bounded retry (see [`connect_and_handshake`]): a service
@@ -436,14 +437,13 @@ where
         if first {
             debug.ipc_note("connected to the service's adapter/control endpoint");
         } else {
-            debug.ipc_note("service restart detected; reconnected");
+            // ADR-0051 P4.3b: records the structured `counters.reconnects` AND the human event.
+            debug.note_reconnected();
         }
         if adapter_endpoints.len() > 1 {
-            debug.ipc_note(&format!(
-                "override resolution: connected to candidate {}/{}",
-                which + 1,
-                adapter_endpoints.len()
-            ));
+            // ADR-0051 P4.3b: records the structured `counters.resolved_candidate`/`candidate_total`
+            // AND the human event.
+            debug.note_resolved_candidate((which + 1) as u32, adapter_endpoints.len() as u32);
         }
 
         let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);

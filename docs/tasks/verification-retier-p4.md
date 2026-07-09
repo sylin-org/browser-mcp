@@ -86,21 +86,21 @@ impact). Each sub-step leaves a green tree and its own commit.
   `e2e` job runs `... -- --ignored`; both across the 3-OS matrix. `scripts/test-e2e.{sh,ps1}` now run
   `-- --include-ignored` (the FULL local pass). Verified: fast tier green with exactly 27 ignored
   (44/44 binaries); e2e tier (`-- --ignored`) green.
-- P4.3b NOT STARTED (the remaining focused follow-up; polish on PASSING tests, not load-bearing):
-  fold former-P1.3 structured observability. `adapter_reconnect` / `adapter_override` currently scrape
-  the debug-EVENTS jsonl text for `Event.summary` substrings. The three emit sites are all in
-  `crates/transport/src/ipc.rs`: `debug.ipc_note("session identity minted (stable for this adapter
-  process)")` (~L428), `debug.ipc_note("service restart detected; reconnected")` (~L439), and
-  `debug.ipc_note(format!("override resolution: connected to candidate {}/{}", ...))` (~L443).
-  Turnkey plan: add structured fields to `observability.rs` (`Snapshot` + `Counters`, or a small new
-  struct) -- `identity_mints: u64` (must be 1), `reconnects: u64` (>=1), `resolved_candidate:
-  Option<(u32,u32)>`; add DebugSink methods that BOTH increment the field AND keep the `ipc_note`
-  (human events log stays); call them at the three sites. Then rewrite the two tests to read the
-  ADAPTER's own `debug-state-<pid>.json` (NOT `support::newest_state`, which may return the SERVICE's
-  file -- add a role-aware state read to `tests/support`, filtering on `"role":"adapter"`/native-host)
-  and assert the structured fields. Spans transport observability + the 3 ipc.rs sites + a new test
-  helper + the 2 (slow, spawn, e2e-tier) tests -- do it focused with its own verify cycle
-  (`scripts/test-e2e.* -- --ignored` or the e2e CI job).
+- P4.3b DONE: folded former-P1.3 structured observability. `observability.rs` `Counters` gained
+  `identity_mints`/`reconnects` and `resolved_candidate`/`candidate_total` (Options, skip-serialized
+  when absent); new `DebugSink` methods `note_identity_minted`/`note_reconnected`/
+  `note_resolved_candidate` increment the field AND keep the human `ipc_note` event; `ipc.rs` wires
+  the adapter's three lifecycle sites to them. `tests/support` gained `newest_state_for_role` +
+  `wait_state_for_role_until` (read the ADAPTER's own `"role":"adapter"` debug-state, not the
+  service's). `adapter_reconnect` now asserts `counters.identity_mints == 1` + `reconnects >= 1`;
+  `adapter_override` reads `resolved_candidate == 1` after the first connect and `== 2` after the
+  failover, at its two existing checkpoints. VERIFIED in an isolated CARGO_TARGET_DIR (all 4 e2e
+  tests green; clippy `--all-targets -D warnings` clean; transport unit tests green). NOTE: after the
+  dev re-install, live MCP clients continuously respawn `ghostlight-relay` and lock the normal
+  `target/debug/ghostlight-relay.exe`, so a normal-dir rebuild of the relay fails (os error 5); the
+  isolated CARGO_TARGET_DIR runner (P1.4 / `scripts/test-e2e.*`) is the way to build+run the e2e tier
+  locally. The normal-dir relay binary staying stale is harmless (its RUNTIME relaying is unchanged;
+  only its debug-state counter shape differs).
 
 ## Guardrails
 

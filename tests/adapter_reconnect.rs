@@ -12,6 +12,8 @@
 //! reconnect self-heal targets a guaranteed-nonexistent OS supervisor unit (a harmless failed
 //! no-op) instead of this machine's real "Ghostlight Service".
 
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -205,31 +207,21 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
         "the reconnected session answered a real request: {list2:?}"
     );
 
-    // ADR-0047 D2 (PINS P3): the adapter mints ONE session identity for its whole process and
-    // re-presents it on reconnect. Across every debug-events log this run produced, the mint note
-    // appears exactly once (never once per connect) and at least one reconnect note is present.
-    let mut events = String::new();
-    for entry in std::fs::read_dir(&log_dir).expect("read log_dir") {
-        let path = entry.expect("dir entry").path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("debug-events-") && name.ends_with(".jsonl") {
-                events.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
-        }
-    }
+    // ADR-0047 D2 (PINS P3), read via STRUCTURED debug state (ADR-0051 P4.3b, not a log-text
+    // scrape): the adapter mints ONE session identity for its whole process (`identity_mints == 1`,
+    // never once per connect) and completed at least one reconnect across the restart
+    // (`reconnects >= 1`). Read the ADAPTER's own state file (role-filtered: the service writes one
+    // too), polling briefly since the adapter forces the snapshot on the reconnect note.
+    let state = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+        v["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1
+    });
     assert_eq!(
-        events
-            .matches("session identity minted (stable for this adapter process)")
-            .count(),
-        1,
-        "the adapter mints its session identity exactly once per process"
+        state["counters"]["identity_mints"], 1,
+        "the adapter mints its session identity exactly once per process: {state}"
     );
     assert!(
-        events
-            .matches("service restart detected; reconnected")
-            .count()
-            >= 1,
-        "at least one reconnect note must be present"
+        state["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1,
+        "at least one reconnect must be recorded: {state}"
     );
 
     drop(stdin);

@@ -12,6 +12,8 @@
 //! failed no-op) instead of this machine's real "Ghostlight Service" -- GHOSTLIGHT_ENDPOINTS
 //! outranks the selection, so the candidate walk is still fully exercised.
 
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -209,6 +211,16 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
         format!("ghostlight-{inst_a}"),
         "with both candidates live, the FIRST wins: {init:?}"
     );
+    // ADR-0051 P4.3b: the first connect resolved to candidate 1/2 -- read from the adapter's
+    // STRUCTURED debug state (role-filtered), not a log-text scrape.
+    let phase1 = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+        v["counters"]["resolved_candidate"].as_u64() == Some(1)
+    });
+    assert_eq!(
+        phase1["counters"]["candidate_total"], 2,
+        "two candidates in the override: {phase1}"
+    );
+
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -232,29 +244,19 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
         "the fallback service answered a real request: {list:?}"
     );
 
-    // The adapter's debug events recorded both resolutions.
-    let mut events = String::new();
-    for entry in std::fs::read_dir(&log_dir).expect("read log_dir") {
-        let path = entry.expect("dir entry").path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("debug-events-") && name.ends_with(".jsonl") {
-                events.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
-        }
-    }
-    assert!(
-        events
-            .matches("override resolution: connected to candidate 1/2")
-            .count()
-            >= 1,
-        "the first connect resolved to candidate 1"
+    // ADR-0051 P4.3b: after the failover the adapter's STRUCTURED debug state shows it resolved to
+    // candidate 2/2 (it had resolved to candidate 1/2 on the first connect, asserted above) --
+    // read the ADAPTER's own role-filtered state, not a log-text scrape.
+    let phase2 = support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(15), |v| {
+        v["counters"]["resolved_candidate"].as_u64() == Some(2)
+    });
+    assert_eq!(
+        phase2["counters"]["candidate_total"], 2,
+        "two candidates in the override: {phase2}"
     );
-    assert!(
-        events
-            .matches("override resolution: connected to candidate 2/2")
-            .count()
-            >= 1,
-        "the failover resolved to candidate 2"
+    assert_eq!(
+        phase2["counters"]["resolved_candidate"], 2,
+        "the failover resolved to candidate 2: {phase2}"
     );
 
     drop(stdin);

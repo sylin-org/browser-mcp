@@ -316,6 +316,63 @@ pub fn newest_state(dir: &Path) -> Option<String> {
     Some(contents)
 }
 
+/// The newest `debug-state-*.json` under `dir` written by a process whose `role` matches
+/// ("adapter", "mcp-server", "native-host"), parsed as JSON. The adapter and the service both write
+/// state files into a shared test log dir, so a test that wants the ADAPTER's structured counters
+/// (ADR-0051 P4.3b) must filter on role rather than take [`newest_state`] (which may return the
+/// service's file). `None` if none match yet.
+pub fn newest_state_for_role(dir: &Path, role: &str) -> Option<serde_json::Value> {
+    let mut newest: Option<(std::time::SystemTime, serde_json::Value)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("debug-state-") && name.ends_with(".json")) {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if v.get("role").and_then(|r| r.as_str()) != Some(role) {
+            continue;
+        }
+        if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            newest = Some((mtime, v));
+        }
+    }
+    newest.map(|(_, v)| v)
+}
+
+/// Poll [`newest_state_for_role`] until `pred` holds on the parsed state (returning it), or panic
+/// after `within`. Bridges the brief window between the adapter forcing a snapshot on a lifecycle
+/// note and the test reading it back (ADR-0051 P4.3b).
+pub fn wait_state_for_role_until(
+    dir: &Path,
+    role: &str,
+    within: Duration,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(v) = newest_state_for_role(dir, role) {
+            if pred(&v) {
+                return v;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "no '{role}' debug-state satisfying the predicate under {} within {within:?}",
+                dir.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Poll `log_dir`'s newest debug state until it reports `"extension_connected": true`, or return
 /// `false` after `within`.
 pub fn wait_extension_connected(log_dir: &Path, within: Duration) -> bool {

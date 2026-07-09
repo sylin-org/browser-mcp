@@ -324,6 +324,21 @@ struct Counters {
     frames_in: u64,
     connects: u64,
     disconnects: u64,
+    /// ADR-0051 P4.3b: the adapter (relay --role agent) mints its session identity exactly once for
+    /// its whole process (ADR-0047 D2). Counted so a test reads a structured signal instead of
+    /// scraping the events log; the human event is still recorded alongside.
+    identity_mints: u64,
+    /// ADR-0051 P4.3b: reconnect episodes this adapter completed across a service restart (ADR-0045);
+    /// `>= 1` after one restart.
+    reconnects: u64,
+    /// ADR-0051 P4.3b: under a multi-candidate override (ADR-0048), the 1-based index of the endpoint
+    /// candidate this adapter last resolved to. `None` outside an override (a single candidate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_candidate: Option<u32>,
+    /// ADR-0051 P4.3b: the candidate count for [`Counters::resolved_candidate`]. `None` outside an
+    /// override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidate_total: Option<u32>,
 }
 
 /// The serialized live snapshot written to `debug-state-<pid>.json`.
@@ -713,6 +728,63 @@ impl DebugSink {
                     kind: "ipc",
                     dir: "-",
                     summary: Self::ident(summary),
+                    detail: None,
+                },
+                true,
+            );
+        });
+    }
+
+    /// ADR-0051 P4.3b: the adapter minted its stable per-process session identity (ADR-0047 D2).
+    /// Increments the structured counter AND records the same human event `ipc_note` did, so a test
+    /// can read `counters.identity_mints == 1` instead of scraping the events log. Forces a snapshot.
+    pub fn note_identity_minted(&self) {
+        self.with(|i| {
+            i.counters.identity_mints += 1;
+            i.record(
+                Event {
+                    ts_ms: now_ms(),
+                    kind: "ipc",
+                    dir: "-",
+                    summary: "session identity minted (stable for this adapter process)".to_string(),
+                    detail: None,
+                },
+                true,
+            );
+        });
+    }
+
+    /// ADR-0051 P4.3b: the adapter reconnected across a service restart (ADR-0045). Increments the
+    /// structured counter AND records the human event. Forces a snapshot.
+    pub fn note_reconnected(&self) {
+        self.with(|i| {
+            i.counters.reconnects += 1;
+            i.record(
+                Event {
+                    ts_ms: now_ms(),
+                    kind: "ipc",
+                    dir: "-",
+                    summary: "service restart detected; reconnected".to_string(),
+                    detail: None,
+                },
+                true,
+            );
+        });
+    }
+
+    /// ADR-0051 P4.3b: the adapter resolved a multi-candidate override (ADR-0048) to candidate
+    /// `index`/`total` (both 1-based counts). Records the current resolution in the structured state
+    /// AND the human event. Forces a snapshot.
+    pub fn note_resolved_candidate(&self, index: u32, total: u32) {
+        self.with(|i| {
+            i.counters.resolved_candidate = Some(index);
+            i.counters.candidate_total = Some(total);
+            i.record(
+                Event {
+                    ts_ms: now_ms(),
+                    kind: "ipc",
+                    dir: "-",
+                    summary: format!("override resolution: connected to candidate {index}/{total}"),
                     detail: None,
                 },
                 true,
