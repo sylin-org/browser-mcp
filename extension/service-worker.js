@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/gifenc.js", "lib/recbuffer.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/neuquant.js", "lib/gifenc.js", "lib/recbuffer.js");
 
 // gif_creator recording state (ADR-0050 Decision 5): a bounded per-tab frame store (lib/recbuffer.js);
 // the encoder is lib/gifenc.js. Both are pure + unit-tested; this worker owns capture + export.

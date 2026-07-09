@@ -7,7 +7,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { encodeGif, frameToIndices, palette332 } = require("../../extension/lib/gifenc.js");
+const { encodeGif, buildGlobalPalette, quantizeFrame } = require("../../extension/lib/gifenc.js");
 
 // Build an RGBA frame of `width*height` from a per-pixel (x,y)->[r,g,b] function.
 function frame(width, height, fn) {
@@ -108,38 +108,65 @@ test("encodeGif returns a GIF89a header and a trailer", () => {
   assert.ok(gif.length > 800, "non-trivial (header + 256-entry GCT + a frame)");
 });
 
-test("the LZW stream for a 2x2 solid frame matches a hand-computed spec oracle", () => {
-  // indices [0,0,0,0] -> emitted 9-bit codes [clear=256, 0, 258, 0, eoi=257] -> LSB-packed bytes.
-  const gif = encodeGif([frame(2, 2, () => [0, 0, 0])], { width: 2, height: 2, delayMs: 100 });
-  const idx = frameToIndices(frame(2, 2, () => [0, 0, 0]), 2, 2);
-  assert.deepStrictEqual(Array.from(idx), [0, 0, 0, 0], "black maps to palette index 0");
-  // Locate the image data: it is the last non-trailer block; decode + re-check bytes via the parser.
+test("a 2x2 solid frame round-trips to four identical indices via an independent decoder", () => {
+  // The exact index value now depends on the learned NeuQuant palette (no longer a fixed 3-3-2
+  // index 0), but a solid frame must still map to four IDENTICAL indices, and the LZW stream must
+  // decode back to exactly them. The independent decoder (not the encoder's own code) is the oracle.
+  const rgba = frame(2, 2, () => [0, 0, 0]);
+  const gif = encodeGif([rgba], { width: 2, height: 2, delayMs: 100 });
+  const { palette, lookup } = buildGlobalPalette([rgba], 2, 2);
+  const expected = Array.from(quantizeFrame(rgba, 2, 2, lookup));
+  assert.strictEqual(palette.length, 256 * 3, "palette is a 256-entry RGB table");
+  assert.deepStrictEqual(expected, [expected[0], expected[0], expected[0], expected[0]], "solid frame -> identical indices");
   const { indices } = decodeFirstFrameIndices(gif);
-  assert.deepStrictEqual(indices, [0, 0, 0, 0], "decodes back to the input indices");
+  assert.deepStrictEqual(indices, expected, "decodes back to the encoder's input indices");
 });
 
 test("round-trips a table-growth gradient frame through an independent decoder", () => {
-  // A 32x32 frame with many distinct 3-3-2 indices forces the LZW table to grow and the code width
-  // to bump past 9 bits -- so this exercises the code-size growth path, not just the base case.
+  // A 32x32 frame with many distinct colors forces the LZW table to grow and the code width to bump
+  // past 9 bits -- so this exercises the code-size growth path, not just the base case.
   const W = 32, H = 32;
   const rgba = frame(W, H, (x, y) => [(x * 8) & 0xff, (y * 8) & 0xff, ((x + y) * 4) & 0xff]);
   const gif = encodeGif([rgba], { width: W, height: H, delayMs: 60 });
-  const expected = Array.from(frameToIndices(rgba, W, H));
+  const { lookup } = buildGlobalPalette([rgba], W, H);
+  const expected = Array.from(quantizeFrame(rgba, W, H, lookup));
   const { indices, width, height } = decodeFirstFrameIndices(gif);
   assert.strictEqual(width, W);
   assert.strictEqual(height, H);
-  assert.deepStrictEqual(indices, expected, "the decoded indices equal the encoder's input indices");
+  assert.deepStrictEqual(indices, expected, "the decoded indices equal the encoder's quantized input indices");
 });
 
 test("encodes multiple frames (animation) with a global color table of 256 entries", () => {
   const f1 = frame(4, 4, () => [255, 0, 0]);
   const f2 = frame(4, 4, () => [0, 255, 0]);
   const gif = encodeGif([f1, f2], { width: 4, height: 4, delayMs: 100 });
-  // GCT size bits = packed & 7 -> 2^(n+1) entries; our fixed palette is 256.
+  // GCT size bits = packed & 7 -> 2^(n+1) entries; our adaptive palette is a full 256 entries.
   assert.strictEqual((gif[10] & 0x07) + 1, 8, "global color table is 2^8 = 256 entries");
-  assert.strictEqual(palette332().length, 256 * 3);
   // Two image descriptors (0x2c) present.
   let images = 0;
   for (let i = 0; i < gif.length; i++) if (gif[i] === 0x2c) images++;
   assert.ok(images >= 2, "at least two image descriptors for two frames");
+});
+
+test("the adaptive palette is deterministic and maps primaries to near colors", () => {
+  // Determinism: identical frames -> byte-identical palette (the harness forbids Math.random anyway,
+  // but pin it). And a red/green/blue frame set should quantize each solid region to a palette entry
+  // close to the true primary (adaptive palette actually represents the input colors).
+  // Frames must clear NeuQuant's minpicturebytes floor (3*503 = 1509) for real learning; 32x32 gives
+  // 9216 training bytes and converges to within ~1 of each primary (measured), so 16 is safe slack.
+  const R = frame(32, 32, () => [255, 0, 0]);
+  const G = frame(32, 32, () => [0, 255, 0]);
+  const B = frame(32, 32, () => [0, 0, 255]);
+  const a = buildGlobalPalette([R, G, B], 32, 32);
+  const b = buildGlobalPalette([R, G, B], 32, 32);
+  assert.deepStrictEqual(Array.from(a.palette), Array.from(b.palette), "same frames -> identical palette");
+
+  const near = (r, g, bl) => {
+    const i = a.lookup(r, g, bl) * 3;
+    const dr = a.palette[i] - r, dg = a.palette[i + 1] - g, db = a.palette[i + 2] - bl;
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  };
+  assert.ok(near(255, 0, 0) < 16, "red maps near red");
+  assert.ok(near(0, 255, 0) < 16, "green maps near green");
+  assert.ok(near(0, 0, 255) < 16, "blue maps near blue");
 });

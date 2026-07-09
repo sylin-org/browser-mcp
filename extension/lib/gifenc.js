@@ -2,13 +2,16 @@
 // Ghostlight -- vendored minimal animated-GIF89a encoder (ADR-0050 Decision 5, gif_creator).
 //
 // Self-contained ASCII JS: MV3 forbids remote code, so the encoder ships IN the extension package
-// (never fetched at runtime). It reduces each RGBA frame with a FIXED 3-3-2 (RRRGGGBB) uniform
-// 256-color palette -- deterministic, always <= 256 colors, no per-frame quantization -- then LZW-
-// compresses the index stream per the GIF89a variable-width LZW discipline. This is a coarse but
-// always-valid FLOOR (Phase 1); richer color quantization and overlays (click cues, labels,
-// watermark, progress bar) are DEFERRED (see the T4 LEDGER entry). The LZW code-size / clear
-// discipline follows the GIF89a spec (and the omggif MIT approach): codes start at minCodeSize+1
-// bits, grow when the next code index reaches 2^codeSize, and a Clear code resets the table at 4096.
+// (never fetched at runtime). It reduces the frames with an ADAPTIVE 256-color GLOBAL palette learned
+// from the actual pixels via NeuQuant (lib/neuquant.js -- the same quantizer the official
+// Claude-in-Chrome extension ships in gif.js), then LZW-compresses each frame's index stream per the
+// GIF89a variable-width LZW discipline. NeuQuant is deterministic (no Math.random) and reference-
+// standard; it replaces the coarse fixed 3-3-2 uniform palette the Phase-1 encoder used, which
+// banded photographic screenshots badly. One global color table is built from all frames (bounded
+// training sample) so the animation shares a single GCT, and every pixel is mapped to its nearest
+// palette entry via the network's own search. The LZW code-size / clear discipline follows the GIF89a
+// spec (and the omggif MIT approach): codes start at minCodeSize+1 bits, grow when the next code index
+// reaches 2^codeSize, and a Clear code resets the table at 4096.
 //
 // IIFE-wrapped and exposed as a namespace per lib/constants.js's pattern (idempotent under MV3
 // worker re-evaluation; loadable as a content-script/worker global and under node --test).
@@ -17,25 +20,61 @@
 
   var MIN_CODE_SIZE = 8; // 256-entry global color table
 
-  // The fixed 3-3-2 palette: 256 RGB triples; index = (r>>5)<<5 | (g>>5)<<2 | (b>>6).
-  function palette332() {
-    var p = new Uint8Array(256 * 3);
-    for (var i = 0; i < 256; i++) {
-      var r3 = (i >> 5) & 7, g3 = (i >> 2) & 7, b2 = i & 3;
-      p[i * 3] = Math.round((r3 * 255) / 7);
-      p[i * 3 + 1] = Math.round((g3 * 255) / 7);
-      p[i * 3 + 2] = Math.round((b2 * 255) / 3);
+  // NeuQuant quantizer -- required in node, a worker global under importScripts (see lib/neuquant.js).
+  var Neuquant =
+    typeof module !== "undefined" && module.exports
+      ? require("./neuquant.js")
+      : self.GhostlightNeuquant;
+
+  var DEFAULT_SAMPLE_FAC = 10; // gif.js's default quality; 1=best/slow .. 30=coarse/fast
+  var TRAIN_PIXEL_BUDGET = 500000; // cap pixels fed to NeuQuant (bounds memory + time; deterministic)
+
+  // Build ONE adaptive 256-color palette from all frames. `frames` is an array of RGBA byte buffers
+  // (each length width*height*4). Returns { palette: Uint8Array(768) RGB triples, lookup: (r,g,b)->idx }.
+  // Training pixels are sub-sampled with a deterministic stride so a long recording stays bounded;
+  // NeuQuant then sub-samples that buffer again per `sampleFac`. With no frames, returns NeuQuant's
+  // default gray-ramp palette (still a valid GCT).
+  function buildGlobalPalette(frames, width, height, sampleFac) {
+    var fac = sampleFac || DEFAULT_SAMPLE_FAC;
+    var perFrame = width * height;
+    var totalPixels = frames.length * perFrame;
+    var stride = totalPixels > TRAIN_PIXEL_BUDGET ? Math.floor(totalPixels / TRAIN_PIXEL_BUDGET) : 1;
+    if (stride < 1) stride = 1;
+
+    // Pack a strided RGB (alpha-stripped) training buffer across every frame.
+    var sampled = stride > 1 ? Math.ceil(totalPixels / stride) : totalPixels;
+    var train = new Uint8Array(sampled * 3);
+    var w = 0; // write cursor into train (byte index)
+    var g = 0; // global pixel counter across all frames
+    for (var f = 0; f < frames.length; f++) {
+      var rgba = frames[f];
+      for (var p = 0; p < perFrame; p++, g++) {
+        if (g % stride !== 0) continue;
+        var s = p * 4;
+        train[w++] = rgba[s];
+        train[w++] = rgba[s + 1];
+        train[w++] = rgba[s + 2];
+      }
     }
-    return p;
+    // train may be slightly over-allocated by rounding; trim so NeuQuant's length math is exact.
+    if (w < train.length) train = train.subarray(0, w);
+
+    var nq = new Neuquant.NeuQuant(train, fac);
+    nq.buildColormap();
+    var map = nq.getColormap(); // flat [r,g,b,...] * 256, values 0..255
+    var palette = new Uint8Array(256 * 3);
+    for (var i = 0; i < palette.length; i++) palette[i] = map[i] & 0xff;
+    return { palette: palette, lookup: nq.lookupRGB };
   }
 
-  // Map a whole RGBA frame (Uint8Array/Uint8ClampedArray, length w*h*4) to 3-3-2 palette indices.
-  function frameToIndices(rgba, width, height) {
+  // Map a whole RGBA frame (Uint8Array/Uint8ClampedArray, length w*h*4) to palette indices via the
+  // NeuQuant nearest-color search built by buildGlobalPalette.
+  function quantizeFrame(rgba, width, height, lookup) {
     var n = width * height;
     var out = new Uint8Array(n);
     for (var i = 0; i < n; i++) {
-      var r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
-      out[i] = ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6);
+      var s = i * 4;
+      out[i] = lookup(rgba[s], rgba[s + 1], rgba[s + 2]);
     }
     return out;
   }
@@ -112,14 +151,18 @@
     arr.push(0x00);
   }
 
-  // encodeGif(frames, {width, height, delayMs}) -> Uint8Array.
+  // encodeGif(frames, {width, height, delayMs, sampleFac}) -> Uint8Array.
   //   frames: array of RGBA byte arrays, each of length width*height*4.
   //   delayMs: per-frame delay in milliseconds (GIF stores centiseconds; min 2cs like most encoders).
+  //   sampleFac: optional NeuQuant quality/sampling factor (default 10; 1=best/slow, 30=coarse/fast).
   // Returns a complete animated GIF89a (looping forever) as a Uint8Array.
   function encodeGif(frames, opts) {
     var width = opts.width, height = opts.height;
     var delayCs = Math.max(2, Math.round((opts.delayMs || 100) / 10));
     var bytes = [];
+
+    // Learn one adaptive 256-color global palette from all frames' pixels.
+    var quant = buildGlobalPalette(frames, width, height, opts.sampleFac);
 
     // Header + Logical Screen Descriptor (global color table present, 256 entries).
     pushStr(bytes, "GIF89a");
@@ -129,9 +172,8 @@
     bytes.push(0x00); // background color index
     bytes.push(0x00); // pixel aspect ratio
 
-    // Global Color Table.
-    var pal = palette332();
-    for (var p = 0; p < pal.length; p++) bytes.push(pal[p]);
+    // Global Color Table (the adaptive NeuQuant palette).
+    for (var p = 0; p < quant.palette.length; p++) bytes.push(quant.palette[p]);
 
     // NETSCAPE2.0 application extension: loop forever.
     bytes.push(0x21, 0xff, 0x0b);
@@ -153,7 +195,7 @@
       bytes.push(0x00);
 
       // Image data: LZW minimum code size byte, then LZW sub-blocks.
-      var indices = frameToIndices(frames[f], width, height);
+      var indices = quantizeFrame(frames[f], width, height, quant.lookup);
       bytes.push(MIN_CODE_SIZE);
       pushSubBlocks(bytes, lzwEncode(indices));
     }
@@ -162,7 +204,11 @@
     return new Uint8Array(bytes);
   }
 
-  var GhostlightGifenc = { encodeGif: encodeGif, frameToIndices: frameToIndices, palette332: palette332 };
+  var GhostlightGifenc = {
+    encodeGif: encodeGif,
+    buildGlobalPalette: buildGlobalPalette,
+    quantizeFrame: quantizeFrame,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = GhostlightGifenc;
   } else {

@@ -6,7 +6,25 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 ## RESUME HERE
 
 - Status: **BATCH FULLY COMPLETE** -- T1..T5 + T4 Phase 2 all DONE (count 21). Everything in ADR-0050
-  is shipped. **NEXT (post-batch, owner-requested): gif_creator REFINEMENTS** -- see the plan below.
+  is shipped. **gif_creator REFINEMENTS (post-batch, owner-requested): TRACK 1 (quantization) DONE;
+  TRACK 2 (overlays) NEXT** -- see the plan below.
+
+- **TRACK 1 -- adaptive palette: DONE.** Per the owner's standing "check the reference original code
+  for standards/patterns" directive, the official Claude-in-Chrome v1.0.80 ships gif.js 0.2.0, whose
+  quantizer is **NeuQuant** (Dekker's neural-net, deterministic -- `Math.random` count 0). We adopted
+  THAT reference standard instead of the median-cut sketched below. New `extension/lib/neuquant.js`
+  (vendored, de-minified faithfully from the reference `gif.worker.js`, MIT). `extension/lib/gifenc.js`
+  now builds ONE adaptive 256-color GLOBAL palette from all frames (bounded 500k-pixel deterministic
+  training sample) via NeuQuant and maps every pixel with the network's own `lookupRGB`; the fixed
+  3-3-2 `palette332`/`frameToIndices` are gone; LZW + GIF framing unchanged. `encodeGif` signature
+  preserved (added optional `sampleFac`, default 10 = gif.js's default quality). Tests: new
+  `tests/extension/neuquant.test.js` (4) + rewrote the gifenc oracle tests (2x2 solid now asserts
+  4 identical indices via the independent decoder roundtrip, not a fixed index; gradient roundtrips
+  against `quantizeFrame`; added a determinism + primaries-converge test with a MEASURED threshold --
+  32x32 frames clear NeuQuant's 1509-byte `minpicturebytes` floor and converge to <=1, so slack 16).
+  Both test files added to `ci.yml` + BOOTSTRAP node --test lines. Extension node --test 51/51 green;
+  `node --check` on neuquant/gifenc/service-worker clean; Rust untouched (extension-only). Commit:
+  `feat(gif): adaptive NeuQuant palette for gif_creator (reference-standard quantization)`.
 
 ## Post-batch: gif_creator refinements plan (owner-requested)
 
@@ -27,17 +45,33 @@ own commit with node --test coverage where the logic is pure.
   The existing exact-2x2 oracle test assumes the 3-3-2 mapping (black->index 0) -- UPDATE it for the
   adaptive palette (recompute the oracle, or assert via decode round-trip instead of exact bytes).
 
-- TRACK 2 -- visual OVERLAYS (larger; part live-only). Official renders click indicators, action
-  labels, a progress bar, and a watermark onto frames; the `options` object (open `{"type":"object"}`
-  in our schema; official says its sub-fields "all default to true") gates them. Needs TWO parts:
-  (a) capture action METADATA per frame -- `recbuffer` frames currently store only base64; extend the
-  frame shape to `{base64, action?, coordinate?, label?}` and have `maybeCaptureGifFrame(tabId, meta)`
-  (called from `dispatch` after computer/navigate) pass the tool + coordinate; (b) COMPOSITE overlays
-  onto each frame in `encodeRecording` (service-worker.js) via OffscreenCanvas before quantizing --
-  draw a ring at the click coordinate, the action label, a progress bar (frame i/N), and a watermark.
-  Extract the pure per-frame overlay math (ring/label/bar positions) where you can and node-test it
-  against an ImageData; the canvas draw itself is live-verified. Honor `options.*` (default all on).
-  Update the T4 LEDGER "deferred" note as each ships.
+- TRACK 2 -- visual OVERLAYS (larger; part live-only). **Reference spec harvested** from the official
+  `offscreen.js` (`.../fcoeoabgfenejglbffodgkkbkcdhcgfn/1.0.80_0/offscreen.js`, functions
+  `drawClickIndicator`/`drawDragPath`/`drawActionLabel`/`drawProgressBar`/`drawWatermark`/
+  `applyActionIndicators`/`generateGif`). Adopt its GEOMETRY and OPTIONS schema; DIVERGE on two points
+  by our own memories: keep our lean inline OffscreenCanvas encoder (the reference uses an offscreen
+  document + gif.js + Web Workers -- see [[not-a-port-lean-internals]]), and RECOLOR the Claude-coral
+  overlays to Ghostlight **sky-blue #38BDF8** (see [[ghostlight-visual-fx]]; the ref click ring is
+  rgba(207,107,60,*) = #CF6B3C coral, progress #C96442, watermark = Claude logo -- swap all for our
+  brand + our ghost mascot, NOT Claude's logo). Exact ref values to port (then recolor): click ring =
+  outer arc r=15 (0.3 alpha), inner arc r=11 (0.5 alpha), border arc r=11 stroke lw=2; action label =
+  14px system-ui, rounded-rect bg rgba(0,0,0,0.85) + drop shadow, white text, edge-aware placement;
+  progress bar = bottom, height 4, bg rgba(0,0,0,0.3), fill brand; watermark = bottom-right, 32px,
+  rounded bg. All sizes * `scaleFactor` where `scaleFactor = canvas.width / frame.viewportWidth`. The
+  `options` object (open `{"type":"object"}` in our schema) gates via fields
+  `showClickIndicators`/`showDragPaths`/`showActionLabels`/`showProgressBar`/`showWatermark`, ALL
+  default true (ref `?? true`). Last frame gets +2000ms delay (ref). Needs TWO parts: (a) capture
+  action METADATA per frame -- `recbuffer` frames currently store only base64; extend the frame shape
+  to `{base64, action, coordinate, start_coordinate, description, viewportWidth}` and have
+  `maybeCaptureGifFrame(tabId, meta)` (called from `dispatch` after computer/navigate) pass the tool
+  type + coordinate(s) + a human label; (b) COMPOSITE overlays onto each frame in `encodeRecording`
+  (service-worker.js) via OffscreenCanvas BEFORE quantizing -- port the ref draw fns (arc/fillText/
+  fillRect/quadraticCurveTo/Path2D all work on OffscreenCanvasRenderingContext2D). Gate the ref's
+  action-type routing: click/scroll -> ring (+label); left_click_drag -> drag path (+label); type/key/
+  wait -> top-left label. Extract the pure per-frame overlay math (ring/label/bar positions, edge
+  clamping, scaleFactor) into a testable module and node-test it against numbers; the canvas draw
+  itself is live-verified. Honor `options.*` (default all on). Update the T4 LEDGER "deferred" note as
+  it ships.
 - (Historical) T4 Phase 2 plan, now done: the
   `gif_creator` `export` handler's `coordinate` branch (currently returns the Phase-1 "not yet
   supported (Phase 2)" text at service-worker.js) must instead ENCODE the GIF (`encodeRecording`)
