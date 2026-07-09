@@ -5,6 +5,11 @@ the v0.5.0 local test). Amends ADR-0050 Decision 5's INTERNAL capture design (sc
 in-memory buffer, synchronous export). The tool's schema, governance classification, and advertised
 surface do not change; everything here is extension-internal.
 
+AMENDED the same day by ADR-0053 (thin-extension rule): this ADR's capture SEMANTICS -- change-driven
+screencast frames, durable frames, real per-frame timing, paint-time action tagging -- all stand, but
+the state and computation (Decisions 2, 3, 4's tagging, 5) RELOCATE from the extension into the
+binary. Decision 1's screencast mechanics stay extension-side as a thin relay.
+
 ## Context
 
 The first live 0.5.0 test broke gif_creator's export twice, and the failure decomposes into three
