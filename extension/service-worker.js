@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/neuquant.js", "lib/gifenc.js", "lib/recbuffer.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/neuquant.js", "lib/gifenc.js", "lib/gifoverlay.js", "lib/recbuffer.js");
 
 // gif_creator recording state (ADR-0050 Decision 5): a bounded per-tab frame store (lib/recbuffer.js);
 // the encoder is lib/gifenc.js. Both are pure + unit-tested; this worker owns capture + export.
@@ -402,35 +402,150 @@ function base64FromBytes(bytes) {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
-// gif_creator (ADR-0050 D5): decode the captured JPEG frames to RGBA at the first frame's
-// dimensions (via OffscreenCanvas) and encode them into an animated GIF (lib/gifenc.js).
-async function encodeRecording(base64Frames, delayMs) {
-  const first = await createImageBitmap(new Blob([bytesFromBase64(base64Frames[0])], { type: "image/jpeg" }));
+// --- gif_creator visual overlays (ADR-0050 D5 refinement) ---
+// Canvas draws recolored to Ghostlight sky-blue (#38BDF8); geometry from lib/gifoverlay.js, which
+// harvests the reference offscreen.js overlay vocabulary. These are the impure (canvas) halves; the
+// pure geometry/routing is unit-tested in lib/gifoverlay.js.
+const OVERLAY = () => self.GhostlightGifoverlay;
+function brandRgba(alpha) {
+  const [r, g, b] = OVERLAY().BRAND_RGB;
+  return "rgba(" + r + ", " + g + ", " + b + ", " + alpha + ")";
+}
+function drawClickIndicator(ctx, x, y, sf) {
+  const rad = OVERLAY().clickRadii(sf);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x, y, rad.outer, 0, 2 * Math.PI); ctx.fillStyle = brandRgba(0.3); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, rad.inner, 0, 2 * Math.PI); ctx.fillStyle = brandRgba(0.5); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, rad.border, 0, 2 * Math.PI);
+  ctx.strokeStyle = brandRgba(1); ctx.lineWidth = rad.lineWidth; ctx.stroke();
+  ctx.restore();
+}
+function drawDragPath(ctx, sx, sy, ex, ey, sf) {
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
+  ctx.strokeStyle = brandRgba(1); ctx.lineWidth = 3 * sf; ctx.stroke();
+  const angle = Math.atan2(ey - sy, ex - sx), arrow = 15 * sf;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(ex - arrow * Math.cos(angle - Math.PI / 6), ey - arrow * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(ex - arrow * Math.cos(angle + Math.PI / 6), ey - arrow * Math.sin(angle + Math.PI / 6));
+  ctx.closePath(); ctx.fillStyle = brandRgba(1); ctx.fill();
+  for (const [mx, my] of [[sx, sy], [ex, ey]]) {
+    ctx.beginPath(); ctx.arc(mx, my, 6 * sf, 0, 2 * Math.PI);
+    ctx.fillStyle = "#ffffff"; ctx.fill();
+    ctx.strokeStyle = brandRgba(1); ctx.lineWidth = 2 * sf; ctx.stroke();
+  }
+  ctx.restore();
+}
+function roundedRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+function drawActionLabel(ctx, textStr, x, y, sf) {
+  ctx.save();
+  const fontSize = 14 * sf;
+  ctx.font = fontSize + "px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  const textWidth = ctx.measureText(textStr).width;
+  const box = OVERLAY().labelBox(x, y, textWidth, ctx.canvas.width, sf);
+  roundedRectPath(ctx, box.bgX, box.bgY, box.bgW, box.bgH, box.radius);
+  ctx.shadowColor = "rgba(0, 0, 0, 0.3)"; ctx.shadowBlur = 4 * sf; ctx.shadowOffsetY = 2 * sf;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.85)"; ctx.fill();
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.fillStyle = "#ffffff"; ctx.fillText(textStr, box.textX, box.textY);
+  ctx.restore();
+}
+function drawProgressBar(ctx, progress, sf) {
+  const bar = OVERLAY().progressBarRect(ctx.canvas.width, ctx.canvas.height, progress, sf);
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.3)"; ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
+  ctx.fillStyle = brandRgba(1); ctx.fillRect(bar.x, bar.y, bar.fillWidth, bar.height);
+  ctx.restore();
+}
+// Ghostlight watermark: a compact sky-blue rounded pill with white "Ghostlight" text, bottom-right.
+// Replaces the reference's Claude-logo Path2D (we do not draw Claude's mark).
+function drawWatermark(ctx, sf) {
+  ctx.save();
+  const fontSize = 12 * sf, padX = 8 * sf, padY = 5 * sf, pad = 8 * sf;
+  ctx.font = "600 " + fontSize + "px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  const label = "Ghostlight";
+  const tw = ctx.measureText(label).width;
+  const w = tw + padX * 2, h = fontSize + padY * 2, r = h / 2;
+  const x = ctx.canvas.width - pad - w, y = ctx.canvas.height - pad - h - 4 * sf;
+  roundedRectPath(ctx, x, y, w, h, r);
+  ctx.fillStyle = brandRgba(0.92); ctx.fill();
+  ctx.fillStyle = "#ffffff"; ctx.fillText(label, x + padX, y + padY);
+  ctx.restore();
+}
+// Composite the overlays for one frame onto `ctx` (already holding the base image), per the frame's
+// action metadata + resolved options + progress. scaleFactor maps CSS viewport px -> canvas px.
+function compositeOverlays(ctx, frame, opts, progress) {
+  const O = OVERLAY();
+  const sf = O.scaleFactorFor(ctx.canvas.width, frame && frame.vpW);
+  const plan = O.overlayPlan(frame, opts);
+  const options = O.resolveOverlayOptions(opts);
+  if (plan.clickRing) drawClickIndicator(ctx, plan.clickRing.x * sf, plan.clickRing.y * sf, sf);
+  if (plan.dragPath) drawDragPath(ctx, plan.dragPath.sx * sf, plan.dragPath.sy * sf, plan.dragPath.ex * sf, plan.dragPath.ey * sf, sf);
+  if (plan.label) drawActionLabel(ctx, plan.label.text, plan.label.x * sf, plan.label.y * sf, sf);
+  if (options.showProgressBar) drawProgressBar(ctx, progress, sf);
+  if (options.showWatermark) drawWatermark(ctx, sf);
+}
+
+// gif_creator (ADR-0050 D5): decode the captured JPEG frames to RGBA at the first frame's dimensions
+// (via OffscreenCanvas), composite the action overlays (click cues, labels, progress bar, watermark;
+// gated by `options`), and encode them into an animated GIF (lib/gifenc.js). `frames` are recbuffer
+// entries: { base64, vpW?, action metadata? }.
+async function encodeRecording(frames, delayMs, options) {
+  const b64 = (f) => (typeof f === "string" ? f : f.base64);
+  const first = await createImageBitmap(new Blob([bytesFromBase64(b64(frames[0]))], { type: "image/jpeg" }));
   const w = first.width, h = first.height;
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const rgbaFrames = [];
-  for (let i = 0; i < base64Frames.length; i++) {
+  for (let i = 0; i < frames.length; i++) {
     const bmp = i === 0 ? first
-      : await createImageBitmap(new Blob([bytesFromBase64(base64Frames[i])], { type: "image/jpeg" }));
+      : await createImageBitmap(new Blob([bytesFromBase64(b64(frames[i]))], { type: "image/jpeg" }));
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(bmp, 0, 0, w, h);
+    const frame = typeof frames[i] === "string" ? { base64: frames[i] } : frames[i];
+    compositeOverlays(ctx, frame, options, (i + 1) / frames.length);
     rgbaFrames.push(ctx.getImageData(0, 0, w, h).data);
     if (bmp.close) bmp.close();
   }
   return (self.GhostlightGifenc || GhostlightGifenc).encodeGif(rgbaFrames, { width: w, height: h, delayMs });
 }
 // Capture a frame for an active recording on `tabId`, best-effort (no-op when not recording or a
-// screenshot fails). Called after a mutating tool while recording (ADR-0050 D5, Phase 1).
-async function maybeCaptureGifFrame(tabId) {
+// screenshot fails). Called after a mutating tool while recording (ADR-0050 D5). `meta` carries the
+// action's overlay metadata (type/description and coordinate(s) already rescaled to CSS viewport px).
+async function maybeCaptureGifFrame(tabId, meta) {
   const entry = gifRecordings.byTab.get(tabId);
   if (!entry || !entry.active) return;
   try {
+    // Read the viewport width from the context the model just acted against, BEFORE this capture's
+    // screenshot() overwrites it -- the overlay scaleFactor needs canvas.width / vpW.
+    const prev = screenshotCtx.get(tabId);
+    const vpW = prev && prev.vpW;
     const shot = await screenshot(tabId);
-    self.GhostlightRecbuffer.capture(gifRecordings, tabId, shot.base64);
+    const frame = Object.assign({ base64: shot.base64 }, vpW ? { vpW } : {}, meta || {});
+    self.GhostlightRecbuffer.capture(gifRecordings, tabId, frame);
   } catch (e) {
     /* best-effort: a failed frame never breaks the tool that triggered it */
   }
+}
+// Build a frame's overlay metadata from a dispatched tool call, converting model coordinates (read
+// off the screenshot the model saw) to CSS viewport px against the CURRENT context (before capture).
+function gifFrameMeta(tool, args, tabId) {
+  const meta = (self.GhostlightGifoverlay || GhostlightGifoverlay).describeAction(tool, args);
+  if (!meta) return null;
+  if (Array.isArray(meta.coordinate)) meta.coordinate = rescaleCoord(tabId, meta.coordinate[0], meta.coordinate[1]);
+  if (Array.isArray(meta.start_coordinate)) meta.start_coordinate = rescaleCoord(tabId, meta.start_coordinate[0], meta.start_coordinate[1]);
+  return meta;
 }
 async function encodeJpeg(bitmap, w, h, quality) {
   const canvas = new OffscreenCanvas(w, h);
@@ -1385,9 +1500,10 @@ const handlers = {
       return text(r.result.output);
     });
   },
-  // gif_creator (ADR-0050 Decision 5) -- Phase 1: record frames, encode + export the GIF (download).
-  // Phase 2 (coordinate drag-drop) is deferred (see the T4 LEDGER entry). Frames are captured on
-  // start and after each computer/navigate while recording (maybeCaptureGifFrame).
+  // gif_creator (ADR-0050 Decision 5): record frames, then export the GIF (download or coordinate
+  // drag-drop). Frames are captured on start and after each computer/navigate while recording
+  // (maybeCaptureGifFrame), each carrying action metadata; export composites the visual overlays
+  // (click cues, action labels, progress bar, watermark) gated by the `options` object.
   async gif_creator(a) {
     const tabId = await effectiveTabId(a.tabId);
     const rec = self.GhostlightRecbuffer;
@@ -1395,8 +1511,11 @@ const handlers = {
       case "start_recording": {
         let seeded = 0;
         try {
+          const prev = screenshotCtx.get(tabId);
+          const vpW = prev && prev.vpW;
           const shot = await screenshot(tabId);
-          seeded = rec.start(gifRecordings, tabId, shot.base64);
+          // Seed frame is the initial state -- base64 + viewport width, but no action metadata.
+          seeded = rec.start(gifRecordings, tabId, Object.assign({ base64: shot.base64 }, vpW ? { vpW } : {}));
         } catch (e) {
           rec.start(gifRecordings, tabId);
         }
@@ -1418,7 +1537,7 @@ const handlers = {
         if (a.coordinate) {
           // Phase 2 (ADR-0050 D5): drag-drop the encoded GIF onto a page element at the coordinate,
           // reusing T3's setImage DragEvent path (content.js) with the GIF File.
-          const gif = await encodeRecording(frames, 500);
+          const gif = await encodeRecording(frames, 500, a.options);
           const r = await content(tabId, {
             type: "setImage",
             coordinate: a.coordinate,
@@ -1433,7 +1552,7 @@ const handlers = {
           return text(r.result.output + " (" + frames.length + " frame(s), " + Math.round(gif.length / 1024) + " KB).");
         }
         if (a.download === true) {
-          const gif = await encodeRecording(frames, 500);
+          const gif = await encodeRecording(frames, 500, a.options);
           return {
             content: [
               { type: "text", text: "Exported an animated GIF: " + frames.length + " frame(s), " + Math.round(gif.length / 1024) + " KB." },
@@ -1625,7 +1744,10 @@ async function dispatch(id, tool, args, guid) {
     // (best-effort, after the reply is already sent, so it never delays or fails the tool response).
     if (tool === "computer" || tool === "navigate") {
       try {
-        await maybeCaptureGifFrame(await effectiveTabId(args.tabId));
+        const tid = await effectiveTabId(args.tabId);
+        // Build the overlay metadata against the pre-capture context (the coordinate the model used).
+        const meta = gifFrameMeta(tool, args, tid);
+        await maybeCaptureGifFrame(tid, meta);
       } catch (e) {
         /* best-effort frame capture */
       }

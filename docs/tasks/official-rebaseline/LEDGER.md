@@ -6,8 +6,25 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
 ## RESUME HERE
 
 - Status: **BATCH FULLY COMPLETE** -- T1..T5 + T4 Phase 2 all DONE (count 21). Everything in ADR-0050
-  is shipped. **gif_creator REFINEMENTS (post-batch, owner-requested): TRACK 1 (quantization) DONE;
-  TRACK 2 (overlays) NEXT** -- see the plan below.
+  is shipped. **gif_creator REFINEMENTS (post-batch, owner-requested): BOTH TRACKS DONE** -- TRACK 1
+  (adaptive NeuQuant palette) + TRACK 2 (visual overlays) shipped, extension-only, all node-tested.
+
+- **TRACK 2 -- visual overlays: DONE.** New `extension/lib/gifoverlay.js` (pure geometry + routing:
+  `describeAction`/`resolveOverlayOptions`/`scaleFactorFor`/`clickRadii`/`labelBox`/`progressBarRect`/
+  `overlayPlan`, harvested from the reference offscreen.js). service-worker.js: added the canvas draw
+  halves (`drawClickIndicator`/`drawDragPath`/`drawActionLabel`/`drawProgressBar`/`drawWatermark`/
+  `compositeOverlays`) recolored to Ghostlight sky-blue (#38BDF8; the watermark is a "Ghostlight" pill,
+  NOT Claude's logo); `encodeRecording(frames, delayMs, options)` now composites overlays before
+  quantizing; `maybeCaptureGifFrame(tabId, meta)` + `gifFrameMeta(tool,args,tabId)` store per-frame
+  action metadata with coordinates rescaled to CSS viewport px (via `rescaleCoord`, read BEFORE the
+  capture screenshot overwrites the ctx) + `vpW`; `dispatch` builds+passes the meta; `start_recording`
+  seeds an object frame; `export` threads `a.options` (the existing schema param -- no schema change).
+  recbuffer frames are now objects `{base64, vpW?, type?, coordinate?, start_coordinate?, description?}`
+  (recbuffer stays generic). Overlays gated by `options.{showClickIndicators,showDragPaths,
+  showActionLabels,showProgressBar,showWatermark}`, all default true. New `tests/extension/
+  gifoverlay.test.js` (7) wired into ci.yml + BOOTSTRAP; extension node --test 58/58 green; the canvas
+  draw itself is live-verified (OffscreenCanvas, not node-testable). NO Rust/schema/pin change. Commit:
+  `feat(gif): visual overlays for gif_creator (click cues, labels, progress, watermark)`.
 
 - **TRACK 1 -- adaptive palette: DONE.** Per the owner's standing "check the reference original code
   for standards/patterns" directive, the official Claude-in-Chrome v1.0.80 ships gif.js 0.2.0, whose
