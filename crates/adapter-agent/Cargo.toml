@@ -1,6 +1,6 @@
 [package]
 name = "ghostlight-adapter-agent"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Ghostlight agent adapter: the MCP-side resilient pass-through the editor launches (ADR-0046)."
 publish = false

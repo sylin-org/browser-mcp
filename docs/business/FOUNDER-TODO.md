@@ -50,7 +50,7 @@ docs/business/PLAN.md). Check items off in place; add dates.
       the next upload on, and losing the key locks you out of updating your own item. Turn it
       on once the release cadence is stable, paired with the same offline key-management
       discipline as the licensing signing seed above.
-- [ ] **v0.3.0 release (supersedes the v0.2.0-release item, post-eval P1).** The v0.2.0 tag's
+- [x] **v0.3.0 release (supersedes the v0.2.0-release item, post-eval P1).** The v0.2.0 tag's
       release run FAILED on a known flaky test (rewritten under ADR-0032; the tag predates the
       fix) and the tag also predates the 17-tool composition surface the docs advertise. The
       2026-07-07 distribution session fixed dev CI (proc.rs/supervisor.rs cross-platform
@@ -58,6 +58,8 @@ docs/business/PLAN.md). Check items off in place; add dates.
       dev instead. Verify the release run went green end to end, then work
       **docs/business/DISTRIBUTION.md** top to bottom (npm name claim FIRST -- `ghostlight`
       was unclaimed on npm as of 2026-07-07).
+      DONE: v0.3.0 shipped 2026-07-08; v0.4.0 released + `ghostlight` published to npm 2026-07-09
+      (see the DISTRIBUTION.md npm step and the 2026-07-09 decision-log entry below).
 - [ ] **Post-eval verification debts (P10; these gate the credibility of the claims above).**
       Run docs/tasks/composition/LIVE-VERIFY.md (13 pinned observations); live-verify macOS and
       Linux; unquarantine e2e-smoke or record the design decision; the LICENSE-GOVERNANCE
@@ -118,3 +120,15 @@ docs/business/PLAN.md). Check items off in place; add dates.
   stays "Ghostlight in Browser"); README / CLAUDE.md / extension README / script synopses swept and
   ADR-0021 amended. The Visual Feedback Dictionary design artifact was preserved verbatim into
   docs/design/visual-feedback-dictionary.html.
+- 2026-07-08: **v0.3.0 SHIPPED** (GitHub Release + Pages site live; distribution Tier 0-2 in-repo).
+- 2026-07-09: **v0.4.0 RELEASED + npm PUBLISHED.** dev->main PR merged, tag `v0.4.0` cut; the
+  GitHub Release published 34 assets and `ghostlight@0.4.0` went live on npm (unscoped, public,
+  under `lbotinelly`) -- `npx -y ghostlight@0.4.0` verified end to end. A latent CI/release bug
+  was fixed en route: the test jobs ran `cargo test --workspace` with no preceding
+  `cargo build --workspace`, so spawn-based integration tests could not find the adapter
+  deliverable binaries (rust-cache masked it until the version bump rotated the cache); the tag
+  was moved to the fixed commit and re-run. Publishing used a classic npm **Automation token**
+  because the account's 2FA is Windows Hello/WebAuthn (no CLI `--otp`). This release carried
+  ADR-0044 (named instances), ADR-0045 (resilient reconnect), ADR-0046 (three role executables),
+  ADR-0047 (tab identity), ADR-0048 (development override + the per-user hub-key fix), and
+  ADR-0049 (the MCP protocol-conformance pass).

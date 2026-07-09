@@ -29,14 +29,20 @@ so `ghostlight install` resolves the adapters as siblings.
 
 ## Founder: accounts and publishes (order matters)
 
-- [ ] **npm: claim the name.** `npm login` (create the account if needed), then
-      `cd packaging/npm && npm publish`. The name `ghostlight` was unclaimed on 2026-07-07;
-      it is the single most squattable asset in this plan -- do this the day the v0.3.0
-      release is live (the launcher downloads release assets, so the release must exist
-      first). Enable 2FA on the npm account.
+- [x] **npm: claim the name.** DONE 2026-07-09: `ghostlight@0.4.0` published (unscoped, public)
+      under user `lbotinelly`; `npx -y ghostlight@0.4.0 doctor` smoke-tested green (the launcher
+      fetches the versioned release binaries from `releases/download/v0.4.0/`). The name was
+      unclaimed on 2026-07-07. NOTE for future publishes: npm 2FA here is Windows Hello
+      (WebAuthn), which yields NO CLI `--otp` code, so `npm publish --otp=` fails -- publish with
+      a classic **Automation token** (Access Tokens -> Classic -> Automation; it bypasses 2FA),
+      set via `npm config set //registry.npmjs.org/:_authToken=<token>`. Reuse that same token as
+      a GitHub Actions `NPM_TOKEN` secret if you later wire `npm publish` into release.yml.
 - [ ] **Chrome Web Store: submit.** Screenshots + Privacy tab per
-      docs/legal/STORE_LISTING.md, then submit for review. The extension zip must be the
-      v0.3.0 build (it carries the first-run install-page tab). Also submit to the
+      docs/legal/STORE_LISTING.md, then submit for review. Upload
+      `dist/ghostlight-extension-v0.4.1.zip` -- build it with `pwsh -File
+      scripts/package-extension.ps1` (it strips the local-dev `key`, which the store rejects
+      on first upload). Do NOT use the `ghostlight-extension-v*.zip` from the GitHub release
+      assets: that one zips extension/ verbatim and still carries the `key`. Also submit to the
       **Edge Add-ons store** (free, same zip, far less competition).
 - [ ] **MCP Registry (official).** Install `mcp-publisher`, validate `server.json`
       (repo root), authenticate via the GitHub method, publish. The registry feeds client
@@ -46,7 +52,7 @@ so `ghostlight install` resolves the adapters as siblings.
 - [ ] **Directory listings** (each ~10 minutes, all free): Smithery, Glama, mcp.so,
       PulseMCP. Then a PR to `punkpeye/awesome-mcp-servers` (one line, browser category).
 - [ ] **winget PR.** Copy `packaging/winget/Sylin.Ghostlight.yaml` into the three-file
-      layout under `manifests/s/Sylin/Ghostlight/0.3.0/` in a fork of microsoft/winget-pkgs,
+      layout under `manifests/s/Sylin/Ghostlight/<version>/` in a fork of microsoft/winget-pkgs,
       fill the sha256 from the release `.sha256` asset, `winget validate`, open the PR.
 - [ ] **Homebrew tap.** Create the public repo `sylin-org/homebrew-tap`, add
       `Formula/ghostlight.rb` from `packaging/homebrew/ghostlight.rb` with the three sha256
