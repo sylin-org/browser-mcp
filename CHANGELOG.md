@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `file_upload` tool: upload base64-encoded file bytes to a located file `<input>` on the page via
+  an in-page DataTransfer. It never reads the host filesystem -- the caller supplies the bytes.
+  (ADR-0050)
+
+### Changed
+- The two thin pass-through adapters (`ghostlight-adapter-agent`, `ghostlight-adapter-browser`) are
+  merged into a single `ghostlight-relay` binary, role-selected at launch (`--role agent`; the
+  browser role auto-detected from the Chrome extension origin, since a native-messaging manifest
+  gives Chrome a bare path). Releases now ship two executables (`ghostlight` + `ghostlight-relay`)
+  instead of three. (ADR-0051)
+
 ## [0.4.1] - 2026-07-09
 
 A distribution-plumbing patch: it makes Ghostlight publishable to the official MCP Registry and

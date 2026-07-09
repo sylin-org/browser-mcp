@@ -1,10 +1,10 @@
 # The Ghostlight dev loop
 
-Ghostlight ships as three executables (ADR-0046): `ghostlight` (the CLI + the persistent
-service), `ghostlight-adapter-agent` (the pass-through your MCP client launches), and
-`ghostlight-adapter-browser` (the pass-through Chrome launches). Only the service carries the
-churny code; both adapters are thin, resilient pipes. That split is what makes the dev loop
-frictionless: you rebuild and restart the service while the adapters keep your editor and browser
+Ghostlight ships as two executables (ADR-0046, ADR-0051 Phase 3): `ghostlight` (the CLI + the
+persistent service) and `ghostlight-relay` (the single thin pass-through, role-selected at launch:
+`--role agent` for your MCP client, the browser role auto-detected when Chrome launches it). Only the
+service carries the churny code; the relay is a thin, resilient pipe. That split is what makes the dev
+loop frictionless: you rebuild and restart the service while the relay keeps your editor and browser
 connected.
 
 Use a named instance (here `dev`) so your work never touches the default install.
@@ -15,9 +15,9 @@ Use a named instance (here `dev`) so your work never touches the default install
 cargo build -p ghostlight
 ```
 
-Build ONLY the `ghostlight` package. It does not relink the two adapter binaries, so a running
-`ghostlight-adapter-agent` (launched by your editor) is never locked, and the rebuild always
-succeeds even while an editor session is live.
+Build ONLY the `ghostlight` package. It does not relink the `ghostlight-relay` binary, so a running
+relay (launched by your editor as `ghostlight-relay --role agent`) is never locked, and the rebuild
+always succeeds even while an editor session is live.
 
 ## 2. Install (once)
 

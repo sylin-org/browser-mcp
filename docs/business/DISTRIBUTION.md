@@ -18,14 +18,15 @@ in the session record and docs/research/14 (P1 was "ship the distribution alread
 - `server.json` (MCP registry descriptor), `packaging/winget/`, `packaging/scoop/`,
   `packaging/homebrew/` (templates; hashes come from release assets).
 
-## Artifact shape (ADR-0046: three role executables)
+## Artifact shape (ADR-0046, ADR-0051 Phase 3: two executables)
 
-Every release ships three role executables side by side: `ghostlight` (the CLI and the persistent
-service) plus the two thin pass-throughs `ghostlight-adapter-agent` (the MCP-client side) and
-`ghostlight-adapter-browser` (the Chrome native-messaging side). Each platform archive carries all
-three, and release.yml uploads all three as raw per-target binaries too. The install scripts, the
-npm launcher, and the winget/scoop/homebrew templates place the three together in one directory,
-so `ghostlight install` resolves the adapters as siblings.
+Every release ships two executables side by side: `ghostlight` (the CLI and the persistent service)
+plus the single thin pass-through `ghostlight-relay`, which carries both former roles -- the
+MCP-client side (`--role agent`) and the Chrome native-messaging side (browser role, auto-detected
+from the extension origin Chrome passes). Each platform archive carries both, and release.yml uploads
+both as raw per-target binaries too. The install scripts, the npm launcher, and the
+winget/scoop/homebrew templates place the two together in one directory, so `ghostlight install`
+resolves the relay as a sibling.
 
 ## Founder: accounts and publishes (order matters)
 

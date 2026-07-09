@@ -116,9 +116,9 @@ cd ghostlight
 cargo build --release
 ```
 
-The build produces three role executables in `target/release/` (ADR-0046): `ghostlight` (the CLI
-you run below) plus the thin `ghostlight-adapter-agent` and `ghostlight-adapter-browser`
-pass-throughs your MCP client and Chrome launch; a prebuilt archive carries all three side by side.
+The build produces two executables in `target/release/` (ADR-0046, ADR-0051): `ghostlight` (the CLI
+you run below) plus the thin `ghostlight-relay` pass-through your MCP client and Chrome launch (one
+binary, role-selected at launch); a prebuilt archive carries both side by side.
 All commands below run the `ghostlight` binary. Every release archive carries a SHA-256 checksum
 and a signed build-provenance attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
 

@@ -42,7 +42,7 @@ MCP Client <--stdio--> Binary <--native messaging--> Extension <--CDP--> Browser
 
 Three processes, two protocol boundaries.
 
-- **Binary (Rust):** MCP server on stdin/stdout. Native messaging host for the extension. Policy enforcement. Audit. Screenshot compression. Portable, zero runtime dependencies. Since ADR-0046 this ships as three role executables: `ghostlight` (CLI + persistent service) plus the thin `ghostlight-adapter-agent` (MCP stdio pass-through) and `ghostlight-adapter-browser` (native-messaging pass-through).
+- **Binary (Rust):** MCP server on stdin/stdout. Native messaging host for the extension. Policy enforcement. Audit. Screenshot compression. Portable, zero runtime dependencies. Since ADR-0046 (as amended by ADR-0051 Phase 3) this ships as two executables: `ghostlight` (CLI + persistent service) plus the thin `ghostlight-relay` pass-through -- a single binary carrying both roles, the MCP stdio pass-through (`--role agent`) and the native-messaging pass-through (browser role, auto-detected from the Chrome extension origin).
 - **Extension (JS, Manifest V3):** Thin CDP executor. No policy logic. Recovers from service worker death.
 - **Browser:** User's Chromium browser. Untouched.
 
