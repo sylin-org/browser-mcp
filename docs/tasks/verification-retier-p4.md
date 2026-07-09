@@ -50,6 +50,42 @@ impact). Each sub-step leaves a green tree and its own commit.
   in `crates/transport/src/observability.rs` -- an observability improvement, NOT a poll-hack, per
   [[prefer-sustainable-architecture]]).
 
+## Progress (as executed)
+
+- P4.1 DONE (`aa182ce`): `tests/support/inproc.rs` -- `Harness::all_open()` / `Harness::governed(manifest)`
+  build a real `ServiceContext` via `from_startup`; `drive()` / `drive_raw()` run a fresh
+  `serve_session` per call over `tokio::io::duplex`; `attach_fake_extension()` supplies the `Browser`
+  leg. The process role is set to `Service` once per binary via a `Once` guard. Chose the duplex
+  helper alone over a new `Listener`/`Stream` trait (the smaller change earned its keep). `tests/
+  inproc_fixture.rs` is the green self-test. GOTCHA (documented in the fixture): tools that
+  orchestrate internal sub-calls (`script`, non-denied `form_fill`) re-enter the runtime via
+  `block_in_place`, which panics on the default current-thread test runtime and only shows up as a
+  `drive()` hang -- those tests need `#[tokio::test(flavor = "multi_thread")]`.
+- P4.2 DONE -- the incidentally-E2E serve_session-WIRING files migrated: `tool_advertisement` +
+  `shadow_mode` (`b1faa49`), `tool_enforcement` 11/12 (`4af9300`), `script_tool` + `mcp_protocol`
+  7/8 (`c68f4e5`). Three tests that need timing/layers the in-process shape can't reproduce stay
+  spawn tests and join the P4.3 quarantine tier: `tool_enforcement::form_fill_without_extension_...`
+  (all-open + USER-CONFIG-FILE audit layer, which would need a process-global `GHOSTLIGHT_USER_CONFIG_DIR`
+  env racing parallel tests), `mcp_protocol::tools_call_waits_for_a_late_extension_...` (late IPC
+  connect), and the `all_open_golden` redaction spawn test.
+- P4.2 SCOPE CORRECTION (honest, per [[prefer-sustainable-architecture]]): `manage_web_*` (real
+  HTTP/1.1 over a real TCP listener) and the CLI-plan subprocess tests (assert the real `ghostlight`
+  CLI's stdout; their render cores are already unit-tested inline) are NOT incidentally-E2E -- they
+  test genuinely-external surfaces. Bending them onto the fixture would fabricate an in-process
+  router / test a different thing and LOSE coverage. They are reclassified into the P4.3 quarantine
+  tier, not migrated.
+- P4.3 NOT STARTED (the well-scoped next step). DECIDED mechanism for the CI tier split: because
+  `tool_enforcement` and `mcp_protocol` are now MIXED files (mostly in-process + one spawn test each),
+  a by-file split is wrong; annotate each remaining SPAWN test with
+  `#[ignore = "e2e: spawns a real service; run in the e2e tier"]`, then `ci.yml`'s fast job runs
+  `cargo test --workspace` (skips ignored) and a separate still-required `e2e` job runs
+  `cargo test --workspace -- --ignored`. This also makes local `cargo test` fast-by-default;
+  `--include-ignored` runs everything. Sweep is broad (~30-40 spawn tests across the tree) so do it
+  focused. THEN fold former-P1.3 (structured observability): add mint-once / reconnect-count /
+  resolved-candidate-index fields to the debug snapshot in `crates/transport/src/observability.rs`
+  and switch `adapter_reconnect` / `adapter_override` off their debug-LOG-TEXT scrapes -- this is
+  polish on tests that already PASS, not load-bearing.
+
 ## Guardrails
 
 - Local runs: use `scripts/test-e2e.{sh,ps1}` (isolated CARGO_TARGET_DIR + closed stdin) or
