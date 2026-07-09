@@ -119,12 +119,19 @@ async fn relay_adapter_sends_a_real_guid_not_a_placeholder() {
 
     let debug = ghostlight::observability::DebugSink::disabled();
     let relay_endpoint = endpoint.clone();
-    // Fire-and-forget: past the hello, `relay_adapter` becomes a raw bidirectional relay of this
-    // test process's own stdio, which never naturally completes here. We only need the ONE hello
-    // frame it sends before that; the task is simply dropped (never awaited) once we have it.
+    // ADR-0051 Phase 2: drive `relay_adapter_over` with INJECTED empty/sink client stdio instead of
+    // `relay_adapter` (which binds the process's real stdin). Under `cargo test` the real console
+    // stdin never signals EOF, so the old form hung here; `tokio::io::empty()` EOFs immediately.
+    // We only need the ONE hello frame the relay sends during connect, before any client traffic.
     tokio::spawn(async move {
         let eps = [relay_endpoint];
-        let _ = ghostlight::native::ipc::relay_adapter(&eps, &debug).await;
+        let _ = ghostlight::native::ipc::relay_adapter_over(
+            &eps,
+            &debug,
+            tokio::io::empty(),
+            tokio::io::sink(),
+        )
+        .await;
     });
 
     let hello_bytes = accept_one_hello(listener).await;
