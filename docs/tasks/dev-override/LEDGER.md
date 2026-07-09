@@ -5,7 +5,8 @@ task (or block); this file is the single source of truth for batch progress.
 
 ## RESUME HERE
 
-Next task: **T4** (`T4-installer-unified-surface.md`). T1 `e80bec9`, T2 `ababf4a`, T3 `77ad837`.
+Next task: **T5** (`T5-doctor-docs-changelog.md`). T1 `e80bec9`, T2 `ababf4a`, T3 `77ad837`,
+T4 `c3e6418`.
 
 ## Task table
 
@@ -14,6 +15,7 @@ Next task: **T4** (`T4-installer-unified-surface.md`). T1 `e80bec9`, T2 `ababf4a
 | T1 agent override resolution | done | e80bec9 | V-ALL green; adapter_override + adapter_reconnect both pass |
 | T2 browser adapter resolution | done | ababf4a | V-ALL green; transport tests 64 -> 66 (two pick_native_host tests) |
 | T3 extension single host | done | 77ad837 | node --check x3 + grouping test pass; P3 post-grep zero; no dev-host in ext JS |
+| T4 installer unified surface | done | c3e6418 | V-ALL green; install_instance 4/4 (dev-thin + qa-full); core 472 -> 473 |
 | T4 installer unified surface | pending | - | |
 | T5 doctor + docs + changelog | pending | - | |
 
@@ -96,3 +98,36 @@ Verification (all green):
 Deviations: none. (The extension JS files are CRLF in the working tree and Git normalizes them to
 LF on commit -- a pre-existing repo characteristic, not a change this task introduced; the diff is
 exactly the pinned label/host edits.)
+
+### T4 -- the unified install surface (ADR-0048 D5/D6)
+
+Code commit: `c3e6418`. STOP preconditions all passed (STORE_EXTENSION_ID/DEV_EXTENSION_ID absent
+from all .rs; the only MissingExtensionId code callers were native_host.rs's two sites + the
+error.rs variant; plan_install matched the pinned shape; DEV_INSTANCE present). Files staged
+(exactly the five owned): crates/core/src/install/native_host.rs, crates/core/src/install/mod.rs,
+crates/transport/src/error.rs, src/main.rs (the one sanctioned help-comment line),
+tests/install_instance.rs.
+
+The F2-blocker restructure was applied exactly as pinned: `plan_install` is now a 4-line resolver
+wrapper; `plan_install_for` opens with `let scope` + a single `let mut actions`, then the
+`if !dev_thin { ... }` block holds the launcher/manifest lets + the needs_copy block + the
+windows/else browser block; the MCP-clients section and `Ok(actions)` stay OUTSIDE. There is
+exactly one `let mut actions` in the fn.
+
+Verification (all green, in the task's order):
+- cargo fmt --check: clean
+- cargo clippy --workspace --all-targets -- -D warnings: clean
+- cargo build --workspace: ok
+- cargo test -p ghostlight-core: 473 passed (472 -> 473: the new
+  plan_install_for_the_dev_instance_is_client_entries_only; plus the updated
+  host_manifest_json_has_type_stdio_and_exact_origin and the new
+  resolve_without_an_id_allows_the_two_shipped_extensions)
+- cargo test --test install_instance: 4 passed (the two new pinned subprocess tests
+  dev_install_plan_is_thin_client_entries_only + a_named_non_dev_instance_still_plans_the_full_stack,
+  plus the two unchanged ones)
+- cargo test --workspace: every test binary reported 0 failed
+- cargo check --target x86_64-unknown-linux-gnu --workspace --all-targets: ok
+
+Deviations: none. (`ghostlight install` was NOT run as verification, per the task; the unit +
+dry-run subprocess tests are the gate. The install_instance.rs module-doc paragraph was manually
+re-wrapped to fit the inserted pinned sentence -- rustfmt does not reflow `//!` comments.)
