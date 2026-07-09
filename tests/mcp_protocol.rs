@@ -188,8 +188,8 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     let tools = list["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        18,
-        "13 trained tools plus wait_for, script, form_fill, file_upload, and the explain addition"
+        ghostlight::browser::directory::advertised_tool_count(),
+        "the wire advertises the full REGISTRY surface (see directory::advertised_tool_names)"
     );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.

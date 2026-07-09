@@ -171,7 +171,7 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     assert_eq!(list1["id"], 2, "pre-restart tools/list reply: {list1:?}");
     assert_eq!(
         list1["result"]["tools"].as_array().map(|t| t.len()),
-        Some(18),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "pre-restart tools/list: {list1:?}"
     );
 
@@ -197,7 +197,7 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     );
     assert_eq!(
         list2["result"]["tools"].as_array().map(|t| t.len()),
-        Some(18),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the reconnected session answered a real request: {list2:?}"
     );
 
@@ -304,7 +304,7 @@ fn adapter_survives_a_five_second_service_gap() {
     );
     assert_eq!(
         list2["result"]["tools"].as_array().map(|t| t.len()),
-        Some(18),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the reconnected session answered a real request: {list2:?}"
     );
 

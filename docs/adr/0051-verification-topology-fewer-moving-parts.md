@@ -1,6 +1,6 @@
 # ADR-0051: Fewer, more meaningful moving parts in the verification topology
 
-Status: Proposed (2026-07-09). Companion to the evaluation in
+Status: Accepted (2026-07-09; owner greenlit full Phase 1-4 execution). Companion to the evaluation in
 `docs/design/verification-topology-evaluation.md`, which carries the full moving-parts census and the
 option analysis this ADR decides. Refines ADR-0046 (role executables) by merging the two thin
 adapters, and refines ADR-0003's concrete-transport stance by introducing an in-process test seam. It

@@ -113,8 +113,12 @@ mod tests {
         let cap = browser::BrowserCapability::new(browser::Browser::new());
         assert_eq!(cap.code(), "browser");
         assert!(!cap.descriptor().is_empty());
-        // The browser's directory is the 18-declaration REGISTRY.
-        assert_eq!(cap.directory().len(), 18);
+        // The browser's directory is the full REGISTRY (ADR-0051 Phase 1: derived from the one
+        // advertised-surface oracle, so an additive tool does not re-bump this site).
+        assert_eq!(
+            cap.directory().len(),
+            crate::browser::directory::advertised_tool_count()
+        );
         // The agent guide carries all four fields.
         let guide = cap.agent_guide();
         assert!(!guide.summary.is_empty());
@@ -129,7 +133,10 @@ mod tests {
             Arc::new(browser::BrowserCapability::new(browser::Browser::new()));
         let reg = Registry::new(vec![cap]);
         assert_eq!(reg.capabilities().len(), 1);
-        assert_eq!(reg.aggregated_directory().len(), 18);
+        assert_eq!(
+            reg.aggregated_directory().len(),
+            crate::browser::directory::advertised_tool_count()
+        );
     }
 
     #[test]

@@ -413,8 +413,8 @@ fn all_open_invariant_no_manifest_means_no_denials() {
         .expect("tools array");
     assert_eq!(
         tools.len(),
-        18,
-        "13 trained tools plus wait_for, script, form_fill, file_upload, and explain"
+        ghostlight::browser::directory::advertised_tool_count(),
+        "the wire advertises the full REGISTRY surface (see directory::advertised_tool_names)"
     );
     let fixture = ghostlight::mcp::tools::advertised_tools_json();
     assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");

@@ -1233,6 +1233,23 @@ pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
 }
 
+/// The advertised tool names, in [`REGISTRY`] (advertised) order (ADR-0051 Phase 1). This is the
+/// single DERIVED source of truth for "the current advertised surface" that BEHAVIOR tests assert
+/// against -- e.g. a spawn test proving the wire delivered the full set, or a protocol test counting
+/// `tools/list` -- so an additive tool (ADR-0034 Decision 7) does not require editing a hardcoded
+/// count or name array in every such test. The FIDELITY guards
+/// (`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`, and the `explain`-text literal in
+/// `mcp/pipeline.rs`) stay hand-maintained on purpose: they are the intentional drift catchers and
+/// must NOT be rewired to derive from here, or a wrong `REGISTRY` change would validate itself.
+pub fn advertised_tool_names() -> Vec<&'static str> {
+    REGISTRY.iter().map(|row| row.tool).collect()
+}
+
+/// The number of advertised tools (see [`advertised_tool_names`]). Derived from [`REGISTRY`].
+pub fn advertised_tool_count() -> usize {
+    REGISTRY.len()
+}
+
 /// Look up the bound capability requirement set for one action. `action` is consulted only
 /// when `tool`'s descriptor carries an `action_key` (`computer` today); for every other tool it
 /// is ignored.

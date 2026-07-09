@@ -361,26 +361,10 @@ fn org_policy_hot_swap_end_to_end() {
     // Delete the policy file: org removal is a legitimate transition back to all-open (18
     // tools), with a second notification.
     std::fs::remove_file(&policy_path).expect("delete the policy file");
-    let full_set: Vec<&str> = vec![
-        "tabs_context_mcp",
-        "tabs_create_mcp",
-        "navigate",
-        "computer",
-        "find",
-        "form_input",
-        "get_page_text",
-        "javascript_tool",
-        "read_console_messages",
-        "read_network_requests",
-        "read_page",
-        "resize_window",
-        "update_plan",
-        "wait_for",
-        "script",
-        "form_fill",
-        "file_upload",
-        "explain",
-    ];
+    // ADR-0051 Phase 1: the all-open surface is the full REGISTRY, derived from the one oracle so an
+    // additive tool does not require editing this list (the grant-filtered `expanded` set above stays
+    // hand-pinned -- it is a meaningful oracle for the [read,action,write] filtering behavior).
+    let full_set: Vec<&str> = ghostlight::browser::directory::advertised_tool_names();
     let _ = poll_tools_list_until(&mut stdin, &lines, consumed, &mut next_id, &full_set, 20);
 
     {

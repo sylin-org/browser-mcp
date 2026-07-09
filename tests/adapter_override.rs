@@ -224,7 +224,7 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
     );
     assert_eq!(
         list["result"]["tools"].as_array().map(|t| t.len()),
-        Some(18),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the fallback service answered a real request: {list:?}"
     );
 
