@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Integration tests for G13 per-call grant enforcement: end to end over stdio, no extension
-//! connected. A permitted call reaches dispatch and returns the familiar `not connected`
-//! execution error; a denied call never reaches dispatch and returns a `Denied (D-...)` text
-//! result instead -- that contrast is the test signal (mirrors `tests/mcp_protocol.rs`'s own
-//! subprocess pattern, one unique `GHOSTLIGHT_ENDPOINT` per spawn).
+//! Integration tests for G13 per-call grant enforcement: no extension connected. A permitted call
+//! reaches dispatch and returns the familiar `not connected` execution error; a denied call never
+//! reaches dispatch and returns a `Denied (D-...)` text result instead -- that contrast is the test
+//! signal.
+//!
+//! ADR-0051 Phase 4 (P4.2): all but one of these migrated from spawn-a-service-plus-adapter onto
+//! the in-process `support::inproc::Harness`, which drives the SAME serve_session -> governance
+//! decide -> dispatch path with no OS process. Governed cases carry their `audit.*` config in the
+//! manifest pointing at a temp file; the harness's user-layer config resolution writes there
+//! exactly as a `--manifest file://` spawn would, so every audit read is unchanged. The one
+//! exception is `form_fill_without_extension_fails_with_parent_audit` (see its own doc): it needs
+//! an ALL-OPEN session with audit enabled via the USER CONFIG FILE layer, which the in-process
+//! harness does not override (that would take a process-global `GHOSTLIGHT_USER_CONFIG_DIR` env var,
+//! racing every parallel in-process test in this binary), so it stays a spawn test and belongs to
+//! the P4.3 quarantined end-to-end tier.
 //!
 //! `file:///etc/passwd` is deliberately NOT used for the scheme-denial scenario (unlike the g13
 //! task doc's own worked example): the extension's `navigate` normalization -- which the g13
@@ -21,19 +31,9 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use support::inproc::{by_id, init_and_call, manifest_from_value, text_of, Harness};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// Build the `file://` source-string form `governance::manifest::source::parse_source_string`
-/// expects, on either platform: three slashes after the scheme, with the Windows drive-letter
-/// convenience (`file:///C:/...`) or a bare Unix absolute path (`file:///tmp/...`).
-fn file_uri(path: &Path) -> String {
-    let forward = path.to_string_lossy().replace('\\', "/");
-    match forward.strip_prefix('/') {
-        Some(rest) => format!("file:///{rest}"),
-        None => format!("file:///{forward}"),
-    }
-}
 
 /// A schema-3 manifest with `grants`, audit enabled and pointed at `audit_path` (so tests can
 /// read back what was recorded), all at the user config layer (`level` is downgraded from
@@ -60,12 +60,6 @@ fn temp_path(tag: &str) -> PathBuf {
     ))
 }
 
-fn write_manifest(tag: &str, value: &Value) -> PathBuf {
-    let path = temp_path(&format!("{tag}-manifest")).with_extension("json");
-    std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
-    path
-}
-
 fn read_audit_lines(path: &Path) -> Vec<Value> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     content
@@ -74,60 +68,16 @@ fn read_audit_lines(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// Spawn `ghostlight service --manifest file://<manifest_path>` (or no `--manifest` at all when
-/// `manifest_path` is `None`, the all-open case) plus a thin adapter dialing it, drive `requests`
-/// over the adapter's stdio, and collect the response lines.
-///
-/// D (H6, forced): only the standalone SERVICE loads policy now (ADR-0030 Decision 8 amendment,
-/// PINS.md SS5.1); a bare `ghostlight` invocation is ALWAYS the thin ADAPTER and ignores
-/// `--manifest`. Spawns `support::spawn_service_with_manifest` plus `support::spawn_adapter`,
-/// preserving every pinned assertion verbatim (same category of forced fix as
-/// `tests/hub_multiplex.rs`'s own H6 deviation note). Reads exactly the expected `id`-bearing
-/// replies BEFORE closing the adapter's stdin (mirrors `tests/mcp_protocol.rs::drive`'s own H6
-/// fix): `relay_adapter` races its two copy directions, so an early close could tear the relay
-/// down before a still-in-flight reply is delivered.
-fn drive(manifest_path: Option<&Path>, requests: &[Value]) -> Vec<Value> {
-    let endpoint = format!(
-        "ghostlight-ge-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let manifest_uri = manifest_path.map(file_uri);
-    let mut service = support::spawn_service_with_manifest(&endpoint, manifest_uri.as_deref());
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    for req in requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let responses: Vec<Value> = (0..expected)
-        .map(|_| {
-            let line = lines
-                .next()
-                .expect("the adapter's stdout closed before every expected reply arrived")
-                .unwrap();
-            serde_json::from_str(&line).expect("each stdout line is JSON")
-        })
-        .collect();
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-    responses
-}
-
-fn text_of(resp: &Value) -> &str {
-    resp["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no text content block in {resp:?}"))
+/// Drive `requests` through an in-process session: governed by `manifest` (a manifest JSON `Value`
+/// carrying its own audit config) when `Some`, all-open when `None`. Builds a FRESH
+/// `support::inproc::Harness` per call, so two calls with the same manifest model two independent
+/// sessions of the same policy version (the denial-id determinism test relies on this).
+async fn drive(manifest: Option<&Value>, requests: &[Value]) -> Vec<Value> {
+    let harness = match manifest {
+        Some(value) => Harness::governed(manifest_from_value(value)),
+        None => Harness::all_open(),
+    };
+    harness.drive(requests).await
 }
 
 /// Extract the `D-xxxxxxxx` id out of a `"... (D-xxxxxxxx): ..."`-shaped denial message.
@@ -135,25 +85,6 @@ fn extract_denial_id(text: &str) -> &str {
     let start = text.find("(D-").expect("a denial id in parens") + 1;
     let end = start + text[start..].find(')').expect("closing paren");
     &text[start..end]
-}
-
-/// `tools/call` runs concurrently (each spawns its own task; see `transport::mcp::server`'s
-/// module doc), so response order does not track request order -- a denied call (near-instant)
-/// can and does finish before a permitted one still waiting out the bounded extension-handshake
-/// window. Every test driving more than one `tools/call` must look responses up by `id`, never
-/// by position.
-fn by_id(responses: &[Value], id: i64) -> &Value {
-    responses
-        .iter()
-        .find(|r| r["id"] == id)
-        .unwrap_or_else(|| panic!("no response with id {id} in {responses:?}"))
-}
-
-fn init_and_call(name: &str, arguments: Value) -> Vec<Value> {
-    vec![
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
-    ]
 }
 
 const EXAMPLE_FULL_AND_RESEARCH_READ: &str = r#"[
@@ -165,18 +96,18 @@ const EXAMPLE_FULL_AND_RESEARCH_READ: &str = r#"[
 /// reaches dispatch and gets the ordinary `not connected` execution error, never `Denied (`); a
 /// denied domain never reaches dispatch and returns `Denied (D-...` naming `no grant covers`;
 /// the audit file records both outcomes with the right `grant_id`/`denial_id`/`duration_ms`.
-#[test]
-fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
+#[tokio::test]
+async fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
     let audit_path = temp_path("case12-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest("case12", &manifest_value("case12", grants, &audit_path));
+    let manifest = manifest_value("case12", grants, &audit_path);
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com/","tabId":1}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://evil.com/","tabId":1}}}),
     ];
-    let responses = drive(Some(&manifest), &requests);
+    let responses = drive(Some(&manifest), &requests).await;
     assert_eq!(responses.len(), 3, "got {responses:?}");
 
     let permitted = by_id(&responses, 2);
@@ -221,7 +152,6 @@ fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
     assert_eq!(deny_line["denial_id"], denial_id);
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// Test 3: a call requiring `read` (`tabs_context_mcp`, domain-less, via the union rule) under a
@@ -232,21 +162,18 @@ fn permitted_call_passes_and_denied_domain_is_denied_with_matching_audit() {
 /// analogous `navigate` reclassification). `EXAMPLE_FULL_AND_RESEARCH_READ` is deliberately not
 /// reused here: its all-access `example-full` grant would satisfy the union rule and mask the
 /// denial.
-#[test]
-fn denied_capability_names_the_grant_and_the_missing_capability() {
+#[tokio::test]
+async fn denied_capability_names_the_grant_and_the_missing_capability() {
     let audit_path = temp_path("case3-audit");
     let grants = json!([{
         "id": "research-write",
         "hosts": {"allow": ["research.example.org"]},
         "allowed": ["action", "write"]
     }]);
-    let manifest = write_manifest("case3", &manifest_value("case3", grants, &audit_path));
+    let manifest = manifest_value("case3", grants, &audit_path);
 
-    let responses = drive(
-        Some(&manifest),
-        &init_and_call("tabs_context_mcp", json!({})),
-    );
-    let denied_text = text_of(&responses[1]);
+    let responses = drive(Some(&manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let denied_text = text_of(by_id(&responses, 2));
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
     assert!(denied_text.contains("research-write"), "{denied_text}");
     assert!(
@@ -255,21 +182,17 @@ fn denied_capability_names_the_grant_and_the_missing_capability() {
     );
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// The s01 bugfix pin: `navigate` on a read-only grant's own domain is now PERMITTED (it is
 /// provably a GET; ADR-0022 Context + Decision 2), reaching dispatch (the ordinary no-extension
 /// `not connected` execution error) instead of a `Denied (` text result, and the audit line
 /// records `decision: allow`, the covering grant, and `capability: read`.
-#[test]
-fn navigate_is_permitted_on_a_read_only_grant() {
+#[tokio::test]
+async fn navigate_is_permitted_on_a_read_only_grant() {
     let audit_path = temp_path("case-navigate-read-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest(
-        "case-navigate-read",
-        &manifest_value("case-navigate-read", grants, &audit_path),
-    );
+    let manifest = manifest_value("case-navigate-read", grants, &audit_path);
 
     let responses = drive(
         Some(&manifest),
@@ -277,7 +200,8 @@ fn navigate_is_permitted_on_a_read_only_grant() {
             "navigate",
             json!({"url": "https://research.example.org/", "tabId": 1}),
         ),
-    );
+    )
+    .await;
     let permitted = by_id(&responses, 2);
     assert_eq!(
         permitted["result"]["isError"], true,
@@ -298,48 +222,43 @@ fn navigate_is_permitted_on_a_read_only_grant() {
     assert_eq!(lines[0]["domain"], "research.example.org");
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// Test 4: a non-http(s) target the extension leaves untouched (`chrome:`, one of the four
 /// allowlisted prefixes) denies with the scheme wording. See the module doc for why this uses
 /// `chrome://settings` rather than the task doc's own `file:///etc/passwd` example.
-#[test]
-fn denied_scheme_names_the_scheme() {
+#[tokio::test]
+async fn denied_scheme_names_the_scheme() {
     let audit_path = temp_path("case4-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest("case4", &manifest_value("case4", grants, &audit_path));
+    let manifest = manifest_value("case4", grants, &audit_path);
 
     let responses = drive(
         Some(&manifest),
         &init_and_call("navigate", json!({"url": "chrome://settings/", "tabId": 1})),
-    );
-    let denied_text = text_of(&responses[1]);
+    )
+    .await;
+    let denied_text = text_of(by_id(&responses, 2));
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
     assert!(denied_text.contains("'chrome:'"), "{denied_text}");
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// Test 5: a tab-scoped call whose tab URL cannot be resolved (no extension connected) fails
 /// closed -- a denial, never the `not connected` execution error.
-#[test]
-fn fail_closed_when_tab_url_is_unknowable() {
+#[tokio::test]
+async fn fail_closed_when_tab_url_is_unknowable() {
     let audit_path = temp_path("case5-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest("case5", &manifest_value("case5", grants, &audit_path));
+    let manifest = manifest_value("case5", grants, &audit_path);
 
-    let responses = drive(
-        Some(&manifest),
-        &init_and_call("read_page", json!({"tabId": 1})),
-    );
-    let text = text_of(&responses[1]);
+    let responses = drive(Some(&manifest), &init_and_call("read_page", json!({"tabId": 1}))).await;
+    let text = text_of(by_id(&responses, 2));
     assert!(text.starts_with("Denied (D-"), "{text}");
     assert!(!text.contains("not connected"), "{text}");
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// Test 6: the `NoPage` union rule, end to end. `tabs_context_mcp` (the only domain-less tool
@@ -347,23 +266,17 @@ fn fail_closed_when_tab_url_is_unknowable() {
 /// `resize_window` all require `[]` and short-circuit to Allow unconditionally) is allowed
 /// (reaches `not connected`) under a grant that includes `read`; the same call is denied under a
 /// grant that omits it.
-#[test]
-fn union_rule_end_to_end() {
+#[tokio::test]
+async fn union_rule_end_to_end() {
     let all_audit = temp_path("case6-all-audit");
     let all_grants = json!([{
         "id": "g-all",
         "hosts": {"allow": ["example.com"]},
         "allowed": ["read", "action", "write"]
     }]);
-    let all_manifest = write_manifest(
-        "case6-all",
-        &manifest_value("case6-all", all_grants, &all_audit),
-    );
-    let responses = drive(
-        Some(&all_manifest),
-        &init_and_call("tabs_context_mcp", json!({})),
-    );
-    let allowed_text = text_of(&responses[1]);
+    let all_manifest = manifest_value("case6-all", all_grants, &all_audit);
+    let responses = drive(Some(&all_manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let allowed_text = text_of(by_id(&responses, 2));
     assert!(
         allowed_text.starts_with("[hop: extension]") && allowed_text.contains("not connected"),
         "allowed under a grant that includes read: {allowed_text}"
@@ -375,18 +288,12 @@ fn union_rule_end_to_end() {
         "hosts": {"allow": ["example.com"]},
         "allowed": ["action", "write"]
     }]);
-    let write_manifest_path = write_manifest(
-        "case6-write",
-        &manifest_value("case6-write", write_grants, &write_audit),
-    );
-    let responses = drive(
-        Some(&write_manifest_path),
-        &init_and_call("tabs_context_mcp", json!({})),
-    );
-    let denied_text = text_of(&responses[1]);
+    let write_manifest = manifest_value("case6-write", write_grants, &write_audit);
+    let responses = drive(Some(&write_manifest), &init_and_call("tabs_context_mcp", json!({}))).await;
+    let denied_text = text_of(by_id(&responses, 2));
     assert!(denied_text.starts_with("Denied (D-"), "{denied_text}");
 
-    for p in [all_audit, all_manifest, write_audit, write_manifest_path] {
+    for p in [all_audit, write_audit] {
         std::fs::remove_file(p).ok();
     }
 }
@@ -395,8 +302,8 @@ fn union_rule_end_to_end() {
 /// today (18 tools -- the 13 trained tools plus `wait_for`, `script`, `form_fill`, `file_upload`,
 /// and the ADR-0022 Decision 7 `explain` addition -- fixture identity, `not connected` execution error)
 /// and no `Denied (` text ever appears.
-#[test]
-fn all_open_invariant_no_manifest_means_no_denials() {
+#[tokio::test]
+async fn all_open_invariant_no_manifest_means_no_denials() {
     let responses = drive(
         None,
         &[
@@ -405,25 +312,23 @@ fn all_open_invariant_no_manifest_means_no_denials() {
             // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
         ],
-    );
+    )
+    .await;
     assert_eq!(responses.len(), 3, "got {responses:?}");
 
-    let tools = responses[1]["result"]["tools"]
-        .as_array()
-        .expect("tools array");
+    let list = by_id(&responses, 2);
+    let tools = list["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
         ghostlight::browser::directory::advertised_tool_count(),
         "the wire advertises the full REGISTRY surface (see directory::advertised_tool_names)"
     );
     let fixture = ghostlight::mcp::tools::advertised_tools_json();
-    assert_eq!(responses[1]["result"], fixture, "byte-identical tools/list");
+    assert_eq!(list["result"], fixture, "byte-identical tools/list");
 
-    let call_text = text_of(&responses[2]);
-    assert_eq!(
-        responses[2]["result"]["isError"], true,
-        "no extension -> isError"
-    );
+    let call = by_id(&responses, 3);
+    let call_text = text_of(call);
+    assert_eq!(call["result"]["isError"], true, "no extension -> isError");
     assert!(call_text.contains("not connected"), "{call_text}");
 
     for resp in &responses {
@@ -440,36 +345,32 @@ fn all_open_invariant_no_manifest_means_no_denials() {
 }
 
 /// Denial-id determinism (ADR-0020): the same denied call, driven twice within one session and
-/// again across a second spawn against the SAME manifest file, gets the identical `D-...` id
-/// every time.
-#[test]
-fn denial_id_is_deterministic_within_and_across_sessions() {
+/// again in a second independent session against the SAME manifest, gets the identical `D-...` id
+/// every time (the id derives from the manifest's content hash, not from any per-session state).
+#[tokio::test]
+async fn denial_id_is_deterministic_within_and_across_sessions() {
     let audit_path = temp_path("case-determinism-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest(
-        "case-determinism",
-        &manifest_value("case-determinism", grants, &audit_path),
-    );
+    let manifest = manifest_value("case-determinism", grants, &audit_path);
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://evil.com/","tabId":1}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://evil.com/","tabId":1}}}),
     ];
-    let first_run = drive(Some(&manifest), &requests);
+    let first_run = drive(Some(&manifest), &requests).await;
     let id_a = extract_denial_id(text_of(by_id(&first_run, 2))).to_string();
     let id_b = extract_denial_id(text_of(by_id(&first_run, 3))).to_string();
     assert_eq!(id_a, id_b, "same id within one session");
 
-    let second_run = drive(Some(&manifest), &requests[..2]);
+    let second_run = drive(Some(&manifest), &requests[..2]).await;
     let id_c = extract_denial_id(text_of(by_id(&second_run, 2))).to_string();
     assert_eq!(
         id_a, id_c,
-        "same id across a fresh spawn of the same manifest file"
+        "same id across a fresh session of the same manifest"
     );
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// ADR-0022 Decision 2/5: a call whose bound requirement set is empty (`tabs_create_mcp`,
@@ -478,18 +379,12 @@ fn denial_id_is_deterministic_within_and_across_sessions() {
 /// consulted). The call reaches ordinary dispatch (the familiar `not connected` execution
 /// error), never a `Denied (` text result, and the single audit line records `capability:
 /// "none"`, no attributed grant.
-#[test]
-fn requires_empty_call_records_capability_none() {
+#[tokio::test]
+async fn requires_empty_call_records_capability_none() {
     let audit_path = temp_path("case-requires-empty-audit");
-    let manifest = write_manifest(
-        "case-requires-empty",
-        &manifest_value("case-requires-empty", json!([]), &audit_path),
-    );
+    let manifest = manifest_value("case-requires-empty", json!([]), &audit_path);
 
-    let responses = drive(
-        Some(&manifest),
-        &init_and_call("tabs_create_mcp", json!({})),
-    );
+    let responses = drive(Some(&manifest), &init_and_call("tabs_create_mcp", json!({}))).await;
     let resp = by_id(&responses, 2);
     assert_eq!(
         resp["result"]["isError"], true,
@@ -507,7 +402,6 @@ fn requires_empty_call_records_capability_none() {
     assert_eq!(lines[0]["held"], false);
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// ADR-0024 Decision 3, the sanctioned delta this task owns: a GOVERNED directory miss (a known
@@ -516,19 +410,17 @@ fn requires_empty_call_records_capability_none() {
 /// absent-means-DENY. `computer` with an unrecognized `action` string is the concrete case: the
 /// extension's own schema would reject it too, but governance must not rely on that, and the
 /// denial fires before any extension traffic (no probe, no dispatch).
-#[test]
-fn governed_unknown_computer_action_is_denied_unknown_action() {
+#[tokio::test]
+async fn governed_unknown_computer_action_is_denied_unknown_action() {
     let audit_path = temp_path("case-unknown-action-audit");
     let grants: Value = serde_json::from_str(EXAMPLE_FULL_AND_RESEARCH_READ).unwrap();
-    let manifest = write_manifest(
-        "case-unknown-action",
-        &manifest_value("case-unknown-action", grants, &audit_path),
-    );
+    let manifest = manifest_value("case-unknown-action", grants, &audit_path);
 
     let responses = drive(
         Some(&manifest),
         &init_and_call("computer", json!({ "action": "bogus_action", "tabId": 1 })),
-    );
+    )
+    .await;
     let resp = by_id(&responses, 2);
     assert_ne!(
         resp["result"]["isError"], true,
@@ -549,7 +441,6 @@ fn governed_unknown_computer_action_is_denied_unknown_action() {
     assert_eq!(lines[0]["denial_id"], denial_id);
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 // --- C10 (ADR-0036, PINS.md SS13): form_fill's parent-level governance decision ---
@@ -559,26 +450,21 @@ fn governed_unknown_computer_action_is_denied_unknown_action() {
 /// capability `form_fill`'s default variant requires alongside `read`) denies the parent call --
 /// exactly one denial, and (proven by the audit log) no internal execution ever started: no
 /// `form_structure`/`form_input` record exists alongside it.
-#[test]
-fn form_fill_denied_upfront_under_write_deny() {
+#[tokio::test]
+async fn form_fill_denied_upfront_under_write_deny() {
     let audit_path = temp_path("case-form-fill-write-deny-audit");
     let grants = json!([{
         "id": "read-action-only",
         "hosts": {"allow": ["example.com"]},
         "allowed": ["read", "action"]
     }]);
-    let manifest = write_manifest(
-        "case-form-fill-write-deny",
-        &manifest_value("case-form-fill-write-deny", grants, &audit_path),
-    );
+    let manifest = manifest_value("case-form-fill-write-deny", grants, &audit_path);
 
     let responses = drive(
         Some(&manifest),
-        &init_and_call(
-            "form_fill",
-            json!({"tabId": 1, "fields": {"Email": "a@b.c"}}),
-        ),
-    );
+        &init_and_call("form_fill", json!({"tabId": 1, "fields": {"Email": "a@b.c"}})),
+    )
+    .await;
     let resp = by_id(&responses, 2);
     assert_ne!(
         resp["result"]["isError"], true,
@@ -603,7 +489,6 @@ fn form_fill_denied_upfront_under_write_deny() {
     );
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// ADR-0036 Decision 5/7: under ALL-OPEN (no manifest at all -- `form_fill` is `TabScoped`, so
@@ -617,10 +502,13 @@ fn form_fill_denied_upfront_under_write_deny() {
 /// 1, a real -- not hardcoded -- duration_ms, since the failed internal read still completes its
 /// own scope).
 ///
-/// Audit cannot be turned on via a manifest here (any manifest at all makes the session governed,
-/// which would deny `form_fill` upfront per the note above): this drives the USER CONFIG FILE
-/// layer instead (`GHOSTLIGHT_USER_CONFIG_DIR`, `governance::config::load::user_config_path`),
-/// which enables audit while leaving the session manifest-less (`Governance::all_open`).
+/// STAYS a spawn test (ADR-0051 Phase 4, quarantined E2E tier): audit cannot be turned on via a
+/// manifest here (any manifest at all makes the session governed, which would deny `form_fill`
+/// upfront per the note above), so it drives the USER CONFIG FILE layer
+/// (`GHOSTLIGHT_USER_CONFIG_DIR`) to enable audit while leaving the session manifest-less
+/// (`Governance::all_open`). The in-process harness deliberately does not override that env var
+/// (it is process-global and would race every parallel in-process test in this binary), so this
+/// one case keeps the spawn-a-service pattern.
 #[test]
 fn form_fill_without_extension_fails_with_parent_audit() {
     let pid = std::process::id();
@@ -655,10 +543,7 @@ fn form_fill_without_extension_fails_with_parent_audit() {
     let mut adapter = support::spawn_adapter(&endpoint);
 
     let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    let requests = init_and_call(
-        "form_fill",
-        json!({"tabId": 0, "fields": {"Email": "a@b.c"}}),
-    );
+    let requests = init_and_call("form_fill", json!({"tabId": 0, "fields": {"Email": "a@b.c"}}));
     for req in &requests {
         stdin
             .write_all(serde_json::to_string(req).unwrap().as_bytes())
