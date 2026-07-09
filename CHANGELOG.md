@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The development override (ADR-0048): an MCP client or browser registered WITHOUT an explicit
+  instance now resolves at connect time, preferring a live `dev` instance and falling back to
+  the default -- run a dev service and every unpinned client routes to it; stop it and they
+  return to the release install on their next connect.
+- One browser surface: the native-host manifest always allows both the Web Store and the pinned
+  unpacked-dev extension ids, so `ghostlight install` needs no --extension-id and one
+  registration serves a store install and a dev checkout at once.
+- `ghostlight doctor` reports whether a live dev instance is currently shadowing the default for
+  unpinned clients.
+
 ### Fixed
 - Tab tools no longer refuse tabs that sit in a per-session Ghostlight group: the extension's
   gate now recognizes every Ghostlight-managed group (ADR-0047 D1; the e2e F4 desync).
@@ -23,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Claude Code"), deduped across sessions, instead of a truncated session id (ADR-0047 D4).
 - A tab owned by a session that is no longer connected can be adopted by a live session, and
   dead group-map entries are pruned on service-worker restart (ADR-0047 D5).
+- `--instance dev install` is now thin (ADR-0048 D6): it registers only the pinned
+  `ghostlight-dev` MCP-client entries; browser traffic rides the unified default host.
+- The extension always connects to the `org.sylin.ghostlight` host; the installType-based
+  dev-host selection is superseded by adapter-side resolution (ADR-0048 D5).
 
 ## [0.3.0] - 2026-07-07
 

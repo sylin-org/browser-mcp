@@ -19,16 +19,25 @@ Build ONLY the `ghostlight` package. It does not relink the two adapter binaries
 `ghostlight-adapter-agent` (launched by your editor) is never locked, and the rebuild always
 succeeds even while an editor session is live.
 
-## 2. Install the dev instance (once)
+## 2. Install (once)
 
 ```
-ghostlight --instance dev install --no-supervisor --debug --extension-id <your-unpacked-id>
+ghostlight install --debug --no-supervisor
 ```
 
-`--no-supervisor` skips registering the OS auto-start service. That matters: an auto-started dev
-service would relaunch itself from `target/debug` and hold the exe lock during your next rebuild.
-With it off, you run the service yourself in a terminal (next step). Then load the unpacked
-extension at chrome://extensions and restart your editor so it picks up the new MCP registration.
+Since ADR-0048 the plain DEFAULT install is all the dev loop needs: it registers ONE browser
+native host (whose manifest already allows the unpacked-dev extension id -- no --extension-id)
+and ONE unpinned MCP-client entry (`ghostlight`). An unpinned client resolves at connect time and
+PREFERS a live dev instance, so the moment your terminal service (next step) is up, unpinned
+clients and the browser route to it; when it is down, they fall back to a default service if one
+exists. `--no-supervisor` matters when installing FROM target/debug: an auto-started default
+service would hold the exe lock during rebuilds. Then load the unpacked extension at
+chrome://extensions and restart your editor once so it picks up the registration.
+
+Optional pin: `ghostlight --instance dev install --debug` additionally registers a PINNED
+`ghostlight-dev` client entry (client entries only since ADR-0048 D6 -- no second native host, no
+supervisor). Pin a client when you want it bound to dev even while a default service is running
+(dev-or-nothing, e.g. mid-rebuild).
 
 ## 3. Run the service in a terminal
 
