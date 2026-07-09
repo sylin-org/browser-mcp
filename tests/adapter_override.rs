@@ -26,16 +26,17 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
-/// The `ghostlight-adapter-agent` sibling of the `ghostlight` test binary (ADR-0046); built by
-/// `cargo test --workspace` into the same `target/<profile>/` directory.
+/// The `ghostlight-relay` sibling of the `ghostlight` test binary (ADR-0046 + ADR-0051 Phase 3);
+/// built by `cargo test --workspace` into the same `target/<profile>/` directory. Launched with
+/// `--role agent` for the MCP-side pass-through.
 fn adapter_bin() -> PathBuf {
     let dir = Path::new(bin())
         .parent()
         .expect("the test binary has a parent directory");
     let name = if cfg!(windows) {
-        "ghostlight-adapter-agent.exe"
+        "ghostlight-relay.exe"
     } else {
-        "ghostlight-adapter-agent"
+        "ghostlight-relay"
     };
     dir.join(name)
 }
@@ -130,6 +131,8 @@ fn wait_for_states(log_dir: &Path, count: usize, within: Duration) {
 /// machine (a harmless failed no-op, never the real "Ghostlight Service" task).
 fn spawn_adapter(endpoints: &[String], instance: &str, log_dir: &Path) -> Child {
     Command::new(adapter_bin())
+        .arg("--role")
+        .arg("agent")
         .env("GHOSTLIGHT_ENDPOINTS", endpoints.join(","))
         .env_remove("GHOSTLIGHT_ENDPOINT")
         .env("GHOSTLIGHT_INSTANCE", instance)

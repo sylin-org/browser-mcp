@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! ADR-0046: the bare `ghostlight` (no subcommand) no longer serves MCP. It prints guidance
-//! pointing the user at `ghostlight-adapter-agent` and exits 2.
+//! pointing the user at `ghostlight-relay` (ADR-0051 Phase 3) and exits 2.
 
 use std::io::Read;
 use std::process::{Command, Stdio};

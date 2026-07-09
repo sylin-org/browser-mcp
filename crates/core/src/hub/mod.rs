@@ -4,7 +4,8 @@
 //!
 //! ADR-0030 Decision 8 (amended 2026-07-04, "the always-ready-service amendment"): role is decided
 //! by ARGV, never a claim race. Since ADR-0046 the thin ADAPTER is a SEPARATE executable
-//! (`ghostlight-adapter-agent`): it connects to an already-running SERVICE, relays its stdio as a
+//! (`ghostlight-relay --role agent`, ADR-0051 Phase 3): it connects to an already-running SERVICE,
+//! relays its stdio as a
 //! pure byte pipe, and dies with its editor, asking the OS supervisor to self-heal-start the
 //! service if it is down (`supervisor::start_service`). [`run_service`] is the STANDALONE SERVICE
 //! (`ghostlight service`): it owns the shared [`ServiceContext`], the extension endpoint, and the

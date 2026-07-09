@@ -105,16 +105,18 @@ pub fn detect(spec: &ClientSpec, ctx: &PlanCtx) -> bool {
 /// The server entry we register: absolute binary path, never npx (doc 11 B.7/C.4).
 pub fn server_entry(exe: &Path) -> ServerEntry {
     let instance = ghostlight_transport::instance::Instance::resolve();
-    // A non-default instance carries `--instance <n>` so the client launches the right stack. The
-    // command stays the bare (stable) binary path, so a dev rebuild is picked up with no reinstall
-    // (the adapter is a dumb pipe; ADR-0044 Decision 4 / ADR-0045).
-    let args = match instance.name() {
-        Some(name) => vec!["--instance".to_string(), name.to_string()],
-        None => vec![],
-    };
+    // The single relay binary carries both roles (ADR-0051 Phase 3); the client launches it with an
+    // explicit `--role agent`. A non-default instance also carries `--instance <n>` so the client
+    // launches the right stack. The command stays the bare (stable) binary path, so a dev rebuild is
+    // picked up with no reinstall (the adapter is a dumb pipe; ADR-0044 Decision 4 / ADR-0045).
+    let mut args = vec!["--role".to_string(), "agent".to_string()];
+    if let Some(name) = instance.name() {
+        args.push("--instance".to_string());
+        args.push(name.to_string());
+    }
     ServerEntry {
         name: instance.mcp_server_name(),
-        command: super::native_host::sibling_bin(exe, "ghostlight-adapter-agent")
+        command: super::native_host::sibling_bin(exe, "ghostlight-relay")
             .to_string_lossy()
             .into_owned(),
         args,
@@ -127,20 +129,28 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// The client entry launches the AGENT ADAPTER sibling (ADR-0046), never the `ghostlight`
-    /// binary itself: MCP clients speak to `ghostlight-adapter-agent`, which relays to the service.
+    /// The client entry launches the RELAY sibling in the agent role (ADR-0046 + ADR-0051 Phase 3),
+    /// never the `ghostlight` binary itself: MCP clients speak to `ghostlight-relay --role agent`,
+    /// which relays to the service.
     #[test]
-    fn server_entry_points_at_the_agent_adapter_sibling() {
+    fn server_entry_points_at_the_relay_sibling_in_agent_role() {
         let exe = Path::new("/opt/gl/ghostlight");
-        let cmd = server_entry(exe).command;
+        let entry = server_entry(exe);
+        let cmd = entry.command;
         assert!(
-            cmd.contains("ghostlight-adapter-agent"),
-            "command names the agent adapter: {cmd}"
+            cmd.contains("ghostlight-relay"),
+            "command names the relay binary: {cmd}"
+        );
+        assert_eq!(
+            &entry.args[..2],
+            &["--role".to_string(), "agent".to_string()],
+            "the agent role is passed explicitly: {:?}",
+            entry.args
         );
         let suffix = if cfg!(windows) {
-            "ghostlight-adapter-agent.exe"
+            "ghostlight-relay.exe"
         } else {
-            "ghostlight-adapter-agent"
+            "ghostlight-relay"
         };
         assert!(cmd.ends_with(suffix), "command ends with {suffix}: {cmd}");
         assert!(
