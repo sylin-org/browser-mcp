@@ -6,7 +6,7 @@ RESUME HERE with no other context.
 ## RESUME HERE
 
 Batch authored 2026-07-10 (same session as the three-lane procurement research and the ADR-0057
-Research-ratification amendment). W1-W5 DONE. Next task: W6.
+Research-ratification amendment). W1-W6 DONE. Next task: W7.
 
 ## Status
 
@@ -16,8 +16,8 @@ Research-ratification amendment). W1-W5 DONE. Next task: W6.
 | W2 | faq.md: the 22-question front door | DONE | 19d2d40 | none |
 | W3 | security-overview.md + data-flows.md | DONE | 68db6c4 | none |
 | W4 | sub-processors.md + continuity.md + supply-chain.md | DONE | b8f89f1 | none |
-| W5 | controls.md + questionnaire.md (CAIQ-shaped) | DONE | (pending) | none |
-| W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | pending | - | - |
+| W5 | controls.md + questionnaire.md (CAIQ-shaped) | DONE | 0c79c4c | none |
+| W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | DONE | (pending) | none |
 | W7 | msa.md + dpa.md (DRAFT -- pending counsel) | pending | - | - |
 | W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | pending | - | - |
 | W9 | Red-team pass (over-claims) + cross-links | pending | - | - |
@@ -82,4 +82,18 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   (DCS/DSP/IVS/UEM structurally-impossible, HRS/SEF partial-N/A).
 - Verification: standing-audit-right 1; N/A 6; STAR Level 1 1; controls H2s present; em-dash 0;
   no stray "open source"; encrypt-at-rest 0; footers present.
+- Deviations: none.
+
+### W6 -- support-policy.md + tiers.md + PLAN.md 3/2 sync (DONE)
+- support-policy.md: Channel / Response commitment / Severity and scope / Enterprise extras;
+  acknowledgment (not resolution) 3 business days Team / 2 Enterprise; business days Mon-Fri UTC;
+  "typically much faster" appears exactly once as color. tiers.md: claims->features->evidence
+  table (central policy, SIEM audit, email support, security questionnaires, MSA, DPA, deployment
+  help + roadmap input) plus the pinned "never enforced at runtime" sentence. PLAN.md: only the
+  support-SLA line changed from team 2-business-day / enterprise 1-business-day to 3 / 2 business
+  days acknowledgment; nothing else touched.
+- Precondition sweep: PLAN.md line 170-171 stated 2-day/1-day, so the "replace those phrases"
+  branch applied (not the "add none" branch).
+- Verification: UTC 1; typically 1; 1-business-day across PLAN+trust 0; never-enforced-at-runtime
+  1; support-policy H2s present; em-dash 0; footers present.
 - Deviations: none.
