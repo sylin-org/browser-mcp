@@ -6,7 +6,7 @@ RESUME HERE with no other context.
 ## RESUME HERE
 
 Batch authored 2026-07-10 (same session as the three-lane procurement research and the ADR-0057
-Research-ratification amendment). W1-W6 DONE. Next task: W7.
+Research-ratification amendment). W1-W7 DONE. Next task: W8.
 
 ## Status
 
@@ -17,8 +17,8 @@ Research-ratification amendment). W1-W6 DONE. Next task: W7.
 | W3 | security-overview.md + data-flows.md | DONE | 68db6c4 | none |
 | W4 | sub-processors.md + continuity.md + supply-chain.md | DONE | b8f89f1 | none |
 | W5 | controls.md + questionnaire.md (CAIQ-shaped) | DONE | 0c79c4c | none |
-| W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | DONE | (pending) | none |
-| W7 | msa.md + dpa.md (DRAFT -- pending counsel) | pending | - | - |
+| W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | DONE | f97ac87 | none |
+| W7 | msa.md + dpa.md (DRAFT -- pending counsel) | DONE | (pending) | none |
 | W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | pending | - | - |
 | W9 | Red-team pass (over-claims) + cross-links | pending | - | - |
 
@@ -96,4 +96,18 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   branch applied (not the "add none" branch).
 - Verification: UTC 1; typically 1; 1-business-day across PLAN+trust 0; never-enforced-at-runtime
   1; support-policy H2s present; em-dash 0; footers present.
+- Deviations: none.
+
+### W7 -- msa.md + dpa.md drafts (DONE)
+- Both files carry the verbatim DRAFT banner immediately after the H1. msa.md: 15-section MSA
+  template, plain language, with the license-grant split (Apache-2.0 OR MIT engine + Ghostlight
+  Commercial License / LICENSE-GOVERNANCE governance module), support BY REFERENCE to
+  support-policy.md, Continuity BY REFERENCE to continuity.md, termination-never-disables clause
+  citing ADR-0028, and bracketed UPPERCASE [TO BE COMPLETED IN REVIEW] placeholders for
+  fees/liability caps/governing law. dpa.md: short no-processing DPA; recitals establish the
+  vendor processes NO customer personal data (cite data-flows.md + ADR-0028 D9); controller/
+  processor clauses NOT ENGAGED; conditional future-processing section; sub-processors none;
+  transfers none; breach notification by reference to security-overview.md.
+- Verification: banner 1 each; TO BE COMPLETED IN REVIEW 4 (>=2); no-customer-personal-data 6;
+  em-dash 0; no stray "open source" (governance module described as source-available); footers.
 - Deviations: none.
