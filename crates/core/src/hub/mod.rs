@@ -120,6 +120,50 @@ pub fn try_mint(
     })
 }
 
+/// Resolve the managed:// policy from its bootstrap into a [`LoadedPolicy`] (ADR-0055 Phase 4). The
+/// last-known-good cache means an unreachable source still yields the cached policy; only a FIRST
+/// boot with the source unreachable AND no cache yields no policy, which is a FATAL startup error --
+/// a configured managed instance must never fall back to unrestricted (fail closed).
+fn activate_managed_policy(
+    bootstrap: &crate::governance::managed::ManagedBootstrap,
+) -> Result<LoadedPolicy> {
+    use crate::governance::manifest::source::ManifestOrigin;
+    if crate::governance::config::load::org_policy_path().exists() {
+        tracing::warn!(
+            "both a managed.json bootstrap and a local org policy file are present; the managed:// \
+             policy takes precedence and the local org policy file is ignored"
+        );
+    }
+    let cache_path = crate::governance::managed::cache::cache_path().ok_or_else(|| {
+        anyhow::anyhow!("no data directory is available for the managed policy cache")
+    })?;
+    let reconciled = crate::governance::managed::cache::resolve_managed(
+        bootstrap,
+        &cache_path,
+        pattern::is_valid_pattern,
+    )
+    .with_context(|| "resolving the managed policy")?;
+    match reconciled.active {
+        Some(vm) => {
+            tracing::info!(
+                freshness = ?reconciled.freshness,
+                seq = vm.seq,
+                name = %vm.manifest.name,
+                "managed policy active (org-authoritative)"
+            );
+            Ok(LoadedPolicy {
+                manifest: Some(vm.manifest),
+                origin: Some(ManifestOrigin::Managed),
+                user_manifest_ignored: false,
+            })
+        }
+        None => anyhow::bail!(
+            "managed:// policy is configured but no policy is available (first boot with the source \
+             unreachable and no cached policy); refusing to start unrestricted -- fail closed (ADR-0055)"
+        ),
+    }
+}
+
 /// The standalone SERVICE entry point (ADR-0030 Decision 8 amendment; PINS.md SS5.1), run only
 /// via the `ghostlight service` subcommand: loads policy (the ONLY role that does), then serves
 /// forever until [`IDLE_GRACE`] elapses with no live sessions and the extension link gone. NEVER
@@ -133,8 +177,20 @@ pub fn run_service(manifest: Option<String>, debug_on: bool, keep_warm: bool) ->
     // parsed, or validated is a fatal startup error (an org policy that fails open is worse
     // than a crash), so this must happen before a single JSON-RPC line is served.
     let user_source = manifest.or_else(|| std::env::var("GHOSTLIGHT_MANIFEST").ok());
-    let loaded_policy = source::load_policy(user_source.as_deref(), pattern::is_valid_pattern)
-        .with_context(|| "loading the governance manifest")?;
+
+    // managed:// (ADR-0055 Phase 4): if the admin `managed.json` bootstrap is present it is the org
+    // authority and takes precedence over the source-string loader. Resolved here, before the async
+    // runtime, so a configured-but-unresolvable managed policy fails closed BEFORE a line is served
+    // (the same fail-closed discipline the org policy file already has).
+    let loaded_policy = match crate::governance::managed::load_bootstrap_at(
+        &crate::governance::managed::bootstrap_path(),
+    )
+    .with_context(|| "loading the managed policy bootstrap")?
+    {
+        Some(bootstrap) => activate_managed_policy(&bootstrap)?,
+        None => source::load_policy(user_source.as_deref(), pattern::is_valid_pattern)
+            .with_context(|| "loading the governance manifest")?,
+    };
 
     match (&loaded_policy.manifest, &loaded_policy.origin) {
         (Some(m), Some(origin)) => tracing::info!(
@@ -371,10 +427,12 @@ impl ServiceContext {
         // free all-open path, and for a user-supplied `--manifest` / `GHOSTLIGHT_MANIFEST`, nothing
         // is resolved, stamped, or warned, so the audit stream stays byte-identical to a build with
         // no licensing at all. The recorder carries the stamp opaquely; all license logic lives in
-        // `governance::license`. A future `managed://` origin joins `OrgPolicyFile` here.
+        // `governance::license`. A `managed://` bundle is org-authoritative too (ADR-0055 Phase 4:
+        // the strongest "an organization is operating governance" signal), so it joins `OrgPolicyFile`.
         let governance_operational = matches!(
             loaded_policy.origin,
             Some(crate::governance::manifest::source::ManifestOrigin::OrgPolicyFile)
+                | Some(crate::governance::manifest::source::ManifestOrigin::Managed)
         );
         if governance_operational {
             let (license_state, license_path) = crate::governance::license::resolve_from_disk();

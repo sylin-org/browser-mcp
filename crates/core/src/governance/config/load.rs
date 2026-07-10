@@ -170,7 +170,13 @@ pub fn org_config_from_entries(entries: &[ConfigEntry]) -> OrgConfig {
 /// `reload::ConfigStore::load_initial_with_policy` so the CLI's view of the org layers and the
 /// server store's can never disagree.
 pub fn org_config_from_policy(loaded_policy: &LoadedPolicy) -> OrgConfig {
-    if loaded_policy.origin != Some(ManifestOrigin::OrgPolicyFile) {
+    // Org-authoritative origins take the org config channel: the local org policy file AND a
+    // managed:// bundle (ADR-0055), both admin-provisioned. A user-sourced manifest does not (its
+    // entries reach the user layer via `manifest_config_as_user_layer`).
+    if !matches!(
+        loaded_policy.origin,
+        Some(ManifestOrigin::OrgPolicyFile) | Some(ManifestOrigin::Managed)
+    ) {
         return OrgConfig::default();
     }
     loaded_policy
@@ -436,6 +442,23 @@ mod tests {
         assert_eq!(org.recommended.len(), 1);
 
         assert_eq!(org_config_from_entries(&[]), OrgConfig::default());
+    }
+
+    #[test]
+    fn managed_origin_takes_the_org_config_channel() {
+        // A managed:// bundle is org-authoritative (ADR-0055): its config entries reach the org
+        // layers, exactly like the local org policy file (and unlike a user-sourced manifest).
+        use crate::governance::manifest::document::parse_manifest;
+        let json_src = r#"{"schema":3,"name":"m","version":"1","grants":[],
+            "config":[{"key":"audit.enabled","value":true,"level":"mandatory"}]}"#;
+        let manifest = parse_manifest(json_src, "managed", |_| true).unwrap();
+        let loaded = LoadedPolicy {
+            manifest: Some(manifest),
+            origin: Some(ManifestOrigin::Managed),
+            user_manifest_ignored: false,
+        };
+        let org = org_config_from_policy(&loaded);
+        assert_eq!(org.mandatory.get("audit.enabled"), Some(&json!(true)));
     }
 
     #[test]
