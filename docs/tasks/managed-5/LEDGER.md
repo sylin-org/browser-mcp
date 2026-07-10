@@ -9,7 +9,7 @@ Batch authored 2026-07-10; red-team re-read against the live tree completed the 
 T3/T8 verified aligned; T4 caller-integration corrected -- print loop, not a lines vec; T6
 precondition corrected -- multiple denial render sites exist, append at the pipeline emission
 chokepoint; T7 anchors verified exactly and pinned). T1 DONE (5a02aaa), T2 DONE (c395c42),
-T3 DONE (3a64c8f), T4 DONE (032ec27). Next task: T5.
+T3 DONE (3a64c8f), T4 DONE (032ec27), T5 DONE (bb17e5b). Next task: T6.
 
 ## Status
 
@@ -19,7 +19,7 @@ T3 DONE (3a64c8f), T4 DONE (032ec27). Next task: T5.
 | T2 | ManagedStatus sidecar (single writer in managed::activate) | DONE | c395c42 | none |
 | T3 | Presentation validation (additive-only limits) | DONE | 3a64c8f | none |
 | T4 | doctor managed line (reads the sidecar) | DONE | 032ec27 | none |
-| T5 | explain-tool Policy Passport section | pending | - | - |
+| T5 | explain-tool Policy Passport section | DONE | bb17e5b | 1 |
 | T6 | Denials-as-doors: org contact line | pending | - | - |
 | T7 | Audit provenance: policy_seq on tool-call records | pending | - | - |
 | T8 | Lightbox scenarios: passport-freshness + sidecar-propagation | pending | - | - |
@@ -81,3 +81,19 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
 - Tests: managed_line_renders_fresh + managed_line_renders_guardian_door, both first-line-exact.
   Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
 - Deviations: none.
+
+### T5 -- explain-tool Policy Passport (bb17e5b)
+- Preconditions verified: T2 status:: items exist; the MCP explain TOOL's text is composed at the
+  single Handler::Local closure in browser/directory.rs (~1283, emitting directory::explain_text());
+  sacred_domains config key hits under governance.
+- explain.rs: pub fn managed_passport(&ManagedStatus)->String (pure, trailing newline), exact lines
+  per spec (active / Governed by / Policy version+freshness_phrase / Why / sacred line / Questions?).
+  directory.rs explain handler: append "\n"+passport only when managed_bootstrap exists AND sidecar
+  reads Some; else byte-identical (all_open_golden + advertised-set goldens stayed green).
+- Tests: passport_renders_fresh (full-string exact) + passport_renders_guardian. Global gates:
+  workspace tests pass (goldens green), clippy clean, lightbox 7/7 ok.
+- Deviation 1: the freshness_phrase match has a catch-all arm ("enforcing your last verified policy
+  from {fetched_at}" with no parenthetical) for states the spec does not enumerate (no_policy or an
+  unknown freshness string). The four spec-defined arms (fresh + the three last_known_good reasons)
+  are the reachable states when a policy is active; the catch-all only guards a degenerate sidecar
+  and is never hit by the pinned tests.
