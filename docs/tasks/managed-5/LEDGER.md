@@ -9,7 +9,7 @@ Batch authored 2026-07-10; red-team re-read against the live tree completed the 
 T3/T8 verified aligned; T4 caller-integration corrected -- print loop, not a lines vec; T6
 precondition corrected -- multiple denial render sites exist, append at the pipeline emission
 chokepoint; T7 anchors verified exactly and pinned). T1 DONE (5a02aaa), T2 DONE (c395c42),
-T3 DONE (3a64c8f), T4 DONE (032ec27), T5 DONE (bb17e5b). Next task: T6.
+T3 DONE (3a64c8f), T4 DONE (032ec27), T5 DONE (bb17e5b), T6 DONE (07b8cbc). Next task: T7.
 
 ## Status
 
@@ -20,7 +20,7 @@ T3 DONE (3a64c8f), T4 DONE (032ec27), T5 DONE (bb17e5b). Next task: T6.
 | T3 | Presentation validation (additive-only limits) | DONE | 3a64c8f | none |
 | T4 | doctor managed line (reads the sidecar) | DONE | 032ec27 | none |
 | T5 | explain-tool Policy Passport section | DONE | bb17e5b | 1 |
-| T6 | Denials-as-doors: org contact line | pending | - | - |
+| T6 | Denials-as-doors: org contact line | DONE | 07b8cbc | none |
 | T7 | Audit provenance: policy_seq on tool-call records | pending | - | - |
 | T8 | Lightbox scenarios: passport-freshness + sidecar-propagation | pending | - | - |
 
@@ -97,3 +97,17 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   unknown freshness string). The four spec-defined arms (fresh + the three last_known_good reasons)
   are the reachable states when a policy is active; the catch-all only guards a degenerate sidecar
   and is never hit by the pinned tests.
+
+### T6 -- denial org-contact door line (07b8cbc)
+- Preconditions verified: T2 sidecar readable; the denial-emission chokepoint is
+  `render_outcome`'s `CallOutcome::Denied { message, .. }` arm in mcp/pipeline.rs (~83) -- the single
+  point where any denial message becomes tool-result text via `text_content(message)`. Chosen line
+  site: pipeline.rs render_outcome Denied arm.
+- denial.rs: pub fn org_contact_line(Option<&str>, &str)->String (pure, no trailing newline).
+  pipeline.rs: with_org_contact_line reads the production-paths sidecar and appends "\n"+line only
+  when bootstrap exists AND sidecar Some AND presentation has a non-empty contacts vec; else returns
+  the message byte-identical (this file is outside src/governance/, so a7 does not constrain it).
+- Tests: contact_line_with_org_name + contact_line_without_org_name; existing denial tests
+  unchanged. tool_enforcement suite green (11 passed, denials there run with no managed bootstrap so
+  strings are unchanged). Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
+- Deviations: none.
