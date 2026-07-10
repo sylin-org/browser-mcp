@@ -246,6 +246,7 @@ first, because a running server locks the exe.
 | [PRICING.md](PRICING.md)                                            | Editions, the founding program, and the Continuity Promise.              |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                  | How to ask questions, request features, and contribute code.             |
 | [SECURITY.md](SECURITY.md)                                          | Vulnerability reporting and what to expect.                              |
+| [Trust Center](docs/trust/README.md)                                | Procurement and security review: FAQ, security overview, questionnaire, and legal templates. |
 | [docs/SPEC.md](docs/SPEC.md)                                        | The authoritative design specification.                                  |
 | [docs/adr/](docs/adr/)                                              | Architecture Decision Records: why the design is the way it is.          |
 | [open-spec/](open-spec/)                                            | Open specs we publish for the ecosystem (starts with RAWX).              |

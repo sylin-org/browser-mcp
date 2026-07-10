@@ -6,7 +6,7 @@ RESUME HERE with no other context.
 ## RESUME HERE
 
 Batch authored 2026-07-10 (same session as the three-lane procurement research and the ADR-0057
-Research-ratification amendment). W1-W8 DONE. Next task: W9.
+Research-ratification amendment). W1-W9 DONE. Batch COMPLETE.
 
 ## Status
 
@@ -19,8 +19,8 @@ Research-ratification amendment). W1-W8 DONE. Next task: W9.
 | W5 | controls.md + questionnaire.md (CAIQ-shaped) | DONE | 0c79c4c | none |
 | W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | DONE | f97ac87 | none |
 | W7 | msa.md + dpa.md (DRAFT -- pending counsel) | DONE | 3a1e7bb | none |
-| W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | DONE | (pending) | 2 |
-| W9 | Red-team pass (over-claims) + cross-links | pending | - | - |
+| W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | DONE | 07249f4 | 2 |
+| W9 | Red-team pass (over-claims) + cross-links | DONE | 880bf2b | none |
 
 Status values: `pending` | `in-progress` | `DONE` | `BLOCKED`.
 
@@ -130,3 +130,25 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   Rust toolchain, because `cargo cyclonedx` requires cargo; mirrors the toolchain step style used
   by the test/build jobs. (2) SBOM generated for the root package only (no --all), matching the
   pinned single-file command and avoiding same-basename collisions across the 5 workspace members.
+
+### W9 -- over-claim red-team pass + cross-links (DONE)
+- Pass 1 claim audit ran CLEAN; zero fixes. Sweeps: (a) SOC 2 / ISO 27001 / ISO/IEC 42001 /
+  penetration-test -- every hit is a negation, orientation, or roadmap statement, no possession
+  claim; (b) `encrypt` -- one hit only, the CAIQ domain NAME "Cryptography, Encryption & Key
+  Management", not an at-rest claim; (c) `open source` -- one hit only, faq.md engine Apache/MIT
+  line; (d) all 4 named lightbox scenarios (continuity-source-unreachable, fail-closed-cold-boot,
+  rollback-guardian, managed-activation-local) exist in crates/lightbox/src/scenarios.rs; (e) all
+  115 relative links in docs/trust/ resolve (python os.path check); (f) all 13 docs/trust/*.md end
+  with the exact footer.
+- Re-ran every W1-W8 verification command: all still pass. Global gates: em-dash 0; 13/13 footers.
+- Pass 2 cross-links (the only files outside docs/trust/ touched): added one row to the root
+  README.md Documentation table and one row to docs/guides/README.md's task table, both linking
+  ../trust/README.md (or docs/trust/README.md), mirroring existing table style, no restructuring.
+- Deviations: none.
+
+## Batch complete
+
+All nine tasks DONE. docs/trust/ holds 13 published documents; W8 touched release.yml,
+security-insights.yml, SECURITY.md; W6 synced docs/business/PLAN.md to 3/2; W9 added two
+cross-links. Owner gates remain: counsel skim (MSA/DPA/LICENSE-GOVERNANCE) before first
+execution of the legal templates; security.txt on sylin.org (founder-side); publish/push.
