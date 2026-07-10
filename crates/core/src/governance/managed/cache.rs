@@ -370,6 +370,38 @@ mod tests {
     }
 
     #[test]
+    fn bad_presentation_update_keeps_last_known_good() {
+        let seed = [25u8; 32];
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let src = dir.join(format!("gl-resolve-badpres-src-{pid}.bundle"));
+        let cache = dir.join(format!("gl-resolve-badpres-cache-{pid}.bundle"));
+        write_cache(&cache, &signed(5, "cached", &seed)).unwrap();
+        // A newer seq-6 bundle whose presentation org_name exceeds the display limit is
+        // REACHABLE-BUT-BAD: rejected at verification, so the seq-5 last-known-good cache stands.
+        let bad_pres = bundle::Presentation {
+            org_name: Some("x".repeat(121)),
+            rationale: None,
+            contacts: vec![],
+        };
+        let bytes = bundle::sign_bundle(
+            &seed,
+            None,
+            6,
+            serde_json::json!({ "schema": 3, "name": "newer", "version": "1", "grants": [] }),
+            Some(bad_pres),
+        );
+        std::fs::write(&src, bytes).unwrap();
+
+        let r = resolve_managed(&bootstrap_for(&seed, &src), &cache, ok_pattern).unwrap();
+        for p in [&src, &cache] {
+            std::fs::remove_file(p).ok();
+        }
+        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::UpdateRejected));
+        assert_eq!(r.active.unwrap().seq, 5);
+    }
+
+    #[test]
     fn a_malformed_org_key_is_a_fatal_bootstrap_error() {
         let bootstrap = ManagedBootstrap {
             source: "irrelevant".into(),

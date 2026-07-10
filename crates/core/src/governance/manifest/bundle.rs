@@ -134,6 +134,53 @@ pub fn org_key(
     }
 }
 
+/// Enforce additive-only display limits on org-authored presentation (ADR-0055 D9): org voice may
+/// add a name, rationale, and contacts, but can never spoof or crowd out truth-telling surfaces. A
+/// validly-signed bundle whose presentation exceeds these limits or carries a control character
+/// (which could forge extra display lines) is rejected at verification. Character counts are Unicode
+/// scalar values (`chars()`), not bytes. Every present string field is swept for control characters
+/// (`c < '\u{20}'`, newline included: these surfaces are single-line).
+pub fn validate_presentation(p: &Presentation) -> Result<(), String> {
+    if p.org_name.as_ref().is_some_and(|s| s.chars().count() > 120) {
+        return Err("presentation org_name exceeds 120 characters".to_string());
+    }
+    if p.rationale.as_ref().is_some_and(|s| s.chars().count() > 400) {
+        return Err("presentation rationale exceeds 400 characters".to_string());
+    }
+    if p.contacts.len() > 8 {
+        return Err("presentation lists more than 8 contacts".to_string());
+    }
+    for c in &p.contacts {
+        if c.kind.chars().count() > 32 {
+            return Err("presentation contact kind exceeds 32 characters".to_string());
+        }
+        if c.value.chars().count() > 256 {
+            return Err("presentation contact value exceeds 256 characters".to_string());
+        }
+        if c.label.as_ref().is_some_and(|s| s.chars().count() > 120) {
+            return Err("presentation contact label exceeds 120 characters".to_string());
+        }
+    }
+    let mut fields: Vec<&str> = Vec::new();
+    if let Some(s) = &p.org_name {
+        fields.push(s);
+    }
+    if let Some(s) = &p.rationale {
+        fields.push(s);
+    }
+    for c in &p.contacts {
+        fields.push(&c.kind);
+        fields.push(&c.value);
+        if let Some(s) = &c.label {
+            fields.push(s);
+        }
+    }
+    if fields.iter().any(|s| s.chars().any(|c| c < '\u{20}')) {
+        return Err("presentation contains a control character".to_string());
+    }
+    Ok(())
+}
+
 /// Parse and verify one policy bundle's bytes against `key` under the `ghostlight/policy` context.
 /// A composite `key` requires both signature legs; an Ed25519-only key requires the ed leg and
 /// rejects a stray ml-dsa leg (see [`crate::governance::crypto::verify`]). Never panics on any
@@ -167,6 +214,9 @@ pub fn verify_bundle(bytes: &[u8], key: &GenKey) -> Result<VerifiedBundle, Bundl
         serde_json::from_slice(&claims_bytes).map_err(|e| BundleError::Claims(e.to_string()))?;
     if claims.kind != "policy" {
         return Err(BundleError::Kind(claims.kind));
+    }
+    if let Some(p) = &claims.presentation {
+        validate_presentation(p).map_err(BundleError::Claims)?;
     }
     let manifest_json =
         serde_json::to_string(&claims.manifest).map_err(|e| BundleError::Claims(e.to_string()))?;
@@ -296,6 +346,54 @@ mod tests {
             verify_bundle(&bytes, &key),
             Err(BundleError::Kind("script".to_string()))
         );
+    }
+
+    #[test]
+    fn oversized_org_name_is_rejected() {
+        let ed_seed = [51u8; 32];
+        let p = Presentation {
+            org_name: Some("x".repeat(121)),
+            rationale: None,
+            contacts: vec![],
+        };
+        let bytes = sign_bundle(&ed_seed, None, 1, sample_manifest(), Some(p));
+        let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
+        assert_eq!(
+            verify_bundle(&bytes, &key),
+            Err(BundleError::Claims(
+                "presentation org_name exceeds 120 characters".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn control_character_in_contact_is_rejected() {
+        let ed_seed = [52u8; 32];
+        let p = Presentation {
+            org_name: Some("Acme Security".into()),
+            rationale: None,
+            contacts: vec![Contact {
+                kind: "email".into(),
+                value: "mailto:a@b\n".into(),
+                label: None,
+            }],
+        };
+        let bytes = sign_bundle(&ed_seed, None, 1, sample_manifest(), Some(p));
+        let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
+        assert_eq!(
+            verify_bundle(&bytes, &key),
+            Err(BundleError::Claims(
+                "presentation contains a control character".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn valid_presentation_passes() {
+        let ed_seed = [53u8; 32];
+        let bytes = sign_bundle(&ed_seed, None, 1, sample_manifest(), Some(sample_presentation()));
+        let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
+        assert!(verify_bundle(&bytes, &key).is_ok());
     }
 
     #[test]
