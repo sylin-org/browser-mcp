@@ -157,6 +157,20 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --override-filename "ghostlight-v${VERSION}-sbom.cyclonedx"
+          # cargo-cyclonedx writes the root-package SBOM to the workspace root; stage it as a release asset.
+          find . -maxdepth 1 -name "ghostlight-v${VERSION}-sbom.cyclonedx*" -exec cp {} artifacts/ \;
+          ls -la artifacts/*.cyclonedx* || true
+
       - name: Package extension
         shell: bash
         run: |

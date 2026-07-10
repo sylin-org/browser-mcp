@@ -6,7 +6,7 @@ RESUME HERE with no other context.
 ## RESUME HERE
 
 Batch authored 2026-07-10 (same session as the three-lane procurement research and the ADR-0057
-Research-ratification amendment). W1-W7 DONE. Next task: W8.
+Research-ratification amendment). W1-W8 DONE. Next task: W9.
 
 ## Status
 
@@ -18,8 +18,8 @@ Research-ratification amendment). W1-W7 DONE. Next task: W8.
 | W4 | sub-processors.md + continuity.md + supply-chain.md | DONE | b8f89f1 | none |
 | W5 | controls.md + questionnaire.md (CAIQ-shaped) | DONE | 0c79c4c | none |
 | W6 | support-policy.md + tiers.md + PLAN.md 3/2 sync | DONE | f97ac87 | none |
-| W7 | msa.md + dpa.md (DRAFT -- pending counsel) | DONE | (pending) | none |
-| W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | pending | - | - |
+| W7 | msa.md + dpa.md (DRAFT -- pending counsel) | DONE | 3a1e7bb | none |
+| W8 | SBOM in release CI + security-insights.yml + SECURITY.md alignment | DONE | (pending) | 2 |
 | W9 | Red-team pass (over-claims) + cross-links | pending | - | - |
 
 Status values: `pending` | `in-progress` | `DONE` | `BLOCKED`.
@@ -111,3 +111,22 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
 - Verification: banner 1 each; TO BE COMPLETED IN REVIEW 4 (>=2); no-customer-personal-data 6;
   em-dash 0; no stray "open source" (governance module described as source-available); footers.
 - Deviations: none.
+
+### W8 -- SBOM CI + security-insights.yml + SECURITY.md alignment (DONE)
+- release.yml: SBOM step added to the `release` job (the once-per-release job; the `build` job is
+  a per-target matrix and was correctly avoided). The step installs cargo-cyclonedx --locked and
+  runs the pinned command with VERSION=${{ needs.prepare.outputs.version }}, then stages the
+  root-package SBOM into artifacts/ so `gh release create ... artifacts/*` uploads it.
+  security-insights.yml (repo root): OpenSSF Security Insights v2 shape (header schema-version
+  2.0.0 + last-updated/last-reviewed/url; project + repository sections) filled honestly (repo
+  https://github.com/sylin-org/ghostlight, vuln reporting via SECURITY.md + hello@sylin.org,
+  bug-bounty-available false, distribution points GitHub releases + npm, per-release CycloneDX
+  SBOM, Apache-2.0 OR MIT engine license + source-available governance note). SECURITY.md: appended
+  a "Disclosures and advisories" section (no-bounty absence with reason; 3-business-day vendor-side
+  advisory commitment; link to docs/trust/security-overview.md); all existing content preserved.
+- Verification: cyclonedx in release.yml 5 hits (>=1); schema-version 1; SECURITY.md trust link 1;
+  both YAML files parse via python yaml; isolated-target `cargo build --workspace` green.
+- Deviations: (1) added a `dtolnay/rust-toolchain@stable` step to the release job, which had no
+  Rust toolchain, because `cargo cyclonedx` requires cargo; mirrors the toolchain step style used
+  by the test/build jobs. (2) SBOM generated for the root package only (no --all), matching the
+  pinned single-file command and avoiding same-basename collisions across the 5 workspace members.
