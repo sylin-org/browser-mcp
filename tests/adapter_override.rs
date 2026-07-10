@@ -12,6 +12,8 @@
 //! failed no-op) instead of this machine's real "Ghostlight Service" -- GHOSTLIGHT_ENDPOINTS
 //! outranks the selection, so the candidate walk is still fully exercised.
 
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -26,16 +28,17 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
-/// The `ghostlight-adapter-agent` sibling of the `ghostlight` test binary (ADR-0046); built by
-/// `cargo test --workspace` into the same `target/<profile>/` directory.
+/// The `ghostlight-relay` sibling of the `ghostlight` test binary (ADR-0046 + ADR-0051 Phase 3);
+/// built by `cargo test --workspace` into the same `target/<profile>/` directory. Launched with
+/// `--role agent` for the MCP-side pass-through.
 fn adapter_bin() -> PathBuf {
     let dir = Path::new(bin())
         .parent()
         .expect("the test binary has a parent directory");
     let name = if cfg!(windows) {
-        "ghostlight-adapter-agent.exe"
+        "ghostlight-relay.exe"
     } else {
-        "ghostlight-adapter-agent"
+        "ghostlight-relay"
     };
     dir.join(name)
 }
@@ -130,6 +133,8 @@ fn wait_for_states(log_dir: &Path, count: usize, within: Duration) {
 /// machine (a harmless failed no-op, never the real "Ghostlight Service" task).
 fn spawn_adapter(endpoints: &[String], instance: &str, log_dir: &Path) -> Child {
     Command::new(adapter_bin())
+        .arg("--role")
+        .arg("agent")
         .env("GHOSTLIGHT_ENDPOINTS", endpoints.join(","))
         .env_remove("GHOSTLIGHT_ENDPOINT")
         .env("GHOSTLIGHT_INSTANCE", instance)
@@ -177,6 +182,7 @@ fn spawn_reader(stdout: std::process::ChildStdout) -> Receiver<String> {
 /// ADR-0048 D3: with BOTH candidates live, an unpinned adapter connects to the FIRST (the dev
 /// slot); when that service dies, the reconnect episode fails over to the SECOND (the default
 /// slot) without a client reload -- and the debug events record both resolutions.
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
     let (ep_a, ep_b, inst_a, inst_b, log_dir) = unique();
@@ -205,6 +211,17 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
         format!("ghostlight-{inst_a}"),
         "with both candidates live, the FIRST wins: {init:?}"
     );
+    // ADR-0051 P4.3b: the first connect resolved to candidate 1/2 -- read from the adapter's
+    // STRUCTURED debug state (role-filtered), not a log-text scrape.
+    let phase1 =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+            v["counters"]["resolved_candidate"].as_u64() == Some(1)
+        });
+    assert_eq!(
+        phase1["counters"]["candidate_total"], 2,
+        "two candidates in the override: {phase1}"
+    );
+
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -224,33 +241,24 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
     );
     assert_eq!(
         list["result"]["tools"].as_array().map(|t| t.len()),
-        Some(17),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the fallback service answered a real request: {list:?}"
     );
 
-    // The adapter's debug events recorded both resolutions.
-    let mut events = String::new();
-    for entry in std::fs::read_dir(&log_dir).expect("read log_dir") {
-        let path = entry.expect("dir entry").path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("debug-events-") && name.ends_with(".jsonl") {
-                events.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
-        }
-    }
-    assert!(
-        events
-            .matches("override resolution: connected to candidate 1/2")
-            .count()
-            >= 1,
-        "the first connect resolved to candidate 1"
+    // ADR-0051 P4.3b: after the failover the adapter's STRUCTURED debug state shows it resolved to
+    // candidate 2/2 (it had resolved to candidate 1/2 on the first connect, asserted above) --
+    // read the ADAPTER's own role-filtered state, not a log-text scrape.
+    let phase2 =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(15), |v| {
+            v["counters"]["resolved_candidate"].as_u64() == Some(2)
+        });
+    assert_eq!(
+        phase2["counters"]["candidate_total"], 2,
+        "two candidates in the override: {phase2}"
     );
-    assert!(
-        events
-            .matches("override resolution: connected to candidate 2/2")
-            .count()
-            >= 1,
-        "the failover resolved to candidate 2"
+    assert_eq!(
+        phase2["counters"]["resolved_candidate"], 2,
+        "the failover resolved to candidate 2: {phase2}"
     );
 
     drop(stdin);
@@ -262,6 +270,7 @@ fn unpinned_adapter_prefers_the_first_candidate_and_fails_over() {
 
 /// ADR-0048 D3: when the FIRST candidate is absent, an unpinned adapter falls back to the
 /// SECOND on the fast path (an absent pipe fails the dial instantly; no retry window burned).
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn unpinned_adapter_falls_back_when_the_first_candidate_is_absent() {
     let (ep_a, ep_b, _inst_a, inst_b, log_dir) = unique();

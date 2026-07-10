@@ -78,8 +78,8 @@ fn a_named_non_dev_instance_still_plans_the_full_stack() {
     // per-instance stack (copy launched by name, isolated host, suffixed supervisor).
     let plan = install_plan(Some("qa"));
     assert!(
-        plan.contains("instance binary") && plan.contains("ghostlight-adapter-browser-qa"),
-        "a qa plan copies a per-instance browser-adapter binary: {plan}"
+        plan.contains("instance binary") && plan.contains("ghostlight-relay-qa"),
+        "a qa plan copies a per-instance relay binary: {plan}"
     );
     assert!(
         plan.contains("org.sylin.ghostlight.qa"),

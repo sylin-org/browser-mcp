@@ -138,9 +138,10 @@ impl Instance {
         Self::from_exe_stem_with_base(exe, LEAF_BASE)
     }
 
-    /// [`from_exe_stem`] generalized over the executable's base name (ADR-0046: each role executable
-    /// resolves argv[0] against ITS OWN base, so `ghostlight-adapter-browser` is that bin's DEFAULT
-    /// instance, never a bogus instance named "adapter-browser").
+    /// [`from_exe_stem`] generalized over the executable's base name (ADR-0046: a role executable
+    /// resolves argv[0] against ITS OWN base, so `ghostlight-relay` is that bin's DEFAULT instance,
+    /// never a bogus instance named "relay"; the browser role uses this on the ADR-0051 Phase 3
+    /// per-instance `ghostlight-relay-<n>` copy Chrome launches by name).
     pub fn from_exe_stem_with_base(exe: &std::path::Path, base: &str) -> Option<Self> {
         let stem = exe.file_stem()?.to_str()?;
         if stem == base {
@@ -439,33 +440,26 @@ mod tests {
     }
 
     #[test]
-    fn from_exe_stem_with_base_resolves_the_browser_adapter_family() {
+    fn from_exe_stem_with_base_resolves_the_relay_family() {
         use std::path::Path;
         // Forward-slash paths only: a backslash is NOT a separator on Unix, so a Windows-style
         // literal here would break the Linux/macOS CI (this exact mistake reddened CI once already).
-        let base = "ghostlight-adapter-browser";
-        assert!(Instance::from_exe_stem_with_base(
-            Path::new("/x/ghostlight-adapter-browser"),
-            base
-        )
-        .unwrap()
-        .is_default());
+        let base = "ghostlight-relay";
+        assert!(
+            Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay"), base)
+                .unwrap()
+                .is_default()
+        );
         assert_eq!(
-            Instance::from_exe_stem_with_base(
-                Path::new("/x/ghostlight-adapter-browser-dev.exe"),
-                base
-            )
-            .unwrap()
-            .name(),
+            Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay-dev.exe"), base)
+                .unwrap()
+                .name(),
             Some("dev")
         );
         assert_eq!(
-            Instance::from_exe_stem_with_base(
-                Path::new("/x/ghostlight-adapter-browser-qa-staging"),
-                base
-            )
-            .unwrap()
-            .name(),
+            Instance::from_exe_stem_with_base(Path::new("/x/ghostlight-relay-qa-staging"), base)
+                .unwrap()
+                .name(),
             Some("qa-staging")
         );
         // The bare `ghostlight` binary is NOT in this family.

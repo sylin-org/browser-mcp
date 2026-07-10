@@ -130,12 +130,27 @@ pub async fn relay_native_host(
     endpoints: &[String],
     debug: &crate::observability::DebugSink,
 ) -> Result<()> {
+    // ADR-0051 Phase 2: the binary wires Chrome's real stdio; the framed relay logic lives in
+    // `relay_native_host_over`, injectable in-process for tests.
+    relay_native_host_over(endpoints, debug, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+/// [`relay_native_host`] with Chrome's stdio INJECTED (ADR-0051 Phase 2): the binary passes the
+/// real `stdin`/`stdout`; tests pass in-memory streams.
+pub async fn relay_native_host_over<I, O>(
+    endpoints: &[String],
+    debug: &crate::observability::DebugSink,
+    mut chrome_in: I,
+    mut chrome_out: O,
+) -> Result<()>
+where
+    I: tokio::io::AsyncRead + Unpin,
+    O: tokio::io::AsyncWrite + Unpin,
+{
     let endpoint = pick_native_host_endpoint(endpoints, probe_endpoint);
     let stream = connect(&endpoint).await?;
     debug.ipc_note("connected to mcp-server endpoint");
     let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);
-    let mut chrome_in = tokio::io::stdin();
-    let mut chrome_out = tokio::io::stdout();
 
     // extension -> mcp-server
     let upstream = async {
@@ -359,6 +374,25 @@ pub async fn relay_adapter(
     endpoints: &[String],
     debug: &crate::observability::DebugSink,
 ) -> Result<()> {
+    // ADR-0051 Phase 2: the binary wires the process's REAL stdio; all the resilient reconnect +
+    // handshake-replay logic lives in `relay_adapter_over`, which tests drive over injected in-memory
+    // streams so none touches the real console stdin (whose missing EOF used to hang the relay tests).
+    relay_adapter_over(endpoints, debug, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+/// [`relay_adapter`] with the client stdio INJECTED (ADR-0051 Phase 2). The binary passes real
+/// `stdin`/`stdout`; tests pass in-memory streams (`tokio::io::duplex` / `empty` / `sink`) so the
+/// reconnect + handshake-replay behavior is exercisable without the real console.
+pub async fn relay_adapter_over<I, O>(
+    endpoints: &[String],
+    debug: &crate::observability::DebugSink,
+    client_in: I,
+    mut client_out: O,
+) -> Result<()>
+where
+    I: tokio::io::AsyncRead + Unpin + Send + 'static,
+    O: tokio::io::AsyncWrite + Unpin,
+{
     use tokio::io::AsyncBufReadExt;
     let adapter_endpoints: Vec<String> =
         endpoints.iter().map(|e| adapter_endpoint_name(e)).collect();
@@ -370,7 +404,7 @@ pub async fn relay_adapter(
     // client close.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+        let mut reader = tokio::io::BufReader::new(client_in);
         loop {
             let mut line = Vec::new();
             match reader.read_until(b'\n', &mut line).await {
@@ -385,14 +419,14 @@ pub async fn relay_adapter(
         }
     });
 
-    let mut client_out = tokio::io::stdout();
     let mut preamble = HandshakePreamble::default();
     let mut first = true;
 
     // ADR-0047 D2: one identity for this adapter's whole life, re-presented on every reconnect so
     // the service-side ownership map and the extension's per-session groups survive a restart.
     let session_guid = crate::session_guid::SessionGuid::mint();
-    debug.ipc_note("session identity minted (stable for this adapter process)");
+    // ADR-0051 P4.3b: records the structured `counters.identity_mints` AND the human event.
+    debug.note_identity_minted();
 
     loop {
         // Connect AND handshake with a bounded retry (see [`connect_and_handshake`]): a service
@@ -403,14 +437,13 @@ pub async fn relay_adapter(
         if first {
             debug.ipc_note("connected to the service's adapter/control endpoint");
         } else {
-            debug.ipc_note("service restart detected; reconnected");
+            // ADR-0051 P4.3b: records the structured `counters.reconnects` AND the human event.
+            debug.note_reconnected();
         }
         if adapter_endpoints.len() > 1 {
-            debug.ipc_note(&format!(
-                "override resolution: connected to candidate {}/{}",
-                which + 1,
-                adapter_endpoints.len()
-            ));
+            // ADR-0051 P4.3b: records the structured `counters.resolved_candidate`/`candidate_total`
+            // AND the human event.
+            debug.note_resolved_candidate((which + 1) as u32, adapter_endpoints.len() as u32);
         }
 
         let (mut ipc_read, mut ipc_write) = tokio::io::split(stream);

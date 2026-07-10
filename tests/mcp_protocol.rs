@@ -1,20 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! End-to-end MCP protocol checks: spawn the standalone SERVICE + a thin ADAPTER (ADR-0030
-//! Decision 8 amendment; movable harness at H6, PINS.md/BOOTSTRAP "only delight is sacred") and
-//! drive the ADAPTER over stdio.
+//! MCP protocol checks: drive the real `serve_session` chokepoint (initialize, tools/list,
+//! tools/call, and the ADR-0049 raw-frame parse/batch rules) and assert the wire behavior.
 //!
 //! Most tests here connect no extension/native-host, so `tools/call` waits out the bounded
 //! handshake window and returns an MCP tool error result (the request/response bridge itself is
-//! covered by the `browser` and `ipc` unit tests). One test below connects a fake extension over
-//! the real IPC (to the EXTENSION endpoint the SERVICE owns) to exercise the late-connect /
-//! truthful-wait-note path. Each spawned service pair gets a unique IPC endpoint so the tests
-//! never contend for one.
+//! covered by the `browser` and `ipc` unit tests).
+//!
+//! ADR-0051 Phase 4 (P4.2): all but one migrated from spawn-a-service-plus-adapter onto the
+//! in-process `support::inproc::Harness`, which drives the SAME serve_session path with no OS
+//! process. The exception is `tools_call_waits_for_a_late_extension_and_notes_the_wait`: it needs a
+//! fake extension to connect LATE (after the call is already queued and waiting) over the real IPC,
+//! which the in-process harness's attach-then-drive shape cannot reproduce, so it stays a spawn test
+//! and belongs to the P4.3 quarantined end-to-end tier.
 
 mod support;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
+use support::inproc::{manifest_from_value, Harness};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -26,115 +30,36 @@ fn unique_endpoint() -> String {
     )
 }
 
-/// Spawn a SERVICE + ADAPTER pair (with an isolated IPC endpoint), send each request as a line to
-/// the ADAPTER's stdin, and collect exactly one reply per `id`-bearing request (a notification, no
-/// `id` key at all, gets none). Reads all expected replies BEFORE closing stdin: `relay_adapter`
-/// races its two copy directions (PINS.md SS1 pin 3's lifecycle-shape mirror of
-/// `relay_native_host`), so closing the client's write side early would tear the whole relay down
-/// -- and this process's own reply -- before a still-in-flight call (e.g. the ~5s
-/// extension-handshake wait below) is delivered; keeping stdin open until every expected reply has
-/// arrived avoids that race entirely, mirroring this file's own
-/// `tools_call_waits_for_a_late_extension_and_notes_the_wait` pattern. Kills the service in
-/// teardown.
-fn drive(requests: &[Value]) -> Vec<Value> {
-    drive_with_manifest(None, requests)
+/// Drive `requests` through an all-open in-process session, returning one reply per `id`-bearing
+/// request (a notification, no `id` key at all, gets none).
+async fn drive(requests: &[Value]) -> Vec<Value> {
+    Harness::all_open().drive(requests).await
 }
 
-/// Like [`drive`], but optionally launches the SERVICE under a schema-3 `--manifest` (PINS.md
-/// SS5.1: `--manifest` is forwarded to the SERVICE; the ADAPTER ignores it). `None` is the
-/// all-open posture (no `--manifest` argument).
-fn drive_with_manifest(manifest: Option<&str>, requests: &[Value]) -> Vec<Value> {
-    let endpoint = unique_endpoint();
-    let manifest_path = manifest.map(|body| {
-        let path = std::env::temp_dir().join(format!(
-            "ghostlight-mcp-protocol-{}-{}.json",
-            std::process::id(),
-            SEQ.load(Ordering::Relaxed)
-        ));
-        std::fs::write(&path, body).unwrap();
-        path
-    });
-    let manifest_uri = manifest_path.as_ref().map(|path| {
-        // `file://` source form: forward slashes, and a leading `/` before a Windows drive letter.
-        let forward = path.to_string_lossy().replace('\\', "/");
-        match forward.strip_prefix('/') {
-            Some(rest) => format!("file:///{rest}"),
-            None => format!("file:///{forward}"),
-        }
-    });
-
-    let mut service = support::spawn_service_with_manifest(&endpoint, manifest_uri.as_deref());
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    for req in requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let mut responses = Vec::with_capacity(expected);
-    for _ in 0..expected {
-        let line = lines
-            .next()
-            .expect("the adapter's stdout closed before every expected reply arrived")
-            .expect("read a stdout line");
-        responses.push(serde_json::from_str(&line).expect("each stdout line is JSON"));
-    }
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-    if let Some(path) = &manifest_path {
-        std::fs::remove_file(path).ok();
-    }
-    responses
+/// Like [`drive`], but optionally under a schema-3 manifest `Value`. `None` is the all-open posture.
+async fn drive_with_manifest(manifest: Option<&Value>, requests: &[Value]) -> Vec<Value> {
+    let harness = match manifest {
+        Some(value) => Harness::governed(manifest_from_value(value)),
+        None => Harness::all_open(),
+    };
+    harness.drive(requests).await
 }
 
-/// Like [`drive`], but sends RAW lines verbatim (so a malformed frame or a JSON-RPC array batch can
-/// be exercised) and reads EXACTLY `expected` responses. The ADR-0049 parse-error / batch rejects
-/// reply with `id: null`, so they cannot be counted by id-presence the way [`drive`] does.
-fn drive_raw(lines: &[&str], expected: usize) -> Vec<Value> {
-    let endpoint = unique_endpoint();
-    let mut service = support::spawn_service_with_manifest(&endpoint, None);
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    for line in lines {
-        stdin.write_all(line.as_bytes()).unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut reader = BufReader::new(stdout).lines();
-    let mut responses = Vec::with_capacity(expected);
-    for _ in 0..expected {
-        let line = reader
-            .next()
-            .expect("the adapter's stdout closed before every expected reply arrived")
-            .expect("read a stdout line");
-        responses.push(serde_json::from_str(&line).expect("each stdout line is JSON"));
-    }
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-    responses
+/// Send RAW lines verbatim (so a malformed frame or a JSON-RPC array batch can be exercised) and
+/// read EXACTLY `expected` responses. The ADR-0049 parse-error / batch rejects reply with
+/// `id: null`, so they cannot be counted by id-presence the way [`drive`] does.
+async fn drive_raw(lines: &[&str], expected: usize) -> Vec<Value> {
+    Harness::all_open().drive_raw(lines, expected).await
 }
 
-/// ADR-0049: a JSON-RPC batch (a top-level array of requests) is rejected with -32600 and a
-/// teaching message (send one per line; use `script` for multi-step), not dropped silently.
-#[test]
-fn batch_array_frame_is_rejected_with_a_teaching_message() {
+/// ADR-0049 (as amended by ADR-0050 D3): a JSON-RPC batch (a top-level array of requests) is
+/// rejected with -32600 and a teaching message (send one per line; use `browser_batch` for
+/// multi-step), not dropped silently.
+#[tokio::test]
+async fn batch_array_frame_is_rejected_with_a_teaching_message() {
     let batch =
         r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]"#;
-    let responses = drive_raw(&[batch], 1);
+    let responses = drive_raw(&[batch], 1).await;
     let err = &responses[0];
     assert_eq!(err["id"], Value::Null);
     assert_eq!(err["error"]["code"], -32600);
@@ -144,31 +69,32 @@ fn batch_array_frame_is_rejected_with_a_teaching_message() {
         "teaches the one-per-line rule: {msg}"
     );
     assert!(
-        msg.contains("`script`"),
-        "teaches the script-tool alternative: {msg}"
+        msg.contains("`browser_batch`"),
+        "teaches the browser_batch alternative: {msg}"
     );
 }
 
 /// ADR-0049: an unparseable NON-empty line gets an addressable -32700 (id:null); a blank line is a
 /// benign keepalive that draws NO response. Sending the blank first proves it is silent -- the sole
 /// reply is the malformed line's -32700, not a response to the blank.
-#[test]
-fn parse_error_answers_32700_and_blank_lines_stay_silent() {
-    let responses = drive_raw(&["", "{ this is not valid json"], 1);
+#[tokio::test]
+async fn parse_error_answers_32700_and_blank_lines_stay_silent() {
+    let responses = drive_raw(&["", "{ this is not valid json"], 1).await;
     let err = &responses[0];
     assert_eq!(err["id"], Value::Null);
     assert_eq!(err["error"]["code"], -32700);
 }
 
-#[test]
-fn initialize_tools_list_and_tool_call_over_stdio() {
+#[tokio::test]
+async fn initialize_tools_list_and_tool_call_over_stdio() {
     let responses = drive(&[
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}), // no response
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
-    ]);
+    ])
+    .await;
 
     assert_eq!(
         responses.len(),
@@ -188,8 +114,8 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
     let tools = list["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        17,
-        "13 trained tools plus wait_for, script, form_fill, and the explain addition"
+        ghostlight::browser::directory::advertised_tool_count(),
+        "the wire advertises the full REGISTRY surface (see directory::advertised_tool_names)"
     );
     assert_eq!(tools[0]["name"], "tabs_context_mcp");
     // The advertised surface must equal the embedded sacred fixture, byte for byte.
@@ -224,13 +150,14 @@ fn initialize_tools_list_and_tool_call_over_stdio() {
 /// the sacred surface) and `tools/call explain` returns the directory text without ever needing
 /// an extension attached -- proving the tool is handled entirely server-side, with zero
 /// native-messaging traffic.
-#[test]
-fn explain_is_advertised_last_and_answers_with_no_extension_attached() {
+#[tokio::test]
+async fn explain_is_advertised_last_and_answers_with_no_extension_attached() {
     let responses = drive(&[
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain","arguments":{}}}),
-    ]);
+    ])
+    .await;
     assert_eq!(responses.len(), 3, "got {responses:?}");
 
     let list = &responses[1];
@@ -262,7 +189,7 @@ fn explain_is_advertised_last_and_answers_with_no_extension_attached() {
 
 /// Run `explain` under a given manifest posture and return its response text, asserting along the
 /// way that it is advertised last and never errors regardless of posture.
-fn explain_text_under_manifest(manifest: Option<&str>) -> String {
+async fn explain_text_under_manifest(manifest: Option<&Value>) -> String {
     let responses = drive_with_manifest(
         manifest,
         &[
@@ -270,7 +197,8 @@ fn explain_text_under_manifest(manifest: Option<&str>) -> String {
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain","arguments":{}}}),
         ],
-    );
+    )
+    .await;
     assert_eq!(responses.len(), 3, "got {responses:?}");
     let list = responses
         .iter()
@@ -300,15 +228,18 @@ fn explain_text_under_manifest(manifest: Option<&str>) -> String {
 /// regardless of manifest posture. It requires nothing and is answered server-side before any
 /// grant machinery, so a locked-down session sees the identical directory an all-open one does.
 /// Pins the actual invariant (same output everywhere), not merely that `explain` is present.
-#[test]
-fn explain_output_is_byte_identical_across_manifest_postures() {
-    let open = explain_text_under_manifest(None);
-    let empty_grants = explain_text_under_manifest(Some(
-        r#"{"schema":3,"name":"empty","version":"1","grants":[]}"#,
-    ));
-    let read_only = explain_text_under_manifest(Some(
-        r#"{"schema":3,"name":"ro","version":"1","grants":[{"id":"read-only","hosts":{"allow":["example.com"]},"allowed":["read"]}]}"#,
-    ));
+#[tokio::test]
+async fn explain_output_is_byte_identical_across_manifest_postures() {
+    let open = explain_text_under_manifest(None).await;
+    let empty_grants = explain_text_under_manifest(Some(&json!({
+        "schema": 3, "name": "empty", "version": "1", "grants": []
+    })))
+    .await;
+    let read_only = explain_text_under_manifest(Some(&json!({
+        "schema": 3, "name": "ro", "version": "1",
+        "grants": [{"id":"read-only","hosts":{"allow":["example.com"]},"allowed":["read"]}]
+    })))
+    .await;
 
     assert!(
         open.starts_with("Capabilities: read = "),
@@ -324,8 +255,8 @@ fn explain_output_is_byte_identical_across_manifest_postures() {
     );
 }
 
-#[test]
-fn unknown_tool_name_is_rejected_before_dispatch() {
+#[tokio::test]
+async fn unknown_tool_name_is_rejected_before_dispatch() {
     // No extension is ever connected in this test. If the unknown-tool pre-check ran AFTER the
     // bounded extension-channel wait (or not at all), this would instead time out and surface
     // "[hop: extension] Browser extension not connected. ...". Getting the invalid-request hop
@@ -334,7 +265,8 @@ fn unknown_tool_name_is_rejected_before_dispatch() {
     let responses = drive(&[
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bogus_tool","arguments":{}}}),
-    ]);
+    ])
+    .await;
     let elapsed = started.elapsed();
 
     assert_eq!(responses.len(), 2, "got {responses:?}");
@@ -358,13 +290,14 @@ fn unknown_tool_name_is_rejected_before_dispatch() {
     );
 }
 
-#[test]
-fn malformed_method_and_null_id_follow_jsonrpc_rules() {
+#[tokio::test]
+async fn malformed_method_and_null_id_follow_jsonrpc_rules() {
     let responses = drive(&[
         json!({"jsonrpc":"2.0","id":7,"params":{}}), // id present, method missing
         json!({"jsonrpc":"2.0","id":null,"method":"ping"}), // legal null-id request
         json!({"method":"notifications/initialized"}), // notification -> no response
-    ]);
+    ])
+    .await;
 
     // The notification yields nothing; the other two are addressable.
     assert_eq!(responses.len(), 2, "got {responses:?}");
@@ -381,6 +314,12 @@ fn malformed_method_and_null_id_follow_jsonrpc_rules() {
     assert_eq!(responses[1]["id"], Value::Null);
 }
 
+/// STAYS a spawn test (ADR-0051 Phase 4, quarantined E2E tier): a fake extension connects LATE --
+/// after the tools/call is already queued and waiting -- over the real IPC to the EXTENSION
+/// endpoint the SERVICE owns, then answers the one framed tool_request. This late-connect timing
+/// (and the resulting truthful "(waited Ns ...)" note) is exactly what the in-process
+/// attach-then-drive fixture cannot reproduce, so it keeps the spawn-a-service pattern.
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
     let endpoint = unique_endpoint();

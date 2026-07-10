@@ -62,6 +62,21 @@ warnings`, and `cargo test` green; ASCII source (escapes for anything else); mat
 surrounding code's style; and one logical change per PR. For anything larger than a
 small fix, open a Discussion or Issue first so nobody builds the wrong thing.
 
+### Running tests locally
+
+The suite has two tiers ([ADR-0032](docs/adr/0032-test-at-seams-and-inject-config-sources.md),
+[ADR-0051](docs/adr/0051-verification-topology-fewer-moving-parts.md)):
+
+- **Fast, in-process** -- the unit tests and the in-process integration tests. Plain `cargo test`
+  runs them; they need no processes and are the everyday gate.
+- **End-to-end (spawn)** -- a smaller tier that launches the real `ghostlight` binaries over the IPC
+  boundary. On a developer machine a live `ghostlight service` and Chrome's native host hold
+  `target/debug/*.exe` against the linker, and the real-stdio relay test hangs on an interactive
+  terminal's stdin. Neither happens in CI. Run these reliably -- without stopping your dev session --
+  with `scripts/test-e2e.ps1` (Windows) or `scripts/test-e2e.sh` (Unix): they build into an isolated
+  target dir the live service never locks, and close stdin so the relay tests see EOF. Pass
+  `-- --test-threads=1` for a fully serial run.
+
 ## What not to report publicly
 
 Suspected vulnerabilities go to hello@sylin.org with "SECURITY" in the subject, per

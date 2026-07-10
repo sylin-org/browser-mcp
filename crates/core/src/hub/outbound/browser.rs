@@ -51,7 +51,7 @@ use crate::ToolError;
 use ghostlight_transport::host;
 use ghostlight_transport::observability::DebugSink;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -93,6 +93,22 @@ fn kill_error() -> ToolError {
 type CallResult = std::result::Result<Value, ToolError>;
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult>>>>;
 
+/// A screenshot cached per session for later `upload_image` reference (ADR-0050 Decision 4). Holds
+/// the base64 bytes and the media type exactly as the extension's `computer` screenshot result
+/// carried them, so `upload_image` can forward them to a file input or drag-drop target.
+#[derive(Clone)]
+pub(crate) struct CachedImage {
+    pub(crate) base64: String,
+    pub(crate) media_type: String,
+}
+
+/// Per-guid bounded screenshot cache (ADR-0050 D4): each session's last
+/// [`SCREENSHOT_CACHE_BOUND`] screenshots, newest last, keyed by minted `img_...` id.
+type ScreenshotCache = Arc<Mutex<HashMap<String, VecDeque<(String, CachedImage)>>>>;
+
+/// The per-guid screenshot-cache bound (ADR-0050 D4): pushing a 9th screenshot evicts the oldest.
+const SCREENSHOT_CACHE_BOUND: usize = 8;
+
 /// The outcome of [`Browser::attach`]: whether this connection became the active session or was
 /// rejected because one is already attached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +140,25 @@ impl Drop for KillHookHandle {
     }
 }
 
+/// Parse the extension's `rescale_coords` reply: a text content block holding
+/// `{"points": [[x, y], ...]}`. None on any shape mismatch (the caller keeps raw coordinates).
+fn parse_rescaled_points(reply: &Value) -> Option<Vec<(f64, f64)>> {
+    let text = reply
+        .get("content")?
+        .as_array()?
+        .first()?
+        .get("text")?
+        .as_str()?;
+    let parsed: Value = serde_json::from_str(text).ok()?;
+    let points = parsed.get("points")?.as_array()?;
+    let mut out = Vec::with_capacity(points.len());
+    for p in points {
+        let pair = p.as_array()?;
+        out.push((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?));
+    }
+    Some(out)
+}
+
 /// A cloneable handle the mcp-server uses to call tools on the extension.
 #[derive(Clone)]
 pub struct Browser {
@@ -149,6 +184,13 @@ pub struct Browser {
     /// Monotonic id source for `kill_hooks` entries (ADR-0030 Decision 7), so a
     /// [`KillHookHandle`] can remove exactly its own registration.
     next_hook_id: Arc<AtomicU64>,
+    /// Per-session screenshot cache (ADR-0050 Decision 4): a `computer` screenshot result is cached
+    /// here under a minted `img_...` id so `upload_image` can later place it into a file input or a
+    /// drag-drop target. Bounded per guid ([`SCREENSHOT_CACHE_BOUND`]), evicting the oldest.
+    screenshot_cache: ScreenshotCache,
+    /// gif_creator recording sessions (ADR-0053 D3/D4): per-tab state + disk-backed frames, fed by
+    /// the extension's unsolicited `gif_frame` events and read back at export.
+    recordings: Arc<super::recording::RecordingStore>,
 }
 
 impl Browser {
@@ -171,6 +213,8 @@ impl Browser {
             killed: Arc::new(AtomicBool::new(false)),
             kill_hooks: Arc::new(Mutex::new(Vec::new())),
             next_hook_id: Arc::new(AtomicU64::new(1)),
+            screenshot_cache: Arc::new(Mutex::new(HashMap::new())),
+            recordings: Arc::new(super::recording::RecordingStore::new()),
         }
     }
 
@@ -301,6 +345,21 @@ impl Browser {
             return Err(kill_error());
         }
 
+        // gif_creator (ADR-0053 D4): while this tab records, note the action BEFORE it runs so
+        // the screencast frame its paint produces is the frame that carries its ring/label.
+        self.note_gif_action(guid, tool, args).await;
+        let result = self.raw_call(guid, tool, args).await?;
+        Ok(self.cache_and_inject_screenshot(guid, tool, result))
+    }
+
+    /// The bare envelope + dispatch of [`Browser::call`], shared with internal sends that must not
+    /// re-enter the gif action-noting or screenshot-cache layers.
+    async fn raw_call(
+        &self,
+        guid: &str,
+        tool: &str,
+        args: &Value,
+    ) -> std::result::Result<Value, ToolError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let request =
             json!({ "id": id, "type": "tool_request", "tool": tool, "args": args, "guid": guid });
@@ -317,6 +376,147 @@ impl Browser {
             }
         };
         self.send_and_await(id, framed, tool).await
+    }
+
+    /// The gif_creator recording sessions (ADR-0053), for the orchestrator handler.
+    pub(crate) fn recordings(&self) -> &super::recording::RecordingStore {
+        &self.recordings
+    }
+
+    /// While `tool`'s tab is actively recording, describe the action for overlay tagging
+    /// (ADR-0052 D4 semantics, service-side per ADR-0053 D4). Model-space coordinates rescale to
+    /// CSS viewport px by ASKING the extension (`rescale_coords`, an internal op over its live
+    /// ScreenshotContext -- the mechanism data stays where Chrome produces it; querying beats
+    /// mirroring). Best-effort: on any failure the raw coordinates stand (identical in the common
+    /// unzoomed case).
+    async fn note_gif_action(&self, guid: &str, tool: &str, args: &Value) {
+        if tool != "computer" && tool != "navigate" {
+            return;
+        }
+        let Some(tab) = args.get("tabId").and_then(Value::as_i64) else {
+            return;
+        };
+        if !self.recordings.is_active(tab) {
+            return;
+        }
+        let Some(mut meta) = crate::gif::describe_action(tool, args) else {
+            return;
+        };
+        meta.ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut points: Vec<Value> = Vec::new();
+        if let Some((x, y)) = meta.coordinate {
+            points.push(json!([x, y]));
+        }
+        if let Some((x, y)) = meta.start_coordinate {
+            points.push(json!([x, y]));
+        }
+        if !points.is_empty() {
+            let rescale_args = json!({ "tabId": tab, "points": points });
+            if let Ok(reply) = self.raw_call(guid, "rescale_coords", &rescale_args).await {
+                if let Some(rescaled) = parse_rescaled_points(&reply) {
+                    let mut it = rescaled.into_iter();
+                    if meta.coordinate.is_some() {
+                        meta.coordinate = it.next();
+                    }
+                    if meta.start_coordinate.is_some() {
+                        meta.start_coordinate = it.next();
+                    }
+                }
+            }
+        }
+        self.recordings.note_action(tab, meta);
+    }
+
+    /// One unsolicited `gif_frame` event from the extension's screencast relay (ADR-0053 D2):
+    /// hand the base64 JPEG to the recording store (which drops it unless the tab is actively
+    /// recording).
+    fn handle_gif_frame(&self, event: &Value) {
+        let Some(tab) = event.get("tabId").and_then(Value::as_i64) else {
+            return;
+        };
+        let Some(data) = event.get("data").and_then(Value::as_str) else {
+            return;
+        };
+        let ts = event
+            .get("ts")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let device_width = event.get("deviceWidth").and_then(Value::as_f64);
+        self.recordings.on_frame(tab, data, ts, device_width);
+    }
+
+    /// ADR-0050 Decision 4 -- the ONE sanctioned additive change to a trained tool's OUTPUT: after a
+    /// `computer` result carrying a screenshot `image` content block, cache the image under `guid`
+    /// and append a text block naming the minted imageId, so the model can later reference it with
+    /// `upload_image`. Every other tool and every image-less `computer` result passes through
+    /// untouched (the `computer` INPUT schema and its descriptor row are unchanged).
+    fn cache_and_inject_screenshot(&self, guid: &str, tool: &str, mut result: Value) -> Value {
+        if tool != "computer" {
+            return result;
+        }
+        let image = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|blocks| {
+                blocks
+                    .iter()
+                    .find(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+            });
+        let Some(image) = image else {
+            return result;
+        };
+        let Some(base64) = image
+            .get("data")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return result;
+        };
+        let media_type = image
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("image/jpeg")
+            .to_string();
+        let image_id = self.cache_screenshot(guid, base64, media_type);
+        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+            content.push(json!({
+                "type": "text",
+                "text": format!(
+                    "[imageId: {image_id}] Reference this id with upload_image to place this \
+                     screenshot into a file input or drag-drop target."
+                ),
+            }));
+        }
+        result
+    }
+
+    /// Cache a screenshot for `guid` and return its minted `img_...` imageId (ADR-0050 D4). Bounds
+    /// the guid's deque to the last [`SCREENSHOT_CACHE_BOUND`] entries -- pushing a 9th evicts the
+    /// oldest.
+    pub(crate) fn cache_screenshot(
+        &self,
+        guid: &str,
+        base64: String,
+        media_type: String,
+    ) -> String {
+        let image_id = format!("img_{}", uuid::Uuid::new_v4().simple());
+        let mut cache = self.screenshot_cache.lock().unwrap();
+        let deque = cache.entry(guid.to_string()).or_default();
+        deque.push_back((image_id.clone(), CachedImage { base64, media_type }));
+        while deque.len() > SCREENSHOT_CACHE_BOUND {
+            deque.pop_front();
+        }
+        image_id
+    }
+
+    /// Resolve a previously cached screenshot for `guid` by imageId (ADR-0050 D4), or None on a miss.
+    pub(crate) fn resolve_cached_image(&self, guid: &str, image_id: &str) -> Option<CachedImage> {
+        let cache = self.screenshot_cache.lock().unwrap();
+        cache
+            .get(guid)?
+            .iter()
+            .find(|(id, _)| id == image_id)
+            .map(|(_, img)| img.clone())
     }
 
     /// Query the current URL of tab `tab_id` from the extension (g13): mechanism only, reporting
@@ -548,6 +748,14 @@ impl Browser {
 
         if reply.get("id").is_none() && msg_type == Some("session_killed") {
             self.handle_session_killed();
+            return;
+        }
+
+        if reply.get("id").is_none() && msg_type == Some("gif_frame") {
+            // gif_creator capture (ADR-0053 D2): the first unsolicited extension event beyond the
+            // handshake. Unknown id-less event types keep falling through to the generic
+            // event/heartbeat return below, so protocol skew stays harmless.
+            self.handle_gif_frame(&reply);
             return;
         }
 
@@ -1312,6 +1520,87 @@ mod tests {
             err.to_string()
                 .contains("Browser extension disconnected before responding"),
             "{err}"
+        );
+    }
+
+    /// ADR-0050 D4: the per-session screenshot cache mints an `img_`-prefixed id, round-trips the
+    /// bytes/media-type, misses on an unknown id/guid, is bounded to 8 (a 9th insert evicts the
+    /// 1st), and `cache_and_inject_screenshot` appends exactly one imageId text block to a
+    /// `computer` screenshot result while passing every other result through unchanged. (Named with
+    /// a snake_case tail rather than the prompt's `imageId` to satisfy `-D warnings`.)
+    #[test]
+    fn screenshot_cache_round_trips_and_injects_image_id() {
+        let browser = Browser::new();
+
+        // Cache + resolve round trip.
+        let id = browser.cache_screenshot("g1", "AAAA".to_string(), "image/jpeg".to_string());
+        assert!(id.starts_with("img_"), "minted id is img_-prefixed: {id}");
+        let got = browser
+            .resolve_cached_image("g1", &id)
+            .expect("cached image resolves");
+        assert_eq!(got.base64, "AAAA");
+        assert_eq!(got.media_type, "image/jpeg");
+
+        // Unknown id, and a different guid, both miss.
+        assert!(browser.resolve_cached_image("g1", "img_nope").is_none());
+        assert!(browser.resolve_cached_image("other", &id).is_none());
+
+        // Bound N=8: after a 9th insert into one guid, the first id is evicted.
+        let first = browser.cache_screenshot("g2", "0".to_string(), "image/jpeg".to_string());
+        for i in 1..8 {
+            browser.cache_screenshot("g2", i.to_string(), "image/jpeg".to_string());
+        }
+        assert!(
+            browser.resolve_cached_image("g2", &first).is_some(),
+            "the 8th entry keeps the first cached"
+        );
+        let ninth = browser.cache_screenshot("g2", "9".to_string(), "image/jpeg".to_string());
+        assert!(
+            browser.resolve_cached_image("g2", &first).is_none(),
+            "the 9th insert evicts the 1st"
+        );
+        assert!(
+            browser.resolve_cached_image("g2", &ninth).is_some(),
+            "the newest entry stays"
+        );
+
+        // Injection: a computer screenshot result gains exactly one trailing imageId text block;
+        // the leading text and the image block are preserved, and the id resolves in g3's cache.
+        let result = json!({
+            "content": [
+                { "type": "text", "text": "screenshot taken" },
+                { "type": "image", "data": "BBBB", "mimeType": "image/png" }
+            ]
+        });
+        let injected = browser.cache_and_inject_screenshot("g3", "computer", result);
+        let content = injected["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3, "exactly one trailing text block appended");
+        assert_eq!(content[1]["type"], "image", "the image block is preserved");
+        let text = content[2]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("[imageId: img_"),
+            "the trailing block names the minted imageId: {text}"
+        );
+        let injected_id = text
+            .strip_prefix("[imageId: ")
+            .and_then(|s| s.split(']').next())
+            .unwrap();
+        let cached = browser
+            .resolve_cached_image("g3", injected_id)
+            .expect("the injected id resolves in the cache");
+        assert_eq!(cached.base64, "BBBB");
+        assert_eq!(cached.media_type, "image/png");
+
+        // A non-computer result, and a computer result with no image, pass through byte-unchanged.
+        let navigate = json!({"content":[{"type":"text","text":"ok"}]});
+        assert_eq!(
+            browser.cache_and_inject_screenshot("g3", "navigate", navigate.clone()),
+            navigate
+        );
+        let click = json!({"content":[{"type":"text","text":"clicked"}]});
+        assert_eq!(
+            browser.cache_and_inject_screenshot("g3", "computer", click.clone()),
+            click
         );
     }
 }

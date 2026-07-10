@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Thin launcher: fetch the version-matched ghostlight role executables from the GitHub release on
 // first run, cache them under ~/.ghostlight/bin/<version>/, then exec the right one for the caller.
-// ADR-0046: a bare `npx ghostlight` (what an MCP client launches) execs ghostlight-adapter-agent
-// (the MCP pass-through); a CLI subcommand (install/doctor/...) execs ghostlight. Zero dependencies.
+// ADR-0046 + ADR-0051 Phase 3: a bare `npx ghostlight` (what an MCP client launches) execs
+// `ghostlight-relay --role agent` (the MCP pass-through); a CLI subcommand (install/doctor/...)
+// execs ghostlight. Zero dependencies.
 // IMPORTANT: stdout belongs to the MCP stdio protocol when a client spawns this; every message this
 // launcher prints goes to stderr.
 
@@ -18,10 +19,10 @@ const { spawnSync } = require("child_process");
 const VERSION = require("../package.json").version;
 const REPO = "sylin-org/ghostlight";
 
-// The three role executables (ADR-0046): ghostlight = CLI + service; the two adapters are thin
-// pass-throughs. All three are cached in ONE dir, so `ghostlight install` resolves the adapters as
-// siblings.
-const BINS = ["ghostlight", "ghostlight-adapter-agent", "ghostlight-adapter-browser"];
+// The two executables (ADR-0046 + ADR-0051 Phase 3): ghostlight = CLI + service; ghostlight-relay =
+// the single thin pass-through carrying both roles. Both are cached in ONE dir, so `ghostlight
+// install` resolves the relay as a sibling.
+const BINS = ["ghostlight", "ghostlight-relay"];
 
 // When the caller names one of these `ghostlight` CLI subcommands, exec `ghostlight`; otherwise
 // this is an MCP launch (bare, or with only flags like --instance), so exec the agent adapter.
@@ -124,13 +125,14 @@ async function ensureBinaries() {
 ensureBinaries()
   .then(({ dir, exe }) => {
     const args = process.argv.slice(2);
-    // ADR-0046: a CLI subcommand runs the `ghostlight` binary; a bare/flags-only invocation is an
-    // MCP launch and runs the agent adapter (the pass-through your client relays through).
-    const binName = args.some((a) => CLI_SUBCOMMANDS.has(a))
-      ? "ghostlight"
-      : "ghostlight-adapter-agent";
+    // ADR-0046 + ADR-0051 Phase 3: a CLI subcommand runs the `ghostlight` binary; a bare/flags-only
+    // invocation is an MCP launch and runs `ghostlight-relay --role agent` (the pass-through your
+    // client relays through).
+    const isCli = args.some((a) => CLI_SUBCOMMANDS.has(a));
+    const binName = isCli ? "ghostlight" : "ghostlight-relay";
     const bin = path.join(dir, `${binName}${exe}`);
-    const result = spawnSync(bin, args, { stdio: "inherit" });
+    const spawnArgs = isCli ? args : ["--role", "agent", ...args];
+    const result = spawnSync(bin, spawnArgs, { stdio: "inherit" });
     if (result.error) {
       process.stderr.write(`ghostlight: failed to launch binary: ${result.error.message}\n`);
       process.exit(1);

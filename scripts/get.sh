@@ -27,9 +27,9 @@ BIN="${BIN_DIR}/ghostlight"
 
 mkdir -p "$BIN_DIR"
 echo "ghostlight: downloading latest release for ${TARGET}..."
-# ADR-0046: three role executables ship together (ghostlight + the two thin adapters). They sit
-# in one dir, so `ghostlight install` finds the adapters as siblings.
-for b in ghostlight ghostlight-adapter-agent ghostlight-adapter-browser; do
+# ADR-0046 + ADR-0051 Phase 3: two executables ship together (the ghostlight brain + the single
+# ghostlight-relay pass-through). They sit in one dir, so `ghostlight install` finds the relay sibling.
+for b in ghostlight ghostlight-relay; do
   URL="https://github.com/${REPO}/releases/latest/download/${b}-${TARGET}"
   curl -fSL --proto '=https' --tlsv1.2 -o "${BIN_DIR}/${b}.download" "$URL"
   mv "${BIN_DIR}/${b}.download" "${BIN_DIR}/${b}"

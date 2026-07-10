@@ -21,11 +21,17 @@
 
 importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js");
 
+// gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
+// pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
+// compositor frame, thin to the service-chosen interval, and forward kept frames as unsolicited
+// gif_frame events. This map is the relay's only state: tabId -> { minIntervalMs, lastSentTs }.
+const gifCast = new Map();
+
 // Operational tunables (lib/constants.js), destructured once for use throughout this worker.
 const {
   MAX_SCREENSHOT_B64, JPEG_QUALITY, JPEG_QUALITY_FALLBACK, JPEG_QUALITY_FULL,
   KEEPALIVE_PERIOD_MINUTES, RECONNECT_DELAY_MS, HOLD_REQUEST_TIMEOUT_MS,
-  CAPTURE_SETTLE_MS, CLICK_GAP_MS, NAV_SETTLE_TIMEOUT_MS,
+  CAPTURE_SETTLE_MS, CLICK_GAP_MS, NAV_SETTLE_TIMEOUT_MS, MAX_SIDE,
 } = self.GhostlightConstants;
 // The H7 grouping DECISION (lib/grouping.js): pure, unit-tested in isolation
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
@@ -398,6 +404,37 @@ function base64FromBytes(bytes) {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
+// Forward one captured frame to the binary as an unsolicited gif_frame event (ADR-0053 D2).
+function sendGifFrame(tabId, base64, deviceWidth) {
+  try {
+    nativePort && nativePort.postMessage({
+      type: "gif_frame",
+      tabId,
+      data: base64,
+      ts: Date.now(),
+      deviceWidth: deviceWidth || undefined,
+    });
+  } catch (e) {
+    /* port gone; this frame is lost, the stream continues */
+  }
+}
+// One screencast frame (ADR-0053 D2): ack immediately (unacked frames stall the compositor's
+// screencast pipeline), thin to the service-chosen minimum interval, and forward. The worker
+// stores NOTHING -- recording state and frames live in the binary.
+async function handleScreencastFrame(tabId, params) {
+  try {
+    await cdp(tabId, "Page.screencastFrameAck", { sessionId: params.sessionId });
+  } catch (e) {
+    /* ack is best-effort: a detaching tab has nothing left to stall */
+  }
+  const cast = gifCast.get(tabId);
+  if (!cast) return;
+  const now = Date.now();
+  if (now - cast.lastSentTs < cast.minIntervalMs) return;
+  cast.lastSentTs = now;
+  const deviceWidth = params.metadata && params.metadata.deviceWidth;
+  sendGifFrame(tabId, params.data, deviceWidth);
+}
 async function encodeJpeg(bitmap, w, h, quality) {
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext("2d");
@@ -434,6 +471,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   consoleBuffer.delete(tabId);
   networkBuffer.delete(tabId);
   screenshotCtx.delete(tabId);
+  gifCast.delete(tabId);
   tabHost.delete(tabId);
   tabUrl.delete(tabId);
   persistSessionState();
@@ -479,6 +517,11 @@ function exceptionText(details, fallbackUrl) {
 }
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
+  if (method === "Page.screencastFrame") {
+    // gif_creator capture (ADR-0052 D1): fire-and-forget; the handler acks + keeps/drops the frame.
+    handleScreencastFrame(tabId, params);
+    return;
+  }
   if (method === "Runtime.consoleAPICalled") {
     // Single console source. Both the Runtime domain (Runtime.consoleAPICalled) and the
     // deprecated Console domain (Console.messageAdded) report the same console.* call, so
@@ -697,7 +740,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1308,6 +1351,98 @@ const handlers = {
       }
       return text(`Set ${a.ref} = ${JSON.stringify(a.value)}.`);
     });
+  },
+  async file_upload(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    if (!a.files || a.files.length === 0) {
+      if (a.paths && a.paths.length > 0) {
+        throw hopError("binary", "file_upload no longer accepts host filesystem paths. The MCP controller must read the file and pass its contents via the `files` parameter.");
+      }
+      throw hopError("binary", "files parameter is required and must be a non-empty array");
+    }
+    return withObservation(tabId, async () => {
+      const r = await content(tabId, { type: "setFiles", ref: a.ref, files: a.files });
+      if (r && r.result && r.result.error) {
+        const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+        throw hopError("page", msg);
+      }
+      return text(r.result.output);
+    });
+  },
+  // upload_image (ADR-0050 Decision 4): place a previously captured screenshot -- the binary
+  // resolves it from its per-session cache and passes the base64 `data`/`mimeType` here (never a
+  // host path) -- into a file input (ref) or a drag-drop target (coordinate). Not an advertised
+  // tool; dispatched by the binary's upload_image_handler. Mirrors file_upload.
+  async upload_image_exec(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    if (!a.data) {
+      throw hopError("binary", "upload_image_exec requires base64 image data");
+    }
+    return withObservation(tabId, async () => {
+      const r = await content(tabId, {
+        type: "setImage",
+        ref: a.ref,
+        coordinate: a.coordinate,
+        data: a.data,
+        filename: a.filename,
+        mimeType: a.mimeType,
+      });
+      if (r && r.result && r.result.error) {
+        const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
+        throw hopError("page", msg);
+      }
+      return text(r.result.output);
+    });
+  },
+  // gif_creator capture relay (ADR-0053 D2/D6): internal ops the binary's orchestrator dials.
+  // NOT in the tool REGISTRY, so models cannot call them. The worker holds no recording state:
+  // the seed frame and every kept screencast frame flow to the binary as gif_frame events.
+  async gif_capture_start(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    let seeded = 0;
+    let vpW = null;
+    try {
+      const shot = await screenshot(tabId);
+      const sctx = screenshotCtx.get(tabId);
+      vpW = (sctx && sctx.vpW) || null;
+      sendGifFrame(tabId, shot.base64, vpW);
+      seeded = 1;
+    } catch (e) {
+      /* the seed is best-effort; the screencast still starts */
+    }
+    gifCast.set(tabId, { minIntervalMs: a.minIntervalMs || 200, lastSentTs: seeded ? Date.now() : 0 });
+    try {
+      await ensureAttached(tabId);
+      await enableDomain(tabId, "Page");
+      // Change-driven capture (ADR-0052 D1): the compositor emits a frame only when the page
+      // visually changes, downscaled at the source to the service-chosen cap.
+      await cdp(tabId, "Page.startScreencast", {
+        format: "jpeg",
+        quality: a.quality || 70,
+        maxWidth: a.maxSide || MAX_SIDE,
+        maxHeight: a.maxSide || MAX_SIDE,
+      });
+    } catch (e) {
+      gifCast.delete(tabId);
+      throw e;
+    }
+    return text(JSON.stringify({ seeded, vpW }));
+  },
+  async gif_capture_stop(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    gifCast.delete(tabId);
+    if (attached.has(tabId)) {
+      try { await cdp(tabId, "Page.stopScreencast", {}); } catch (e) { /* already detached */ }
+    }
+    return text("Screencast stopped.");
+  },
+  // Rescale model-space points (read off the downscaled screenshot) to CSS viewport px against
+  // the tab's live ScreenshotContext (ADR-0053 D4): the binary QUERIES this mechanism data where
+  // Chrome produces it instead of mirroring it.
+  async rescale_coords(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    const points = (a.points || []).map((p) => rescaleCoord(tabId, p[0], p[1]));
+    return text(JSON.stringify({ points }));
   },
   async wait_for(a) {
     // Defaults (ADR-0037 D1/D6): settle ON, state visible, timeout 10s, min 0.

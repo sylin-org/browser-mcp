@@ -628,7 +628,7 @@ pub(super) async fn handle_line(
             -32600,
             "Batching (a JSON-RPC array of requests) is not supported -- MCP removed it in the \
              2025-06-18 revision. Send one JSON-RPC message per line. To run several browser \
-             actions in a single call, use the `script` tool.",
+             actions in a single call, use the `browser_batch` tool.",
         ));
     }
 

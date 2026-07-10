@@ -9,6 +9,11 @@
 
 #![allow(dead_code)]
 
+/// The in-process session fixture (ADR-0051 Phase 4): drives the real `serve_session` chokepoint
+/// over an in-memory duplex, no spawned process. The migration target for the incidentally-E2E
+/// wiring tests.
+pub mod inproc;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -18,31 +23,20 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
-/// The `ghostlight-adapter-agent` executable beside the `ghostlight` test binary (ADR-0046). Cargo
-/// does not expose a `CARGO_BIN_EXE_*` for another workspace member's bin, so derive the sibling
-/// path in the same `target/<profile>/` directory; `cargo test --workspace` builds it before tests.
-pub fn adapter_bin() -> PathBuf {
+/// The single `ghostlight-relay` executable beside the `ghostlight` test binary (ADR-0046 +
+/// ADR-0051 Phase 3: it carries both former adapter roles). Cargo does not expose a
+/// `CARGO_BIN_EXE_*` for another workspace member's bin, so derive the sibling path in the same
+/// `target/<profile>/` directory; `cargo test --workspace` builds it before tests. The AGENT role is
+/// selected with `--role agent` (see [`spawn_adapter`]); the BROWSER role is auto-detected from the
+/// `chrome-extension://` origin, exactly as Chrome launches it.
+pub fn relay_bin() -> PathBuf {
     let dir = Path::new(bin())
         .parent()
         .expect("the test binary has a parent directory");
     let name = if cfg!(windows) {
-        "ghostlight-adapter-agent.exe"
+        "ghostlight-relay.exe"
     } else {
-        "ghostlight-adapter-agent"
-    };
-    dir.join(name)
-}
-
-/// The `ghostlight-adapter-browser` executable beside the `ghostlight` test binary (ADR-0046),
-/// derived the same way as [`adapter_bin`] (the browser-side pass-through Chrome launches).
-pub fn browser_bin() -> PathBuf {
-    let dir = Path::new(bin())
-        .parent()
-        .expect("the test binary has a parent directory");
-    let name = if cfg!(windows) {
-        "ghostlight-adapter-browser.exe"
-    } else {
-        "ghostlight-adapter-browser"
+        "ghostlight-relay"
     };
     dir.join(name)
 }
@@ -52,6 +46,15 @@ pub fn browser_bin() -> PathBuf {
 /// state after [`spawn_service`] hands back only a bare `Child`.
 pub fn log_dir_for(endpoint: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ghostlight-test-logdir-{endpoint}"))
+}
+
+/// The isolated audit file a given test's service writes to (ADR-0051 Phase 1): every `spawn_service*`
+/// helper sets `GHOSTLIGHT_AUDIT_DIR` to the endpoint's [`log_dir_for`], so audit lands in the test's
+/// own dir instead of the machine's REAL default audit path (which `dirs::data_local_dir()` resolves
+/// ignoring env, and which parallel E2E tests would otherwise contend on). A test that inspects the
+/// audit stream reads it here.
+pub fn audit_path_for(endpoint: &str) -> PathBuf {
+    log_dir_for(endpoint).join("audit.jsonl")
 }
 
 /// Connect to a service's TCP web API. No retry is needed: the `port` comes from
@@ -112,6 +115,7 @@ pub fn spawn_service_with_manifest(endpoint: &str, manifest: Option<&str>) -> Ch
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -135,6 +139,7 @@ pub fn spawn_service_with_program_data(endpoint: &str, program_data_dir: &Path) 
         .env("ProgramData", program_data_dir)
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -159,6 +164,7 @@ pub fn spawn_service_with_webapi_port(endpoint: &str) -> (Child, u16) {
         .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -185,6 +191,7 @@ pub fn spawn_service_with_program_data_and_webapi_port(
         .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -212,6 +219,7 @@ pub fn spawn_service_with_user_config_dir_and_webapi_port(
         .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -241,6 +249,7 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
         .env("GHOSTLIGHT_WEBAPI_PORT", "0")
         .env("GHOSTLIGHT_DEBUG", "1")
         .env("GHOSTLIGHT_LOG_DIR", &log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", &log_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -258,7 +267,9 @@ pub fn spawn_service_with_program_data_user_config_dir_and_webapi_port(
 /// both sides to read the SAME per-install `hub-key`, so a mismatched log dir here would make
 /// every real adapter/service pair fail the proof, not just an intentional impostor scenario.
 pub fn spawn_adapter(endpoint: &str) -> Child {
-    Command::new(adapter_bin())
+    Command::new(relay_bin())
+        .arg("--role")
+        .arg("agent")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_LOG_DIR", log_dir_for(endpoint))
         .stdin(Stdio::piped())
@@ -303,6 +314,63 @@ pub fn newest_state(dir: &Path) -> Option<String> {
         .read_to_string(&mut contents)
         .ok()?;
     Some(contents)
+}
+
+/// The newest `debug-state-*.json` under `dir` written by a process whose `role` matches
+/// ("adapter", "mcp-server", "native-host"), parsed as JSON. The adapter and the service both write
+/// state files into a shared test log dir, so a test that wants the ADAPTER's structured counters
+/// (ADR-0051 P4.3b) must filter on role rather than take [`newest_state`] (which may return the
+/// service's file). `None` if none match yet.
+pub fn newest_state_for_role(dir: &Path, role: &str) -> Option<serde_json::Value> {
+    let mut newest: Option<(std::time::SystemTime, serde_json::Value)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("debug-state-") && name.ends_with(".json")) {
+            continue;
+        }
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if v.get("role").and_then(|r| r.as_str()) != Some(role) {
+            continue;
+        }
+        if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            newest = Some((mtime, v));
+        }
+    }
+    newest.map(|(_, v)| v)
+}
+
+/// Poll [`newest_state_for_role`] until `pred` holds on the parsed state (returning it), or panic
+/// after `within`. Bridges the brief window between the adapter forcing a snapshot on a lifecycle
+/// note and the test reading it back (ADR-0051 P4.3b).
+pub fn wait_state_for_role_until(
+    dir: &Path,
+    role: &str,
+    within: Duration,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(v) = newest_state_for_role(dir, role) {
+            if pred(&v) {
+                return v;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "no '{role}' debug-state satisfying the predicate under {} within {within:?}",
+                dir.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Poll `log_dir`'s newest debug state until it reports `"extension_connected": true`, or return

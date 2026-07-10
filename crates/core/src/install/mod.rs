@@ -286,8 +286,7 @@ fn plan_install_for(
             // ADR-0046: the per-instance copy is of the browser ADAPTER (the tiny pass-through Chrome
             // launches by name), never the multi-MB `ghostlight` brain -- so a service rebuild never
             // needs the copy refreshed.
-            let copy_from =
-                native_host::sibling_bin(&ctx.current_exe, "ghostlight-adapter-browser");
+            let copy_from = native_host::sibling_bin(&ctx.current_exe, "ghostlight-relay");
             let up_to_date = std::fs::metadata(&launcher)
                 .ok()
                 .zip(std::fs::metadata(&copy_from).ok())

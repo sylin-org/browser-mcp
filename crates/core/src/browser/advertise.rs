@@ -134,14 +134,17 @@ mod tests {
                 "update_plan",
                 "wait_for",
                 "script",
+                "browser_batch",
+                "gif_creator",
                 "explain",
             ]
         );
     }
 
     /// ADR-0022 Decision 8 consequence: an empty-grants manifest advertises exactly the
-    /// requires-empty set (`tabs_create_mcp`, `resize_window`, `update_plan`, `script`, `explain`,
-    /// and `computer` via its `wait` row), in advertisement order -- not an empty list.
+    /// requires-empty set (`tabs_create_mcp`, `resize_window`, `update_plan`, `script`,
+    /// `browser_batch`, `explain`, and `computer` via its `wait` row), in advertisement order -- not
+    /// an empty list.
     #[test]
     fn empty_grants_manifest_advertises_exactly_the_requires_empty_set() {
         let fx = advertisement();
@@ -154,6 +157,8 @@ mod tests {
                 "resize_window",
                 "update_plan",
                 "script",
+                "browser_batch",
+                "gif_creator",
                 "explain",
             ]
         );

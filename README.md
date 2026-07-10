@@ -20,12 +20,14 @@ Two concerns, one binary: a full browser-automation engine, and a governance lay
 per call, what the agent may do.
 
 - **The full tool surface.** The 13 trained tools at byte-parity with the official Claude-in-Chrome
-  schemas, plus four additive tools -- `wait_for`, `script`, `form_fill`, and `explain`: screenshots
-  with coordinate mapping, an on-page agent cursor, accessibility-tree and text reads, form input
-  (including shadow DOM), in-page JavaScript, console and network inspection, tab management,
-  condition-and-settlement waiting, sequential multi-step scripts with inter-step data flow, and
-  semantic form filling by label. Structured results (`structuredContent`) on the tools that carry
-  one, `dry_run` pre-flight verdicts on `script`, `read_page` diff mode, and consequence digests on
+  schemas, plus eight additive tools -- `wait_for`, `script`, `form_fill`, `file_upload`,
+  `browser_batch`, `upload_image`, `gif_creator`, and `explain`: screenshots with coordinate
+  mapping, an on-page agent cursor, accessibility-tree and text reads, form input (including shadow
+  DOM), in-page JavaScript, console and network inspection, tab management, condition-and-settlement
+  waiting, sequential multi-step scripts with inter-step data flow, semantic form filling by label,
+  file and captured-screenshot uploads to page inputs, one-call action batches, and animated-GIF
+  recording of a session. Structured results (`structuredContent`) on the tools that carry one,
+  `dry_run` pre-flight verdicts on `script`, `read_page` diff mode, and consequence digests on
   mutating actions round out the surface.
 - **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
   / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
@@ -116,9 +118,9 @@ cd ghostlight
 cargo build --release
 ```
 
-The build produces three role executables in `target/release/` (ADR-0046): `ghostlight` (the CLI
-you run below) plus the thin `ghostlight-adapter-agent` and `ghostlight-adapter-browser`
-pass-throughs your MCP client and Chrome launch; a prebuilt archive carries all three side by side.
+The build produces two executables in `target/release/` (ADR-0046, ADR-0051): `ghostlight` (the CLI
+you run below) plus the thin `ghostlight-relay` pass-through your MCP client and Chrome launch (one
+binary, role-selected at launch); a prebuilt archive carries both side by side.
 All commands below run the `ghostlight` binary. Every release archive carries a SHA-256 checksum
 and a signed build-provenance attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
 
@@ -204,6 +206,10 @@ manifest (all-open) every action is allowed.
 | `wait_for`              | Wait for a page condition and settlement         | read                       |
 | `script`                | Run a sequence of tool calls in one request (with optional `dry_run`) | none |
 | `form_fill`             | Fill a form by field labels in one call          | read + write (or read + write + action when `submit: true`) |
+| `file_upload`           | Upload file bytes to a file `<input>` on the page | write                     |
+| `browser_batch`         | Run a batch of browser actions in one call       | none                       |
+| `upload_image`          | Place a captured screenshot into a file input or drop target | write          |
+| `gif_creator`           | Record a session and export it as an animated GIF | read or write, per action |
 | `explain`               | List every action and the capability it requires | none                       |
 
 For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require

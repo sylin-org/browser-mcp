@@ -30,7 +30,13 @@ The authoritative design specification is `docs/SPEC.md`. Read it fully before w
 
 ## Origin
 
-This is a clean-room Rust rewrite informed by [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome), a Node.js reimplementation of Anthropic's Claude in Chrome extension. The reference repo is cloned into `reference/open-claude-in-chrome/` for study. We are not forking it. We are understanding what it does and rebuilding the concept in Rust with a fundamentally different architecture (governance-first, single-binary, no Node.js dependency).
+This is a clean-room Rust rewrite. Its sole reference is Anthropic's official Claude in Chrome
+extension (installed for study; interface and technique are harvested, never code -- see
+docs/research/12 and ADR-0050 Decision 1). An earlier community reimplementation
+(open-claude-in-chrome) informed the initial clean-room build and has since been retired as a
+reference (it was a lossy proxy of the official surface). We do not fork or vendor either; we
+understand the observable interface and rebuild the concept in Rust with a governance-first,
+single-binary architecture.
 
 **Critical constraint (as amended by ADR-0034 Decision 7):** Preserve the exact MCP tool names, parameter signatures, and description strings from the reference implementation's tool schemas. Claude was trained against these schemas. The 13 trained tool schemas stay stable as the reference shape -- no rename, removal, paraphrase, or reorder of anything a trained model relies on. Growth is additive only: new tools join via the capability registry (`explain` per ADR-0022 Decision 7; `script`, `form_fill`, `wait_for` per ADR-0035..0038), and new OPTIONAL parameters may be added to existing tools without touching trained fields or enums. Our governance layer shapes which tools are visible and when they execute; the trained shape itself does not drift.
 
@@ -42,7 +48,7 @@ MCP Client <--stdio--> Binary <--native messaging--> Extension <--CDP--> Browser
 
 Three processes, two protocol boundaries.
 
-- **Binary (Rust):** MCP server on stdin/stdout. Native messaging host for the extension. Policy enforcement. Audit. Screenshot compression. Portable, zero runtime dependencies. Since ADR-0046 this ships as three role executables: `ghostlight` (CLI + persistent service) plus the thin `ghostlight-adapter-agent` (MCP stdio pass-through) and `ghostlight-adapter-browser` (native-messaging pass-through).
+- **Binary (Rust):** MCP server on stdin/stdout. Native messaging host for the extension. Policy enforcement. Audit. Screenshot compression. Portable, zero runtime dependencies. Since ADR-0046 (as amended by ADR-0051 Phase 3) this ships as two executables: `ghostlight` (CLI + persistent service) plus the thin `ghostlight-relay` pass-through -- a single binary carrying both roles, the MCP stdio pass-through (`--role agent`) and the native-messaging pass-through (browser role, auto-detected from the Chrome extension origin).
 - **Extension (JS, Manifest V3):** Thin CDP executor. No policy logic. Recovers from service worker death.
 - **Browser:** User's Chromium browser. Untouched.
 
@@ -227,4 +233,3 @@ Read spec §10 carefully. These are explicit exclusions:
 - No content inspection or DLP.
 - No manifest signing.
 - No Firefox support.
-- No `upload_image` tool.

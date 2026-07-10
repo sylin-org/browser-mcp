@@ -587,7 +587,7 @@ The following are explicitly out of scope for v1:
 | **Content inspection / DLP** | Semantic analysis of page content is a different tool with different expertise requirements. |
 | **Manifest signing / attestation** | Adds key management complexity. Enterprise deployments use `chrome.storage.managed` (tamper-resistant by design). Signing is a v2 enhancement for file-based manifests. |
 | **Cross-browser support** | v1 targets Chromium-based browsers only (Chrome, Edge, Brave, Arc). Firefox uses a different extension API and native messaging model. |
-| **`upload_image` tool** | Niche use case. Can be added later without schema changes. |
+| **`upload_image` tool** | ~~Niche use case. Can be added later without schema changes.~~ SUPERSEDED by ADR-0050 Decision 4: `upload_image` is now implemented (cached-screenshot upload to a file input or drag-drop target). |
 
 ---
 

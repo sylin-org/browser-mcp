@@ -12,6 +12,8 @@
 //! reconnect self-heal targets a guaranteed-nonexistent OS supervisor unit (a harmless failed
 //! no-op) instead of this machine's real "Ghostlight Service".
 
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -26,16 +28,17 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_ghostlight")
 }
 
-/// The `ghostlight-adapter-agent` sibling of the `ghostlight` test binary (ADR-0046); built by
-/// `cargo test --workspace` into the same `target/<profile>/` directory.
+/// The `ghostlight-relay` sibling of the `ghostlight` test binary (ADR-0046 + ADR-0051 Phase 3);
+/// built by `cargo test --workspace` into the same `target/<profile>/` directory. Launched with
+/// `--role agent` for the MCP-side pass-through.
 fn adapter_bin() -> PathBuf {
     let dir = Path::new(bin())
         .parent()
         .expect("the test binary has a parent directory");
     let name = if cfg!(windows) {
-        "ghostlight-adapter-agent.exe"
+        "ghostlight-relay.exe"
     } else {
-        "ghostlight-adapter-agent"
+        "ghostlight-relay"
     };
     dir.join(name)
 }
@@ -92,6 +95,8 @@ fn wait_for_state(log_dir: &Path, within: Duration) {
 
 fn spawn_adapter(endpoint: &str, instance: &str, log_dir: &Path) -> Child {
     Command::new(adapter_bin())
+        .arg("--role")
+        .arg("agent")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
         .env("GHOSTLIGHT_INSTANCE", instance)
         .env("GHOSTLIGHT_LOG_DIR", log_dir)
@@ -121,6 +126,7 @@ fn recv(rx: &Receiver<String>, within: Duration) -> Value {
     }
 }
 
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     let (endpoint, instance, log_dir) = unique();
@@ -171,7 +177,7 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     assert_eq!(list1["id"], 2, "pre-restart tools/list reply: {list1:?}");
     assert_eq!(
         list1["result"]["tools"].as_array().map(|t| t.len()),
-        Some(17),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "pre-restart tools/list: {list1:?}"
     );
 
@@ -197,35 +203,26 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     );
     assert_eq!(
         list2["result"]["tools"].as_array().map(|t| t.len()),
-        Some(17),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the reconnected session answered a real request: {list2:?}"
     );
 
-    // ADR-0047 D2 (PINS P3): the adapter mints ONE session identity for its whole process and
-    // re-presents it on reconnect. Across every debug-events log this run produced, the mint note
-    // appears exactly once (never once per connect) and at least one reconnect note is present.
-    let mut events = String::new();
-    for entry in std::fs::read_dir(&log_dir).expect("read log_dir") {
-        let path = entry.expect("dir entry").path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("debug-events-") && name.ends_with(".jsonl") {
-                events.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
-        }
-    }
+    // ADR-0047 D2 (PINS P3), read via STRUCTURED debug state (ADR-0051 P4.3b, not a log-text
+    // scrape): the adapter mints ONE session identity for its whole process (`identity_mints == 1`,
+    // never once per connect) and completed at least one reconnect across the restart
+    // (`reconnects >= 1`). Read the ADAPTER's own state file (role-filtered: the service writes one
+    // too), polling briefly since the adapter forces the snapshot on the reconnect note.
+    let state =
+        support::wait_state_for_role_until(&log_dir, "adapter", Duration::from_secs(10), |v| {
+            v["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1
+        });
     assert_eq!(
-        events
-            .matches("session identity minted (stable for this adapter process)")
-            .count(),
-        1,
-        "the adapter mints its session identity exactly once per process"
+        state["counters"]["identity_mints"], 1,
+        "the adapter mints its session identity exactly once per process: {state}"
     );
     assert!(
-        events
-            .matches("service restart detected; reconnected")
-            .count()
-            >= 1,
-        "at least one reconnect note must be present"
+        state["counters"]["reconnects"].as_u64().unwrap_or(0) >= 1,
+        "at least one reconnect must be recorded: {state}"
     );
 
     drop(stdin);
@@ -235,6 +232,7 @@ fn adapter_reconnects_across_a_service_restart_without_a_client_reload() {
     let _ = std::fs::remove_dir_all(&log_dir);
 }
 
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn adapter_survives_a_five_second_service_gap() {
     // Identical to the restart test above, but with a 5-second gap between kill and respawn --
@@ -304,7 +302,7 @@ fn adapter_survives_a_five_second_service_gap() {
     );
     assert_eq!(
         list2["result"]["tools"].as_array().map(|t| t.len()),
-        Some(17),
+        Some(ghostlight::browser::directory::advertised_tool_count()),
         "the reconnected session answered a real request: {list2:?}"
     );
 

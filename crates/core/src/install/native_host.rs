@@ -234,27 +234,24 @@ pub fn linux_host_path(spec: &BrowserSpec, ctx: &PlanCtx) -> PathBuf {
 /// The native-host launcher for the active instance (ADR-0044 Decision 4 / ADR-0046): the path the
 /// host manifest `path` field points at, plus whether the installer must place a per-instance copy.
 ///
-/// The DEFAULT instance points the manifest straight at the `ghostlight-adapter-browser` sibling
-/// beside the running binary -- no copy, byte-identical. A NON-DEFAULT instance points it at a
-/// per-instance copy named `ghostlight-adapter-browser-<n>[.exe]` under that instance's data dir,
-/// because Chrome launches the native host with a bare path and no argument room; the copied binary
-/// reads its own `argv[0]` basename to know which instance it is (SPEC 7). Only the tiny browser
-/// adapter is ever copied, never the multi-MB `ghostlight` brain. A stale copy is harmless (the
-/// native host is a dumb pipe; only the service, which the installer launches via `--instance`,
-/// carries code).
+/// The DEFAULT instance points the manifest straight at the `ghostlight-relay` sibling beside the
+/// running binary -- no copy, byte-identical. A NON-DEFAULT instance points it at a per-instance copy
+/// named `ghostlight-relay-<n>[.exe]` under that instance's data dir, because Chrome launches the
+/// native host with a bare path and no argument room; the copied binary reads its own `argv[0]`
+/// basename to know which instance it is (SPEC 7), and detects the browser role from the
+/// `chrome-extension://` origin Chrome passes (ADR-0051 Phase 3). Only the tiny relay is ever copied,
+/// never the multi-MB `ghostlight` brain. A stale copy is harmless (the native host is a dumb pipe;
+/// only the service, which the installer launches via `--instance`, carries code).
 pub fn instance_launcher(ctx: &PlanCtx) -> (PathBuf, bool) {
     let instance = ghostlight_transport::instance::Instance::resolve();
     if instance.is_default() {
-        (
-            sibling_bin(&ctx.current_exe, "ghostlight-adapter-browser"),
-            false,
-        )
+        (sibling_bin(&ctx.current_exe, "ghostlight-relay"), false)
     } else {
         let name = instance.name().expect("a non-default instance has a name");
         let file_name = if cfg!(windows) {
-            format!("ghostlight-adapter-browser-{name}.exe")
+            format!("ghostlight-relay-{name}.exe")
         } else {
-            format!("ghostlight-adapter-browser-{name}")
+            format!("ghostlight-relay-{name}")
         };
         let path = ctx.local.join(instance.dir_leaf()).join(file_name);
         (path, true)
@@ -450,10 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn instance_launcher_default_is_the_adapter_browser_sibling() {
-        // The default instance never copies: the manifest points straight at the browser adapter
-        // sibling beside the running binary (ADR-0046). No GHOSTLIGHT_INSTANCE is set here --
-        // mutating it would race the parallel tests that call Instance::resolve.
+    fn instance_launcher_default_is_the_relay_sibling() {
+        // The default instance never copies: the manifest points straight at the relay sibling
+        // beside the running binary (ADR-0046 + ADR-0051 Phase 3). No GHOSTLIGHT_INSTANCE is set
+        // here -- mutating it would race the parallel tests that call Instance::resolve.
         let (path, needs_copy) = instance_launcher(&ctx());
         assert!(
             !needs_copy,
@@ -461,13 +458,13 @@ mod tests {
         );
         let s = path.to_string_lossy();
         let suffix = if cfg!(windows) {
-            "ghostlight-adapter-browser.exe"
+            "ghostlight-relay.exe"
         } else {
-            "ghostlight-adapter-browser"
+            "ghostlight-relay"
         };
         assert!(
             s.ends_with(suffix),
-            "the default launcher is the browser adapter sibling: {s}"
+            "the default launcher is the relay sibling: {s}"
         );
     }
 

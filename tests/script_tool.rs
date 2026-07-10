@@ -1,24 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Integration test for the `script` tool (ADR-0035, PINS.md SS7): drives the real pipeline over
-//! stdio with no extension connected (so the dispatched steps fail at execution) and asserts the
-//! compact result's honest per-step status plus the correlated audit records.
+//! Integration test for the `script` tool (ADR-0035, PINS.md SS7): drives the real pipeline with no
+//! extension connected (so the dispatched steps fail at execution) and asserts the compact result's
+//! honest per-step status plus the correlated audit records.
+//!
+//! ADR-0051 Phase 4 (P4.2): migrated from spawn-a-service-plus-adapter onto the in-process
+//! `support::inproc::Harness`. Both cases stay governed by a manifest carrying its own `audit.*`
+//! config (a broad grant so the navigate step is allowed and reaches dispatch); the harness writes
+//! the correlated audit to that temp file exactly as a `--manifest file://` spawn would, so every
+//! assertion is verbatim, now with no OS process.
 
 mod support;
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use support::inproc::{by_id, manifest_from_value, Harness};
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
-
-fn file_uri(path: &Path) -> String {
-    let forward = path.to_string_lossy().replace('\\', "/");
-    match forward.strip_prefix('/') {
-        Some(rest) => format!("file:///{rest}"),
-        None => format!("file:///{forward}"),
-    }
-}
 
 fn temp_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -26,12 +24,6 @@ fn temp_path(tag: &str) -> PathBuf {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ))
-}
-
-fn write_manifest(tag: &str, value: &Value) -> PathBuf {
-    let path = temp_path(&format!("{tag}-manifest")).with_extension("json");
-    std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
-    path
 }
 
 fn manifest_with_audit(name: &str, audit_path: &Path) -> Value {
@@ -61,61 +53,19 @@ fn read_audit_lines(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn drive(manifest_path: Option<&Path>, requests: &[Value]) -> Vec<Value> {
-    let endpoint = format!(
-        "ghostlight-script-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let manifest_uri = manifest_path.map(file_uri);
-    let mut service = support::spawn_service_with_manifest(&endpoint, manifest_uri.as_deref());
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    for req in requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let responses: Vec<Value> = (0..expected)
-        .map(|_| {
-            let line = lines
-                .next()
-                .expect("the adapter's stdout closed before every expected reply arrived")
-                .unwrap();
-            serde_json::from_str(&line).expect("each stdout line is JSON")
-        })
-        .collect();
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-    responses
-}
-
-fn by_id(responses: &[Value], id: i64) -> &Value {
-    responses
-        .iter()
-        .find(|r| r["id"] == id)
-        .unwrap_or_else(|| panic!("no response with id {id} in {responses:?}"))
-}
-
 /// The script tool with two extension-forwarded steps and no extension connected: step 1 (navigate)
 /// fails at execution with an extension hop error; step 2 (find) never runs. The compact result
 /// reports the honest per-step statuses, and the audit log carries exactly the parent `script`
 /// record plus the one step that actually ran (navigate), correlated by batch_id -- NO record for
 /// `find` (it was never dispatched).
-#[test]
-fn script_reports_step_error_and_not_run_with_correlated_audit() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_reports_step_error_and_not_run_with_correlated_audit() {
     let audit_path = temp_path("script-audit");
     let _ = std::fs::remove_file(&audit_path);
-    let manifest = write_manifest("script", &manifest_with_audit("script-audit", &audit_path));
+    let harness = Harness::governed(manifest_from_value(&manifest_with_audit(
+        "script-audit",
+        &audit_path,
+    )));
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
@@ -127,7 +77,7 @@ fn script_reports_step_error_and_not_run_with_correlated_audit() {
             ]
         }}}),
     ];
-    let responses = drive(Some(&manifest), &requests);
+    let responses = harness.drive(&requests).await;
     let call = by_id(&responses, 2);
     assert_ne!(
         call["result"]["isError"], true,
@@ -192,21 +142,21 @@ fn script_reports_step_error_and_not_run_with_correlated_audit() {
     );
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }
 
 /// A dry run evaluates every step's verdict through the REAL governance decision but dispatches
 /// nothing: no extension frame, no step audit records. The audit log carries exactly ONE record --
-/// the parent `script` call with `dry_run: true`. Under all-open, both find and navigate are
-/// `would_allow` (the real authorize verdict, not a guess).
-#[test]
-fn dry_run_verdicts_without_step_records() {
+/// the parent `script` call with `dry_run: true`. `find` (tab-scoped, no extension -> tab URL
+/// unknowable) is `would_deny`; navigate to the granted `example.com` is `would_allow` (the real
+/// authorize verdict, not a guess).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dry_run_verdicts_without_step_records() {
     let audit_path = temp_path("script-dry-audit");
     let _ = std::fs::remove_file(&audit_path);
-    let manifest = write_manifest(
+    let harness = Harness::governed(manifest_from_value(&manifest_with_audit(
         "script-dry",
-        &manifest_with_audit("script-dry", &audit_path),
-    );
+        &audit_path,
+    )));
 
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
@@ -219,7 +169,7 @@ fn dry_run_verdicts_without_step_records() {
             ]
         }}}),
     ];
-    let responses = drive(Some(&manifest), &requests);
+    let responses = harness.drive(&requests).await;
     let call = by_id(&responses, 2);
     assert_ne!(
         call["result"]["isError"], true,
@@ -254,5 +204,4 @@ fn dry_run_verdicts_without_step_records() {
     assert_eq!(lines[0]["dry_run"], true, "parent is marked dry_run");
 
     std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_file(&manifest).ok();
 }

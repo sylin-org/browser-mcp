@@ -16,6 +16,7 @@ mod support;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
 #[test]
 fn native_host_exits_when_server_dies() {
     let endpoint = format!("ghostlight-peerdeath-{}", std::process::id());
@@ -25,9 +26,10 @@ fn native_host_exits_when_server_dies() {
     // written its first debug snapshot, so the connection race below is real, not a startup race.
     let mut service = support::spawn_service(&endpoint);
 
-    // native-host role: the chrome-extension:// positional arg selects the relay role. stdin held
-    // open so the upstream (Chrome -> IPC) reader does not EOF.
-    let mut host = Command::new(support::browser_bin())
+    // browser role: the chrome-extension:// positional arg auto-selects it (ADR-0051 Phase 3),
+    // exactly as Chrome launches the native host. stdin held open so the upstream (Chrome -> IPC)
+    // reader does not EOF.
+    let mut host = Command::new(support::relay_bin())
         .arg(format!("chrome-extension://{}/", "a".repeat(32)))
         .env("GHOSTLIGHT_ENDPOINT", &endpoint)
         .stdin(Stdio::piped())

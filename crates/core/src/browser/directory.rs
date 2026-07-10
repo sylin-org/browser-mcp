@@ -143,8 +143,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 17 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
-/// and `explain`), in the order they appear in `tools/list`. `computer`'s 13 variants are in the
+/// The tool registry: 21 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
+/// `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in the order they
+/// appear in `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
@@ -503,13 +504,13 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "form_input",
-        advertised_description: "Set values in form elements using element reference ID from the read_page tool. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        advertised_description: "Set values in form elements using element reference ID from the read_page or find tools. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
         input_schema: || json!({
             "type": "object",
             "properties": {
                 "ref": {
                     "type": "string",
-                    "description": "Element reference ID from the read_page tool (e.g., \"ref_1\", \"ref_2\")"
+                    "description": "Element reference ID from the read_page or find tools (e.g., \"ref_1\", \"ref_2\")"
                 },
                 "value": {
                     "type": ["string", "boolean", "number"],
@@ -541,7 +542,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "get_page_text",
-        advertised_description: "Extract raw text content from the page, prioritizing article content. Ideal for reading articles, blog posts, or other text-heavy pages. Returns plain text without HTML formatting. If you don't have a valid tab ID, use tabs_context first to get available tabs. Output is limited to 50000 characters by default. If the output exceeds this limit, you will receive an error suggesting alternatives.",
+        advertised_description: "Extract raw text content from the page, prioritizing article content. Ideal for reading articles, blog posts, or other text-heavy pages. Returns plain text without HTML formatting. If you don't have a valid tab ID, use tabs_context first to get available tabs. Output is limited to 50000 characters by default; if it exceeds the limit it is truncated with a note giving the full size.",
         input_schema: || json!({
             "type": "object",
             "properties": {
@@ -702,7 +703,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "read_page",
-        advertised_description: "Get an accessibility tree representation of elements on the page. By default returns all elements including non-visible ones. Output is limited to 50000 characters. If the output exceeds this limit, you will receive an error asking you to specify a smaller depth or focus on a specific element using ref_id. Optionally filter for only interactive elements. If you don't have a valid tab ID, use tabs_context first to get available tabs.",
+        advertised_description: "Get an accessibility tree representation of elements on the page. By default returns all elements including non-visible ones. Can optionally filter for only interactive elements, limit tree depth, or focus on a specific element. Returns a structured tree that represents how screen readers see the page content. If you don't have a valid tab ID, use tabs_context first to get available tabs. Output is limited to 50000 characters -- if exceeded, the tree is truncated at a line boundary with a note giving the full size; pass a larger max_chars, or use depth/ref_id to focus.",
         input_schema: || json!({
             "type": "object",
             "properties": {
@@ -1073,6 +1074,196 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
     },
     ToolDescriptor {
+        tool: "file_upload",
+        advertised_description: "Upload one or multiple files to a file input element on the page. Do not click on file upload buttons or file inputs -- clicking opens a native file picker dialog that you cannot see or interact with. Instead, use read_page or find to locate the file input element, then use this tool with its ref to upload files directly.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "data": { "type": "string" },
+                            "name": { "type": "string" },
+                            "mimeType": { "type": "string" }
+                        },
+                        "required": ["data", "name"]
+                    },
+                    "description": "Files to upload, as base64-encoded bytes."
+                },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "DEPRECATED. Use `files` instead."
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Element reference ID of the file input from read_page or find tools (e.g., \"ref_1\", \"ref_2\")."
+                },
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID where the file input is located. Use tabs_context first if you don't have a valid tab ID."
+                }
+            },
+            "required": ["ref", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"ref":"ref_1","tabId":0,"files":[{"data":"aGVsbG8=","name":"hello.txt"}]}"#,
+            returns: Some("Uploads the base64-decoded file(s) to the file input at ref; returns a text confirmation with the file names and total size."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[Capability::Write],
+            directory_description:
+                "Upload files (base64 bytes) to a file input located by read_page or find, via its ref.",
+        }],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::ExtensionForward,
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
+        tool: "browser_batch",
+        advertised_description: "Execute a sequence of browser tool calls in ONE round trip. Each item is {name, input} where input is exactly what you'd pass to that tool standalone. Actions execute SEQUENTIALLY (not in parallel) and stop on the first error. Use this tool extensively to quickly execute work whenever you can predict two or more steps ahead -- e.g. navigate, click a field, type, press Return, screenshot. Each tool's own permission check runs per item -- if an action navigates to a domain without permission, the next item's check fails and the batch stops. Screenshots and other images are returned interleaved with outputs; coordinates you write in THIS batch refer to the screenshot taken BEFORE this call. browser_batch cannot be nested.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Tool name (e.g. computer, navigate, find, tabs_create). browser_batch cannot be nested." },
+                            "input": { "type": "object", "description": "That tool's input -- same shape you'd pass when calling it directly." }
+                        },
+                        "required": ["name", "input"]
+                    },
+                    "description": "List of tool calls to execute sequentially. Example: [{\"name\":\"computer\",\"input\":{\"action\":\"left_click\",\"coordinate\":[100,200],\"tabId\":123}}, {\"name\":\"computer\",\"input\":{\"action\":\"type\",\"text\":\"hello\",\"tabId\":123}}, {\"name\":\"navigate\",\"input\":{\"url\":\"https://example.com\",\"tabId\":123}}]"
+                }
+            },
+            "required": ["actions"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"actions":[{"name":"navigate","input":{"url":"https://example.com","tabId":0}},{"name":"computer","input":{"action":"screenshot","tabId":0}}]}"#,
+            returns: Some("Each action's output, with screenshots interleaved, in order; stops on the first error."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[],
+            directory_description:
+                "Run a sequence of tool calls in one round trip; each item is name+input, authorized per item.",
+        }],
+        resource: ResourceShape::DomainLess,
+        handler: Handler::Local(crate::mcp::browser_batch::browser_batch_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
+        tool: "upload_image",
+        advertised_description: "Upload a previously captured screenshot to a file input or drag & drop target. Supports two approaches: (1) ref -- for targeting specific elements, especially hidden file inputs, (2) coordinate -- for drag & drop to visible locations like Google Docs. Provide either ref or coordinate, not both.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "imageId": { "type": "string", "description": "ID of a previously captured screenshot (from the computer tool's screenshot action), e.g. \"img_...\" as reported in the screenshot result." },
+                "ref": { "type": "string", "description": "Element reference ID from read_page or find tools (e.g., \"ref_1\", \"ref_2\"). Use this for file inputs (especially hidden ones). Provide either ref or coordinate, not both." },
+                "coordinate": { "type": "array", "description": "Viewport coordinates [x, y] for drag & drop to a visible location like Google Docs. Provide either ref or coordinate, not both." },
+                "tabId": { "type": "number", "description": "Tab ID where the target element is located. This is where the image will be uploaded to." },
+                "filename": { "type": "string", "description": "Optional filename for the uploaded file (default: \"image.png\")." }
+            },
+            "required": ["imageId", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"imageId":"img_example","ref":"ref_1","tabId":0}"#,
+            returns: Some("Uploads the cached screenshot to the file input at ref (or drag-drops it at coordinate); returns a text confirmation."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[Capability::Write],
+            directory_description:
+                "Upload a previously captured screenshot to a file input (ref) or drag-drop target (coordinate).",
+        }],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::Local(crate::mcp::upload_image::upload_image_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
+        tool: "gif_creator",
+        // The description + parameter text below are TRANSCRIBED VERBATIM from the installed official
+        // Claude-in-Chrome v1.0.80 (assets/mcpPermissions-*.js `name:"gif_creator"`), the sole
+        // reference (ADR-0050 D1). gif_creator is a NEW additive tool (never trained), so this is not
+        // a sacred-surface pin, but it is the real schema, not an approximation. `enum` +
+        // `required` + `additionalProperties` follow our house JSON-Schema style (the official uses
+        // Anthropic's `parameters` format). Phase 1 produces a plain-frame GIF; the description's
+        // visual overlays are a DEFERRED extension feature (see the T4 LEDGER entry).
+        advertised_description: "Manage GIF recording and export for browser automation sessions. Control when to start/stop recording browser actions (clicks, scrolls, navigation), then export as an animated GIF with visual overlays (click indicators, action labels, progress bar, watermark). All operations are scoped to the tab's group. When starting recording, take a screenshot immediately after to capture the initial state as the first frame. When stopping recording, take a screenshot immediately before to capture the final state as the last frame. For export, either provide 'coordinate' to drag/drop upload to a page element, or set 'download: true' to download the GIF.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start_recording", "stop_recording", "clear", "export"],
+                    "description": "Action to perform: 'start_recording' (begin capturing), 'stop_recording' (stop capturing but keep frames), 'export' (generate and export GIF), 'clear' (discard frames)"
+                },
+                "tabId": { "type": "number", "description": "Tab ID to identify which tab group this operation applies to" },
+                "coordinate": { "type": "array", "description": "Viewport coordinates [x, y] for drag & drop upload. Required for 'export' action unless 'download' is true." },
+                "download": { "type": "boolean", "description": "If true, download the GIF instead of drag/drop upload. For 'export' action only." },
+                "filename": { "type": "string", "description": "Optional filename for exported GIF (default: 'recording-[timestamp].gif'). For 'export' action only." },
+                "options": { "type": "object", "description": "Optional GIF enhancement options for 'export' action. All default to true." }
+            },
+            "required": ["action", "tabId"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"action":"start_recording","tabId":0}"#,
+            returns: Some("Starts capturing GIF frames for the tab; later stop_recording then export (download:true) to get the animated GIF."),
+        }),
+        action_key: Some("action"),
+        variants: &[
+            ActionVariant {
+                action: Some("start_recording"),
+                requires: &[Capability::Read],
+                directory_description:
+                    "Start recording browser actions in the tab's group as GIF frames.",
+            },
+            ActionVariant {
+                action: Some("stop_recording"),
+                requires: &[],
+                directory_description: "Stop recording; keep the captured frames for export.",
+            },
+            ActionVariant {
+                action: Some("clear"),
+                requires: &[],
+                directory_description: "Discard the captured recording frames.",
+            },
+            ActionVariant {
+                action: Some("export"),
+                requires: &[Capability::Write],
+                directory_description:
+                    "Encode the frames to a GIF and export it (download, or drag-drop at a coordinate).",
+            },
+        ],
+        resource: ResourceShape::TabScoped,
+        // ADR-0053 D6: the orchestrator lives in the binary (the form_fill precedent); the
+        // extension keeps only the thin screencast capture relay. Wiring only -- the advertised
+        // schema above is untouched.
+        handler: Handler::Local(crate::mcp::gif_creator::gif_creator_handler),
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
         tool: "explain",
         advertised_description: "Returns this server's action directory: every available action, the capability it requires (read, action, write, or execute; some require none), and a short description of what it does, plus definitions of the capability vocabulary. Use it to learn what you are allowed to do in this session. It does not read, summarize, or explain web pages.",
         input_schema: || json!({
@@ -1174,10 +1365,27 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 17 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 21 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
+}
+
+/// The advertised tool names, in [`REGISTRY`] (advertised) order (ADR-0051 Phase 1). This is the
+/// single DERIVED source of truth for "the current advertised surface" that BEHAVIOR tests assert
+/// against -- e.g. a spawn test proving the wire delivered the full set, or a protocol test counting
+/// `tools/list` -- so an additive tool (ADR-0034 Decision 7) does not require editing a hardcoded
+/// count or name array in every such test. The FIDELITY guards
+/// (`tests/tool_schema_fidelity.rs`, `tests/all_open_golden.rs`, and the `explain`-text literal in
+/// `mcp/pipeline.rs`) stay hand-maintained on purpose: they are the intentional drift catchers and
+/// must NOT be rewired to derive from here, or a wrong `REGISTRY` change would validate itself.
+pub fn advertised_tool_names() -> Vec<&'static str> {
+    REGISTRY.iter().map(|row| row.tool).collect()
+}
+
+/// The number of advertised tools (see [`advertised_tool_names`]). Derived from [`REGISTRY`].
+pub fn advertised_tool_count() -> usize {
+    REGISTRY.len()
 }
 
 /// Look up the bound capability requirement set for one action. `action` is consulted only
@@ -1281,8 +1489,8 @@ mod tests {
             .collect();
         assert_eq!(
             with_action_key.len(),
-            2,
-            "computer and form_fill (C10) are the only descriptors carrying an action_key"
+            3,
+            "computer, form_fill (C10), and gif_creator (ADR-0050 D5) carry an action_key"
         );
         let computer = with_action_key
             .iter()
@@ -1309,10 +1517,9 @@ mod tests {
         assert_eq!(computer_actions, declared_actions);
         assert_eq!(computer_actions.len(), 13);
 
-        for row in REGISTRY
-            .iter()
-            .filter(|row| row.tool != "computer" && row.tool != "form_fill")
-        {
+        for row in REGISTRY.iter().filter(|row| {
+            row.tool != "computer" && row.tool != "form_fill" && row.tool != "gif_creator"
+        }) {
             assert_eq!(
                 row.variants.len(),
                 1,
@@ -1332,7 +1539,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 30);
+        assert_eq!(total_variants, 37);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1383,6 +1590,13 @@ mod tests {
                 Some("submit"),
                 &[Capability::Read, Capability::Write, Capability::Action],
             ),
+            ("file_upload", None, &[Capability::Write]),
+            ("browser_batch", None, &[]),
+            ("upload_image", None, &[Capability::Write]),
+            ("gif_creator", Some("start_recording"), &[Capability::Read]),
+            ("gif_creator", Some("stop_recording"), &[]),
+            ("gif_creator", Some("clear"), &[]),
+            ("gif_creator", Some("export"), &[Capability::Write]),
             ("explain", None, &[]),
         ];
 
@@ -1603,6 +1817,40 @@ mod tests {
                 "form_fill",
                 Some("submit"),
                 ResourceShape::TabScoped,
+                true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "file_upload",
+                None,
+                ResourceShape::TabScoped,
+                false,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "browser_batch",
+                None,
+                ResourceShape::DomainLess,
+                true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "upload_image",
+                None,
+                ResourceShape::TabScoped,
+                true,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "gif_creator",
+                Some("action"),
+                ResourceShape::TabScoped,
+                // Local since ADR-0053 D6: the orchestrator moved into the binary; the extension
+                // keeps only the screencast capture relay.
                 true,
                 false,
                 PostDispatch::None,

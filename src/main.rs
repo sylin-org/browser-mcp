@@ -4,17 +4,17 @@
 //! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0
 //! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
 //!
-//! Since ADR-0046 this executable is the CLI + the standalone SERVICE; the two thin pass-through
-//! adapters ship as SEPARATE executables, so a service rebuild never relinks (locks) them:
+//! Since ADR-0046 this executable is the CLI + the standalone SERVICE; the thin pass-through relay
+//! ships as a SEPARATE executable, so a service rebuild never relinks (locks) it:
 //! - **service** (`ghostlight service`) -- the STANDALONE, persistent Hub. Owns the browser IPC
 //!   endpoint and the adapter/control endpoint for its whole life, multiplexes any number of
 //!   adapter sessions through the one governance chokepoint, and shuts down only on a continuous
 //!   idle-grace window (never on any client's death).
 //! - **install / uninstall / doctor / status / config / policy** -- synchronous subcommands.
 //! - a BARE `ghostlight` (no subcommand) no longer serves MCP: it prints guidance pointing at
-//!   `ghostlight-adapter-agent` and exits 2 (ADR-0046). The `ghostlight-adapter-agent` (MCP-client
-//!   pass-through) and `ghostlight-adapter-browser` (Chrome native-messaging pass-through) are
-//!   their own crates.
+//!   `ghostlight-relay` and exits 2 (ADR-0046). The single `ghostlight-relay` binary carries both
+//!   pass-through roles (MCP-client agent + Chrome native-messaging browser), selected at launch
+//!   (ADR-0051 Phase 3); it is its own crate.
 //!
 //! `main` deliberately has no `#[tokio::main]`: the async roles each build their own runtime, and
 //! the installer needs none.
@@ -415,10 +415,10 @@ fn main() -> Result<()> {
             ..
         } => ghostlight::hub::run_service(manifest, debug_flag || debug_env, keep_warm)?,
         Cli { command: None, .. } => {
-            // ADR-0046: the bare `ghostlight` no longer serves MCP -- the MCP client launches
-            // ghostlight-adapter-agent, which relays to the running service.
+            // ADR-0046 + ADR-0051 Phase 3: the bare `ghostlight` no longer serves MCP -- the MCP
+            // client launches `ghostlight-relay --role agent`, which relays to the running service.
             eprintln!(
-                "ghostlight no longer serves MCP directly; your MCP client launches ghostlight-adapter-agent."
+                "ghostlight no longer serves MCP directly; your MCP client launches ghostlight-relay."
             );
             eprintln!(
                 "Run `ghostlight install` to update client registrations, then restart your editor."
