@@ -512,14 +512,34 @@ function Step-Npm {
         }
     }
 
-    # Smoke: launcher fetches the version-matched binary and runs. doctor's exit code is
-    # informational here (a machine with no browser/extension reports unhealthy by design).
+    # Smoke: the launcher fetches the version-matched binary and runs it. First WAIT for the
+    # just-published version to propagate through the npm registry -- a smoke fired the instant
+    # after `npm publish` reliably hits ETARGET (the publish succeeded; the registry has just not
+    # indexed it yet). Poll `npm view` until the version is visible, then run the launcher.
+    if ($DryRun) {
+        Write-Info "smoke test: npx -y ghostlight@$Version doctor"
+        Write-Would "wait for ghostlight@$Version to propagate, then npx -y ghostlight@$Version doctor"
+        return
+    }
+
+    Write-Info "waiting for ghostlight@$Version to propagate on the npm registry..."
+    $propagated = $false
+    for ($i = 0; $i -lt 24 -and -not $propagated; $i++) {
+        $seen = & npm view "ghostlight@$Version" version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $seen -eq $Version) { $propagated = $true; break }
+        Start-Sleep -Seconds 5
+    }
+    if (-not $propagated) {
+        Write-Warn2 "ghostlight@$Version not visible on npm after ~2 min; skipping the launcher smoke (the publish still succeeded -- verify with 'npm view ghostlight@$Version version')"
+        return
+    }
+    Write-Ok "ghostlight@$Version visible on npm"
+
     Write-Info "smoke test: npx -y ghostlight@$Version doctor"
-    if ($DryRun) { Write-Would "npx -y ghostlight@$Version doctor"; return }
     & npx -y "ghostlight@$Version" doctor
     $code = $LASTEXITCODE
     if ($code -eq 0) { Write-Ok 'doctor healthy (exit 0)' }
-    else { Write-Warn2 "doctor exited $code -- expected if this machine has no browser/extension set up; the launcher fetch itself worked if you saw output above" }
+    else { Write-Warn2 "doctor exited $code -- the launcher fetched v$Version (see output above); a nonzero here is expected when this machine has no browser/extension configured" }
 }
 
 function Step-Report {
