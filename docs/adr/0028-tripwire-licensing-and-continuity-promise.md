@@ -1,6 +1,9 @@
 # ADR-0028: Tripwire licensing, tiers, and the Continuity Promise
 
-- Status: accepted (2026-07-03)
+- Status: accepted (2026-07-03); Decision 5 amended 2026-07-09 (see the note under the
+  tier table: the `development` tier is renamed `evaluation`, the paywall wording moves
+  from development/production to evaluation/operational use, and the small-team free
+  grant lands in the license text as LICENSE-GOVERNANCE v1.1 grant (e))
 - Deciders: founder (Leo Botinelly), in session with the frontier assistant
 - Extends: ADR-0027 (open-core business model); ADR-0026 (release maturity)
 
@@ -135,6 +138,20 @@ it.
 | `founding` | free 12 months, then 50% of list forever | 10 slots; quarterly email questionnaire + reference (named case study preferred, anonymized accepted) |
 | `team` | ~$12/user/month, billed annually, 5-seat minimum | org policy at scale, email support (2-business-day response) |
 | `enterprise` | from ~$10k/year | team + procurement paperwork (questionnaires, MSA, DPA), 1-business-day support, deployment help, roadmap input |
+
+AMENDED 2026-07-09 (owner review of PRICING.md, before any license key shipped, so the
+rename costs nothing): the `development` tier is renamed **`evaluation`** -- the old name
+conflated the deployment stage with the paywall axis, and "never production" misread as
+"production means you pay" when the actual trigger is a CONJUNCTION (a for-profit
+organization of MORE THAN FIVE people, running governance CONFIGURED, operationally).
+The wording across PRICING.md/LICENSING.md now uses "operational use" for the paid side
+(defined: the organization relies on the policy for real work; internal tools count) with
+"production" kept once as a parenthetical alias. The `community` small-team grant, which
+the pricing page advertised but the license text never granted, is now granted explicitly:
+LICENSE-GOVERNANCE v1.1 adds free-use grant (e), organizations of at most five people,
+including production use. Two generosity accommodations join the pricing page as standing
+policy: a hardship valve (email us; includes free) and an outgrew-the-tier grace (finish
+the year free; nothing owed retroactively).
 
 Pricing is initial and founder-revisable until first publication on the pricing page;
 tier NAMES and the claims enum are pinned now. Annual billing only. Every early customer

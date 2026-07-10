@@ -281,10 +281,11 @@ with reasoning -- accepted, deferred, or declined against the project's recorded
 
 Ghostlight is open-core. The engine -- everything outside `src/governance/` -- is open source
 under Apache-2.0 OR MIT, at your option. The governance module (`src/governance/`) is
-source-available under the Ghostlight Commercial License: free for individuals and solo
-developers, development, testing, evaluation, all-open operation, and noncommercial
-nonprofit/open-source use; production use with governance configured by an organization
-requires a commercial subscription. See [LICENSING.md](LICENSING.md) for the plain-language
+source-available under the Ghostlight Commercial License, and free for almost everyone:
+individuals and solo developers, teams of up to five, evaluation and development at any org
+size, all-open operation at any org size, and noncommercial nonprofit/open-source use. Exactly
+one situation needs a commercial subscription: an organization of more than five people running
+the governance features operationally. See [LICENSING.md](LICENSING.md) for the plain-language
 guide.
 
 Editions, prices, the founding program (12 months free for the first ten organizations), and
