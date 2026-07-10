@@ -306,7 +306,33 @@ admin's "did it propagate?" from the sidecar (seq, fetched-ago, source OK / the 
 without needing a service session; the Console reads live state. The guardian moment renders in both
 registers (user: "still protected on your verified policy"; admin: "update rejected, still enforcing
 seq N"). Presentation validation is additive-only sanity (length and control-character limits) so
-org voice can never spoof or crowd out the truth-telling lines.
+org voice can never spoof or crowd out the truth-telling lines. Refinement (2026-07-10, batch
+authoring): the SIDECAR IS the ManagedStatus store -- ONE writer (`governance::managed::activate`,
+which both startup and every re-resolve flow through) writes it atomically; the `explain` tool,
+`doctor`, and the Console all READ it. No new ConfigStore state; one artifact, three readers.
+
+9. **Strategic riders (owner-ratified 2026-07-10: "EXCELLENT suggestions -- add all of them").**
+(a) **The bundle carries a `kind` discriminator** (claims field, default `"policy"`, unknown kinds
+REJECTED at verification): the signed/seq/last-known-good machinery is artifact-agnostic, so
+managed:// is deliberately a GOVERNED CONTENT CHANNEL -- a future `kind` distributes ADR-0039 saved
+scripts (org-published vetted workflows: governance as enablement, not only restriction). The org
+keypair is intentionally THE ORG TRUST ROOT for all future org-authored artifacts.
+(b) **Break-glass signed exceptions** (future `kind`: signed, time-boxed, offline-verified emergency
+grants, Passport-visible and audited) are the anticipated answer to the emergency-loosening
+objection; PARKED for their own ADR before implementation.
+(c) **Audit provenance:** the managed publish sequence is stamped on TOOL-CALL audit records (the
+same additive channel as the ADR-0028 license stamp; session-event shapes stay frozen; absent unless
+origin is Managed, so the all-open stream stays byte-identical). Every decision becomes "made under
+org-signed policy version N".
+(d) **Fleet visibility rides existing tooling:** the versioned sidecar is a deliberate integration
+surface -- the org's own osquery/Intune inventory reads it; no vendor infrastructure, no phone-home.
+Positioning/docs, not code.
+(e) **The bundle format is a publication candidate for `open-spec/`** (PQ-signed, transport-agnostic
+policy distribution with additive-only presentation); PARKED, founder timing.
+(f) **NEVER GATE the `policy` CLI (normative, permanent):** `policy sign`/`pubkey`/`publish` ship
+ungated in every build. Ed25519-only evaluation keys plus the ADR-0028 tripwire stamp ARE the
+try-before-buy funnel; adding a license gate would break both the funnel and the never-gate
+philosophy.
 
 ## Consequences
 
