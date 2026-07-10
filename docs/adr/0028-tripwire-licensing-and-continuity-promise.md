@@ -3,7 +3,10 @@
 - Status: accepted (2026-07-03); Decision 5 amended 2026-07-09 (see the note under the
   tier table: the `development` tier is renamed `evaluation`, the paywall wording moves
   from development/production to evaluation/operational use, and the small-team free
-  grant lands in the license text as LICENSE-GOVERNANCE v1.1 grant (e))
+  grant lands in the license text as LICENSE-GOVERNANCE v1.1 grant (e)); Decisions 2 and
+  8 amended 2026-07-10 by Decisions 10 and 11 (issuance pipeline pinned after a two-brief
+  prior-art pass; production generations become composite Ed25519 + ML-DSA-65; the
+  armored paste-block becomes a first-class license form)
 - Deciders: founder (Leo Botinelly), in session with the frontier assistant
 - Extends: ADR-0027 (open-core business model); ADR-0026 (release maturity)
 
@@ -104,16 +107,36 @@ config directory (sibling of `config.json`). The first file that exists is THE l
 merging. Resolution happens once at mcp-server startup (hot-reload of the license file is
 explicitly out of scope for v1 and may be added later).
 
-Stamp decision table (`org_present` means `load::org_policy_path()` exists on disk):
+Stamp decision table (REFINED 2026-07-10; see the note below):
 
-| License state | org_present | Stamp |
+| License state | governance operational | Stamp |
 |---|---|---|
-| no license file | false | none (personal use is quiet; no license required) |
+| no license file | false | none (all-open / personal use is quiet; no license required) |
 | no license file | true | `"unlicensed"` |
-| present but invalid (bad sig, unknown keygen, malformed, wrong products) | any | `"invalid"` |
-| valid but expired | any | `"expired"` |
-| valid, tier `development` | any | `"development"` |
-| valid production tier, in date | any | none |
+| present but invalid (bad sig, unknown keygen, malformed, wrong products) | true | `"invalid"` |
+| valid but expired | true | `"expired"` |
+| valid, tier `development` | true | `"development"` |
+| valid production tier, in date | true | none |
+| any state | false | none (the licensing engine is dormant when governance is not operating) |
+
+REFINEMENT (2026-07-10, owner-directed, before any key shipped): the gate column changes
+from `org_present` (`org_policy_path()` exists on disk) to **`governance operational`** --
+an ORG-DEPLOYED policy is loaded and IN EFFECT in this session. Two consequences, both
+deliberate: (a) the license engine emits NOTHING (no stamp, no startup warn) in the free
+all-open path -- it is dormant unless governance is actually operating, so the audit stream
+of a free deployment is byte-identical to today's; (b) the signal is org-policy ORIGIN, not
+any active manifest -- a user `--manifest` / `GHOSTLIGHT_MANIFEST` never triggers a stamp,
+because the binary cannot distinguish a free solo developer's own manifest from a paying
+org's (it never phones home and never counts seats), and the admin-installed system-location
+org policy file is the only reliable "an ORGANIZATION deployed central governance" signal.
+Erring toward org-policy origin makes a false positive (wrongly stamping a free individual
+`"unlicensed"`) impossible, at the cost of a false negative on the rare org that governs via
+an env manifest instead of the org policy file -- the correct trade for a brand that promises
+generosity to individuals. This supersedes the `org_present` phrasing above and keeps the
+engine confined to one module (`governance::license`); the recorder receives only an opaque
+stamp string, resolution/decision/formatting all live in that module (SoC per the owner).
+Resolution itself still happens once at startup; `doctor` and `license status` are separate
+read-only CLI invocations that display the resolved state and NEVER stamp or warn.
 
 The stamped `license` field is APPENDED to the serialized record (after `held` on tool-call
 records) and is entirely ABSENT when the state is normal. This deliberately diverges from
@@ -200,6 +223,85 @@ licensing, telemetry, analytics, update checks, or any other vendor-serving purp
 only network I/O the product performs is what the user's own tool calls and the user's own
 configured audit destinations require. This decision is permanent and marketing-visible.
 
+### 10. Issuance pipeline: MoR checkout as delivery only; signing stays air-gapped
+(2026-07-10; amends Decision 8)
+
+Pinned after a two-brief prior-art pass (merchant-of-record platforms; dedicated
+licensing infrastructure and real offline issuers), both run 2026-07-10:
+
+- **Checkout and tax: Polar.sh** (a true merchant of record), with Lemon Squeezy as the
+  fallback. The platform's own license-key feature is NEVER used for validation: every
+  MoR built-in key (Polar, Lemon Squeezy, Gumroad) is validated by calling the vendor's
+  API, which Decision 9 forbids. The platform carries payment, tax, subscription state,
+  and the delivery envelope for our own signed license, nothing else. Stripe alone is
+  rejected (not a merchant of record; the founder would carry worldwide VAT), and Paddle
+  is rejected (native license fulfillment deprecated; approval-gated onboarding).
+- **The purchase webhook files an order-intent; it never signs.** A minimal endpoint (or
+  a manual step at first) records identity fields from the buyer (licensee, org) plus
+  commercial fields from the purchase itself (tier, seats, expires) into the private
+  `ghostlight-licensing` ledger repo. Nothing online ever holds the signing seed.
+- **The founder batch-signs offline** on the air-gapped machine with the feature-gated
+  `license sign` CLI, commits the claims to the ledger, and delivers the signed license
+  (armored block by email, or a Polar file benefit). Because licensing is observational
+  (Decision 1), the hours-scale signing delay is invisible: the buyer's binary already
+  works; the license file only silences a stamp.
+- **Rejected mechanisms, with reasons, so they are not re-proposed:** a serverless
+  function that signs on purchase (parks the air-gapped seed in an online function);
+  Keygen.sh Cloud (the vendor holds the signing key -- verified 2026-07-10 -- which
+  breaks the air-gap non-negotiable; Keygen self-host CE remains the named escape hatch
+  only if self-service issuance at scale ever becomes real); any client-side phone-home
+  (Decision 9 stands).
+- **Revocation is expiry.** Annual terms aligned to annual billing; a lapsed or refunded
+  license is simply not renewed. No CRL, no kill switch -- the norm among offline
+  issuers (JetBrains offline codes, Keygen offline mode) and the only mechanism
+  consistent with Decisions 1 and 9. Runtime seat/machine binding stays out (it exists
+  to gate behavior, which Decision 1 forbids).
+
+### 11. Composite signatures (Ed25519 + ML-DSA-65) and the armored license block
+(2026-07-10; amends Decision 2)
+
+- **Every production key generation (keygen 1 and up) is a composite scheme from
+  birth:** Ed25519 plus ML-DSA-65 (FIPS 204, security category 3). The embedded
+  generation table declares each generation's scheme. Generation 0 (the public
+  development key) stays pure Ed25519, unchanged.
+- **Composite envelope** (v stays 1; the scheme rides on `keygen`):
+
+      {
+        "v": 1,
+        "keygen": 1,
+        "claims": "<base64 of the claims JSON bytes>",
+        "sig": "<base64 of the 64-byte Ed25519 signature>",
+        "sig_mldsa": "<base64 of the 3309-byte ML-DSA-65 signature>"
+      }
+
+  Both signatures cover the SAME exact decoded claims bytes. Verification for a
+  composite generation requires BOTH to pass (AND-composition): a missing or invalid
+  `sig_mldsa` on a composite generation is Invalid, as is a stray `sig_mldsa` that fails.
+  An Ed25519-only envelope verifies only against a generation whose declared scheme is
+  Ed25519 (today: generation 0 only).
+- **Why composite, not a swap:** the two algorithms fail differently. Ed25519's exposure
+  is quantum (Shor); ML-DSA's exposure is youth -- roughly fifteen years of lattice
+  cryptanalysis versus forty for elliptic curves (the Rainbow and SIKE breaks happened
+  mid-NIST-process, by classical attacks), and the pure-Rust ML-DSA crates are pre-1.0
+  and unaudited. Under AND-verification a forger must break both, so the composite is as
+  strong as the stronger algorithm whichever way history breaks. This mirrors the
+  IETF LAMPS composite-signature direction and the hybrid pattern TLS and SSH adopted
+  for their post-quantum rollouts.
+- **Implementation:** a pure-Rust ML-DSA implementation (required: the four-target
+  cross-compile matrix must not grow a C toolchain); the concrete crate (fips204 or
+  RustCrypto ml-dsa) is pinned at build time after checking release state. Verification
+  cost is microseconds, once, at startup; the license file grows to roughly 5 KB, which
+  stays comfortably inside the paste-block form below.
+- **The armored block is a first-class license form.** Format:
+
+      -----BEGIN GHOSTLIGHT LICENSE-----
+      <base64 of the exact envelope JSON bytes, wrapped at 64 columns>
+      -----END GHOSTLIGHT LICENSE-----
+
+  `license sign` emits both the envelope JSON file and the armored block; `license
+  install` accepts a file path or a pasted armored block. The armored payload decodes to
+  the exact envelope JSON bytes (no transformation), so both forms verify identically.
+
 ## Provenance (decided in session, 2026-07-03; do not re-litigate)
 
 - Founder confirmed full accordance with the four principles, verbatim quote: "Never
@@ -220,6 +322,17 @@ configured audit destinations require. This decision is permanent and marketing-
   topics), founder's words: "we can reduce the floor even more: An email"; and the
   operative contact address became the single sink hello@sylin.org. Decisions 5 and 7
   updated in place.
+- 2026-07-10 (Decisions 10 and 11, decided in session before any license key was ever
+  issued): the owner asked for prior-art research on the licensing ENGINE (issuance
+  mechanics), which produced the two briefs Decision 10 cites. The composite
+  post-quantum scheme and the armored paste-block are both owner ideas from the same
+  session (owner on the quantum flex, after hearing the cost was a pure-Rust dependency
+  and microseconds at startup: "the flex is totally worth it!"); the AND-composition
+  rationale and the sign/install verb split are the assistant's refinements the owner
+  ratified. The owner also directed that the Enterprise-tier promise ("security
+  questionnaires, MSA, DPA...") be backed by a ready-to-go document pack that leads with
+  the offline/no-phone-home/post-quantum posture; that pack extends the Decision 8
+  template set and owes a legal skim before first use.
 
 ## Consequences
 

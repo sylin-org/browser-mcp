@@ -33,6 +33,11 @@ enum Inner {
 /// recorder does nothing (and creates no file).
 pub struct Recorder {
     inner: Mutex<Option<Inner>>,
+    /// An opaque license-state marker appended under the `"license"` key on every record while set
+    /// (ADR-0028 Decision 3). The recorder holds NO license logic: the value is decided by
+    /// `governance::license` and installed once at startup via [`Self::set_license_stamp`]. `None`
+    /// (the common case) keeps the serialized output byte-identical to an unlicensed-field record.
+    license_stamp: Mutex<Option<&'static str>>,
 }
 
 /// Resolve the destination `Recorder::from_config` and `Recorder::reload` both need, from a
@@ -88,6 +93,7 @@ impl Recorder {
     pub fn from_config(config: &Config) -> Self {
         Self {
             inner: Mutex::new(resolve_inner(config)),
+            license_stamp: Mutex::new(None),
         }
     }
 
@@ -95,6 +101,7 @@ impl Recorder {
     pub fn disabled() -> Self {
         Self {
             inner: Mutex::new(None),
+            license_stamp: Mutex::new(None),
         }
     }
 
@@ -102,6 +109,7 @@ impl Recorder {
     pub fn to_file(path: PathBuf) -> Self {
         Self {
             inner: Mutex::new(Some(Inner::File(path))),
+            license_stamp: Mutex::new(None),
         }
     }
 
@@ -109,7 +117,18 @@ impl Recorder {
     pub fn to_stderr() -> Self {
         Self {
             inner: Mutex::new(Some(Inner::Stderr)),
+            license_stamp: Mutex::new(None),
         }
+    }
+
+    /// Install the license stamp appended to every subsequent record (ADR-0028 Decision 3). Called
+    /// once at mcp-server startup, and ONLY when governance is operationally in effect; the recorder
+    /// treats the value as opaque and simply appends it under the `"license"` key. `None` clears it.
+    pub fn set_license_stamp(&self, stamp: Option<&'static str>) {
+        *self
+            .license_stamp
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = stamp;
     }
 
     /// True while this recorder has a live destination (audit enabled).
@@ -140,7 +159,29 @@ impl Recorder {
         let Some(inner) = &*self.inner.lock().unwrap_or_else(PoisonError::into_inner) else {
             return;
         };
-        let line = match serde_json::to_string(record) {
+        // Fast path (the norm): no license stamp -> serialize directly, byte-identical to before the
+        // licensing engine existed. Only an abnormal, governance-operational deployment carries a
+        // stamp, and then the `"license"` key is appended LAST (serde_json is built with
+        // preserve_order), after `held` on tool-call records (ADR-0028 Decision 3).
+        let stamp = *self
+            .license_stamp
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let serialized = match stamp {
+            None => serde_json::to_string(record),
+            Some(s) => match serde_json::to_value(record) {
+                Ok(serde_json::Value::Object(mut map)) => {
+                    map.insert(
+                        "license".to_string(),
+                        serde_json::Value::String(s.to_string()),
+                    );
+                    serde_json::to_string(&serde_json::Value::Object(map))
+                }
+                Ok(other) => serde_json::to_string(&other),
+                Err(e) => Err(e),
+            },
+        };
+        let line = match serialized {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(error = %e, kind, "failed to serialize audit record");

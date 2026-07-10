@@ -21,6 +21,7 @@ pub mod dispatch;
 pub mod enforcement;
 pub mod explain;
 pub mod inbound;
+pub mod license;
 pub mod manifest;
 pub mod ports;
 pub mod simulate;

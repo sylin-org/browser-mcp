@@ -69,6 +69,90 @@ enum Command {
     Policy(PolicyArgs),
     /// Run the persistent Ghostlight Hub service (owns the browser link; multiplexes clients).
     Service,
+    /// Show or install a Ghostlight license (state never affects behavior; ADR-0028).
+    License(LicenseArgs),
+}
+
+#[derive(Debug, Args)]
+struct LicenseArgs {
+    #[command(subcommand)]
+    command: LicenseSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LicenseSubcommand {
+    /// Show the resolved license state (read-only; never affects behavior).
+    Status {
+        /// Inspect a specific license file or armored block instead of the installed one.
+        #[arg(long, value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+    },
+    /// Install a license from a file, an armored block, or stdin.
+    Install {
+        /// Path to a license file or armored block; omit to read from stdin.
+        #[arg(value_name = "PATH")]
+        source: Option<std::path::PathBuf>,
+        /// Install to the org-wide location instead of the per-user location.
+        #[arg(long)]
+        org: bool,
+    },
+    /// (offline authoring) Sign claims into a license envelope.
+    #[cfg(feature = "license-admin")]
+    Sign {
+        /// 32-byte Ed25519 seed file.
+        #[arg(long, value_name = "FILE")]
+        seed: std::path::PathBuf,
+        /// 32-byte ML-DSA seed file (required for keygen >= 1, the composite generations).
+        #[arg(long, value_name = "FILE")]
+        mldsa_seed: Option<std::path::PathBuf>,
+        /// Key generation index (0 = the public evaluation key; 1+ = composite production keys).
+        #[arg(long)]
+        keygen: u32,
+        /// Claims JSON file.
+        #[arg(long, value_name = "FILE")]
+        claims: std::path::PathBuf,
+        /// Output envelope path (default license.json). The armored block is printed to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+    },
+    /// (offline authoring) Print the verifying key(s) for a seed, for embedding.
+    #[cfg(feature = "license-admin")]
+    Pubkey {
+        /// 32-byte Ed25519 seed file.
+        #[arg(long, value_name = "FILE")]
+        seed: std::path::PathBuf,
+        /// 32-byte ML-DSA seed file (prints the composite public key too).
+        #[arg(long, value_name = "FILE")]
+        mldsa_seed: Option<std::path::PathBuf>,
+    },
+}
+
+impl From<LicenseArgs> for ghostlight::governance::license::cli::LicenseCommand {
+    fn from(a: LicenseArgs) -> Self {
+        use ghostlight::governance::license::cli::LicenseCommand;
+        match a.command {
+            LicenseSubcommand::Status { file } => LicenseCommand::Status { file },
+            LicenseSubcommand::Install { source, org } => LicenseCommand::Install { source, org },
+            #[cfg(feature = "license-admin")]
+            LicenseSubcommand::Sign {
+                seed,
+                mldsa_seed,
+                keygen,
+                claims,
+                out,
+            } => LicenseCommand::Sign {
+                seed,
+                mldsa_seed,
+                keygen,
+                claims,
+                out,
+            },
+            #[cfg(feature = "license-admin")]
+            LicenseSubcommand::Pubkey { seed, mldsa_seed } => {
+                LicenseCommand::Pubkey { seed, mldsa_seed }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -414,6 +498,10 @@ fn main() -> Result<()> {
             keep_warm,
             ..
         } => ghostlight::hub::run_service(manifest, debug_flag || debug_env, keep_warm)?,
+        Cli {
+            command: Some(Command::License(args)),
+            ..
+        } => ghostlight::governance::license::cli::run(args.into())?,
         Cli { command: None, .. } => {
             // ADR-0046 + ADR-0051 Phase 3: the bare `ghostlight` no longer serves MCP -- the MCP
             // client launches `ghostlight-relay --role agent`, which relays to the running service.

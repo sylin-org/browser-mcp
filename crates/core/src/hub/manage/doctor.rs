@@ -80,6 +80,14 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
         println!("{line}");
     }
 
+    // Read-only license display (ADR-0028 Decision 3): shows the resolved state, never a finding,
+    // never a stamp. Just a read, independent of whether a server is running or governance active.
+    println!();
+    println!("License:");
+    for line in crate::governance::license::doctor_section_lines() {
+        println!("{line}");
+    }
+
     let endpoint = ipc::default_endpoint();
     let endpoint_display = ipc::endpoint_display(&endpoint);
     let probe = ipc::probe_endpoint(&endpoint);
