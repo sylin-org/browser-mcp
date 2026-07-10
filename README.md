@@ -78,7 +78,7 @@ Needs a Chromium browser (116+) and an MCP client. No Node, no Rust, nothing to 
 
 Restart your client and the browser tools appear. If anything looks off, `npx ghostlight doctor`
 tells you exactly what. Prebuilt archives, building from source, and every other path live in the
-[install guide](https://sylin-org.github.io/ghostlight/install.html) and the manual steps below.
+[installation guide](docs/guides/installation.md) and the manual steps below.
 
 <details>
 <summary><strong>Manual install (inspect everything)</strong></summary>
@@ -199,8 +199,9 @@ capabilities (`read`, `action`, `write`, `execute`) to an identity on the hosts 
 
 A governed client only *sees* the tools its grants permit, plus `explain`. Start from a ready
 manifest in [`examples/`](examples/), preview any file with `ghostlight policy explain <file>`,
-and see the [solo-developer](docs/guides/solo-developer.md) and
-[compliance-team](docs/guides/compliance-team.md) guides for the full journey.
+and see the [governance configuration guide](docs/guides/governance-configuration.md) for the
+mechanics, with the [solo-developer](docs/guides/solo-developer.md) and
+[compliance-team](docs/guides/compliance-team.md) walkthroughs for the full journey.
 
 ## How it works
 
@@ -218,7 +219,8 @@ suite in CI, and end-to-end browser use is verified on Windows today.
 <details>
 <summary><strong>CLI and troubleshooting</strong></summary>
 
-- No subcommand: the MCP server role (your client launches this; you do not run it by hand).
+- No subcommand: prints a short hint and exits. The MCP server role now lives in `ghostlight-relay`
+  (your client launches `ghostlight-relay --role agent`; you never run it by hand).
 - `install` / `uninstall`: register or remove everything (both support `--dry-run`).
 - `doctor [--verbose]`: read-only diagnosis of the whole chain with a truthful exit code.
 - `status [--json]`: a running server's live inner state (requires `--debug` /
@@ -238,10 +240,7 @@ first, because a running server locks the exe.
 
 | Doc                                                                 | What it is                                                              |
 | ------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| [docs/guides/solo-developer.md](docs/guides/solo-developer.md)      | Ten minutes from clone to a working agent, plus personal safety rails.   |
-| [docs/guides/compliance-team.md](docs/guides/compliance-team.md)    | Taking a policy from blank page to org-wide enforcement, with evidence.  |
-| [docs/guides/siem-integration.md](docs/guides/siem-integration.md)  | Audit stream schema and Splunk / Sentinel / Elastic ingestion.           |
-| [docs/guides/licensing.md](docs/guides/licensing.md)                | Entering, checking, and refreshing a license key (only the paid tier).   |
+| [Guides & how-tos](docs/guides/)                                    | Install, configure governance, roll it out to a team, ship audit to a SIEM, manage a license. |
 | [docs/COMPARISON.md](docs/COMPARISON.md)                            | A candid comparison with the alternatives.                               |
 | [ROADMAP.md](ROADMAP.md)                                            | What we are building next, and the direction behind it.                  |
 | [PRICING.md](PRICING.md)                                            | Editions, the founding program, and the Continuity Promise.              |
