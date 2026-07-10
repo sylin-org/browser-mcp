@@ -8,6 +8,7 @@ use anyhow::{anyhow, ensure};
 
 use ghostlight_core::governance::managed;
 use ghostlight_core::governance::managed::cache::{Freshness, StaleReason};
+use ghostlight_core::governance::managed::status;
 use ghostlight_core::governance::paths::GovernancePaths;
 
 use crate::support::{self, BundleServer, TempRoot};
@@ -31,6 +32,8 @@ pub fn registry() -> Vec<Scenario> {
         ("rollback-guardian", rollback_guardian),
         ("update-on-reresolve", update_on_reresolve),
         ("no-clobber-on-reresolve", no_clobber_on_reresolve),
+        ("sidecar-propagation", sidecar_propagation),
+        ("passport-freshness", passport_freshness),
     ]
 }
 
@@ -212,6 +215,116 @@ fn no_clobber_on_reresolve() -> anyhow::Result<()> {
     ensure!(
         matches!(published.origin, Some(ManifestOrigin::Managed)),
         "the origin must stay Managed after reresolve"
+    );
+    Ok(())
+}
+
+/// The admin's "did my policy propagate?" artifact, end to end (ADR-0055 Impl.8 / ADR-0056 D5): each
+/// managed resolve writes the T2 status sidecar; the sidecar tracks a fresh publish, a live update,
+/// and a guardian fallback when the source goes away.
+fn sidecar_propagation() -> anyhow::Result<()> {
+    let tmp = TempRoot::new("sidecar-prop")?;
+    let paths = GovernancePaths::under(tmp.path());
+    let seed = [14u8; 32];
+    let cache_path = paths
+        .managed_cache
+        .as_ref()
+        .ok_or_else(|| anyhow!("no managed cache path under the temp root"))?
+        .clone();
+    let sidecar = status::sidecar_path(&cache_path);
+
+    {
+        let server = BundleServer::start(support::sign(&seed, 5, support::manifest("acme-prop")))?;
+        support::write_bootstrap(&paths.managed_bootstrap, &server.url(), &seed)?;
+
+        managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
+        let s = status::read_sidecar(&sidecar)
+            .ok_or_else(|| anyhow!("no sidecar after the first activate"))?;
+        ensure!(s.freshness == "fresh", "expected fresh, got {}", s.freshness);
+        ensure!(s.seq == Some(5), "expected seq 5, got {:?}", s.seq);
+
+        // The org publishes a newer policy; a re-resolve propagates it into the sidecar.
+        server.set_bundle(support::sign(&seed, 6, support::manifest("acme-prop-v6")));
+        managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
+        let s = status::read_sidecar(&sidecar)
+            .ok_or_else(|| anyhow!("no sidecar after the update"))?;
+        ensure!(s.seq == Some(6), "expected seq 6 after the update, got {:?}", s.seq);
+    } // server dropped -> the source is now unreachable
+
+    managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
+    let s = status::read_sidecar(&sidecar)
+        .ok_or_else(|| anyhow!("no sidecar after the source went away"))?;
+    ensure!(
+        s.freshness == "last_known_good",
+        "expected last_known_good, got {}",
+        s.freshness
+    );
+    ensure!(
+        s.stale_reason.as_deref() == Some("source_unreachable"),
+        "expected source_unreachable, got {:?}",
+        s.stale_reason
+    );
+    ensure!(s.seq == Some(6), "seq should stay 6, got {:?}", s.seq);
+    Ok(())
+}
+
+/// The Policy Passport rendered from a real activation (ADR-0055 D9 / ADR-0056 D5): an org-signed
+/// bundle carrying presentation activates, the sidecar captures it, and the `explain`-tool renderer
+/// speaks for the governed session (who governs, the policy version, the sacred line, and a contact).
+fn passport_freshness() -> anyhow::Result<()> {
+    use ghostlight_core::governance::manifest::bundle::{self, Contact, Presentation};
+
+    let tmp = TempRoot::new("passport")?;
+    let paths = GovernancePaths::under(tmp.path());
+    let seed = [15u8; 32];
+    let presentation = Presentation {
+        org_name: Some("Acme Security".into()),
+        rationale: None,
+        contacts: vec![Contact {
+            kind: "email".into(),
+            value: "security@acme.example".into(),
+            label: None,
+        }],
+    };
+    let bundle_path = tmp.path().join("policy.bundle");
+    std::fs::write(
+        &bundle_path,
+        bundle::sign_bundle(
+            &seed,
+            None,
+            3,
+            support::manifest("acme-passport"),
+            Some(presentation),
+        ),
+    )?;
+    support::write_bootstrap(&paths.managed_bootstrap, &bundle_path.display().to_string(), &seed)?;
+
+    managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
+    let cache_path = paths
+        .managed_cache
+        .as_ref()
+        .ok_or_else(|| anyhow!("no managed cache path under the temp root"))?;
+    let status = status::read_sidecar(&status::sidecar_path(cache_path))
+        .ok_or_else(|| anyhow!("no sidecar after activation"))?;
+
+    let passport = ghostlight_core::governance::explain::managed_passport(&status);
+    ensure!(
+        passport.contains("Governed by: Acme Security."),
+        "passport missing the org name: {passport}"
+    );
+    ensure!(
+        passport.contains("Policy version 3,"),
+        "passport missing the policy version: {passport}"
+    );
+    ensure!(
+        passport.contains(
+            "Sacred domains remain off-limits to automation under any policy, including this one."
+        ),
+        "passport missing the sacred-domains line: {passport}"
+    );
+    ensure!(
+        passport.contains("security@acme.example"),
+        "passport missing the contact: {passport}"
     );
     Ok(())
 }
