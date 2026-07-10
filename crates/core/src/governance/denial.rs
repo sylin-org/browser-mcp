@@ -33,9 +33,36 @@ pub fn denial_id(manifest_hash: &str, grant_id: &str, rule: &str) -> String {
     hex
 }
 
+/// The org contact "door" line (ADR-0055 D9): when managed governance denies an action and the org
+/// published a contact, this single trailing line routes the human to their org. Pure and I/O-free
+/// (the caller reads the status sidecar and decides whether to append); no trailing newline. When
+/// the org named itself the line addresses it by name, otherwise "your organization".
+pub fn org_contact_line(org_name: Option<&str>, contact_value: &str) -> String {
+    format!(
+        "Questions about this policy? Contact {}: {contact_value}",
+        org_name.unwrap_or("your organization")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_line_with_org_name() {
+        assert_eq!(
+            org_contact_line(Some("Acme Security"), "security@acme.example"),
+            "Questions about this policy? Contact Acme Security: security@acme.example"
+        );
+    }
+
+    #[test]
+    fn contact_line_without_org_name() {
+        assert_eq!(
+            org_contact_line(None, "security@acme.example"),
+            "Questions about this policy? Contact your organization: security@acme.example"
+        );
+    }
 
     #[test]
     fn denial_id_is_stable_and_pinned() {

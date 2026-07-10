@@ -80,9 +80,42 @@ fn render_outcome(id: Option<Value>, outcome: CallOutcome) -> JsonRpcResponse {
     match outcome {
         CallOutcome::Success { result } => JsonRpcResponse::success(id, result),
         CallOutcome::Failure { error } => JsonRpcResponse::success(id, error_result(error)),
-        CallOutcome::Denied { message, .. } => JsonRpcResponse::success(id, text_content(message)),
+        CallOutcome::Denied { message, .. } => {
+            JsonRpcResponse::success(id, text_content(with_org_contact_line(message)))
+        }
         CallOutcome::Held { message } => JsonRpcResponse::success(id, text_content(message)),
     }
+}
+
+/// Append the org contact "door" line (ADR-0055 D9 / T6) to a denial message when managed
+/// governance is active and the org published a contact. Reads the T2 status sidecar at the fixed
+/// production paths; absent a managed bootstrap, sidecar, presentation, or contact the message is
+/// returned byte-identical, so the all-open and non-managed denial streams are unchanged. This
+/// lives OUTSIDE `src/governance/`, so the a7 arch rules do not constrain the sidecar read here.
+/// The pure line renderer stays in [`crate::governance::denial::org_contact_line`].
+fn with_org_contact_line(message: String) -> String {
+    let paths = crate::governance::paths::GovernancePaths::production();
+    if !paths.managed_bootstrap.exists() {
+        return message;
+    }
+    let Some(cache_path) = paths.managed_cache.as_ref() else {
+        return message;
+    };
+    let sidecar = crate::governance::managed::status::sidecar_path(cache_path);
+    let Some(status) = crate::governance::managed::status::read_sidecar(&sidecar) else {
+        return message;
+    };
+    let Some(presentation) = status.presentation.as_ref() else {
+        return message;
+    };
+    let Some(contact) = presentation.contacts.first() else {
+        return message;
+    };
+    let line = crate::governance::denial::org_contact_line(
+        presentation.org_name.as_deref(),
+        &contact.value,
+    );
+    format!("{message}\n{line}")
 }
 
 /// PINS.md SS7's `_batch_id` side channel: an orchestrator's own [`directory::Handler::Local`]
