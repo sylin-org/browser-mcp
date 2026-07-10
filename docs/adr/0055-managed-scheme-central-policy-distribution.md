@@ -287,6 +287,27 @@ signed-bundle format (verify + sign, pure); 1c org-key config + `managed://` sou
 local-path load (the air-gap path, no network); 1d the customer `ghostlight policy` CLI. Phases 2-5
 follow per the plan above. Each sub-step lands on a green tree.
 
+7. **Phase 4b as-built (2026-07-10): unified PolicySource; a live fail-open found and fixed.** The
+ConfigStore resolves policy through an injected `PolicySource { SourceString | Managed }` on every
+re-resolve; the file watcher and the managed poll timer share that ONE path, and a resolve error is
+keep-last-good, never a swap to all-open. This fixed a live fail-open the delight review surfaced:
+the watcher's re-resolve re-ran the source-string loader, so a routine `config set` under managed
+governance replaced the managed policy with unrestricted. `spawn_managed_poll` re-resolves on
+`poll_seconds` (default 900s, per-process jitter). Proven by the lightbox `no-clobber-on-reresolve`
+scenario (ADR-0056).
+
+8. **Phase 5 surfaces (owner-approved via the delight lens): ManagedStatus + a status sidecar
+bridges the process boundary.** A first-class `ManagedStatus { freshness, seq, fetched_at,
+presentation, last_error }` is retained on every managed resolve, and a small VERSIONED (`v: 1`,
+because admins will script against it), no-secrets `managed-status.json` sidecar is written
+atomically beside the cache on each poll. Surface map: the `explain` TOOL renders the live Policy
+Passport (who governs me, freshness, sacred, org contact) from live status; `doctor` answers the
+admin's "did it propagate?" from the sidecar (seq, fetched-ago, source OK / the guardian doors)
+without needing a service session; the Console reads live state. The guardian moment renders in both
+registers (user: "still protected on your verified policy"; admin: "update rejected, still enforcing
+seq N"). Presentation validation is additive-only sanity (length and control-character limits) so
+org voice can never spoof or crowd out the truth-telling lines.
+
 ## Consequences
 
 - `managed://` becomes a thin, verifiable addition: a fetch-loop, a signed-and-encrypted
