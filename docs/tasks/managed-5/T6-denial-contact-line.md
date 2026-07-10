@@ -8,24 +8,26 @@ per BOOTSTRAP NEVER list).
 
 ## Preconditions (verify, else STOP)
 - T2 DONE (sidecar readable).
-- `crates/core/src/governance/denial.rs` exists and owns denial message formatting. Locate the
-  single function that renders the final user-facing denial string (grep `Denied (D-` -- STOP if
-  the literal renders in more than one place).
+- VERIFIED (2026-07-10 re-read): `Denied (D-` renders in MULTIPLE production sites (at least
+  `browser/sacred.rs` for sacred denials and the governance enforcement path) -- there is NO single
+  render function, so do NOT look for one. The correct append point is the PIPELINE's
+  denial-emission chokepoint: `crates/core/src/mcp/pipeline.rs` is where a governance
+  `Decision::Deny` message becomes the tool-result text sent to the client (its tests assert
+  `text.starts_with("Denied (D-")`). Find where the deny message string is placed into the
+  response (grep `Denied` and follow the non-test flow); STOP only if the pipeline has no single
+  point where every denial message passes through.
 
 ## Required behavior
 1. In denial.rs add a PURE function (doc cites ADR-0055 D9):
    `pub fn org_contact_line(org_name: Option<&str>, contact_value: &str) -> String` returning
    EXACTLY: `Questions about this policy? Contact {org_name or "your organization"}:
    {contact_value}` (one line, no trailing newline).
-2. At the denial-rendering composition point (found above), AFTER the existing message is fully
-   built: read the sidecar (same pattern as T4/T5: `GovernancePaths::production()` ->
-   `sidecar_path` -> `read_sidecar`); if Some(status) and status.presentation has a non-empty
-   contacts vec, append `"\n" + org_contact_line(org_name.as_deref(), &contacts[0].value)`.
-   IMPORTANT: if the denial renderer is inside `src/governance/` and the a7 arch rules make the
-   production-paths read awkward at that layer, do the append at the TRANSPORT-side call site that
-   emits the denial to the client instead (one place; grep where denial text reaches the MCP
-   response) -- the pure function stays in denial.rs either way. Record which site you chose as a
-   LEDGER deviation note (both are sanctioned).
+2. At the pipeline denial-emission chokepoint (found above; it is OUTSIDE src/governance/, so the
+   a7 arch rules do not constrain the sidecar read there), AFTER the existing message is fully
+   built: read the sidecar (`GovernancePaths::production()` -> `sidecar_path(managed_cache)` ->
+   `read_sidecar`); if Some(status) and status.presentation has a non-empty contacts vec, append
+   `"\n"` + `org_contact_line(org_name.as_deref(), &contacts[0].value)`. The pure function stays
+   in governance/denial.rs. Record the exact chosen line site as a LEDGER note.
 3. Absent bootstrap/sidecar/contacts: denial text byte-identical to before this task.
 
 ## Tests (denial.rs `mod tests`; pinned)

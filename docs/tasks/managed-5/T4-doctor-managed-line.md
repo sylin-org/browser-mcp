@@ -28,10 +28,13 @@ session. Professional register (ADR-0055 D9): plain, precise lines; no mascot vo
      - `  source   {source}`
      - when presentation.org_name is Some: `  org      {org_name}`
      - when last_error is Some: `  note     {last_error}`
-2. Call it from the same place `governance_section_lines` is consumed so the lines print directly
-   after the governance section (locate the caller with `rg -n "governance_section_lines" crates/`;
-   append `lines.extend(managed_section_lines());` in the caller, preserving existing output
-   ordering otherwise).
+2. VERIFIED (2026-07-10 re-read): the caller is doctor.rs ~77-81 and PRINTS in a for loop:
+   `println!("Governance:"); for line in governance_section_lines() { println!("{line}"); }`.
+   Integration: immediately AFTER that loop add
+   `for line in managed_section_lines() { println!("{line}"); }` (no `lines` vec exists; do not
+   restructure the caller). The line format is `format!("  {:<9}{}", "managed", rest)` -- the
+   {:<9}-padded label convention produces exactly the pinned literals in this file (the pure
+   renderer pattern mirrors the existing `render_governance_status` at doctor.rs ~313).
 
 ## Tests
 - doctor output is process-environment dependent (fixed paths), so pin PURE tests instead: extract

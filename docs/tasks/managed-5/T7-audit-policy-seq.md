@@ -8,9 +8,18 @@ Session-event shapes FROZEN (untouched). All-open and non-managed streams byte-i
 ## Preconditions (verify, else STOP)
 - T2 DONE. `rg -n "set_license_stamp" crates/core/src` shows the Recorder setter AND its hub call
   site inside the `governance_operational` block (hub/mod.rs). STOP if either is missing.
-- Confirm how the license stamp reaches tool-call records: read the Recorder + record-building code
-  the setter feeds (follow `license` field usage from `set_license_stamp`). Your change mirrors it
-  field-for-field.
+- VERIFIED (2026-07-10 re-read), your anchors in `crates/core/src/governance/audit/mod.rs`:
+  the field `license_stamp: Mutex<Option<&'static str>>` (~line 40, initialized `Mutex::new(None)`
+  in all four constructors), `pub fn set_license_stamp` (~127), and the tool-call-only gate (~168):
+  `let stamp = if kind == "tool_call" { *self.license_stamp.lock()... } else { None };` followed by
+  the serialization that appends the `"license"` key. Mirror EXACTLY: `policy_seq:
+  Mutex<Option<u64>>` field (init None in the same four constructors), `pub fn set_policy_seq`, a
+  parallel `let seq = if kind == "tool_call" { ... } else { None };`, and the same
+  serialization-append mechanism for `"policy_seq"`. Re-read the region first; line numbers drift.
+- Scope hint for the LIVE-update wiring: `hub::ServiceContext::from_startup` already clones
+  `Arc<Recorder>` into a spawned config-subscription task -- the policy-subscription task (mcp/
+  server.rs, near `store.policy()`) may have or may be given the same clone if its spawn site
+  already receives the recorder or ServiceContext; a one-line clone there is sanctioned.
 
 ## Required behavior
 1. Recorder gains `set_policy_seq(seq: Option<u64>)` mirroring `set_license_stamp`'s storage

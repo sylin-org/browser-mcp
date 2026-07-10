@@ -5,7 +5,10 @@ executor resumes from RESUME HERE with no other context.
 
 ## RESUME HERE
 
-Batch authored 2026-07-10, NOT started. Next task: T1.
+Batch authored 2026-07-10; red-team re-read against the live tree completed the same day (T1/T2/
+T3/T8 verified aligned; T4 caller-integration corrected -- print loop, not a lines vec; T6
+precondition corrected -- multiple denial render sites exist, append at the pipeline emission
+chokepoint; T7 anchors verified exactly and pinned). NOT started. Next task: T1.
 
 ## Status
 
