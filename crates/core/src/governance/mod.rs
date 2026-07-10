@@ -3,7 +3,9 @@
 //!
 //! This bounded context (see docs/design/ghostlight-service-architecture.md section 3)
 //! names no browser type. It owns the dispatch seam ([`dispatch`]), the typed config
-//! registry ([`config`]), the stable denial id scheme ([`denial`]), the per-call grant
+//! registry ([`config`]), the shared composite-signature primitive ([`crypto`], reused by
+//! [`license`] and managed-policy bundles per ADR-0055), the stable denial id scheme
+//! ([`denial`]), the per-call grant
 //! enforcement decision core ([`enforcement`]), the deterministic plain-language policy
 //! renderer ([`explain`]), the audit-replay policy simulator ([`simulate`]), the embedded
 //! policy manifest templates ([`templates`]), the policy manifest ([`manifest`]), the audit
@@ -16,6 +18,7 @@
 
 pub mod audit;
 pub mod config;
+pub mod crypto;
 pub mod denial;
 pub mod dispatch;
 pub mod enforcement;
