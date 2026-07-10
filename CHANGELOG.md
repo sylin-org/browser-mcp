@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-10
+
+### Fixed
+- Windows binaries no longer require the Microsoft Visual C++ Redistributable. The MSVC build now
+  links the C runtime statically, so `ghostlight.exe` and `ghostlight-relay.exe` start on a clean
+  Windows machine with nothing extra to install. Previously they failed with "VCRUNTIME140.dll was
+  not found" wherever the redistributable was absent -- a latent issue in every Windows build since
+  v0.1.0, surfaced by the winget clean-room validation. This is a generic Rust-on-MSVC behavior
+  (Rust's own `std` links the VC runtime dynamically by default), not a dependency of any crate, and
+  the static-linking fix covers every Windows channel at once (npm, scoop, winget, direct download).
+  Linux and macOS are unchanged.
+
 ## [0.5.3] - 2026-07-10
 
 The offline licensing engine (ADR-0028), plus how-to guides. Licensing is purely observational --
