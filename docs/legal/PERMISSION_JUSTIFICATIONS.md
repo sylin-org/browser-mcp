@@ -30,12 +30,14 @@ and titles back to the connected agent.
 The `debugger` permission is required because Ghostlight in Browser attaches the Chrome DevTools
 Protocol (CDP, version 1.3) to the single tab it is automating, via
 `chrome.debugger.attach`. This is the only mechanism that gives the extension a single,
-unified session for the three capabilities the tool depends on together: (1) dispatching
+unified session for the four capabilities the tool depends on together: (1) dispatching
 low-level synthetic input (mouse clicks, drags, key presses, scrolling) with the same
 coordinate and timing fidelity a real user produces, (2) capturing on-demand screenshots of the
-exact rendered tab, and (3) capturing console and network events as they happen. No combination
-of public, non-debugger extension APIs provides all three in one coherent session against one
-target tab: `chrome.tabs.captureVisibleTab` cannot dispatch input or read console/network
+exact rendered tab, (3) during a user-requested session recording, capturing screen-cast frames
+of that same tab (Page.startScreencast) so the local application can assemble an annotated
+animated GIF of the session, and (4) capturing console and network events as they happen. No
+combination of public, non-debugger extension APIs provides all four in one coherent session
+against one target tab: `chrome.tabs.captureVisibleTab` cannot dispatch input, stream frames, or read console/network
 activity, and there is no public API for CDP-fidelity input dispatch or console/network event
 streaming. Content-script-simulated input (dispatching synthetic DOM events) is a fundamentally
 different and less reliable capability: it does not reproduce trusted, OS-level input the way

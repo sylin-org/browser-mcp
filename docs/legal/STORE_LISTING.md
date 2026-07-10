@@ -54,9 +54,13 @@ receive instructions, or take any action. Install instructions are in the projec
 
 What it can do, on instruction from that local application:
 - Read page content and structure (text, accessibility tree, shadow DOM).
-- Take screenshots of the automated tab, with an on-page cursor showing where input lands.
+- Take screenshots of the automated tab, with an on-page cursor showing where input lands, and,
+  when you ask for a session recording, relay screen-capture frames of that tab so the local
+  application can assemble an annotated animated GIF of what the agent did.
 - Dispatch clicks, keystrokes, scrolling, and drags with real-input fidelity.
 - Fill in forms, find elements, and run in-page JavaScript.
+- Place files and captured screenshots into a page's file inputs and drop targets, using data the
+  local application supplies (the extension never reads your disk).
 - Inspect console messages and network request metadata.
 - Open, navigate, group, and manage tabs in a dedicated, clearly labeled automation window.
 
@@ -95,9 +99,10 @@ https://github.com/sylin-org/ghostlight
 
 ```
 Ghostlight in Browser is a thin executor for a separately installed local automation host. It carries
-out browser actions -- reading page content, taking screenshots, dispatching input, and managing
-tabs -- on the automated tab, on instruction from that host over Chrome native messaging, so a
-connected AI agent can operate the user's own authenticated browser session. Everything the
+out browser actions -- reading page content, taking screenshots and (during a user-requested session
+recording) screen-capture frames, dispatching input, placing host-supplied files into page inputs,
+and managing tabs -- on the automated tab, on instruction from that host over Chrome native
+messaging, so a connected AI agent can operate the user's own authenticated browser session. Everything the
 extension does serves that single purpose; it makes no access-control decisions of its own and
 holds no policy or allowlist logic.
 ```

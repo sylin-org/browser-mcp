@@ -4,7 +4,7 @@
 class Ghostlight < Formula
   desc "Governed browser automation over your own authenticated Chromium session (MCP)"
   homepage "https://sylin-org.github.io/ghostlight/"
-  version "0.5.0"
+  version "0.5.1"
   license "Apache-2.0"
 
   on_macos do
@@ -23,8 +23,9 @@ class Ghostlight < Formula
   end
 
   def install
-    # ADR-0046: three role executables ship in the archive (ghostlight + the two adapters).
-    bin.install "ghostlight", "ghostlight-adapter-agent", "ghostlight-adapter-browser"
+    # ADR-0046 as amended by ADR-0051: two executables ship in the archive
+    # (ghostlight + the single role-selected ghostlight-relay pass-through).
+    bin.install "ghostlight", "ghostlight-relay"
   end
 
   def caveats

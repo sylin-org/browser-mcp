@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-10
+
+Windows first-run fix, found live while validating the Cline marketplace submission (issue #17).
+
+### Fixed
+- Windows auto-start actually works without elevation now (ADR-0054). The installer previously
+  registered a Task Scheduler logon task, but Windows denies creating logon-trigger tasks from a
+  non-admin shell -- so every unelevated install silently registered nothing, and a fresh user's
+  first tool call failed until they ran `ghostlight service` by hand. The installer now writes the
+  per-user registry Run key (always writable, visible in Task Manager's Startup page) and starts
+  the service once, detached; the relay's self-heal likewise spawns the sibling service executable
+  detached (null stdio, its own process group) instead of asking a scheduled task that may not
+  exist. Old scheduled tasks from elevated installs are cleaned up on install and uninstall.
+  macOS (launchd) and Linux (systemd --user) are unchanged.
+
 ## [0.5.0] - 2026-07-09
 
 The tool-surface release. Four new tools, harvested from the official Claude-in-Chrome v1.0.80 (now

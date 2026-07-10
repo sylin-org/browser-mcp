@@ -15,13 +15,16 @@ files govern. Decision record:
 
 | You | Engine | Governance module |
 |---|---|---|
-| An individual or solo developer, including production use and your own one-person business | Free | Free |
+| An individual or solo developer, including operational use and your own one-person business | Free | Free |
 | A nonprofit organization or an open-source project (noncommercial use) | Free | Free |
-| A company developing, testing, or evaluating | Free | Free |
-| A company running in production in all-open mode (no governance manifest or org policy configured) | Free | Free (the governance layer is a pass-through) |
-| A company running in production with governance configured (manifests, org policy, audit) | Free | Commercial subscription |
+| A company evaluating, developing, or testing | Free | Free |
+| A team of up to 5 people, including operational governance use | Free | Free |
+| A company running operationally in all-open mode (no governance manifest or org policy configured) | Free | Free (the governance layer is a pass-through) |
+| An organization of more than 5 people running governance operationally (manifests, org policy, audit -- what the license text calls "production use") | Free | Commercial subscription |
 
-If your row says "commercial subscription", contact hello@sylin.org.
+If your row says "commercial subscription", contact hello@sylin.org. In short: exactly
+one situation pays, and everything else is free -- see [PRICING.md](PRICING.md) for the
+tiers, plus the hardship and outgrew-the-tier accommodations.
 
 ## Labels, precisely
 
