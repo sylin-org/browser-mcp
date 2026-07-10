@@ -152,39 +152,26 @@ pub fn stamp_for(state: &LicenseState) -> Option<&'static str> {
     }
 }
 
-// --- ASCII-armored block (ADR-0028 Decision 11) ---------------------------------------------------
+// --- ASCII-armored block (ADR-0028 Decision 11; the generic wrapper is `crate::armor`) ------------
 
-const ARMOR_BEGIN: &str = "-----BEGIN GHOSTLIGHT LICENSE-----";
-const ARMOR_END: &str = "-----END GHOSTLIGHT LICENSE-----";
+/// The armor label for license envelopes.
+const ARMOR_LABEL: &str = "GHOSTLIGHT LICENSE";
 
-/// Wrap envelope JSON bytes as an ASCII-armored block (base64 wrapped at 64 columns). The armored
-/// payload decodes to the EXACT envelope bytes, so both forms verify identically.
+/// Wrap envelope JSON bytes as an ASCII-armored license block. The armored payload decodes to the
+/// EXACT envelope bytes, so both forms verify identically.
 pub fn armor(envelope_json: &[u8]) -> String {
-    let b64 = crate::b64::encode(envelope_json);
-    let mut out = String::with_capacity(b64.len() + ARMOR_BEGIN.len() + ARMOR_END.len() + 16);
-    out.push_str(ARMOR_BEGIN);
-    out.push('\n');
-    for chunk in b64.as_bytes().chunks(64) {
-        out.push_str(std::str::from_utf8(chunk).expect("base64 is ascii"));
-        out.push('\n');
-    }
-    out.push_str(ARMOR_END);
-    out.push('\n');
-    out
+    crate::armor::wrap(ARMOR_LABEL, envelope_json)
 }
 
-/// Extract envelope JSON bytes from an ASCII-armored block, or `None` if the markers are absent or
-/// the body is not valid base64. Whitespace between the markers is ignored.
+/// Extract envelope JSON bytes from an ASCII-armored license block, or `None` if the markers are
+/// absent or the body is not valid base64. Whitespace between the markers is ignored.
 pub fn dearmor(block: &str) -> Option<Vec<u8>> {
-    let start = block.find(ARMOR_BEGIN)? + ARMOR_BEGIN.len();
-    let end = block[start..].find(ARMOR_END)? + start;
-    let body: String = block[start..end].split_whitespace().collect();
-    crate::b64::decode(&body)
+    crate::armor::unwrap(ARMOR_LABEL, block)
 }
 
 /// True when the input looks like an armored license block (vs. a raw JSON envelope).
 pub fn is_armored(s: &str) -> bool {
-    s.contains(ARMOR_BEGIN)
+    crate::armor::is_armored(ARMOR_LABEL, s)
 }
 
 // --- Disk resolution ------------------------------------------------------------------------------
@@ -368,7 +355,10 @@ mod tests {
         let bytes = dev_envelope(&claims("evaluation", "2126-01-01"));
         let block = armor(&bytes);
         assert!(is_armored(&block));
-        assert!(block.contains(ARMOR_BEGIN) && block.contains(ARMOR_END));
+        assert!(
+            block.contains("-----BEGIN GHOSTLIGHT LICENSE-----")
+                && block.contains("-----END GHOSTLIGHT LICENSE-----")
+        );
         let recovered = dearmor(&block).expect("dearmor");
         assert_eq!(recovered, bytes, "armored payload is the exact envelope");
         assert!(matches!(
