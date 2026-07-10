@@ -55,6 +55,11 @@ pub struct Contact {
 /// org signs with a newer claims field still verifies on an older endpoint, which ignores it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct BundleClaims {
+    /// Bundle kind discriminator (ADR-0055 Impl.9a): future-proofs the envelope for governed
+    /// content beyond policy (saved scripts, break-glass). Serde-defaults to `"policy"` so bundles
+    /// signed before this field verify unchanged; verification rejects any other kind.
+    #[serde(default = "default_kind")]
+    kind: String,
     /// Monotonic publish sequence. The endpoint refuses a bundle whose `seq` is below the one it
     /// already holds (the anti-rollback check lives in the cache, ADR-0055 Phase 2).
     seq: u64,
@@ -63,6 +68,12 @@ struct BundleClaims {
     manifest: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     presentation: Option<Presentation>,
+}
+
+/// The default bundle `kind` (ADR-0055 Impl.9a): every bundle this build mints is a `"policy"`
+/// bundle, and any bundle predating the `kind` field is treated as one.
+fn default_kind() -> String {
+    "policy".to_string()
 }
 
 /// The on-disk / on-wire envelope: `v` version, base64 signed `claims`, and the signature legs.
@@ -103,6 +114,8 @@ pub enum BundleError {
     BadSignature,
     #[error("malformed policy bundle claims: {0}")]
     Claims(String),
+    #[error("unsupported policy bundle kind '{0}'")]
+    Kind(String),
 }
 
 /// Build a policy verifying key from an org's public key bytes: Ed25519-only, or composite when an
@@ -152,6 +165,9 @@ pub fn verify_bundle(bytes: &[u8], key: &GenKey) -> Result<VerifiedBundle, Bundl
     }
     let claims: BundleClaims =
         serde_json::from_slice(&claims_bytes).map_err(|e| BundleError::Claims(e.to_string()))?;
+    if claims.kind != "policy" {
+        return Err(BundleError::Kind(claims.kind));
+    }
     let manifest_json =
         serde_json::to_string(&claims.manifest).map_err(|e| BundleError::Claims(e.to_string()))?;
     Ok(VerifiedBundle {
@@ -195,6 +211,7 @@ pub fn sign_bundle(
     presentation: Option<Presentation>,
 ) -> Vec<u8> {
     let claims = BundleClaims {
+        kind: default_kind(),
         seq,
         manifest,
         presentation,
@@ -241,6 +258,44 @@ mod tests {
                 label: None,
             }],
         }
+    }
+
+    /// Assemble an Ed25519-only envelope over arbitrary hand-built claims bytes, exactly as
+    /// `sign_bundle` frames it (used to forge legacy / unknown-kind claims the signer never mints).
+    fn ed_envelope_from_claims(ed_seed: &[u8; 32], claims_bytes: &[u8]) -> Vec<u8> {
+        let sig = crypto::admin::ed_sign(ed_seed, claims_bytes);
+        let mut env = serde_json::Map::new();
+        env.insert("v".into(), serde_json::json!(1));
+        env.insert(
+            "claims".into(),
+            serde_json::json!(crate::b64::encode(claims_bytes)),
+        );
+        env.insert("sig".into(), serde_json::json!(crate::b64::encode(&sig)));
+        serde_json::to_vec(&env).expect("envelope serializes")
+    }
+
+    #[test]
+    fn kind_defaults_to_policy_for_old_claims() {
+        let ed_seed = [31u8; 32];
+        let claims = serde_json::json!({ "seq": 1, "manifest": sample_manifest() });
+        let claims_bytes = serde_json::to_vec(&claims).unwrap();
+        let bytes = ed_envelope_from_claims(&ed_seed, &claims_bytes);
+        let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
+        assert!(verify_bundle(&bytes, &key).is_ok());
+    }
+
+    #[test]
+    fn unknown_kind_is_rejected() {
+        let ed_seed = [32u8; 32];
+        let claims =
+            serde_json::json!({ "kind": "script", "seq": 1, "manifest": sample_manifest() });
+        let claims_bytes = serde_json::to_vec(&claims).unwrap();
+        let bytes = ed_envelope_from_claims(&ed_seed, &claims_bytes);
+        let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
+        assert_eq!(
+            verify_bundle(&bytes, &key),
+            Err(BundleError::Kind("script".to_string()))
+        );
     }
 
     #[test]
