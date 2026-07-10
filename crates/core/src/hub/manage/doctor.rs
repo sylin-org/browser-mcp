@@ -7,6 +7,7 @@
 //! script) acts on, never an action doctor takes for them. Its only side effect is
 //! [`ipc::probe_endpoint`]'s single, harmless probe connection, which the report discloses.
 
+use crate::governance::managed::status::{read_sidecar, sidecar_path, ManagedStatus};
 use crate::install::native_host::WowView;
 use crate::install::{clients, host_file_path, native_host, Hive, PlanCtx};
 use crate::Result;
@@ -77,6 +78,9 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
     println!();
     println!("Governance:");
     for line in governance_section_lines() {
+        println!("{line}");
+    }
+    for line in managed_section_lines() {
         println!("{line}");
     }
 
@@ -328,6 +332,54 @@ fn render_governance_status(
             s.mode.as_str()
         )],
     }
+}
+
+/// The managed:// section of `ghostlight doctor` (ADR-0055 Impl.8): answers the admin's "did my
+/// policy propagate?" from the T2 status sidecar, with no live service session required. Reads the
+/// fixed production paths; a missing bootstrap, data dir, or sidecar each degrades to one plain line.
+fn managed_section_lines() -> Vec<String> {
+    let paths = crate::governance::paths::GovernancePaths::production();
+    if !paths.managed_bootstrap.exists() {
+        return vec![format!("  {:<9}not configured", "managed")];
+    }
+    let Some(cache_path) = paths.managed_cache.as_ref() else {
+        return vec![format!("  {:<9}configured; no data directory", "managed")];
+    };
+    match read_sidecar(&sidecar_path(cache_path)) {
+        None => vec![format!(
+            "  {:<9}configured; no status yet (service has not resolved it)",
+            "managed"
+        )],
+        Some(s) => render_managed_status(&s),
+    }
+}
+
+/// The pure rendering half of [`managed_section_lines`] for a resolved sidecar (ADR-0055 Impl.8):
+/// turns a [`ManagedStatus`] into the exact doctor lines, so the wording is unit-testable without
+/// touching production paths. Professional register (ADR-0055 D9): plain, precise, no mascot voice.
+fn render_managed_status(s: &ManagedStatus) -> Vec<String> {
+    let seq = s
+        .seq
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let reason = match &s.stale_reason {
+        Some(r) => format!(": {r}"),
+        None => String::new(),
+    };
+    let mut lines = vec![
+        format!(
+            "  {:<9}seq {} ({}{}), fetched {}",
+            "managed", seq, s.freshness, reason, s.fetched_at
+        ),
+        format!("  {:<9}{}", "source", s.source),
+    ];
+    if let Some(org) = s.presentation.as_ref().and_then(|p| p.org_name.as_deref()) {
+        lines.push(format!("  {:<9}{}", "org", org));
+    }
+    if let Some(err) = &s.last_error {
+        lines.push(format!("  {:<9}{}", "note", err));
+    }
+    lines
 }
 
 fn state_line(probe: &EndpointProbe) -> String {
@@ -835,6 +887,42 @@ mod tests {
         assert_eq!(
             lines,
             vec!["  mode  enforce (denied calls are blocked)".to_string()]
+        );
+    }
+
+    #[test]
+    fn managed_line_renders_fresh() {
+        let s = ManagedStatus {
+            v: 1,
+            freshness: "fresh".to_string(),
+            stale_reason: None,
+            seq: Some(6),
+            fetched_at: "2026-07-10T14:02:00+00:00".to_string(),
+            source: "https://policy.example/x".to_string(),
+            presentation: None,
+            last_error: None,
+        };
+        assert_eq!(
+            render_managed_status(&s)[0],
+            "  managed  seq 6 (fresh), fetched 2026-07-10T14:02:00+00:00"
+        );
+    }
+
+    #[test]
+    fn managed_line_renders_guardian_door() {
+        let s = ManagedStatus {
+            v: 1,
+            freshness: "last_known_good".to_string(),
+            stale_reason: Some("rollback_refused".to_string()),
+            seq: Some(9),
+            fetched_at: "2026-07-10T14:02:00+00:00".to_string(),
+            source: "https://policy.example/x".to_string(),
+            presentation: None,
+            last_error: None,
+        };
+        assert_eq!(
+            render_managed_status(&s)[0],
+            "  managed  seq 9 (last_known_good: rollback_refused), fetched 2026-07-10T14:02:00+00:00"
         );
     }
 
