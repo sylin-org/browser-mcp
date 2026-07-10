@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extension/icons/icon512.png" alt="Ghostlight mascot: a small sky-blue ghost holding a glowing lantern" width="140" height="140">
+  <img src="extension/icons/ghostlight-mascot.png" alt="Ghostlight mascot: a small sky-blue pixel-art ghost holding a glowing lantern" width="100" height="100">
 </p>
 
 <h1 align="center">Ghostlight</h1>
