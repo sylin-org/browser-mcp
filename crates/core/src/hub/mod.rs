@@ -469,6 +469,23 @@ impl ServiceContext {
                     "license state is abnormal for an operational governance deployment; audit records will carry a license stamp until it is resolved"
                 );
             }
+            // ADR-0055 Impl.9c: under managed governance the tool-call audit stream carries the
+            // org-signed policy sequence from the T2 status sidecar. Other operational origins
+            // (OrgPolicyFile) leave policy_seq unset (default None), so their streams are unchanged.
+            if matches!(
+                loaded_policy.origin,
+                Some(crate::governance::manifest::source::ManifestOrigin::Managed)
+            ) {
+                let paths = crate::governance::paths::GovernancePaths::production();
+                if let Some(cache_path) = paths.managed_cache.as_ref() {
+                    let sidecar = crate::governance::managed::status::sidecar_path(cache_path);
+                    if let Some(status) =
+                        crate::governance::managed::status::read_sidecar(&sidecar)
+                    {
+                        recorder.set_policy_seq(status.seq);
+                    }
+                }
+            }
         }
 
         let capabilities = outbound::Registry::new(vec![Arc::new(

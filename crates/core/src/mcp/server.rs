@@ -359,6 +359,9 @@ where
     // exit on stdin close.
     let policy_subscription = tokio::spawn({
         let governance_slot = Arc::clone(&governance_slot);
+        // ADR-0055 Impl.9c: a concrete Recorder handle (the AuditSink trait has no set_policy_seq)
+        // so a live policy change keeps the tool-call policy_seq stamp in step with the new origin.
+        let seq_recorder = Arc::clone(&recorder);
         let recorder = recorder.clone() as Arc<dyn AuditSink>;
         let mut policy_changes = store.policy();
         let tx = tx.clone();
@@ -367,6 +370,25 @@ where
             let mut ignored_in_force = policy_changes.borrow().user_manifest_ignored;
             while policy_changes.changed().await.is_ok() {
                 let loaded_policy = policy_changes.borrow_and_update().clone();
+
+                // ADR-0055 Impl.9c: track the org-signed policy sequence across a live change. A
+                // managed origin re-reads the T2 sidecar for the current seq; any other origin clears
+                // it (default None), so a Managed -> non-managed transition drops the stamp.
+                match loaded_policy.origin {
+                    Some(crate::governance::manifest::source::ManifestOrigin::Managed) => {
+                        let paths = crate::governance::paths::GovernancePaths::production();
+                        if let Some(cache_path) = paths.managed_cache.as_ref() {
+                            let sidecar =
+                                crate::governance::managed::status::sidecar_path(cache_path);
+                            if let Some(status) =
+                                crate::governance::managed::status::read_sidecar(&sidecar)
+                            {
+                                seq_recorder.set_policy_seq(status.seq);
+                            }
+                        }
+                    }
+                    _ => seq_recorder.set_policy_seq(None),
+                }
 
                 let outgoing = current_governance(&governance_slot);
                 let before = advertise::advertised_tools(&fixture, outgoing.grants());
