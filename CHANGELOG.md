@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-10
+
+npm launcher supply-chain hardening (prompted by a Socket.dev supply-chain finding on the 0.5.1
+package). No changes to the ghostlight binaries themselves.
+
+### Security
+- The npm launcher now verifies every downloaded binary before it is made executable or run. Each
+  release binary's sha256 is pinned in a `checksums.json` that ships inside the npm package (an
+  immutable, independently hosted manifest), and the launcher aborts on any mismatch -- a tampered
+  release asset, a corrupted transfer, or a hijacked redirect can no longer lead to running an
+  unverified binary.
+- Downloads and their redirects are constrained to GitHub hosts (`github.com` and
+  `*.githubusercontent.com`), so a rogue `Location` header cannot redirect the fetch off-platform.
+- The release pipeline (`scripts/release.ps1`) generates the pinned manifest from the published
+  `.sha256` assets and refuses to publish a launcher whose manifest is missing or incomplete.
+
 ## [0.5.1] - 2026-07-10
 
 Windows first-run fix, found live while validating the Cline marketplace submission (issue #17).

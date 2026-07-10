@@ -1,6 +1,6 @@
 {
   "name": "ghostlight",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "mcpName": "org.sylin/ghostlight",
   "description": "Governed browser automation over your own authenticated Chromium session, for AI coding agents. Thin npm launcher for the ghostlight binary.",
   "bin": {
@@ -8,8 +8,12 @@
   },
   "files": [
     "bin/ghostlight.js",
+    "checksums.json",
     "README.md"
   ],
+  "scripts": {
+    "test": "node --test test/launcher.test.js"
+  },
   "engines": {
     "node": ">=18"
   },

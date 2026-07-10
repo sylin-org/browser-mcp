@@ -5,6 +5,13 @@
 // ADR-0046 + ADR-0051 Phase 3: a bare `npx ghostlight` (what an MCP client launches) execs
 // `ghostlight-relay --role agent` (the MCP pass-through); a CLI subcommand (install/doctor/...)
 // execs ghostlight. Zero dependencies.
+//
+// SUPPLY-CHAIN INTEGRITY: this is a download-and-execute-native-binary launcher, so it verifies
+// what it runs. Every downloaded binary is checked (sha256) against a checksums.json that travels
+// INSIDE this npm package -- an immutable, independently hosted manifest -- BEFORE it is made
+// executable or run. A mismatch (tampered release asset, corrupted transfer, hijacked redirect)
+// aborts. Downloads and their redirects are also constrained to GitHub hosts. See ADR/Socket note.
+//
 // IMPORTANT: stdout belongs to the MCP stdio protocol when a client spawns this; every message this
 // launcher prints goes to stderr.
 
@@ -14,6 +21,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const https = require("https");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 const VERSION = require("../package.json").version;
@@ -45,40 +53,67 @@ function targetTriple() {
   return null;
 }
 
-function download(url, dest, redirectsLeft) {
+// Redirect/download allowlist: GitHub release downloads start at github.com and 302 to the
+// object store on *.githubusercontent.com. Anything else is refused so a hijacked Location header
+// cannot redirect the fetch off-platform.
+function isAllowedHost(host) {
+  return host === "github.com" || host.endsWith(".githubusercontent.com");
+}
+
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+// The pinned-integrity manifest bundled in this package (written at release time). Its absence or a
+// version skew is fatal: we will not run a binary we cannot verify.
+function loadChecksums() {
+  const file = path.join(__dirname, "..", "checksums.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(
+      `integrity manifest (checksums.json) missing or unreadable (${e.message}). ` +
+        `Reinstall a published version (npx ghostlight@latest) or build from source.`
+    );
+  }
+  if (manifest.version !== VERSION) {
+    throw new Error(
+      `integrity manifest is for ${manifest.version}, but this launcher is ${VERSION}; refusing to proceed.`
+    );
+  }
+  return manifest;
+}
+
+function download(url, tmpPath, redirectsLeft) {
   return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return reject(new Error(`bad download url: ${url}`));
+    }
+    if (!isAllowedHost(parsed.host)) {
+      return reject(new Error(`refusing to download from untrusted host: ${parsed.host}`));
+    }
     if (redirectsLeft <= 0) return reject(new Error("too many redirects"));
     https
       .get(url, { headers: { "User-Agent": `ghostlight-npm/${VERSION}` } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return resolve(download(res.headers.location, dest, redirectsLeft - 1));
+          // Resolve relative Location against the current URL; the recursive call re-checks the host.
+          const next = new URL(res.headers.location, url).toString();
+          return resolve(download(next, tmpPath, redirectsLeft - 1));
         }
         if (res.statusCode !== 200) {
           res.resume();
           return reject(new Error(`download failed: HTTP ${res.statusCode} for ${url}`));
         }
-        const tmp = `${dest}.download-${process.pid}`;
-        const out = fs.createWriteStream(tmp, { mode: 0o755 });
+        const out = fs.createWriteStream(tmpPath, { mode: 0o755 });
         res.pipe(out);
-        out.on("finish", () => {
-          out.close(() => {
-            try {
-              fs.renameSync(tmp, dest);
-              resolve();
-            } catch (e) {
-              // A concurrent launcher won the rename race; theirs is identical.
-              if (fs.existsSync(dest)) {
-                fs.rmSync(tmp, { force: true });
-                resolve();
-              } else {
-                reject(e);
-              }
-            }
-          });
-        });
+        out.on("finish", () => out.close((err) => (err ? reject(err) : resolve())));
         out.on("error", (e) => {
-          fs.rmSync(tmp, { force: true });
+          fs.rmSync(tmpPath, { force: true });
           reject(e);
         });
       })
@@ -96,6 +131,7 @@ async function ensureBinaries() {
     );
     process.exit(1);
   }
+  const checksums = loadChecksums();
   const exe = process.platform === "win32" ? ".exe" : "";
   const dir = path.join(os.homedir(), ".ghostlight", "bin", `v${VERSION}`);
   fs.mkdirSync(dir, { recursive: true });
@@ -103,15 +139,39 @@ async function ensureBinaries() {
   let announced = false;
   for (const b of BINS) {
     const bin = path.join(dir, `${b}${exe}`);
-    if (fs.existsSync(bin)) continue;
+    if (fs.existsSync(bin)) continue; // already downloaded AND verified on a prior run
     if (!announced) {
       process.stderr.write(`ghostlight: first run, fetching v${VERSION} for ${triple}...\n`);
       announced = true;
     }
     const asset = `${b}-${triple}${exe}`;
+    const expected = checksums.binaries && checksums.binaries[asset];
+    if (!expected) {
+      throw new Error(`no pinned checksum for ${asset}; refusing to run an unverified binary`);
+    }
     const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
-    await download(url, bin, 5);
-    if (process.platform !== "win32") fs.chmodSync(bin, 0o755);
+    const tmp = `${bin}.download-${process.pid}`;
+    await download(url, tmp, 5);
+
+    const actual = sha256File(tmp);
+    if (actual !== expected) {
+      fs.rmSync(tmp, { force: true });
+      throw new Error(
+        `integrity check FAILED for ${asset}: expected ${expected}, got ${actual}. ` +
+          `The downloaded binary does not match the pinned checksum; not running it.`
+      );
+    }
+    if (process.platform !== "win32") fs.chmodSync(tmp, 0o755);
+    try {
+      fs.renameSync(tmp, bin);
+    } catch (e) {
+      // A concurrent launcher won the rename race; theirs passed the same verification.
+      if (fs.existsSync(bin)) {
+        fs.rmSync(tmp, { force: true });
+      } else {
+        throw e;
+      }
+    }
   }
   if (announced) {
     process.stderr.write(
@@ -122,24 +182,32 @@ async function ensureBinaries() {
   return { dir, exe };
 }
 
-ensureBinaries()
-  .then(({ dir, exe }) => {
-    const args = process.argv.slice(2);
-    // ADR-0046 + ADR-0051 Phase 3: a CLI subcommand runs the `ghostlight` binary; a bare/flags-only
-    // invocation is an MCP launch and runs `ghostlight-relay --role agent` (the pass-through your
-    // client relays through).
-    const isCli = args.some((a) => CLI_SUBCOMMANDS.has(a));
-    const binName = isCli ? "ghostlight" : "ghostlight-relay";
-    const bin = path.join(dir, `${binName}${exe}`);
-    const spawnArgs = isCli ? args : ["--role", "agent", ...args];
-    const result = spawnSync(bin, spawnArgs, { stdio: "inherit" });
-    if (result.error) {
-      process.stderr.write(`ghostlight: failed to launch binary: ${result.error.message}\n`);
+function main() {
+  ensureBinaries()
+    .then(({ dir, exe }) => {
+      const args = process.argv.slice(2);
+      // ADR-0046 + ADR-0051 Phase 3: a CLI subcommand runs the `ghostlight` binary; a bare/flags-only
+      // invocation is an MCP launch and runs `ghostlight-relay --role agent` (the pass-through your
+      // client relays through).
+      const isCli = args.some((a) => CLI_SUBCOMMANDS.has(a));
+      const binName = isCli ? "ghostlight" : "ghostlight-relay";
+      const bin = path.join(dir, `${binName}${exe}`);
+      const spawnArgs = isCli ? args : ["--role", "agent", ...args];
+      const result = spawnSync(bin, spawnArgs, { stdio: "inherit" });
+      if (result.error) {
+        process.stderr.write(`ghostlight: failed to launch binary: ${result.error.message}\n`);
+        process.exit(1);
+      }
+      process.exit(result.status === null ? 1 : result.status);
+    })
+    .catch((e) => {
+      process.stderr.write(`ghostlight: ${e.message}\n`);
       process.exit(1);
-    }
-    process.exit(result.status === null ? 1 : result.status);
-  })
-  .catch((e) => {
-    process.stderr.write(`ghostlight: ${e.message}\n`);
-    process.exit(1);
-  });
+    });
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { targetTriple, isAllowedHost, sha256File, loadChecksums };
