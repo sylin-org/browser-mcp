@@ -36,7 +36,9 @@ impl FreshError {
     /// anything else is treated as a bad source.
     fn from_fetch(e: ManagedError) -> Self {
         match e {
-            ManagedError::Io { .. } | ManagedError::NetworkNotYet => FreshError::Unreachable,
+            ManagedError::Io { .. } | ManagedError::NetworkNotYet | ManagedError::Fetch(_) => {
+                FreshError::Unreachable
+            }
             other => FreshError::Bad(other.to_string()),
         }
     }
@@ -307,7 +309,7 @@ mod tests {
         ManagedBootstrap {
             source: source.display().to_string(),
             pubkey_ed25519: hex(&crypto::admin::ed_public(seed)),
-            pubkey_mldsa: None,
+            ..Default::default()
         }
     }
 
@@ -386,7 +388,7 @@ mod tests {
         let bootstrap = ManagedBootstrap {
             source: "irrelevant".into(),
             pubkey_ed25519: "tooshort".into(),
-            pubkey_mldsa: None,
+            ..Default::default()
         };
         let cache = std::env::temp_dir().join("gl-resolve-badkey.bundle");
         assert!(matches!(

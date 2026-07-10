@@ -18,6 +18,8 @@
 
 pub mod cache;
 pub mod cli;
+#[cfg(feature = "managed-fetch")]
+pub mod http;
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +33,7 @@ use crate::governance::manifest::document::{parse_manifest, Manifest, ManifestEr
 /// carries the org's public verifying key(s) and the policy source. Org-authoritative: MDM drops it
 /// in the admin location exactly as it drops `policy.json`. Deliberately `deny_unknown_fields`: a
 /// typo in a governance trust anchor is a hard error, never silently ignored.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedBootstrap {
     /// Where the signed policy bundle comes from: a local filesystem path (Phase 1c) or an
@@ -43,6 +45,18 @@ pub struct ManagedBootstrap {
     /// key; present = a production composite key, which then requires both signature legs).
     #[serde(default)]
     pub pubkey_mldsa: Option<String>,
+    /// Bearer token sent as `Authorization: Bearer` on the network fetch (ADR-0055 D4 v1 auth).
+    /// Optional: absent = an unauthenticated fetch (fine for a public or network-allowlisted source).
+    #[serde(default)]
+    pub bearer_token: Option<String>,
+    /// The org endpoint's pinned CA certificate(s) in PEM. When present the fetch trusts ONLY this
+    /// root (ADR-0055 D4 CA pin); when absent it uses the bundled webpki roots.
+    #[serde(default)]
+    pub ca_cert_pem: Option<String>,
+    /// How often to re-poll the source, in seconds (the Phase 4 fetch loop). Optional; the loop
+    /// applies a default when absent.
+    #[serde(default)]
+    pub poll_seconds: Option<u64>,
 }
 
 /// Why a managed bootstrap or bundle could not be loaded or verified. Owned by this module (rather
@@ -64,7 +78,13 @@ pub enum ManagedError {
         #[source]
         source: std::io::Error,
     },
-    #[error("network policy fetch is not yet supported (ADR-0055 Phase 3); managed source must be a local path")]
+    /// A network fetch failed (connect / TLS / HTTP / pin). Treated as UNREACHABLE by the cache
+    /// reconcile -- TLS is never the trust anchor; the bundle signature is.
+    #[error("managed policy fetch failed: {0}")]
+    Fetch(String),
+    /// An `https://` source but this is a no-network (air-gap) build (`--no-default-features`, the
+    /// `managed-fetch` feature off): use a local file or USB bundle source, or a network build.
+    #[error("this build has no network support (managed-fetch feature off); use a local managed source")]
     NetworkNotYet,
 }
 
@@ -165,12 +185,31 @@ pub fn load_from_local_path(
 /// (ADR-0055 D7).
 pub fn fetch_bytes(b: &ManagedBootstrap) -> Result<Vec<u8>, ManagedError> {
     if b.source.starts_with("http://") || b.source.starts_with("https://") {
-        return Err(ManagedError::NetworkNotYet);
+        return fetch_http(b);
     }
     std::fs::read(&b.source).map_err(|e| ManagedError::Io {
         path: b.source.clone(),
         source: e,
     })
+}
+
+/// The network arm of [`fetch_bytes`]. With `managed-fetch` (the default) it performs a real fetch
+/// through the [`http`] module; without it (the air-gap build) it errors, directing the operator to a
+/// local source.
+#[cfg(feature = "managed-fetch")]
+fn fetch_http(b: &ManagedBootstrap) -> Result<Vec<u8>, ManagedError> {
+    match http::fetch(b, None).map_err(|e| ManagedError::Fetch(e.to_string()))? {
+        http::FetchOutcome::Modified { bytes, .. } => Ok(bytes),
+        // A non-conditional GET should not answer 304; if it does, there is nothing fresh to return.
+        http::FetchOutcome::NotModified => {
+            Err(ManagedError::Fetch("unexpected 304 to a non-conditional request".into()))
+        }
+    }
+}
+
+#[cfg(not(feature = "managed-fetch"))]
+fn fetch_http(_b: &ManagedBootstrap) -> Result<Vec<u8>, ManagedError> {
+    Err(ManagedError::NetworkNotYet)
 }
 
 /// Load, verify, and parse the managed policy named by a bootstrap, deriving the org key from the
@@ -243,19 +282,20 @@ mod tests {
         let ed_only = ManagedBootstrap {
             source: "x".into(),
             pubkey_ed25519: hex_encode(&crypto::admin::ed_public(&ed_seed)),
-            pubkey_mldsa: None,
+            ..Default::default()
         };
         assert!(matches!(org_key(&ed_only), Ok(GenKey::Ed25519(_))));
         let composite = ManagedBootstrap {
             source: "x".into(),
             pubkey_ed25519: hex_encode(&crypto::admin::ed_public(&ed_seed)),
             pubkey_mldsa: Some(hex_encode(&crypto::admin::mldsa_public(&mldsa_seed))),
+            ..Default::default()
         };
         assert!(matches!(org_key(&composite), Ok(GenKey::Composite { .. })));
         let bad = ManagedBootstrap {
             source: "x".into(),
             pubkey_ed25519: "notlongenough".into(),
-            pubkey_mldsa: None,
+            ..Default::default()
         };
         assert!(matches!(org_key(&bad), Err(ManagedError::Key(_))));
     }
@@ -329,12 +369,15 @@ mod tests {
         assert!(matches!(load_bootstrap_at(&path), Ok(None)));
     }
 
+    #[cfg(not(feature = "managed-fetch"))]
     #[test]
-    fn load_bundle_rejects_a_network_source_for_now() {
+    fn air_gap_build_rejects_a_network_source() {
+        // Without the managed-fetch feature (the pure-Rust air-gap build), an https source is not
+        // fetchable; the operator must use a local file or USB bundle source.
         let b = ManagedBootstrap {
             source: "https://policy.acme.example/ghostlight.bundle".into(),
             pubkey_ed25519: hex_encode(&crypto::admin::ed_public(&[7u8; 32])),
-            pubkey_mldsa: None,
+            ..Default::default()
         };
         assert!(matches!(
             load_bundle(&b, ok_pattern),

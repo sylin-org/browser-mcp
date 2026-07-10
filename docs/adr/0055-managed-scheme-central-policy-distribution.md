@@ -260,9 +260,21 @@ org-authored fields (D9): display name, one-line rationale, and contact channel(
 covers the manifest, the sequence, AND the presentation, so an attacker cannot swap the org's contact
 for a phishing address without breaking the signature.
 
-4. **HTTP client (Phase 3): `reqwest` with `rustls-tls` and `default-features = false`** -- pure Rust
-(honoring the no-C-toolchain rule stated in `crypto.rs`), tokio-native, with rustls custom
-certificate verification for the D4 CA pin.
+4. **HTTP client (Phase 3): `ureq` + rustls, feature-gated behind `managed-fetch`, quarantined behind
+`fetch_bytes`** (amended 2026-07-10 via the delight lens, superseding the earlier `reqwest` pick).
+The network path is the smallest, most isolated thing it can be. `ureq` (a small, readable dependency
+tree) rather than `reqwest` (~100 transitive crates) keeps the supply-chain audit surface tiny for a
+product whose pitch is a clean supply chain; a periodic poll needs no async client, so blocking on a
+`spawn_blocking` thread is fine. The ENTIRE HTTP/TLS dependency lives behind the one
+`governance::managed::fetch_bytes` seam, so verify/cache/reconcile stay network-agnostic and testable
+without a server. It is a CARGO FEATURE (`managed-fetch`, on by default in the shipped binary,
+removable): `--no-default-features` yields a pure-Rust, no-C, air-gap-only build as a first-class
+artifact, which DISSOLVES the no-C-toolchain tension -- the audited `ring`-backed TLS exists only in
+the network build, never in the air-gap one, and the signature crypto stays pure Rust everywhere. CA
+pinning is a one-root rustls trust store (trust exactly the org's CA), not a hand-rolled verifier. TLS
+is never load-bearing: trust lives in the signature and availability in the cache, so a TLS or pin
+failure is just `FreshError::Unreachable` (keep last-known-good), and a pin mismatch surfaces as a
+guardian door (Phase 5), never an opaque stack trace.
 
 5. **Cache (Phase 2): sign in v1, defer machine-bound at-rest encryption.** Verifying the cache
 signature on load closes the fail-open-via-tampered-cache hole (the security-critical half, reusing
