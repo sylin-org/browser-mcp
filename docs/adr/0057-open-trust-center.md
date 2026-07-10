@@ -82,6 +82,42 @@ sub-processor list is empty and published as such.
 claims -> shipped features -> guides). Existing guides (`compliance-team`, `siem-integration`,
 `governance-configuration`, `licensing`) are cited, not duplicated: one source of truth per fact.
 
+## Research ratification (2026-07-10, same day; owner: "Excellent suggestions. All accepted.")
+
+Three research lanes (questionnaire frameworks: CAIQ v4 / SIG Lite / VSA / ISO 27001 A.5.19-5.23 +
+27036-2; AI-era vendor questions incl. the SafeBase 800-trust-center mining, CSA AI Controls
+Matrix, EU AI Act deployer duties, the Gartner Dec-2025 "block AI browsers" guidance; trust-center
+delight and small-vendor honesty patterns) produced these ratified additions:
+
+10. **The FAQ is ~22 questions in six persona-scannable sections** (Data & privacy 6; AI & agents
+6; Security posture 4; Continuity & viability 2; Supply chain 2; Legal & support 2) -- the exact
+questions are pinned in the trust-1 batch (task W2). Evidence-linked, runnable answers were found
+NOWHERE in the industry (even Tailscale NDA-gates its SOC 2 report); Ghostlight gates nothing --
+the confirmed differentiator.
+
+11. **Ratified framings (normative for every trust document):**
+(a) The vendor's crown jewels are the SOURCE REPO, SIGNING KEYS, and RELEASE PIPELINE -- vendor-side
+security questions are answered about those assets, and "a breach of us" means build/signing/
+update-channel compromise, answered with an advisory commitment, never customer-data language.
+(b) Collapsed questions are answered "N/A -- structurally impossible" WITH the reason, in the
+architecture-as-evidence register (Obsidian pattern), stating absences as facts with reasons, never
+apologies (Tailscale register).
+(c) The Gartner flip: Ghostlight is NOT an AI browser replacing the hardened browser; it drives the
+user's own hardened Chrome under policy -- the opening positioning of the AI section.
+(d) Prompt injection gets the honest answer: unsolved industry-wide; governance BOUNDS THE BLAST
+RADIUS (sacred domains, capability grants, take-the-wheel, kill switch).
+(e) EU AI Act: Ghostlight is the TOOL vendor and the customer is the deployer; documents SUPPORT
+the customer's Article 12/26 duties and never render legal advice.
+(f) Source access is a STANDING AUDIT RIGHT (the A.5.20 line).
+(g) `questionnaire.md` is CAIQ-SHAPED so a CSA STAR Level 1 self-assessment submission later is a
+copy job (STAR itself deferred).
+
+12. **Adopted artifacts:** a per-release CycloneDX SBOM generated in release CI (EU CRA + routine
+questionnaire asks); `security.txt` (RFC 9116, with `Expires`) on sylin.org -- founder-side;
+OpenSSF `security-insights.yml` in-repo; the Mullvad-style PUBLISH-ALL-AUDITS pledge (all future
+third-party audits published in full, including findings) written into `security-overview.md`; a
+pen-test-when-funded / certification-roadmap statement in the what-we-do-not-have section.
+
 ## Consequences
 
 - An enterprise reviewer can self-serve the entire assessment in one sitting, with citations; the
