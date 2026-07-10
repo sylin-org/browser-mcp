@@ -366,6 +366,29 @@ impl ServiceContext {
             }
         });
 
+        // Licensing observability (ADR-0028 Decisions 1 and 3, refined 2026-07-10). The engine is
+        // DORMANT unless governance is operationally in effect via an ORG-DEPLOYED policy: in the
+        // free all-open path, and for a user-supplied `--manifest` / `GHOSTLIGHT_MANIFEST`, nothing
+        // is resolved, stamped, or warned, so the audit stream stays byte-identical to a build with
+        // no licensing at all. The recorder carries the stamp opaquely; all license logic lives in
+        // `governance::license`. A future `managed://` origin joins `OrgPolicyFile` here.
+        let governance_operational = matches!(
+            loaded_policy.origin,
+            Some(crate::governance::manifest::source::ManifestOrigin::OrgPolicyFile)
+        );
+        if governance_operational {
+            let (license_state, license_path) = crate::governance::license::resolve_from_disk();
+            let stamp = crate::governance::license::stamp_for(&license_state);
+            recorder.set_license_stamp(stamp);
+            if let Some(s) = stamp {
+                tracing::warn!(
+                    stamp = s,
+                    path = ?license_path,
+                    "license state is abnormal for an operational governance deployment; audit records will carry a license stamp until it is resolved"
+                );
+            }
+        }
+
         let capabilities = outbound::Registry::new(vec![Arc::new(
             outbound::browser::BrowserCapability::new(browser.clone()),
         )]);

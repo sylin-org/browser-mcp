@@ -60,15 +60,22 @@ use case, and a rough seat count. The agreement is one page.
 
 ## How licensing works
 
-A license is a small signed JSON file the binary verifies offline (Ed25519). There is no
-activation server, no telemetry, and no network traffic in the license path. License
-state is observational: in an abnormal state (expired, or missing where org policy is
-present), the binary keeps working exactly as before and appends a `license` field to
-your own audit records, so your compliance process sees it.
+A license is a small signed file the binary verifies fully offline -- a composite **Ed25519 +
+ML-DSA-65** signature (the latter is post-quantum, FIPS 204), so forging one would mean breaking
+both a classical and a post-quantum scheme. There is no activation server, no telemetry, and no
+network traffic in the license path. License state is observational: while governance is actually
+operating and the license state is abnormal (expired, invalid, or missing), the binary keeps
+working exactly as before and appends a `license` field to your own audit records, so your
+compliance process sees it. In the free all-open path the licensing layer is dormant and writes
+nothing at all.
 
-License key verification ships in an upcoming release. Today nothing checks anything:
-every documented feature works without a key, and evaluation requires no contact with
-us. The terms in [LICENSING.md](LICENSING.md) apply regardless of tooling.
+License verification is present and never gates behavior. Production key issuance opens with the
+founding program; until then every documented feature works without a key, and evaluation requires
+no contact with us (a public evaluation key lets you self-sign). The terms in
+[LICENSING.md](LICENSING.md) apply regardless of tooling.
+
+To install, check, or refresh a key once you have one, see
+[entering a license](docs/guides/licensing.md).
 
 ## Questions
 

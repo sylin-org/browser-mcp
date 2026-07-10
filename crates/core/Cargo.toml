@@ -1,6 +1,6 @@
 [package]
 name = "ghostlight-core"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Ghostlight core: governance, tools, browser protocol, hub composition, and the installer (ADR-0046)."
 publish = false
@@ -28,6 +28,18 @@ url = "2"
 jpeg-decoder = { version = "0.3", default-features = false }
 color_quant = "1.1"
 gif = { version = "0.13", default-features = false, features = ["std"] }
+# License verification (ADR-0028 Decision 11): composite Ed25519 + ML-DSA-65 (FIPS 204) signature
+# over the license claims, verified fully offline against an embedded key table. ML-DSA is the
+# post-quantum leg; Ed25519 is the classical guard (AND-composition). Both pure Rust (the four-target
+# cross-compile matrix must not grow a C toolchain). base64 is reused from crate::b64 (lean-internals
+# posture), so no base64 crate is added here.
+ed25519-dalek = "2"
+fips204 = "0.4"
+
+[features]
+# Gates the offline license-authoring CLI (sign, pubkey). Never enabled in release builds; the
+# founder builds with it on the air-gapped machine (ADR-0028 Decision 10).
+license-admin = []
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

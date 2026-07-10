@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-10
+
+The offline licensing engine (ADR-0028), plus how-to guides. Licensing is purely observational --
+it never gates behavior, never phones home, and is dormant unless an org-deployed governance policy
+is operating -- so this release changes nothing about how Ghostlight runs.
+
+### Added
+- Offline license verification: `ghostlight license status` / `install` (a file, an armored
+  `-----BEGIN GHOSTLIGHT LICENSE-----` block, or stdin), plus a read-only `License:` section in
+  `ghostlight doctor`. A license is verified locally with a composite Ed25519 + ML-DSA-65 (FIPS 204,
+  post-quantum) signature; there is no activation server and no network call in the license path.
+- Founder-only offline authoring (`license sign` / `pubkey`, gated behind the `license-admin`
+  build feature; never in a release build).
+- Guides: [docs/guides/licensing.md](docs/guides/licensing.md) (installing/refreshing a key) and
+  [docs/business/issuing-licenses.md](docs/business/issuing-licenses.md) (the founder's signing
+  runbook).
+
+### Notes
+- The audit `license` marker appears only while governance is operationally in effect via an
+  org-deployed policy; the all-open audit stream is byte-identical to before.
+- Production key generations are embedded by the founder offline; until then a public evaluation
+  key allows frictionless self-signed evaluation.
+
 ## [0.5.2] - 2026-07-10
 
 npm launcher supply-chain hardening (prompted by a Socket.dev supply-chain finding on the 0.5.1
