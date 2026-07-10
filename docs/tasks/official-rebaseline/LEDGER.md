@@ -64,6 +64,20 @@ task (or when marking BLOCKED). A human reads RESUME HERE to pick up.
   survive a service restart's sweep (the service is a normal process -- ADR-0053 Consequences).
   LIVE VERIFICATION still owed: this move CHANGES THE BINARY, so the live test needs BOTH a
   rebuilt+reinstalled release binary AND an extension reload, then record -> actions -> export.
+- **ADR-0053 LIVE-VERIFIED (2026-07-09) + LZW library fix `204cd17`.** The live test (release binary
+  + reloaded extension, driven via a scripted relay MCP session since the in-session tools were down)
+  recorded 33 change-driven screencast frames and exported an animated GIF -- the old design
+  DISCONNECTED on 2 frames, so the stall/kill/loss failure class is gone. BUT the first export opened
+  in NO strict decoder: the hand-ported LZW had a code-width off-by-one at the first 9->10 bit
+  transition (bisected: n=16 codes PASS, n=300 FAIL), invisible because it round-tripped through its
+  own matched (mirror-buggy) decoder -- the JS carried the same latent bug, never caught because a
+  gif_creator GIF was never opened before. Fix (`204cd17`): writer.rs now encodes via the image-rs
+  `gif` crate (weezl LZW), per ADR-0008 (do not hand-roll a codec) + the owner's call; tests
+  round-trip through the independent weezl decoder incl. a frame crossing every code width. Re-test:
+  all 33 frames decode in Pillow, real per-frame timing (durations 200..750ms + 2800ms last-frame
+  hold), sky-blue progress bar (100% on the last frame) + watermark pill + rings/labels all render.
+  Full workspace V-ALL GREEN (687/0, fmt+clippy clean). **ADR-0053 COMPLETE + LIVE-VERIFIED. The tree
+  is ready for the v0.5.0 cut** (release prep `b88e2ce` rides all of this).
 
 - **TRACK 2 -- visual overlays: DONE.** New `extension/lib/gifoverlay.js` (pure geometry + routing:
   `describeAction`/`resolveOverlayOptions`/`scaleFactorFor`/`clickRadii`/`labelBox`/`progressBarRect`/
