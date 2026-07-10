@@ -8,8 +8,8 @@ executor resumes from RESUME HERE with no other context.
 Batch authored 2026-07-10; red-team re-read against the live tree completed the same day (T1/T2/
 T3/T8 verified aligned; T4 caller-integration corrected -- print loop, not a lines vec; T6
 precondition corrected -- multiple denial render sites exist, append at the pipeline emission
-chokepoint; T7 anchors verified exactly and pinned). T1 DONE (5a02aaa), T2 DONE (c395c42).
-Next task: T3.
+chokepoint; T7 anchors verified exactly and pinned). T1 DONE (5a02aaa), T2 DONE (c395c42),
+T3 DONE (3a64c8f). Next task: T4.
 
 ## Status
 
@@ -17,7 +17,7 @@ Next task: T3.
 | --- | --- | --- | --- | --- |
 | T1 | Bundle `kind` discriminator | DONE | 5a02aaa | none |
 | T2 | ManagedStatus sidecar (single writer in managed::activate) | DONE | c395c42 | none |
-| T3 | Presentation validation (additive-only limits) | pending | - | - |
+| T3 | Presentation validation (additive-only limits) | DONE | 3a64c8f | none |
 | T4 | doctor managed line (reads the sidecar) | pending | - | - |
 | T5 | explain-tool Policy Passport section | pending | - | - |
 | T6 | Denials-as-doors: org contact line | pending | - | - |
@@ -54,4 +54,17 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   extended activate_resolves_a_configured_local_bundle to assert freshness=="fresh", seq==Some(4).
   31 managed tests green (default) + 29 green (--no-default-features air-gap; status.rs touches no
   ureq/rustls). Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
+- Deviations: none.
+
+### T3 -- Presentation validation (3a64c8f)
+- Preconditions verified: Presentation{org_name,rationale,contacts} + Contact{kind,value,label} in
+  bundle.rs; verify_and_parse calls verify_bundle then parse_manifest.
+- bundle.rs: pub fn validate_presentation with the exact limits (org_name<=120, rationale<=400,
+  contacts<=8, kind<=32, value<=256, label<=120 via chars()) and a control-character sweep
+  (c<'\u{20}') across every present string field, verbatim error strings. verify_bundle runs it on
+  Some(presentation) after the T1 kind check, mapping Err(msg)->BundleError::Claims(msg).
+- Tests: oversized_org_name_is_rejected, control_character_in_contact_is_rejected,
+  valid_presentation_passes (bundle.rs); bad_presentation_update_keeps_last_known_good (cache.rs,
+  seq-6 bad-presentation update refused -> LastKnownGood(UpdateRejected), active seq==5). 45 bundle+
+  managed tests green. Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
 - Deviations: none.
