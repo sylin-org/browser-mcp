@@ -9,7 +9,7 @@ Batch authored 2026-07-10; red-team re-read against the live tree completed the 
 T3/T8 verified aligned; T4 caller-integration corrected -- print loop, not a lines vec; T6
 precondition corrected -- multiple denial render sites exist, append at the pipeline emission
 chokepoint; T7 anchors verified exactly and pinned). T1 DONE (5a02aaa), T2 DONE (c395c42),
-T3 DONE (3a64c8f). Next task: T4.
+T3 DONE (3a64c8f), T4 DONE (032ec27). Next task: T5.
 
 ## Status
 
@@ -18,7 +18,7 @@ T3 DONE (3a64c8f). Next task: T4.
 | T1 | Bundle `kind` discriminator | DONE | 5a02aaa | none |
 | T2 | ManagedStatus sidecar (single writer in managed::activate) | DONE | c395c42 | none |
 | T3 | Presentation validation (additive-only limits) | DONE | 3a64c8f | none |
-| T4 | doctor managed line (reads the sidecar) | pending | - | - |
+| T4 | doctor managed line (reads the sidecar) | DONE | 032ec27 | none |
 | T5 | explain-tool Policy Passport section | pending | - | - |
 | T6 | Denials-as-doors: org contact line | pending | - | - |
 | T7 | Audit provenance: policy_seq on tool-call records | pending | - | - |
@@ -67,4 +67,17 @@ One entry per task as it closes (or blocks). Number every deviation from the tas
   valid_presentation_passes (bundle.rs); bad_presentation_update_keeps_last_known_good (cache.rs,
   seq-6 bad-presentation update refused -> LastKnownGood(UpdateRejected), active seq==5). 45 bundle+
   managed tests green. Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
+- Deviations: none.
+
+### T4 -- doctor managed section (032ec27)
+- Preconditions verified: T2 status::{read_sidecar,sidecar_path,ManagedStatus} exist; doctor.rs
+  governance section uses `println!("  {:<9}...")` style and the caller is the confirmed print loop
+  at ~78-81.
+- doctor.rs: added `use ...status::{read_sidecar, sidecar_path, ManagedStatus}`; managed_section_lines
+  (production paths, not-configured / no-data-dir / no-status / render arms) and pure
+  render_managed_status producing the `  {:<9}` label lines (seq/freshness/reason/fetched, source,
+  org, note). Caller: added a second print loop immediately after the governance loop (no lines vec;
+  matches the pinned integration).
+- Tests: managed_line_renders_fresh + managed_line_renders_guardian_door, both first-line-exact.
+  Global gates: workspace tests pass, clippy clean, lightbox 7/7 ok.
 - Deviations: none.
