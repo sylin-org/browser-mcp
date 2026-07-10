@@ -1,192 +1,135 @@
 <p align="center">
-  <img src="extension/icons/icon512.png" alt="Ghostlight mascot" width="128" height="128">
+  <img src="extension/icons/icon512.png" alt="Ghostlight mascot: a small sky-blue ghost holding a glowing lantern" width="140" height="140">
 </p>
 
-# Ghostlight
+<h1 align="center">Ghostlight</h1>
 
-[![CI](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml)
+<p align="center"><strong>Governed access to your own browser, for AI agents.</strong></p>
 
-**Governed access to your own browser, for AI agents.**
+<p align="center">
+  <a href="https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml"><img src="https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/ghostlight"><img src="https://img.shields.io/npm/v/ghostlight?color=38BDF8&label=npm" alt="npm"></a>
+  <a href="https://github.com/sylin-org/ghostlight/releases/latest"><img src="https://img.shields.io/github/v/release/sylin-org/ghostlight?color=38BDF8&label=release" alt="release"></a>
+</p>
 
-Ghostlight is a single Rust binary plus a thin Chromium (Manifest V3) extension that gives
-an AI agent controlled access to your real, authenticated browser session. It drives the
-browser you are already logged in to, so the agent can observe and act on the web apps you already
-use, through any MCP client (Claude Code, Cursor, and others). A separable governance layer decides,
-per call, what the agent is allowed to do.
+Let your AI agent use *your* browser -- the real one, with your logins, your tabs, your
+sessions -- from any MCP client (Claude Code, Cursor, VS Code, Zed, Cline, and anything else
+that speaks MCP). Governed when you want it, wide open when you don't.
 
-## What it does
+<!-- HERO DEMO SLOT: an annotated session GIF recorded by Ghostlight's own gif_creator tool
+     (sky-blue click rings, action labels, progress bar, watermark). Capture with
+     scripts/capture-readme-tour.ps1, keep it under ~5 MB, then:
+<p align="center"><img src="docs/assets/demo.gif" alt="Ghostlight driving a browser: click ripples, captions, and a governed session"></p>
+<p align="center"><sub>This demo was recorded by Ghostlight itself, with its gif_creator tool.</sub></p>
+-->
 
-Two concerns, one binary: a full browser-automation engine, and a governance layer that decides,
-per call, what the agent may do.
+## Install in two minutes
 
-- **The full tool surface.** The 13 trained tools at byte-parity with the official Claude-in-Chrome
-  schemas, plus eight additive tools -- `wait_for`, `script`, `form_fill`, `file_upload`,
-  `browser_batch`, `upload_image`, `gif_creator`, and `explain`: screenshots with coordinate
-  mapping, an on-page agent cursor, accessibility-tree and text reads, form input (including shadow
-  DOM), in-page JavaScript, console and network inspection, tab management, condition-and-settlement
-  waiting, sequential multi-step scripts with inter-step data flow, semantic form filling by label,
-  file and captured-screenshot uploads to page inputs, one-call action batches, and animated-GIF
-  recording of a session. Structured results (`structuredContent`) on the tools that carry one,
-  `dry_run` pre-flight verdicts on `script`, `read_page` diff mode, and consequence digests on
-  mutating actions round out the surface.
-- **The governance layer.** Capability-based policy manifests (per-call `read` / `action` / `write`
-  / `execute` classification), identity-bound domain grants with allow/deny host polarity, sacred
-  never-touch domains, a take-the-wheel pause and a panic kill switch, `observe` and `enforce` modes
-  (observe records shadow denials without blocking), and structured JSON-Lines audit to file,
-  stderr, or RFC 5424 syslog. Layered configuration with organization policy locks, and live
-  manifest hot-reload: edit the policy file and the running session re-resolves with no restart,
-  failing closed on a bad edit.
-- **All-open is first-class.** With no manifest, the engine runs unrestricted -- the agent has the
-  full capability surface, with no access decisions beyond secret-field redaction. Governance is an
-  overlay you opt into, not a stripped-down build.
-- **Operability.** A single portable binary with a built-in installer, a `doctor` diagnostic, a
-  layered `config` CLI, and a `policy` CLI (explain / simulate / init).
+You need a Chromium browser (Chrome, Edge, Brave, or Chromium, 116+) and an MCP client.
+No Node, no Rust, no runtime dependencies -- the npm launcher just fetches one portable binary.
 
-Windows, macOS, and Linux all build and pass the full test suite in CI; end-to-end browser use is
-verified on Windows.
-
-## What makes it different
-
-- **Bring your own agent.** It speaks the Model Context Protocol, so it works with any MCP client
-  against the browser you already use. You are not locked into one vendor's app or cloud.
-- **It is your session, not a clean-room browser.** The value is your own authenticated context:
-  real cookies, real SSO, real tabs. Your work is never relocated to a cloud or a freshly launched
-  browser to gain a technical property.
-- **Governance fused with the engine, not bolted on.** Access control, capability classification,
-  and audit live at a single dispatch chokepoint in the binary. A governed client only sees the
-  tools its grants permit, and every call is checked and recorded. All-open is a first-class
-  supported mode.
-- **Single portable binary, zero runtime dependencies.** No Node.js, no `npx`, no separate servers
-  to babysit. The class of install failures that affects Node-based browser MCPs does not exist.
-
-## Requirements
-
-- A Chromium browser: Chrome, Edge, Brave, or Chromium, version 116 or newer.
-- An MCP client: Claude Code, Claude Desktop, Cursor, or VS Code.
-- A Rust toolchain (stable) to build the binary. Install from https://rustup.rs.
-
-## Getting started
-
-### Quick install (two minutes)
-
-One command downloads the latest release, registers the browser connection, and adds Ghostlight
-to every MCP client it finds (idempotent value-level merge; it never clobbers your config):
-
-```sh
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/sylin-org/ghostlight/main/scripts/get.sh | sh
-```
-
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/sylin-org/ghostlight/main/scripts/get.ps1 | iex
-```
-
-Then add the **"Ghostlight in Browser"** extension
-([Chrome Web Store](https://chromewebstore.google.com/detail/lejccfmoeogmhemakeknjjdhkfkgncdl), or
-load the release zip unpacked) and restart your MCP client. Verify with `ghostlight doctor`.
-
-No install at all: any MCP client can launch Ghostlight via npx --
+Add Ghostlight to any MCP client as a stdio server:
 
 ```json
 { "command": "npx", "args": ["-y", "ghostlight"] }
 ```
-
-[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_MCP_server-38BDF8?style=flat-square)](cursor://anysphere.cursor-deeplink/mcp/install?name=ghostlight&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImdob3N0bGlnaHQiXX0=)
-[![Add to VS Code](https://img.shields.io/badge/VS_Code-Add_MCP_server-38BDF8?style=flat-square)](vscode:mcp/install?%7B%22name%22%3A%22ghostlight%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghostlight%22%5D%7D)
 
 ```sh
 # Claude Code
 claude mcp add ghostlight -- npx -y ghostlight
 ```
 
-(after adding via npx, run `npx ghostlight install` once to connect the browser extension).
-Rust users: `cargo binstall --git https://github.com/sylin-org/ghostlight ghostlight`. The
-walkthrough with all paths: https://sylin-org.github.io/ghostlight/install.html
+[![Add to Cursor](https://img.shields.io/badge/Cursor-Add_MCP_server-38BDF8?style=flat-square)](cursor://anysphere.cursor-deeplink/mcp/install?name=ghostlight&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImdob3N0bGlnaHQiXX0=)
+[![Add to VS Code](https://img.shields.io/badge/VS_Code-Add_MCP_server-38BDF8?style=flat-square)](vscode:mcp/install?%7B%22name%22%3A%22ghostlight%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22ghostlight%22%5D%7D)
 
-The manual, inspect-everything route:
-
-### 1. Get the binary
-
-Download a prebuilt archive for your platform from the
-[Releases page](https://github.com/sylin-org/ghostlight/releases/latest) and extract it, or build
-from source:
+Then connect the browser side (once) and verify:
 
 ```sh
-git clone https://github.com/sylin-org/ghostlight
-cd ghostlight
-cargo build --release
+npx ghostlight install    # registers the browser connection + your MCP clients (idempotent)
+npx ghostlight doctor     # tells you exactly what is healthy and what is not
 ```
 
-The build produces two executables in `target/release/` (ADR-0046, ADR-0051): `ghostlight` (the CLI
-you run below) plus the thin `ghostlight-relay` pass-through your MCP client and Chrome launch (one
-binary, role-selected at launch); a prebuilt archive carries both side by side.
-All commands below run the `ghostlight` binary. Every release archive carries a SHA-256 checksum
-and a signed build-provenance attestation (`gh attestation verify <archive> --repo sylin-org/ghostlight`).
+Finally, add the **"Ghostlight in Browser"** extension: download `ghostlight-extension-v*.zip`
+from the [latest release](https://github.com/sylin-org/ghostlight/releases/latest) and load it
+unpacked at `chrome://extensions` (a Chrome Web Store listing is on the way). Restart your MCP
+client, and the browser tools appear.
 
-### 2. Load the extension in Chrome
+Prefer a shell one-liner, prebuilt archives, or building from source? Every path is covered in
+the [install guide](https://sylin-org.github.io/ghostlight/install.html), and the manual route is
+below.
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode** (top right).
-3. Click **Load unpacked** and select the `extension/` directory of this repo.
-4. The committed manifest key pins the extension ID to `cjcmhepmagomefjggkcohdbfemacojoa`; the
-   installer already allows it (and the Web Store ID), so there is nothing to copy.
+<details>
+<summary><strong>Manual install (inspect everything)</strong></summary>
 
-### 3. Register the native host and your MCP client
+1. **Get the binary.** Download a prebuilt archive from the
+   [Releases page](https://github.com/sylin-org/ghostlight/releases/latest) (each carries a
+   SHA-256 checksum and a signed build-provenance attestation:
+   `gh attestation verify <archive> --repo sylin-org/ghostlight`), or build from source with a
+   stable Rust toolchain: `cargo build --release`. The build produces two executables:
+   `ghostlight` (the CLI) and the thin `ghostlight-relay` pass-through your MCP client and
+   Chrome launch.
+2. **Load the extension.** `chrome://extensions` -> Developer mode -> Load unpacked -> the
+   `extension/` directory. The committed manifest key pins the extension ID, and the installer
+   already allows it -- nothing to copy.
+3. **Register.** `./target/release/ghostlight install`. Useful flags: `--dry-run` (print the
+   plan, write nothing), `--browser <id>` / `--client <id>` (limit scope; repeatable),
+   `--all-browsers` / `--all-clients`, `--debug` (observability on), `--system` (machine-wide).
+   The installer is an idempotent value-level merge; it never clobbers your config and never
+   duplicates entries.
+4. **Restart the client, reload the extension, run `ghostlight doctor`.** A healthy result
+   reports registration, a live endpoint, and a connected extension; anything off gets a
+   specific, actionable finding.
 
-Run the installer from the binary you just built. It registers the native-messaging host with your
-detected browsers and adds the MCP server entry to your detected MCP clients:
+</details>
 
-```sh
-./target/release/ghostlight install
-```
+## Why Ghostlight
 
-Useful flags:
+- **Bring your own agent.** It speaks MCP, so it works with any client -- including Claude via
+  Bedrock or Vertex. You are not locked into one vendor's app or cloud.
+- **Your session, not a clean-room browser.** The value is your authenticated context: real
+  cookies, real SSO, real tabs. Your work never gets relocated to a cloud browser or a fresh
+  profile to gain a technical property.
+- **Governance fused with the engine, not bolted on.** Capability classification, access
+  decisions, and audit live at one dispatch chokepoint in the binary. A governed client only
+  sees the tools its grants permit; every call is checked and recorded. And all-open is a
+  first-class mode, not a degraded one.
+- **A single portable binary, zero runtime dependencies.** No servers to babysit; the class of
+  install failures that plagues Node-based browser MCPs does not exist here.
 
-- `--dry-run` computes and prints the plan without writing anything. Run this first to see what will
-  change.
-- `--browser <id>` limits registration to one browser (`chrome`, `edge`, `brave`, `chromium`).
-  Repeatable. `--all-browsers` registers every known browser, not just detected ones.
-- `--client <id>` limits registration to one client (`claude-code`, `claude-desktop`, `cursor`,
-  `vscode`). Repeatable. `--all-clients` adds to every known client.
-- `--debug` registers the server to run with observability on (see Troubleshooting).
-- `--system` registers machine-wide (HKLM on Windows) instead of per-user.
+## Watch it work
 
-The installer is idempotent: re-running it will not create duplicate entries.
+Every action the agent takes is visible in the browser: sky-blue click ripples, a comet trail
+on drags, a shimmer while it types, captions narrating each step. The agent works inside its own
+tab group (labeled 👻Ghostlight), visually separate from your tabs, and you can grab the wheel --
+or hit the kill switch -- at any moment. The agent can even hand you a souvenir: `gif_creator`
+records the session and exports an annotated animated GIF, made by the same pipeline that renders
+the overlays.
 
-### 4. Restart the client and reload the extension
+## What the agent can do
 
-- Restart (or reload the MCP connection of) your MCP client so it picks up the new server entry.
-- Reload the extension at `chrome://extensions` so it connects to the freshly registered host.
-
-### 5. Verify
-
-```sh
-./target/release/ghostlight doctor
-```
-
-A healthy result reports that the browser and client are registered, the IPC endpoint accepts
-connections, and the extension is connected. If anything is off, `doctor` prints a specific,
-actionable finding for each problem.
-
-## Using it
-
-Once connected, the browser tools appear in your MCP client and the agent can drive your browser.
-Ghostlight works inside its own tab group (labeled 👻Ghostlight), so agent activity is visually
-separated from your own tabs. A typical first request to the agent:
+A typical first request:
 
 > Open a new browser tab, go to example.com, and tell me what the page says.
 
-The agent will create a tab in the MCP group, navigate, read the page, and report back. It can then
-click, type, fill forms (by ref or by label), run JavaScript, take screenshots, inspect console and
-network activity, wait for dynamic pages to settle, and compose multi-step scripts that chain
-results -- all in your real logged-in session, subject to whatever governance policy is active.
+The tool surface preserves the schemas Claude was trained on, byte for byte, and adds more on
+top -- 21 tools in five groups:
 
-### The tools
+- **See and act.** Navigate, click, type, scroll, hover, drag; screenshots with exact coordinate
+  mapping and an on-page cursor.
+- **Forms and files.** Fill forms by element ref or semantically by label (shadow DOM included);
+  upload file bytes or captured screenshots straight into page inputs and drop targets.
+- **Compose.** Multi-step scripts with inter-step data flow and `dry_run` pre-flight; one-call
+  action batches; wait-for-condition with page settlement.
+- **Record.** Animated-GIF session recording with click cues, action labels, a progress bar, and
+  real per-frame timing.
+- **Inspect.** Accessibility tree (with diff mode), page text, element search, console and
+  network activity, and consequence digests on mutating actions.
 
-Each action carries a capability requirement. Under a governance manifest, the layer both filters
-the advertised tool set to what your grants permit and checks the requirement on every call; with no
-manifest (all-open) every action is allowed.
+Ask the agent to call `explain` at any time for the authoritative, in-session directory of every
+action and the capability it requires.
+
+<details>
+<summary><strong>The full tool table</strong></summary>
 
 | Tool                    | What it does                                     | Capability                 |
 | ----------------------- | ------------------------------------------------ | -------------------------- |
@@ -212,82 +155,54 @@ manifest (all-open) every action is allowed.
 | `gif_creator`           | Record a session and export it as an animated GIF | read or write, per action |
 | `explain`               | List every action and the capability it requires | none                       |
 
-For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`) require
-`read`, the input actions (`left_click`, `right_click`, `type`, `key`, `left_click_drag`,
-`double_click`, `triple_click`) require `action`, and `wait` requires none. Ask the agent to call
-`explain` at any time for the authoritative, in-session capability directory.
+For `computer`, the read-only actions (`screenshot`, `scroll`, `zoom`, `scroll_to`, `hover`)
+require `read`, the input actions (`left_click`, `right_click`, `type`, `key`,
+`left_click_drag`, `double_click`, `triple_click`) require `action`, and `wait` requires none.
 
-## Governance
+</details>
 
-Governance is off by default (all-open) and turns on when a policy manifest is present. A manifest is
-a JSON document (schema 3) describing identity-bound **grants**: each grant names the hosts it covers
-(`allow` patterns with optional `deny` carve-outs) and the capabilities it permits (`read`,
-`action`, `write`, `execute`). The layer resolves each call against the active grants and either
-dispatches it or returns a clear denial naming the capability, the host, and a stable denial id.
+## Governed, honestly
 
-The model in brief:
+Governance is off by default and turns on when a policy manifest is present. A manifest grants
+capabilities -- `read`, `action`, `write`, `execute` -- to an identity on the hosts you name, with
+`deny` carve-outs, and every call resolves against it at a single chokepoint:
 
-- **Capabilities, not tool lists.** Every action is classified `read` / `action` / `write` /
-  `execute` (some require none). Grants allow capabilities on hosts; the classification is intrinsic
-  to each action. This vocabulary is published as an open, vendor-neutral spec -- the
-  [RAWX capability model](open-spec/rawx-capability-model.md) (`rwx` for agents) -- so it can be
-  adopted beyond Ghostlight.
-- **Host polarity.** A grant's `allow` patterns can carry `deny` carve-outs, so "everywhere except
-  this site" is expressible directly.
-- **Sacred domains.** A never-touch list denies every tool on a matching tab, regardless of grants.
-- **Modes.** `observe` dispatches every call and records what enforce would have denied (as
-  `shadow_deny` audit records with the same stable denial ids); `enforce` blocks. Sacred and
-  user-authored protections always enforce, in every mode.
-- **Advertisement filtering.** A governed client sees only the tools its grants can use, plus
-  `explain`.
-- **Audit.** Every call produces one JSON-Lines record (permitted, denied, and shadow-denied alike):
-  identity, host, capability, grant id, decision, denial id, duration, and manifest hash. Destinations:
-  local file, stderr, or RFC 5424 syslog over UDP for SIEM ingestion (see the
-  [SIEM guide](docs/guides/siem-integration.md)).
-- **Layered configuration.** Settings resolve through built-in defaults, org policy, and a user
-  layer, with organization policy able to lock keys. Inspect and edit with `ghostlight config`.
-- **Hot-reload.** The org policy path and a `file://` user manifest are watched; edits re-resolve the
-  running session with no restart, an advertised-set change re-advertises the tools, and an invalid
-  edit keeps the last-good manifest (fail closed).
+```json
+{
+  "schema": 3,
+  "name": "acme-dev",
+  "version": "2026.07.0",
+  "identity": { "resolved_by": "local_file", "principal": "dev@acme" },
+  "grants": [
+    { "id": "acme-apps",
+      "hosts": { "allow": ["*.acme.com"], "deny": ["payroll.acme.com"] },
+      "allowed": ["read", "action", "write"] }
+  ],
+  "config": [
+    { "key": "content.security.sacred_domains", "value": ["*.mybank.com"], "level": "mandatory" }
+  ]
+}
+```
 
-Manifest sources, in precedence order: a `--manifest file://...` flag (or `GHOSTLIGHT_MANIFEST`), then
-the machine org policy path (`%ProgramData%\ghostlight\policy.json` on Windows;
-`/Library/Application Support/ghostlight/policy.json` on macOS; `/etc/ghostlight/policy.json` on
-Linux). No manifest means all-open. See `examples/` for ready-to-adapt manifests and preview any file
-with `ghostlight policy explain <file>`.
+(That exact file renders as plain sentences with `ghostlight policy explain` -- try it.)
 
-## CLI reference
+- **Capabilities, not tool lists.** Every action carries an intrinsic classification. The
+  vocabulary is published as an open, vendor-neutral spec: the
+  [RAWX capability model](open-spec/rawx-capability-model.md) (`rwx` for agents).
+- **Observe before you enforce.** `observe` mode dispatches everything and records what enforce
+  *would have* denied; `enforce` blocks. Sacred never-touch domains always enforce.
+- **Evidence built in.** Every call -- permitted, denied, or shadow-denied -- emits one structured
+  JSON-Lines audit record: identity, host, capability, grant, decision, duration. Stream to a
+  file, stderr, or syslog for your SIEM ([guide](docs/guides/siem-integration.md)).
+- **Live and layered.** Manifests hot-reload without a restart (failing closed on a bad edit);
+  configuration resolves through defaults, org policy, and user layers, with org locks.
 
-The binary has no-subcommand and subcommand modes:
+A governed client only *sees* the tools its grants permit, plus `explain`. Start from a ready
+manifest in [`examples/`](examples/), preview any file with `ghostlight policy explain <file>`,
+and see the [solo-developer](docs/guides/solo-developer.md) and
+[compliance-team](docs/guides/compliance-team.md) guides for the full journey.
 
-- No subcommand: the MCP server role. Your MCP client launches this over stdio; you do not run it by
-  hand.
-- `install` / `uninstall`: register or remove the native host and the MCP client entries (see flags
-  above; both support `--dry-run`).
-- `doctor [--verbose]`: one-shot, read-only diagnosis of the whole chain (registration, IPC
-  endpoint, extension link) with a truthful exit code. It never changes anything.
-- `status [--json]`: print a running server's live inner state. Requires a server started with
-  `--debug` (or `GHOSTLIGHT_DEBUG=1`).
-- `config <list | get | set | schema | docs | preset>`: inspect and edit the layered configuration.
-  `list` shows every key with its effective value, source layer, and lock state; `preset` selects a
-  named bundle of defaults after previewing the change.
-- `policy <explain | simulate | init>`: work with policy files without a browser. `explain` renders
-  a manifest or config file as plain sentences; `simulate` replays a recorded audit log through a
-  candidate manifest; `init` writes an embedded example manifest as a starting point.
-
-## Troubleshooting
-
-- **Start with `doctor`.** It pinpoints most problems: a browser or client that is not registered,
-  no server running, a stale process holding the endpoint, or an extension that never connected.
-- **Extension shows disconnected.** Reload it at `chrome://extensions`, make sure the browser is
-  running, and check `ghostlight doctor` (the host manifest already allows both shipped extension
-  ids).
-- **Turn on observability.** Install with `--debug` (or set `GHOSTLIGHT_DEBUG=1` in the server's
-  environment), then run `ghostlight status` to see live counters and per-session state.
-- **Rebuilding the binary on Windows.** A running server locks `ghostlight.exe`. Stop the MCP
-  client (and reload/close the extension) before `cargo build`, then restart both.
-
-## Architecture
+## How it works
 
 ```
 MCP Client  --stdio-->  Rust Binary  --native messaging-->  Extension  --CDP-->  Browser
@@ -295,77 +210,72 @@ MCP Client  --stdio-->  Rust Binary  --native messaging-->  Extension  --CDP--> 
                          governance)                         executor)           session)
 ```
 
-Three processes, two protocol boundaries. The binary is both the MCP server (over stdio) and the
-browser's native-messaging host; the extension is a deliberately thin CDP executor. All capability
-and all policy live in the binary, and the extension holds none. The governance layer attaches at a
-single dispatch chokepoint inside the binary without touching any tool code.
+Three processes, two protocol boundaries. The binary is both the MCP server and the browser's
+native-messaging host; the extension is deliberately thin -- it holds only what must touch a
+Chrome API, and no policy at all. Windows, macOS, and Linux build and pass the full suite in CI;
+end-to-end browser use is verified on Windows.
+
+<details>
+<summary><strong>CLI and troubleshooting</strong></summary>
+
+- No subcommand: the MCP server role (your client launches this; you do not run it by hand).
+- `install` / `uninstall`: register or remove everything (both support `--dry-run`).
+- `doctor [--verbose]`: read-only diagnosis of the whole chain with a truthful exit code.
+- `status [--json]`: a running server's live inner state (requires `--debug` /
+  `GHOSTLIGHT_DEBUG=1`).
+- `config <list|get|set|schema|docs|preset>`: the layered configuration, with sources and locks.
+- `policy <explain|simulate|init>`: render a manifest as plain sentences, replay an audit log
+  against a candidate policy, or write a starter manifest.
+
+**If something is off, start with `doctor`** -- it pinpoints unregistered browsers/clients, a
+missing server, a stale endpoint, or an extension that never connected. Extension shows
+disconnected? Reload it at `chrome://extensions`. Rebuilding on Windows? Stop the MCP client
+first; a running server locks the exe.
+
+</details>
 
 ## Roadmap
 
-- Live browser verification on macOS and Linux (the binary already builds and ships for all four
-  targets on the [Releases page](https://github.com/sylin-org/ghostlight/releases)).
-- A Chrome Web Store listing, so the extension installs without developer mode.
-- Offline license keys for organizations (see [PRICING.md](PRICING.md)), and an `http` audit
-  destination alongside file, stderr, and syslog.
-- `managed://` policy distribution for MDM and Group Policy fleets.
-- More adapters on the same governance spine -- the browser is the first.
-
-## Direction
-
-The governance engine -- capability grants, host polarity, audit, layered configuration, and
-licensing -- is domain-agnostic by design; the browser is its first adapter. The same
-policy-and-audit spine is what any future adapter would reuse, which is why this is the first of a
-planned family rather than a one-off. The vocabulary that engine speaks is published for the whole
-ecosystem as the [RAWX capability model](open-spec/rawx-capability-model.md): the durable asset in
-agent governance is the way you classify and grant capabilities, not the mechanism that carries
-them, and mechanisms change.
+Chrome Web Store listing (installs without developer mode), live browser verification on macOS
+and Linux, an `http` audit destination and offline license keys for organizations, `managed://`
+policy distribution for MDM/Group Policy fleets -- and more adapters on the same governance
+spine, because the browser is the first, not the last. The durable asset is the
+[RAWX capability model](open-spec/rawx-capability-model.md); mechanisms change.
 
 ## Documentation
 
-| Doc                                                                | What it is                                                                                                |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| [docs/guides/solo-developer.md](docs/guides/solo-developer.md)     | Ten minutes from clone to a working agent, plus personal safety rails.                                    |
-| [docs/guides/compliance-team.md](docs/guides/compliance-team.md)   | Taking a policy from blank page to org-wide enforcement, with evidence.                                   |
-| [docs/guides/siem-integration.md](docs/guides/siem-integration.md) | Audit stream schema and Splunk / Sentinel / Elastic ingestion.                                            |
-| [docs/COMPARISON.md](docs/COMPARISON.md)                           | How Ghostlight compares to the alternatives, honestly.                                                    |
-| [PRICING.md](PRICING.md)                                           | Editions, the founding program, and the Continuity Promise.                                               |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                                 | How to ask questions, request features, and contribute code.                                              |
-| [SECURITY.md](SECURITY.md)                                         | Vulnerability reporting and what to expect.                                                               |
-| [docs/SPEC.md](docs/SPEC.md)                                       | The authoritative design specification.                                                                   |
-| [docs/adr/](docs/adr/)                                             | Architecture Decision Records: the reasons behind the design and how it evolved.                          |
-| [docs/design/](docs/design/)                                       | Forward-looking design discussions (family and service architecture).                                     |
-| [open-spec/](open-spec/)                                           | Open, vendor-neutral specifications we publish for the ecosystem (starts with the RAWX capability model). |
-| [docs/research/NORTH-STAR.md](docs/research/NORTH-STAR.md)         | Governing design principles.                                                                              |
+| Doc                                                                 | What it is                                                              |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [docs/guides/solo-developer.md](docs/guides/solo-developer.md)      | Ten minutes from clone to a working agent, plus personal safety rails.   |
+| [docs/guides/compliance-team.md](docs/guides/compliance-team.md)    | Taking a policy from blank page to org-wide enforcement, with evidence.  |
+| [docs/guides/siem-integration.md](docs/guides/siem-integration.md)  | Audit stream schema and Splunk / Sentinel / Elastic ingestion.           |
+| [docs/COMPARISON.md](docs/COMPARISON.md)                            | How Ghostlight compares to the alternatives, honestly.                   |
+| [PRICING.md](PRICING.md)                                            | Editions, the founding program, and the Continuity Promise.              |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                  | How to ask questions, request features, and contribute code.             |
+| [SECURITY.md](SECURITY.md)                                          | Vulnerability reporting and what to expect.                              |
+| [docs/SPEC.md](docs/SPEC.md)                                        | The authoritative design specification.                                  |
+| [docs/adr/](docs/adr/)                                              | Architecture Decision Records: why the design is the way it is.          |
+| [open-spec/](open-spec/)                                            | Open specs we publish for the ecosystem (starts with RAWX).              |
 
-## Positioning and prior art
+## Positioning
 
-This is a clean-room Rust rewrite informed by
-[open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome), a Node.js
-reimplementation of the Claude-in-Chrome extension. Prior art is studied as a concern surface (the
-hazards and questions others hit), not as a feature catalog to copy. The tool schemas are preserved
-verbatim so a trained agent behaves as expected; everything behind them is our own.
+Ghostlight preserves the tool schemas Claude was trained on, byte for byte, so a trained agent
+behaves as expected; everything behind them is an original, clean-room Rust implementation.
+Anthropic ships a first-party Claude Code + Chrome integration, and it is good --
+[docs/COMPARISON.md](docs/COMPARISON.md) tells you honestly when that path (or another) is the
+better choice. Ghostlight is for everyone those paths exclude: other MCP clients, Claude via
+cloud providers, and anyone who wants policy as code, an audit trail, or a self-hosted stack.
 
-Anthropic now ships a first-party Claude Code + Chrome integration, and generic agent-governance
-toolkits are emerging; we treat both as validation and meet them with alternatives and open
-standards, not rivalry ([ADR-0041](docs/adr/0041-post-evaluation-response.md)).
-[docs/COMPARISON.md](docs/COMPARISON.md) is the honest decision guide, including when the
-first-party path is the better choice; [docs/research/14](docs/research/14-post-evaluation-2026-07.md)
-carries the current landscape evidence.
-
-## The name
-
-Ghostlight is the brand for a planned family of governance-friendly MCP tools; this browser adapter
-is the first. The theatrical ghost light metaphor sits alongside the publisher's register of
-guardian-in-a-bounded-space names. See [docs/adr/0021-ghostlight-brand-and-family.md](docs/adr/0021-ghostlight-brand-and-family.md)
-for the naming decision.
+Ghostlight is the first of a planned family of governance-friendly MCP tools; the theatrical
+ghost light -- the lamp left burning so the theater is never dark -- is the
+[name behind it](docs/adr/0021-ghostlight-brand-and-family.md).
 
 ## Questions, requests, and contributing
 
-Three lanes: [GitHub Issues](../../issues) for bugs, [GitHub Discussions](../../discussions) for
-questions, ideas, and feature requests, and hello@sylin.org for anything that cannot be public
-(security, licensing, or a compliance team that cannot post in the open). Every request gets a
-disposition with reasoning -- accepted, deferred, or declined against the project's recorded
-vision. See [CONTRIBUTING.md](CONTRIBUTING.md) for the details and the contribution terms.
+[GitHub Issues](../../issues) for bugs, [GitHub Discussions](../../discussions) for questions and
+ideas, and hello@sylin.org for anything that cannot be public. Every request gets a disposition
+with reasoning -- accepted, deferred, or declined against the project's recorded vision. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
@@ -375,8 +285,7 @@ source-available under the Ghostlight Commercial License: free for individuals a
 developers, development, testing, evaluation, all-open operation, and noncommercial
 nonprofit/open-source use; production use with governance configured by an organization
 requires a commercial subscription. See [LICENSING.md](LICENSING.md) for the plain-language
-guide and [docs/adr/0027-open-core-business-model-and-licensing.md](docs/adr/0027-open-core-business-model-and-licensing.md)
-for the decision.
+guide.
 
 Editions, prices, the founding program (12 months free for the first ten organizations), and
 the Continuity Promise -- license state never affects behavior, and the binary never phones
