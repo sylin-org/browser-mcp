@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlight"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlight-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlight-relay"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ghostlight-transport",
  "tokio",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlight-transport"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "dirs",
  "getrandom 0.4.3",

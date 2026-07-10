@@ -386,7 +386,8 @@ function Step-Sums {
         Write-Would "download the 4 archive .sha256 assets from $Tag"
         Write-Would "set scoop hash + winget InstallerSha256 = sha256($winTarget zip)"
         Write-Would "set homebrew sha256 for aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu"
-        Write-Would "commit packaging/{scoop,winget,homebrew} and push origin main"
+        Write-Would "download the 8 raw-binary .sha256 and write packaging/npm/checksums.json (launcher integrity pins)"
+        Write-Would "commit packaging/{scoop,winget,homebrew,npm/checksums.json} and push origin main"
         return
     }
 
@@ -412,14 +413,31 @@ function Step-Sums {
     Set-HomebrewShaForTarget $brew 'x86_64-unknown-linux-gnu' $linuxHash
     Write-Ok "wrote checksums into scoop, winget, homebrew templates"
 
+    # Pin the raw-binary hashes into the npm launcher. checksums.json travels inside the
+    # immutable npm tarball; the launcher verifies every downloaded binary against it before
+    # executing (Socket supply-chain hardening). Keys are the exact raw asset names the
+    # launcher fetches: <bin>-<triple>[.exe].
+    $binaries = [ordered]@{}
+    foreach ($t in $Targets) {
+        $suffix = if ($t.Windows) { '.exe' } else { '' }
+        foreach ($b in @('ghostlight', 'ghostlight-relay')) {
+            $asset = "$b-$($t.Target)$suffix"
+            $binaries[$asset] = Get-AssetSha256 $asset $tmp
+        }
+    }
+    $manifest = [ordered]@{ version = $Version; algorithm = 'sha256'; binaries = $binaries }
+    $checksumsPath = Join-Path $RepoRoot 'packaging/npm/checksums.json'
+    ($manifest | ConvertTo-Json -Depth 5) + "`n" | Set-Content -Path $checksumsPath -Encoding utf8 -NoNewline
+    Write-Ok "wrote packaging/npm/checksums.json ($($binaries.Count) launcher integrity pins)"
+
     Push-Location $RepoRoot
     try {
-        $changed = git status --porcelain=v1 -- packaging/scoop packaging/winget packaging/homebrew
+        $changed = git status --porcelain=v1 -- packaging/scoop packaging/winget packaging/homebrew packaging/npm/checksums.json
         if (-not $changed) {
             Write-Skip 'packaging checksums already up to date; nothing to commit'
             return
         }
-        Invoke-Native 'git' @('add', 'packaging/scoop/ghostlight.json', 'packaging/winget/Sylin.Ghostlight.yaml', 'packaging/homebrew/ghostlight.rb') | Out-Null
+        Invoke-Native 'git' @('add', 'packaging/scoop/ghostlight.json', 'packaging/winget/Sylin.Ghostlight.yaml', 'packaging/homebrew/ghostlight.rb', 'packaging/npm/checksums.json') | Out-Null
         Invoke-Native 'git' @('commit', '-m', "chore(release): fill $Tag package-manager checksums") | Out-Null
         Write-Ok "committed checksum fill"
         Invoke-Native 'git' @('push', 'origin', 'main') -AllowFail | Out-Null
@@ -481,6 +499,20 @@ function Step-Tap {
 function Step-Npm {
     Write-Banner 'Publish to npm'
     if ($SkipNpm) { Write-Skip '-SkipNpm set'; return }
+
+    # Integrity-manifest guard: the launcher verifies every binary against the bundled
+    # checksums.json and fails closed without it, so refuse to publish a launcher whose manifest
+    # is missing, stale, or short of the 8 pins (that would break every user's first run). The
+    # sums step writes it; -From npm without a fresh sums run is the case this catches.
+    $checksumsPath = Join-Path $RepoRoot 'packaging/npm/checksums.json'
+    if (-not $DryRun) {
+        if (-not (Test-Path $checksumsPath)) { throw "packaging/npm/checksums.json is missing; run the 'sums' step first" }
+        $cs = Get-Content -Raw $checksumsPath | ConvertFrom-Json
+        if ($cs.version -ne $Version) { throw "checksums.json version '$($cs.version)' != $Version; re-run the 'sums' step" }
+        $pinCount = @($cs.binaries.PSObject.Properties).Count
+        if ($pinCount -ne 8) { throw "checksums.json has $pinCount pins, expected 8; re-run the 'sums' step" }
+        Write-Ok "integrity manifest present ($pinCount pins for $Version)"
+    }
 
     # Already published?
     $published = & npm view "ghostlight@$Version" version 2>$null
