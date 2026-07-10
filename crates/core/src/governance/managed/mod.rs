@@ -16,6 +16,7 @@
 //! from a local path (the air-gap / sneakernet path); Phase 3 adds the network fetch; Phase 2 adds
 //! the last-known-good cache.
 
+pub mod cache;
 pub mod cli;
 
 use std::path::{Path, PathBuf};
@@ -158,17 +159,30 @@ pub fn load_from_local_path(
     verify_and_parse(&bytes, key, domain_pattern_valid)
 }
 
-/// Load the managed policy named by a bootstrap: from a local path today, or (Phase 3) an
-/// `https://` source. The org key is derived from the same bootstrap.
+/// Fetch the raw bundle bytes named by a bootstrap's `source`: a local file today, or (Phase 3) an
+/// `https://` URL. This is the transport seam -- Phase 3 replaces the network arm with a real fetch;
+/// verification is the caller's job and is identical regardless of where the bytes came from
+/// (ADR-0055 D7).
+pub fn fetch_bytes(b: &ManagedBootstrap) -> Result<Vec<u8>, ManagedError> {
+    if b.source.starts_with("http://") || b.source.starts_with("https://") {
+        return Err(ManagedError::NetworkNotYet);
+    }
+    std::fs::read(&b.source).map_err(|e| ManagedError::Io {
+        path: b.source.clone(),
+        source: e,
+    })
+}
+
+/// Load, verify, and parse the managed policy named by a bootstrap, deriving the org key from the
+/// same bootstrap. This is the no-cache path; [`cache::resolve_managed`] adds the last-known-good
+/// reconcile that never fails open.
 pub fn load_bundle(
     b: &ManagedBootstrap,
     domain_pattern_valid: fn(&str) -> bool,
 ) -> Result<VerifiedManaged, ManagedError> {
     let key = org_key(b)?;
-    if b.source.starts_with("http://") || b.source.starts_with("https://") {
-        return Err(ManagedError::NetworkNotYet);
-    }
-    load_from_local_path(Path::new(&b.source), &key, domain_pattern_valid)
+    let bytes = fetch_bytes(b)?;
+    verify_and_parse(&bytes, &key, domain_pattern_valid)
 }
 
 /// Decode a lowercase/uppercase hex string into a fixed-size byte array, or `None` on any malformed
