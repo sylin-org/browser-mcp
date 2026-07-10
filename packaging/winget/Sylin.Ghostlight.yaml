@@ -24,7 +24,7 @@ NestedInstallerFiles:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/sylin-org/ghostlight/releases/download/v0.5.4/ghostlight-v0.5.4-x86_64-pc-windows-msvc.zip
-    InstallerSha256: TODO-SHA256-FROM-RELEASE-ASSET
+    InstallerSha256: 6e9220405556a7d59f9b1af28ace2ded55cfd007684b5ea127f625868f7abb3f
 ManifestType: installer
 ManifestVersion: 1.6.0
 ---
