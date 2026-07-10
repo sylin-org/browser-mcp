@@ -21,6 +21,7 @@ pub mod cache;
 pub mod cli;
 #[cfg(feature = "managed-fetch")]
 pub mod http;
+pub mod status;
 
 use std::path::Path;
 
@@ -119,6 +120,13 @@ pub fn activate(
             reason: "no data directory is available for the managed policy cache".to_string(),
         })?;
     let reconciled = cache::resolve_managed(&bootstrap, cache_path, domain_pattern_valid)?;
+    // Best-effort status sidecar (ADR-0055 Impl.8): the single writer. A write failure is a warning,
+    // never a failure of activation -- the sidecar is a human-facing report, not a trust artifact.
+    let status = status::from_reconciled(&reconciled, &bootstrap.source, None);
+    let sidecar = status::sidecar_path(cache_path);
+    if let Err(e) = status::write_sidecar(&sidecar, &status) {
+        tracing::warn!(error = %e, path = %sidecar.display(), "failed to write the managed status sidecar; continuing");
+    }
     Ok(Some(reconciled))
 }
 
@@ -416,12 +424,19 @@ mod tests {
         });
         std::fs::write(&paths.managed_bootstrap, serde_json::to_vec(&bootstrap).unwrap()).unwrap();
 
-        let active = activate(&paths, ok_pattern)
-            .unwrap()
+        let reconciled = activate(&paths, ok_pattern).unwrap();
+        let active = reconciled
             .and_then(|r| r.active)
             .map(|vm| (vm.manifest.name, vm.seq));
+        // The single sidecar writer ran during activate: read it back (ADR-0055 Impl.8).
+        let sidecar = status::read_sidecar(&status::sidecar_path(
+            paths.managed_cache.as_ref().unwrap(),
+        ));
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(active, Some(("acme-activate".to_string(), 4)));
+        let sidecar = sidecar.expect("activate wrote the status sidecar");
+        assert_eq!(sidecar.freshness, "fresh");
+        assert_eq!(sidecar.seq, Some(4));
     }
 
     #[cfg(not(feature = "managed-fetch"))]
