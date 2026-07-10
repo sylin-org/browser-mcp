@@ -6,31 +6,31 @@
 ---
 # Sylin.Ghostlight.yaml (version manifest)
 PackageIdentifier: Sylin.Ghostlight
-PackageVersion: 0.5.3
+PackageVersion: 0.5.4
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.6.0
 ---
 # Sylin.Ghostlight.installer.yaml
 PackageIdentifier: Sylin.Ghostlight
-PackageVersion: 0.5.3
+PackageVersion: 0.5.4
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
-  - RelativeFilePath: ghostlight-v0.5.3-x86_64-pc-windows-msvc\ghostlight.exe
+  - RelativeFilePath: ghostlight-v0.5.4-x86_64-pc-windows-msvc\ghostlight.exe
     PortableCommandAlias: ghostlight
-  - RelativeFilePath: ghostlight-v0.5.3-x86_64-pc-windows-msvc\ghostlight-relay.exe
+  - RelativeFilePath: ghostlight-v0.5.4-x86_64-pc-windows-msvc\ghostlight-relay.exe
     PortableCommandAlias: ghostlight-relay
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/sylin-org/ghostlight/releases/download/v0.5.3/ghostlight-v0.5.3-x86_64-pc-windows-msvc.zip
-    InstallerSha256: d6e026df0b624ca7cb1dcb409f59acdb57cd5ec2cc472221a24e1a65f09408e1
+    InstallerUrl: https://github.com/sylin-org/ghostlight/releases/download/v0.5.4/ghostlight-v0.5.4-x86_64-pc-windows-msvc.zip
+    InstallerSha256: TODO-SHA256-FROM-RELEASE-ASSET
 ManifestType: installer
 ManifestVersion: 1.6.0
 ---
 # Sylin.Ghostlight.locale.en-US.yaml
 PackageIdentifier: Sylin.Ghostlight
-PackageVersion: 0.5.3
+PackageVersion: 0.5.4
 PackageLocale: en-US
 Publisher: Sylin
 PublisherUrl: https://sylin-org.github.io/ghostlight/
