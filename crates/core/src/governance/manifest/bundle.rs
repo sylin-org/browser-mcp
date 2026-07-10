@@ -185,9 +185,8 @@ pub fn is_armored(s: &str) -> bool {
 }
 
 /// Mint a signed policy bundle over `manifest` at publish sequence `seq`. Ed25519-only when
-/// `mldsa_seed` is `None`, composite when present. Gated like the licensing authoring primitives for
-/// now; ADR-0055 Phase 1d ungates it for the customer-facing `ghostlight policy sign` command.
-#[cfg(any(feature = "license-admin", test))]
+/// `mldsa_seed` is `None`, composite when present. Always compiled (ADR-0055 Phase 1d): the
+/// customer-facing `ghostlight policy sign` command mints bundles in a normal build.
 pub fn sign_bundle(
     ed_seed: &[u8; 32],
     mldsa_seed: Option<&[u8; 32]>,

@@ -85,12 +85,10 @@ pub fn verify(
     }
 }
 
-/// Offline signing primitives. Gated identically to the founder's licensing authoring build for now
-/// (ADR-0028 Decision 10); ADR-0055 Phase 1d ungates these once the CUSTOMER-facing `ghostlight
-/// policy sign` command needs them in a normal build (having the sign code compiled does not enable
-/// forgery -- a forger still needs the private seed). Also compiled under `#[cfg(test)]` so the
-/// round-trip tests can mint fixtures.
-#[cfg(any(feature = "license-admin", test))]
+/// Offline signing primitives. Always compiled (ADR-0055 Phase 1d): the CUSTOMER-facing `ghostlight
+/// policy sign` command mints policy bundles in a normal build, and having the sign code compiled
+/// does not enable forgery -- a forger still needs the private seed. The founder-only `license sign`
+/// COMMAND stays gated behind `license-admin`; only the underlying primitive is shared here.
 pub mod admin {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};

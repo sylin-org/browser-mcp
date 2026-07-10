@@ -16,6 +16,8 @@
 //! from a local path (the air-gap / sneakernet path); Phase 3 adds the network fetch; Phase 2 adds
 //! the last-known-good cache.
 
+pub mod cli;
+
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
