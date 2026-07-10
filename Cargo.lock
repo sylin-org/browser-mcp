@@ -587,6 +587,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostlight-lightbox"
+version = "0.5.4"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ghostlight-core",
+ "serde_json",
+]
+
+[[package]]
 name = "ghostlight-relay"
 version = "0.5.4"
 dependencies = [

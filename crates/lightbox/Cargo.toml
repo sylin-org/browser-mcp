@@ -1,0 +1,23 @@
+# Ghostlight Lightbox (ADR-0056): a DEV-ONLY integration harness -- a second composition root over
+# the ghostlight-core library that stands up the real governance/managed logic against temp dirs,
+# an injected clock, and a real localhost fake-org endpoint. Never shipped: publish = false, and
+# release.yml builds only `ghostlight` and `ghostlight-relay`, never this crate.
+[package]
+name = "ghostlight-lightbox"
+version = "0.5.4"
+edition = "2021"
+publish = false
+description = "Ghostlight Lightbox: dev-only integration harness (ADR-0056). Not a shipped artifact."
+license-file = "../../LICENSE"
+
+[[bin]]
+name = "lightbox"
+path = "src/main.rs"
+
+[dependencies]
+# The whole point: reuse the REAL library (default features include managed-fetch, so the real
+# ureq/rustls network path executes in the network scenarios).
+ghostlight-core = { path = "../core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
