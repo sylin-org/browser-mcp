@@ -5,7 +5,7 @@
 **Author:** Leonardo Botinelly / Kintsugi Architecture  
 **Date:** 2026-07-01  
 **Status:** Draft  
-**License:** Open-core -- engine Apache-2.0 OR MIT; `src/governance/` source-available (ADR-0027)
+**License:** Open-core -- engine Apache-2.0 OR MIT; `crates/core/src/governance/` source-available (ADR-0027)
 
 ---
 
@@ -56,7 +56,7 @@ This design is informed by, but architecturally distinct from, the following:
 | MCP Gateway ecosystem (TrueFoundry, MintMCP, Cloudflare, etc.) | Precedent for MCP-level RBAC, tool allowlisting, and audit. Not browser-specific. |
 | Okta XAA / Entra Agent Identity | Precedent for identity-governed agent access. Protocol-layer; not an implementation. |
 
-**The gap this project fills:** No existing project combines extension-based browser automation (user's authenticated session), identity-bound capability projection (enterprise directory → per-connection manifest), tool-level r/w classification, default-deny posture, and healthcare-grade audit, in a single deployable artifact.
+**The gap this project fills:** No existing project combines extension-based browser automation (user's authenticated session), identity-bound capability projection (enterprise directory -> per-connection manifest), tool-level r/w classification, default-deny posture, and healthcare-grade audit, in a single deployable artifact.
 
 ---
 
@@ -501,7 +501,7 @@ Three artifacts, all pushed through existing IT channels:
 ### 8.2. Personal/Developer Deployment
 
 1. Download the binary.
-2. Load the extension unpacked in the browser (`chrome://extensions` → Developer mode → Load unpacked).
+2. Load the extension unpacked in the browser (`chrome://extensions` -> Developer mode -> Load unpacked).
 3. Register native messaging host (a one-line install script, as in the reference implementation).
 4. Add to MCP client: `claude mcp add ghostlight -- /path/to/ghostlight`
 5. No manifest needed. The binary defaults to `unlisted_domains: "observe"`, audit to stderr.
@@ -736,7 +736,7 @@ The following are explicitly out of scope for v1:
 | Execution model | Extension (user's browser) | Extension (user's browser) | Playwright (separate instance) | Extension (user's browser) |
 | Domain control | Blocklist (58 domains) | No restrictions | Static allowlist | Identity-bound allowlist, default-deny |
 | Tool-level access control | None | None | Action policy (static JSON) | Per-domain r/w tier + tool mask |
-| Identity binding | None | None | None | Enterprise directory → manifest |
+| Identity binding | None | None | None | Enterprise directory -> manifest |
 | Audit | None | None | None | Structured, per-call, configurable destination |
 | Deployment model | Chrome Web Store | Manual (developer mode) | npm install | Enterprise policy (force-install) or manual |
 | Runtime dependencies | Chrome, Claude Code | Node.js, Chrome | Node.js / Rust binary | None (single binary + extension) |

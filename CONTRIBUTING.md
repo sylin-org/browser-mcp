@@ -48,10 +48,10 @@ questionnaire exists precisely to harvest those.
 
 Contribution terms follow the open-core boundary (ADR-0027 Decision 5):
 
-- **Engine** (everything outside `src/governance/`): contributions are accepted under
+- **Engine** (everything outside `crates/core/src/governance/`): contributions are accepted under
   the [Developer Certificate of Origin](https://developercertificate.org/); sign off
   your commits (`git commit -s`). Inbound = outbound under Apache-2.0 OR MIT.
-- **Governance module** (`src/governance/`): contributions require a Contributor
+- **Governance module** (`crates/core/src/governance/`): contributions require a Contributor
   License Agreement (the module is distributed under a commercial license, and only the
   copyright holder can sell that). The CLA will be in place before the first outside
   governance PR is merged; if you want to contribute there, open a Discussion first and

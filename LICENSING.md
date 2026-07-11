@@ -8,8 +8,8 @@ files govern. Decision record:
 
 | Part | License | SPDX |
 |---|---|---|
-| Engine: everything outside `src/governance/` -- the automation engine, the 13 trained tools, the Chromium extension, the CLIs and installers | Apache-2.0 OR MIT, at your option ([LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT)) | `Apache-2.0 OR MIT` |
-| Governance module: `src/governance/` -- identity-bound grants, org policy locks, structured audit, sacred never-touch domains, the `explain` tool, central management | Ghostlight Commercial License, source-available ([LICENSE-GOVERNANCE](LICENSE-GOVERNANCE)) | `LicenseRef-Ghostlight-Commercial` |
+| Engine: everything outside `crates/core/src/governance/` -- the automation engine, the 13 trained tools, the Chromium extension, the CLIs and installers | Apache-2.0 OR MIT, at your option ([LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT)) | `Apache-2.0 OR MIT` |
+| Governance module: `crates/core/src/governance/` -- identity-bound grants, org policy locks, structured audit, sacred never-touch domains, the `explain` tool, central management | Ghostlight Commercial License, source-available ([LICENSE-GOVERNANCE](LICENSE-GOVERNANCE)) | `LicenseRef-Ghostlight-Commercial` |
 
 ## Am I free to use it?
 
@@ -46,5 +46,5 @@ tiers, plus the hardship and outgrew-the-tier accommodations. Once you have a li
 
 - Engine contributions are accepted under the Developer Certificate of
   Origin (inbound = outbound, Apache-2.0 OR MIT).
-- Contributions to `src/governance/` are not open yet; if you want to
+- Contributions to `crates/core/src/governance/` are not open yet; if you want to
   contribute there, open an issue first (a CLA will be required).
