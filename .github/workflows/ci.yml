@@ -18,8 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to master's HEAD SHA (not @stable) with an explicit toolchain input: @stable
+      # installs whatever "stable" resolves to at runtime and does NOT read
+      # rust-toolchain.toml (verified empirically -- SAPS ARCH-LOW-04), so relying on the file
+      # alone silently drifts off the pin. The SHA is immutable (supply-chain hygiene); bump it
+      # deliberately alongside rust-toolchain.toml, not implicitly.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
+          toolchain: "1.95.0"
           components: rustfmt
       - run: cargo fmt --check
 
@@ -35,8 +41,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
+          toolchain: "1.95.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -64,7 +71,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-e2e
@@ -79,7 +88,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
         with:
           key: lightbox
@@ -98,18 +109,38 @@ jobs:
           node-version: "22"
       - run: node --test tests/extension/constants.test.js tests/extension/geometry.test.js tests/extension/grouping.test.js tests/extension/keys.test.js tests/extension/settle.test.js tests/extension/observation.test.js tests/extension/treediff.test.js tests/extension/fileset.test.js
 
-  # The former `e2e-smoke` Playwright job was RETIRED (2026-07): it hung to the 6-hour runner
-  # ceiling on every push and ran `continue-on-error`, so it verified nothing while costing
-  # runner minutes -- coast-rot, not coverage. Real end-to-end coverage lives in the blocking
-  # `e2e` (spawned service + thin adapter) and `lightbox` (governance spec) jobs above. The
-  # harness itself is kept at `tests/e2e/run-smoke.mjs` for manual runs; wire a fixed version
-  # back in as its own reviewed commit once the hang is diagnosed with log access.
+  # Real extension + real binary over native messaging, driven as an MCP server over stdio
+  # (ADR-0026 Decision 6). Retired 2026-07 (it hung to the 6-hour runner ceiling under
+  # `continue-on-error`, verifying nothing while costing runner minutes) then re-wired here:
+  # the hang's root causes -- a stale `ghostlight-adapter-*` binary name left over from the
+  # ADR-0051 relay merge, and a test asserting against the wrong tool -- are fixed, and the
+  # harness ran green in ~1 minute across three separate PRs (no continue-on-error, no hang)
+  # before this job definition existed to prove it in CI directly. `timeout-minutes` stays as
+  # a safety net, not a crutch: this is now a real, blocking gate.
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: cargo build --locked --workspace
+      - run: npm ci --prefix tests/e2e || npm install --prefix tests/e2e
+      - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node tests/e2e/run-smoke.mjs
 
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -123,7 +154,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked

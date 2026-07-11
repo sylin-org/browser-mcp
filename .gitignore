@@ -30,3 +30,4 @@ Thumbs.db
 # Deliberately untracked: never pushed, never published. Backed up only by whatever covers
 # the working tree (NAS replica), not by git.
 /private/
+/saps

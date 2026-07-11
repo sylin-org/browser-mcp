@@ -37,7 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
       # Build the deliverable binaries first so the spawn-based integration tests find the sibling
       # adapter executables (see ci.yml's test job for the full rationale).
@@ -62,8 +64,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -157,7 +160,9 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
 
       - name: Generate CycloneDX SBOM
         shell: bash
@@ -169,7 +174,10 @@ jobs:
           cargo cyclonedx --format json --override-filename "ghostlight-v${VERSION}-sbom.cyclonedx"
           # cargo-cyclonedx writes the root-package SBOM to the workspace root; stage it as a release asset.
           find . -maxdepth 1 -name "ghostlight-v${VERSION}-sbom.cyclonedx*" -exec cp {} artifacts/ \;
-          ls -la artifacts/*.cyclonedx* || true
+          # No `|| true`: under `set -e`, ls on a non-matching glob fails the step -- if the SBOM
+          # never landed in artifacts/, the release build fails loudly instead of shipping quietly
+          # without it (SAPS OSS-LOW-03).
+          ls -la artifacts/*.cyclonedx*
 
       - name: Package extension
         shell: bash
