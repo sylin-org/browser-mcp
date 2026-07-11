@@ -40,4 +40,4 @@ security questionnaires: where the published CAIQ-shaped self-assessment does no
 portal, we complete one full questionnaire per year on request. These match the Enterprise
 commitments on the pricing page.
 
-Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org

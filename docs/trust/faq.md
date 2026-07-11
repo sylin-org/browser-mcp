@@ -354,4 +354,4 @@ See the [licensing guide](../guides/licensing.md),
 
 Evidence: docs/guides/licensing.md; ADR-0027 (open-core split, source-available governance); ADR-0028 (expiry changes only the audit stamp).
 
-Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org

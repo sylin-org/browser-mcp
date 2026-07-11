@@ -66,4 +66,4 @@ commitment exists for.
 
 See [security-overview.md](security-overview.md) for the vendor-side security posture.
 
-Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org
