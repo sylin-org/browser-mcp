@@ -321,7 +321,9 @@ impl Governance {
     ///    denial) and proceeds.
     ///
     /// On `Gate::Deny` the audit record is already written when this returns; the caller renders
-    /// `message` as the denial text and drops the (already-recorded) scope.
+    /// `denial.message` as the denial text and drops the (already-recorded) scope. The full
+    /// [`Denial`] (not just its message) rides along so a caller can also surface the domain and
+    /// denial_id on a non-audit channel (SAPS PRES-HIGH-01: the on-screen denial notification).
     pub fn authorize(
         &self,
         audit: &mut CallAudit,
@@ -347,7 +349,7 @@ impl Governance {
             ) {
                 Decision::Deny(d) => {
                     audit.record_terminal_deny(&d, 0);
-                    Gate::Deny { message: d.message }
+                    Gate::Deny { denial: d }
                 }
                 Decision::ShadowDeny(d) => {
                     audit.shadow = Some(d);
@@ -380,7 +382,7 @@ impl Governance {
             }
             Decision::Deny(d) => {
                 audit.record_terminal_deny(&d, 0);
-                Gate::Deny { message: d.message }
+                Gate::Deny { denial: d }
             }
             Decision::ShadowDeny(d) => {
                 audit.grant_id = d.grant_id.clone();
@@ -476,7 +478,7 @@ impl Governance {
 /// with the scope) or proceed (the caller dispatches the tool and later completes the scope).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {
-    Deny { message: String },
+    Deny { denial: Denial },
     Proceed,
 }
 
@@ -890,8 +892,12 @@ mod tests {
         let mut enforce_audit = enforce_g.begin("no_such_tool", None, None);
         let denial_id = match enforce_g.authorize(&mut enforce_audit, None, EffectiveMode::Enforce)
         {
-            Gate::Deny { message } => {
-                assert!(message.starts_with("Denied (D-"), "{message}");
+            Gate::Deny { denial } => {
+                assert!(
+                    denial.message.starts_with("Denied (D-"),
+                    "{}",
+                    denial.message
+                );
                 let rec = enforce_sink.last();
                 assert_eq!(rec.decision, "deny");
                 assert_eq!(rec.capability, "none");
@@ -1074,9 +1080,10 @@ mod tests {
             Some(GoverningResource::Resource("example.com".to_string())),
             EffectiveMode::Enforce,
         ) {
-            Gate::Deny { message } => assert!(
-                message.contains("Execute"),
-                "the PDP must see exactly the caller's own requires value: {message}"
+            Gate::Deny { denial } => assert!(
+                denial.message.contains("Execute"),
+                "the PDP must see exactly the caller's own requires value: {}",
+                denial.message
             ),
             Gate::Proceed => panic!("expected the echo PDP's deny"),
         }

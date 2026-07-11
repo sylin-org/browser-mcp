@@ -152,6 +152,19 @@ async function connect() {
           });
         return;
       }
+      // On-screen notification (SAPS PRES-HIGH-01): mechanism only, out of band from tool
+      // dispatch, the same fire-and-forget posture as group_request above. The binary has
+      // already decided everything (class/icon/description); this only relays it to the named
+      // tab's content script for rendering -- no policy decision, no interpretation here.
+      if (msg && msg.type === "notification" && typeof msg.tabId === "number") {
+        sendToTab(msg.tabId, {
+          type: "AGENT_NOTIFICATION",
+          class: msg.class,
+          icon: msg.icon,
+          description: msg.description,
+        });
+        return;
+      }
       if (msg && (msg.type === "hold_state" || msg.type === "hold_error") && msg.id) {
         const pending = holdPending.get(msg.id);
         if (!pending) return; // late or duplicate reply
