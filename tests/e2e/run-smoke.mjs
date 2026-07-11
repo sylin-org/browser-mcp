@@ -369,11 +369,23 @@ async function runLive(binaryPath, endpoint) {
       arguments: { tabId },
     });
     const rp1 = toolResultText(rp1Response, "read_page (before click)");
-    if (!rp1.includes("Ghostlight smoke fixture") || !rp1.includes("marker-before-click")) {
-      throw new Error(`read_page did not contain the expected fixture markers:\n${rp1}`);
+    if (!rp1.includes("Ghostlight smoke fixture")) {
+      throw new Error(`read_page did not contain the expected fixture heading:\n${rp1}`);
     }
     const inputRef = extractRef(rp1, "Name input");
     const buttonRef = extractRef(rp1, "Click me");
+
+    // The marker is a bare <p>, so it has neither a role nor an accessible name and read_page
+    // (a structural/interactive tree) never surfaces it by design; get_page_text is the tool
+    // for plain text, so it verifies the mutation the click below is meant to produce.
+    const pt1Response = await rpc.call("tools/call", {
+      name: "get_page_text",
+      arguments: { tabId },
+    });
+    const pt1 = toolResultText(pt1Response, "get_page_text (before click)");
+    if (!pt1.includes("marker-before-click")) {
+      throw new Error(`get_page_text did not contain the expected marker text:\n${pt1}`);
+    }
 
     const shotResponse = await rpc.call("tools/call", {
       name: "computer",
@@ -398,13 +410,13 @@ async function runLive(binaryPath, endpoint) {
       arguments: { action: "left_click", ref: buttonRef, tabId },
     });
 
-    const rp2Response = await rpc.call("tools/call", {
-      name: "read_page",
+    const pt2Response = await rpc.call("tools/call", {
+      name: "get_page_text",
       arguments: { tabId },
     });
-    const rp2 = toolResultText(rp2Response, "read_page (after click)");
-    if (!rp2.includes("marker-after-click")) {
-      throw new Error(`read_page after the click did not show marker-after-click:\n${rp2}`);
+    const pt2 = toolResultText(pt2Response, "get_page_text (after click)");
+    if (!pt2.includes("marker-after-click")) {
+      throw new Error(`get_page_text after the click did not show marker-after-click:\n${pt2}`);
     }
 
     await cleanup();
