@@ -154,13 +154,14 @@ async function connect() {
       }
       // On-screen notification (SAPS PRES-HIGH-01): mechanism only, out of band from tool
       // dispatch, the same fire-and-forget posture as group_request above. The binary has
-      // already decided everything (class/icon/description); this only relays it to the named
-      // tab's content script for rendering -- no policy decision, no interpretation here.
+      // already decided everything (class/icon/title/description); this only relays it to the
+      // named tab's content script for rendering -- no policy decision, no interpretation here.
       if (msg && msg.type === "notification" && typeof msg.tabId === "number") {
         sendToTab(msg.tabId, {
           type: "AGENT_NOTIFICATION",
           class: msg.class,
           icon: msg.icon,
+          title: msg.title,
           description: msg.description,
         });
         return;

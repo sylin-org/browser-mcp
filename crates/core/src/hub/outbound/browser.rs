@@ -48,13 +48,16 @@
 //! as an ordinary id-less event, same as any other frame nothing is waiting for.
 //!
 //! On-screen notification ([`Browser::notify`], SAPS PRES-HIGH-01): the mcp-server sends
-//! `{ "type": "notification", "tabId", "class", "icon"?, "description", "ref"? }`. Same posture
-//! as `request_group` -- fire-and-forget, no `id`, no reply. `class` and `icon` are a small,
-//! open-ended vocabulary (today: `class: "blocked"` for a sacred-domain denial, `"warning"` for
-//! a policy denial) the extension renders without judging; `ref` is an opaque cross-reference
-//! (today: the denial_id) a viewer can correlate back to the structured audit record. First
-//! caller is a denial, fired from [`crate::mcp::pipeline::run_tool_call`] at each of the three
-//! points a call is denied -- the ONE place today where governance decides something and the
+//! `{ "type": "notification", "tabId", "class", "icon"?, "title", "description"?, "ref"? }`.
+//! Same posture as `request_group` -- fire-and-forget, no `id`, no reply. `class` and `icon` are
+//! the standard severity taxonomy this codebase's own tracing already uses --
+//! `"info"`/`"debug"`/`"warn"`/`"error"` -- so the primitive stays general-purpose rather than
+//! denial-specific (today: `class: "error"` for a sacred-domain denial, `"warn"` for a policy
+//! denial) the extension renders without judging; `title` is the
+//! always-shown headline, `description` an optional supporting line; `ref` is an opaque
+//! cross-reference (today: the denial_id) a viewer can correlate back to the structured audit
+//! record. First caller is a denial, fired from [`crate::mcp::pipeline::run_tool_call`] at each of
+//! the three points a call is denied -- the ONE place today where governance decides something and the
 //! extension is never otherwise contacted, so nothing on screen shows a block happened without
 //! this. Deliberately general so a future notification need (a policy hot-reload landing, for
 //! example) is a new `class`/`icon` value at an existing call site, not a new message type.
@@ -597,18 +600,24 @@ impl Browser {
     /// out-of-band-presentation posture as [`Browser::request_group`] above, just a general
     /// vocabulary instead of one narrow purpose. No `id`, no reply awaited, no policy decision
     /// made on the extension side -- the binary has ALREADY decided everything (`class`, `icon`,
-    /// `description`); the extension only renders it. First caller: a denial (SAPS PRES-HIGH-01)
-    /// -- governance blocks a call before the extension is ever contacted for the call itself, so
-    /// today nothing on screen shows a block happened. `tab_id: None` renders nothing (there is
-    /// no always-visible "every tab" surface today; a future global-notification need can extend
-    /// this, not narrow it). A missing/dead connection or an encoding failure is a harmless
-    /// no-op, same reasoning as `request_group`: this is presentation, never a tool call.
+    /// `title`, `description`); the extension only renders it. `title` is the always-shown
+    /// headline (e.g. "Blocked - example.com"); `description` is an optional supporting line
+    /// (e.g. "access is denied (sacred domain)"). This is deliberately NOT the extension's
+    /// `caption()` mechanism: a caption is optional decorative flavor text, off by default; a
+    /// notification is substantive and must never be silently gated behind that preference.
+    /// First caller: a denial (SAPS PRES-HIGH-01) -- governance blocks a call before the
+    /// extension is ever contacted for the call itself, so today nothing on screen shows a
+    /// block happened. `tab_id: None` renders nothing (there is no always-visible "every tab"
+    /// surface today; a future global-notification need can extend this, not narrow it). A
+    /// missing/dead connection or an encoding failure is a harmless no-op, same reasoning as
+    /// `request_group`: this is presentation, never a tool call.
     pub fn notify(
         &self,
         tab_id: Option<i64>,
         class: &str,
         icon: Option<&str>,
-        description: &str,
+        title: &str,
+        description: Option<&str>,
         reference: Option<&str>,
     ) {
         let Some(tab_id) = tab_id else {
@@ -618,10 +627,13 @@ impl Browser {
             "type": "notification",
             "tabId": tab_id,
             "class": class,
-            "description": description,
+            "title": title,
         });
         if let Some(icon) = icon {
             notification["icon"] = json!(icon);
+        }
+        if let Some(description) = description {
+            notification["description"] = json!(description);
         }
         if let Some(reference) = reference {
             notification["ref"] = json!(reference);

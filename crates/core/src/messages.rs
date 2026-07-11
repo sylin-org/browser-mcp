@@ -142,13 +142,18 @@
 //! ## binary -> extension
 //! ```json
 //! { "type": "notification", "tabId": <number>, "class": "<string>", "icon": "<string>",
-//!   "description": "<string>", "ref": "<string>" }
+//!   "title": "<string>", "description": "<string>", "ref": "<string>" }
 //! ```
 //!
-//! `icon` and `ref` are optional. Additive; ONE new `type` value on the SAME channel, the same
-//! fire-and-forget-presentation posture as `group_request` above (no `id`, no reply, no policy
-//! decision on the extension side -- it renders exactly what it is told). `class` is a small,
-//! open-ended vocabulary (today: `"blocked"` for a sacred-domain denial, `"warning"` for a policy
-//! denial); `ref` is an opaque cross-reference (today: a denial_id) a viewer can correlate back to
+//! `icon`, `description`, and `ref` are optional; `title` is always present. Additive; ONE new
+//! `type` value on the SAME channel, the same fire-and-forget-presentation posture as
+//! `group_request` above (no `id`, no reply, no policy decision on the extension side -- it
+//! renders exactly what it is told). `title` is deliberately NOT the extension's `caption()`
+//! mechanism (optional decorative flavor text, off by default) -- a notification is substantive
+//! and must always render. `class` is the standard severity taxonomy this codebase's own tracing
+//! already uses -- `"info"`/`"debug"`/`"warn"`/`"error"` -- so the primitive stays general-purpose
+//! rather than denial-specific (today: `"error"` for a sacred-domain denial, `"warn"` for a policy
+//! denial); `ref` is an opaque cross-reference
+//! (today: a denial_id) a viewer can correlate back to
 //! the structured audit record later. First caller: [`crate::mcp::pipeline::run_tool_call`], at
 //! each of the three points a call is denied.
