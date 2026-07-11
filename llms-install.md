@@ -1,12 +1,14 @@
 # Installing Ghostlight (for AI agents)
 
 Ghostlight is an MCP server that gives you governed access to the user's own, already-logged-in
-Chromium browser. Follow these steps exactly; each is idempotent and safe to re-run.
+Chromium browser. You run the commands, then test; pull the user in only for what a CLI can't do
+-- restart the client to load the server, and load the browser extension if the test shows it
+missing. Everything here is idempotent and safe to re-run.
 
 ## 1. Add the MCP server
 
-Add this stdio server entry to the MCP settings file you manage (no install step needed; the npm
-launcher fetches a single portable binary on first run):
+Add this stdio server entry to the MCP settings file you manage. The `npx` launcher fetches the
+portable binary on first run, so there is nothing to pre-install:
 
 ```json
 {
@@ -33,34 +35,25 @@ npx -y ghostlight install
 This registers the browser's native-messaging host and the MCP client entries (an idempotent,
 value-level merge -- it never clobbers existing config and never duplicates entries).
 
-## 3. Ask the user to add the browser extension
+## 3. Test the whole chain
 
-The extension cannot be installed from the command line. Ask the user to:
+No ghostlight tools yet? Have the user restart the client (skip if it hot-reloaded them). Then get a
+`tabId` (`tabs_context_mcp`, `createIfEmpty: true`) and `navigate` to https://sylin.org/ghostlight/.
 
-- download `ghostlight-extension-v*.zip` from
-  https://github.com/sylin-org/ghostlight/releases/latest, unzip it, and load it unpacked at
-  `chrome://extensions` (Developer mode -> Load unpacked).
+- Loads and readable -> the whole chain works. Go to step 4; the extension is already there, so do
+  not ask the user to install it.
+- Errors or not connected -> the browser extension is the likely cause (the one piece the CLI can't
+  install):
+  1. Run `npx -y ghostlight doctor` to confirm which link is broken.
+  2. Have the user download `ghostlight-extension-v*.zip` from
+     https://github.com/sylin-org/ghostlight/releases/latest, unzip it, and load it unpacked at
+     `chrome://extensions` (Developer mode -> Load unpacked). A Web Store listing ("Ghostlight in
+     Browser") is coming; once live, they can use that instead.
+  3. Retest (reload the extension at `chrome://extensions` first if the browser was already open).
 
-A Chrome Web Store listing ("Ghostlight in Browser") is in preparation; once it is live, the
-user can install from the store instead.
+## 4. First use
 
-Then ask the user to restart the MCP client (so it picks up the new server) and, if the browser
-was already open, reload the extension.
-
-## 4. Verify
-
-```sh
-npx -y ghostlight doctor
-```
-
-`doctor` is read-only and prints a specific, actionable finding for anything unhealthy (browser
-not registered, extension not connected, no server running). Exit code 0 means the whole chain is
-healthy. If the extension shows disconnected, reloading it at `chrome://extensions` is the usual
-fix.
-
-## 5. First use
-
-Call `tabs_context_mcp` with `createIfEmpty: true` to get a `tabId`, then `navigate`. The agent
-works inside a dedicated, clearly labeled tab group, visually separate from the user's own tabs.
+You already have a `tabId` from the test above (reuse it, or call `tabs_context_mcp` again). You
+work inside a dedicated, clearly labeled tab group, visually separate from the user's own tabs.
 Call `explain` at any time to see every available action and the capability it requires under the
 session's policy (with no policy configured, everything is allowed).
