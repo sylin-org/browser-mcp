@@ -27,13 +27,13 @@ url = "2"
 # latent width-timing bug at the 4096-code reset that only a strict third-party decoder exposed).
 jpeg-decoder = { version = "0.3", default-features = false }
 color_quant = "1.1"
-gif = { version = "0.13", default-features = false, features = ["std"] }
+gif = { version = "0.14", default-features = false, features = ["std"] }
 # License verification (ADR-0028 Decision 11): composite Ed25519 + ML-DSA-65 (FIPS 204) signature
 # over the license claims, verified fully offline against an embedded key table. ML-DSA is the
 # post-quantum leg; Ed25519 is the classical guard (AND-composition). Both pure Rust (the four-target
 # cross-compile matrix must not grow a C toolchain). base64 is reused from crate::b64 (lean-internals
 # posture), so no base64 crate is added here.
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 fips204 = "0.4"
 # managed:// network fetch (ADR-0055 Phase 3), behind the `managed-fetch` feature: a SMALL blocking
 # HTTP client (ureq) plus rustls with a one-root pinned trust store. Optional, so
@@ -43,7 +43,7 @@ fips204 = "0.4"
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
-webpki-roots = { version = "0.26", optional = true }
+webpki-roots = { version = "1.0", optional = true }
 
 [features]
 # managed:// network fetch (ADR-0055 Phase 3). On by default so the shipped binary can fetch policy
