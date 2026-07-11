@@ -95,10 +95,20 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
     let endpoint = ipc::default_endpoint();
     let endpoint_display = ipc::endpoint_display(&endpoint);
     let probe = ipc::probe_endpoint(&endpoint);
+    // Live extension liveness over the control channel (CAP-MED-01): asks the running service
+    // whether the browser extension is attached, so doctor renders a real verdict WITHOUT requiring
+    // --debug. Only worth querying when a server is actually accepting; `None` (service absent, too
+    // old to answer the control role, or no reply within the short timeout) renders as "unknown".
+    let live_extension = if matches!(probe, EndpointProbe::Accepts) {
+        ipc::query_status(&endpoint).map(|s| s.extension_connected)
+    } else {
+        None
+    };
     println!();
     println!("IPC endpoint:");
     println!("  {:<9}{}", "path", endpoint_display);
     println!("  {:<9}{}", "state", state_line(&probe));
+    println!("  {:<9}{}", "extension", extension_line(live_extension));
 
     // ADR-0048 D7: when this report is for the DEFAULT instance, say where UNPINNED clients
     // (agent adapters and the browser native host with no --instance) currently route: a live
@@ -141,21 +151,22 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
         sessions_present,
         newest_server,
         orphans: orphan_pids(&rows).len(),
+        live_extension,
     };
     let problems = findings(&obs);
 
     println!();
     println!("Verdict:");
     if problems.is_empty() {
-        // A newest_server is guaranteed here: every rule that fires with no mcp-server session
-        // (rules 3, 5) or a disconnected one (rule 6) pushes a finding, so an empty vector implies
-        // Accepts + a connected newest_server (see `findings`'s doc comment).
-        let pid = obs
+        // Empty findings implies a healthy chain: the endpoint accepts, and either the live control
+        // query confirmed the extension is attached or (older service / no --debug) the newest debug
+        // session did. The pid is shown when a debug session recorded one, omitted otherwise.
+        let pid_note = obs
             .newest_server
-            .expect("empty findings implies a connected newest mcp-server session")
-            .pid;
+            .map(|s| format!(" (pid {})", s.pid))
+            .unwrap_or_default();
         println!(
-            "  OK: mcp-server (pid {pid}) is running, the extension is connected, and the IPC endpoint accepts connections."
+            "  OK: mcp-server{pid_note} is running, the browser extension is connected, and the IPC endpoint accepts connections."
         );
     } else {
         for problem in &problems {
@@ -412,6 +423,17 @@ fn state_line(probe: &EndpointProbe) -> String {
         }
         EndpointProbe::Absent => "absent (no mcp-server currently owns it)".to_string(),
         EndpointProbe::Rejects(detail) => format!("exists but rejected the probe: {detail}"),
+    }
+}
+
+/// The IPC-endpoint "extension" line: the live control-channel verdict (CAP-MED-01). `None` means
+/// doctor could not ask (no server, an older service that does not answer the control role, or no
+/// reply) -- reported as "unknown" rather than guessed.
+fn extension_line(live_extension: Option<bool>) -> &'static str {
+    match live_extension {
+        Some(true) => "connected (live)",
+        Some(false) => "NOT connected (live: the service is running but no extension is attached)",
+        None => "unknown (service not running, or too old to report; run with --debug for details)",
     }
 }
 
@@ -786,6 +808,11 @@ struct Observations {
     /// How many adapter sessions are orphaned (alive process, dead parent) -- reap targets
     /// (ADR-0030 Decision 8, PINS.md SS5.5).
     orphans: usize,
+    /// The live control-channel extension verdict (CAP-MED-01): `Some(true/false)` when the running
+    /// service answered whether the extension is attached, `None` when it could not be asked (no
+    /// server, an older service, or no reply). When present it is authoritative and does not need
+    /// `--debug`; when absent the verdict falls back to the debug-session inference.
+    live_extension: Option<bool>,
 }
 
 struct NewestServer {
@@ -830,25 +857,36 @@ fn findings(obs: &Observations) -> Vec<String> {
                 ),
             });
         }
-        EndpointProbe::Accepts => match &obs.newest_server {
-            None => out.push(
-                "an mcp-server is running but wrote no debug state: restart the session with --debug (or GHOSTLIGHT_DEBUG=1) and re-run doctor for a full diagnosis"
+        EndpointProbe::Accepts => match obs.live_extension {
+            // Authoritative live signal (CAP-MED-01), available WITHOUT --debug: the service is
+            // running and answered whether the extension is attached.
+            Some(true) => {}
+            Some(false) => out.push(
+                "an mcp-server is running but no browser extension is attached: check that the extension is loaded and enabled at chrome://extensions and that the browser is running; if it persists, re-run ghostlight install and restart the browser"
                     .to_string(),
             ),
-            Some(s) if !s.extension_connected => {
-                if s.connects == 0 {
-                    out.push(format!(
-                        "the extension never connected in the newest session (pid {}): check that the extension is loaded and enabled at chrome://extensions and that the browser is running; if it persists, re-run ghostlight install and restart the browser",
-                        s.pid
-                    ));
-                } else {
-                    out.push(format!(
-                        "the extension is disconnected from the mcp-server (pid {}; it connected {} time(s) earlier in this session): the extension service worker may be stopped; inspect it at chrome://extensions or restart the browser",
-                        s.pid, s.connects
-                    ));
+            // The service could not be asked (older service, or no reply): fall back to the
+            // debug-session inference, which needs --debug to have written state.
+            None => match &obs.newest_server {
+                None => out.push(
+                    "an mcp-server is running but its extension status could not be confirmed and it wrote no debug state: restart the session with --debug (or GHOSTLIGHT_DEBUG=1) and re-run doctor for a full diagnosis"
+                        .to_string(),
+                ),
+                Some(s) if !s.extension_connected => {
+                    if s.connects == 0 {
+                        out.push(format!(
+                            "the extension never connected in the newest session (pid {}): check that the extension is loaded and enabled at chrome://extensions and that the browser is running; if it persists, re-run ghostlight install and restart the browser",
+                            s.pid
+                        ));
+                    } else {
+                        out.push(format!(
+                            "the extension is disconnected from the mcp-server (pid {}; it connected {} time(s) earlier in this session): the extension service worker may be stopped; inspect it at chrome://extensions or restart the browser",
+                            s.pid, s.connects
+                        ));
+                    }
                 }
-            }
-            Some(_) => {}
+                Some(_) => {}
+            },
         },
     }
 
@@ -982,6 +1020,7 @@ mod tests {
                 connects: 2,
             }),
             orphans: 0,
+            live_extension: Some(true),
         }
     }
 
@@ -1016,6 +1055,7 @@ mod tests {
             sessions_present: false,
             newest_server: None,
             orphans: 0,
+            live_extension: None,
         };
         let f = findings(&obs);
         assert_eq!(f.len(), 2, "{f:?}");
@@ -1038,13 +1078,16 @@ mod tests {
             sessions_present: false,
             newest_server: None,
             orphans: 0,
+            live_extension: None,
         };
         let f2 = findings(&obs2);
         assert!(f2[0].contains("process manager"), "{f2:?}");
     }
 
     #[test]
-    fn accepts_with_no_server_session_fires_rule_5() {
+    fn accepts_with_no_live_status_and_no_session_falls_back_to_debug_hint() {
+        // No live control answer (older service) AND no --debug session: doctor still points the
+        // user at --debug for a full diagnosis.
         let obs = Observations {
             any_browser_registered: true,
             any_client_registered: true,
@@ -1052,6 +1095,7 @@ mod tests {
             sessions_present: false,
             newest_server: None,
             orphans: 0,
+            live_extension: None,
         };
         let f = findings(&obs);
         assert_eq!(f.len(), 1, "{f:?}");
@@ -1059,8 +1103,45 @@ mod tests {
     }
 
     #[test]
+    fn accepts_with_live_extension_connected_is_healthy_without_debug() {
+        // CAP-MED-01: the live control query confirms the extension is attached, so a normal
+        // (non-debug) install with no session file is HEALTHY -- no "wrote no debug state" nag.
+        let obs = Observations {
+            any_browser_registered: true,
+            any_client_registered: true,
+            probe: EndpointProbe::Accepts,
+            sessions_present: false,
+            newest_server: None,
+            orphans: 0,
+            live_extension: Some(true),
+        };
+        assert!(findings(&obs).is_empty(), "{:?}", findings(&obs));
+    }
+
+    #[test]
+    fn accepts_with_live_extension_disconnected_reports_it_without_debug() {
+        // CAP-MED-01: the live query says the extension is NOT attached; doctor renders a real
+        // verdict even with no debug session.
+        let obs = Observations {
+            any_browser_registered: true,
+            any_client_registered: true,
+            probe: EndpointProbe::Accepts,
+            sessions_present: false,
+            newest_server: None,
+            orphans: 0,
+            live_extension: Some(false),
+        };
+        let f = findings(&obs);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("no browser extension is attached"), "{f:?}");
+    }
+
+    #[test]
     fn accepts_with_a_disconnected_extension_distinguishes_never_connected_from_dropped() {
+        // The debug-fallback path (no live answer): the never/dropped distinction still comes from
+        // the recorded session's connect count.
         let mut never = healthy_obs();
+        never.live_extension = None;
         never.newest_server = Some(NewestServer {
             pid: 5,
             extension_connected: false,
@@ -1070,6 +1151,7 @@ mod tests {
         assert!(f[0].contains("never connected"), "{f:?}");
 
         let mut dropped = healthy_obs();
+        dropped.live_extension = None;
         dropped.newest_server = Some(NewestServer {
             pid: 5,
             extension_connected: false,
@@ -1078,6 +1160,13 @@ mod tests {
         let f2 = findings(&dropped);
         assert!(f2[0].contains("disconnected"), "{f2:?}");
         assert!(f2[0].contains("3 time(s)"), "{f2:?}");
+    }
+
+    #[test]
+    fn extension_line_renders_each_live_state() {
+        assert!(extension_line(Some(true)).contains("connected (live)"));
+        assert!(extension_line(Some(false)).contains("NOT connected"));
+        assert!(extension_line(None).contains("unknown"));
     }
 
     #[test]

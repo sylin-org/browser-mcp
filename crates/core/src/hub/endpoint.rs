@@ -32,8 +32,9 @@ where
 /// session-hello FIRST (safe here -- unlike the extension endpoint, this peer always speaks
 /// first), parse and admit its presented GUID (H3, ADR-0030 Decision 4), and route `"adapter"`
 /// into the SAME governance chokepoint every transport calls
-/// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is
-/// reserved until H8; an unknown or absent role, a malformed/empty guid, or a guid refused by
+/// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is a
+/// stateless read-only request/reply ([`answer_control_request`], CAP-MED-01) admitting no session;
+/// an unknown or absent role, a malformed/empty guid, or a guid refused by
 /// [`crate::hub::session::SessionRegistry::admit`] are all refused cleanly, never a panic, and
 /// never surface the presented GUID in a log. Runs entirely INSIDE the spawned per-connection
 /// task (never inline in the accept loop), so a silent peer cannot head-of-line-block admission
@@ -122,7 +123,14 @@ async fn handle_adapter_connection<S>(
             }
         }
         Some(role) if role == ghostlight_transport::handshake::ROLE_CONTROL => {
-            tracing::debug!("the control role is reserved until H8; refusing the connection");
+            let live_sessions = ctx.live_sessions.load(std::sync::atomic::Ordering::Relaxed) as u64;
+            answer_control_request(
+                &mut stream,
+                &hello,
+                ctx.browser.is_connected(),
+                live_sessions,
+            )
+            .await;
         }
         other => {
             tracing::warn!(
@@ -130,6 +138,49 @@ async fn handle_adapter_connection<S>(
                 "adapter/control connection sent an unknown or absent role; refusing"
             );
         }
+    }
+}
+
+/// Answer a [`ghostlight_transport::handshake::ROLE_CONTROL`] request (CAP-MED-01): a stateless,
+/// read-only reply with NO session admission (no guid, no mint quota, no anti-squat proof, no
+/// `serve_session`). Today the only request is `status`, which returns a liveness
+/// [`ghostlight_transport::ipc::StatusReply`] -- whether the extension is attached and how many tool
+/// sessions are live -- so `ghostlight doctor` can render a real Extension verdict without
+/// `--debug`. An unknown request is ignored (the connection just closes), keeping the control
+/// vocabulary forward-compatible. Access is already bounded to the same OS user by the endpoint's
+/// owner-only transport ACL, and the reply carries only non-sensitive liveness, so no per-request
+/// credential check is needed here. Takes the two liveness values directly (not the whole
+/// `ServiceContext`) so the reply shape is unit-testable over an in-memory duplex.
+async fn answer_control_request<S>(
+    stream: &mut S,
+    hello: &Value,
+    extension_connected: bool,
+    live_sessions: u64,
+) where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let request = hello.get("request").and_then(Value::as_str).unwrap_or("");
+    if request != ghostlight_transport::handshake::CONTROL_REQUEST_STATUS {
+        tracing::debug!(
+            request,
+            "control connection sent an unknown request; ignoring"
+        );
+        return;
+    }
+    let reply = ghostlight_transport::ipc::StatusReply {
+        hub: ghostlight_transport::handshake::HUB_PROTO,
+        extension_connected,
+        live_sessions,
+    };
+    let bytes = match serde_json::to_vec(&reply) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to encode the control status reply");
+            return;
+        }
+    };
+    if let Err(e) = host::write_message(stream, &bytes).await {
+        tracing::debug!(error = %e, "control status reply could not be written (peer gone)");
     }
 }
 
@@ -704,6 +755,45 @@ mod tests {
         let built = win_security::OwnerOnly::build();
         assert!(built.is_some(), "constant SDDL must convert on Windows");
         assert!(require_owner_only(built).is_ok());
+    }
+
+    /// CAP-MED-01: a `control`/`status` request produces exactly one framed [`StatusReply`] whose
+    /// fields echo the liveness values, over an in-memory duplex (no spawned service).
+    #[tokio::test]
+    async fn control_status_request_writes_a_status_reply() {
+        let (mut server_side, mut client_side) = tokio::io::duplex(4096);
+        let hello = json!({
+            "hub": ghostlight_transport::handshake::HUB_PROTO,
+            "role": ghostlight_transport::handshake::ROLE_CONTROL,
+            "request": ghostlight_transport::handshake::CONTROL_REQUEST_STATUS,
+        });
+        answer_control_request(&mut server_side, &hello, true, 3).await;
+
+        let bytes = host::read_message(&mut client_side)
+            .await
+            .unwrap()
+            .expect("a framed reply");
+        let reply: ghostlight_transport::ipc::StatusReply = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply.hub, ghostlight_transport::handshake::HUB_PROTO);
+        assert!(reply.extension_connected);
+        assert_eq!(reply.live_sessions, 3);
+    }
+
+    /// An unrecognized control request writes nothing and simply closes -- keeping the vocabulary
+    /// forward-compatible (a future request name never crashes an older service).
+    #[tokio::test]
+    async fn unknown_control_request_writes_nothing() {
+        let (mut server_side, mut client_side) = tokio::io::duplex(4096);
+        let hello = json!({ "role": ghostlight_transport::handshake::ROLE_CONTROL, "request": "future-thing" });
+        answer_control_request(&mut server_side, &hello, true, 0).await;
+        drop(server_side); // close the write half so the read observes EOF, not a hang
+        assert!(
+            host::read_message(&mut client_side)
+                .await
+                .unwrap()
+                .is_none(),
+            "an unknown request must produce no reply"
+        );
     }
 
     #[tokio::test]
