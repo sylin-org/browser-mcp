@@ -20,7 +20,10 @@ const MAX_BUNDLE_BYTES: u64 = 8 * 1024 * 1024;
 /// The outcome of a conditional fetch.
 pub enum FetchOutcome {
     /// The source returned a body (200), with its ETag if any (for the next conditional request).
-    Modified { bytes: Vec<u8>, etag: Option<String> },
+    Modified {
+        bytes: Vec<u8>,
+        etag: Option<String>,
+    },
     /// The source answered 304 Not Modified: keep enforcing what we already hold.
     NotModified,
 }
@@ -52,7 +55,10 @@ impl std::fmt::Display for FetchError {
 
 /// Perform one conditional GET of the bootstrap's `source`, honoring the bearer token, the pinned CA,
 /// and `if_none_match` (the last ETag). Blocking.
-pub fn fetch(b: &ManagedBootstrap, if_none_match: Option<&str>) -> Result<FetchOutcome, FetchError> {
+pub fn fetch(
+    b: &ManagedBootstrap,
+    if_none_match: Option<&str>,
+) -> Result<FetchOutcome, FetchError> {
     let agent = build_agent(b.ca_cert_pem.as_deref())?;
     let mut req = agent.get(&b.source);
     if let Some(bearer) = &b.bearer_token {
@@ -112,7 +118,9 @@ fn pinned_client_config(pem: &str) -> Result<rustls::ClientConfig, FetchError> {
         added += 1;
     }
     if added == 0 {
-        return Err(FetchError::BadPin("no certificates found in the pinned CA PEM".into()));
+        return Err(FetchError::BadPin(
+            "no certificates found in the pinned CA PEM".into(),
+        ));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
@@ -152,7 +160,10 @@ mod tests {
                 if reader.read_line(&mut line).unwrap() == 0 {
                     break;
                 }
-                if line.to_lowercase().starts_with("authorization: bearer opensesame") {
+                if line
+                    .to_lowercase()
+                    .starts_with("authorization: bearer opensesame")
+                {
                     saw_bearer = true;
                 }
                 if line == "\r\n" {

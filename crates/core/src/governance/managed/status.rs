@@ -129,7 +129,10 @@ mod tests {
     fn snake_case_mapping_is_exact() {
         let seed = [71u8; 32];
         let fresh = from_reconciled(&reconciled(Freshness::Fresh, 4, &seed), "src", None);
-        assert_eq!((fresh.freshness.as_str(), fresh.stale_reason), ("fresh", None));
+        assert_eq!(
+            (fresh.freshness.as_str(), fresh.stale_reason),
+            ("fresh", None)
+        );
 
         let unreachable = from_reconciled(
             &reconciled(

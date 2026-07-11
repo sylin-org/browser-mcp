@@ -505,7 +505,10 @@ pub fn managed_passport(status: &ManagedStatus) -> String {
         // Any other state (no active policy, or an unknown freshness string) degrades to the
         // last-verified phrasing without a parenthetical; the four cases above are the reachable
         // ones when a policy is active.
-        _ => format!("enforcing your last verified policy from {}", status.fetched_at),
+        _ => format!(
+            "enforcing your last verified policy from {}",
+            status.fetched_at
+        ),
     };
     lines.push(format!("Policy version {seq}, {freshness_phrase}."));
 

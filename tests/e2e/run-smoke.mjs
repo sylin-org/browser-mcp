@@ -45,8 +45,9 @@ function resolveBinaryPath() {
   return binPath;
 }
 
-// Derive a sibling role executable (ADR-0046) beside the resolved `ghostlight` binary: same dir,
-// platform suffix. `cargo build --workspace` builds all three bins into target/debug.
+// Derive the sibling `ghostlight-relay` executable (ADR-0051 Phase 3) beside the resolved
+// `ghostlight` binary: same dir, platform suffix. `cargo build --workspace` builds both bins into
+// target/debug; role (agent vs. browser) is selected at launch, not by binary name.
 function siblingBin(binaryPath, name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   return path.join(path.dirname(binaryPath), exe);
@@ -223,8 +224,9 @@ function reExecUnderXvfb() {
 }
 
 async function runDryRun(binaryPath, endpoint) {
-  // Chrome launches the native host, so the manifest/wrapper wraps the BROWSER adapter (ADR-0046).
-  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
+  // Chrome launches the native host, so the manifest/wrapper wraps ghostlight-relay; the browser
+  // role auto-detects from the chrome-extension:// origin Chrome passes (ADR-0051 Phase 3).
+  const browserBin = siblingBin(binaryPath, "ghostlight-relay");
   const { server, url: fixtureUrl } = await startFixtureServer();
   const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, browserBin);
   const plan = {
@@ -245,10 +247,12 @@ async function runDryRun(binaryPath, endpoint) {
 }
 
 async function runLive(binaryPath, endpoint) {
-  // ADR-0046: Chrome launches the BROWSER adapter (wrapped by the native-messaging manifest); the
-  // MCP client launches the AGENT adapter; the `service` spawn below stays on the `ghostlight` bin.
-  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
-  const agentBin = siblingBin(binaryPath, "ghostlight-adapter-agent");
+  // ADR-0051 Phase 3: both roles are the same ghostlight-relay binary. Chrome launches it via the
+  // native-messaging manifest (browser role auto-detected from the chrome-extension:// origin);
+  // the MCP client launches it with an explicit `--role agent`. The `service` spawn below stays on
+  // the separate `ghostlight` bin.
+  const browserBin = siblingBin(binaryPath, "ghostlight-relay");
+  const agentBin = siblingBin(binaryPath, "ghostlight-relay");
   const { server, url: fixtureUrl } = await startFixtureServer();
   const { userDataDir } = buildProfile(endpoint, browserBin);
 
@@ -307,7 +311,7 @@ async function runLive(binaryPath, endpoint) {
     fail("no extension service worker appeared within the retry budget", 3);
   }
 
-  const child = spawn(agentBin, [], {
+  const child = spawn(agentBin, ["--role", "agent"], {
     stdio: ["pipe", "pipe", "inherit"],
     env: { ...process.env, GHOSTLIGHT_ENDPOINT: endpoint },
   });
@@ -365,11 +369,23 @@ async function runLive(binaryPath, endpoint) {
       arguments: { tabId },
     });
     const rp1 = toolResultText(rp1Response, "read_page (before click)");
-    if (!rp1.includes("Ghostlight smoke fixture") || !rp1.includes("marker-before-click")) {
-      throw new Error(`read_page did not contain the expected fixture markers:\n${rp1}`);
+    if (!rp1.includes("Ghostlight smoke fixture")) {
+      throw new Error(`read_page did not contain the expected fixture heading:\n${rp1}`);
     }
     const inputRef = extractRef(rp1, "Name input");
     const buttonRef = extractRef(rp1, "Click me");
+
+    // The marker is a bare <p>, so it has neither a role nor an accessible name and read_page
+    // (a structural/interactive tree) never surfaces it by design; get_page_text is the tool
+    // for plain text, so it verifies the mutation the click below is meant to produce.
+    const pt1Response = await rpc.call("tools/call", {
+      name: "get_page_text",
+      arguments: { tabId },
+    });
+    const pt1 = toolResultText(pt1Response, "get_page_text (before click)");
+    if (!pt1.includes("marker-before-click")) {
+      throw new Error(`get_page_text did not contain the expected marker text:\n${pt1}`);
+    }
 
     const shotResponse = await rpc.call("tools/call", {
       name: "computer",
@@ -394,13 +410,13 @@ async function runLive(binaryPath, endpoint) {
       arguments: { action: "left_click", ref: buttonRef, tabId },
     });
 
-    const rp2Response = await rpc.call("tools/call", {
-      name: "read_page",
+    const pt2Response = await rpc.call("tools/call", {
+      name: "get_page_text",
       arguments: { tabId },
     });
-    const rp2 = toolResultText(rp2Response, "read_page (after click)");
-    if (!rp2.includes("marker-after-click")) {
-      throw new Error(`read_page after the click did not show marker-after-click:\n${rp2}`);
+    const pt2 = toolResultText(pt2Response, "get_page_text (after click)");
+    if (!pt2.includes("marker-after-click")) {
+      throw new Error(`get_page_text after the click did not show marker-after-click:\n${pt2}`);
     }
 
     await cleanup();

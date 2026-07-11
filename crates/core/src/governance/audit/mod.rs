@@ -216,7 +216,10 @@ impl Recorder {
                         );
                     }
                     if let Some(n) = seq {
-                        map.insert("policy_seq".to_string(), serde_json::Value::Number(n.into()));
+                        map.insert(
+                            "policy_seq".to_string(),
+                            serde_json::Value::Number(n.into()),
+                        );
                     }
                     serde_json::to_string(&serde_json::Value::Object(map))
                 }

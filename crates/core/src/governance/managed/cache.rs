@@ -19,7 +19,9 @@ use std::path::Path;
 
 use crate::governance::crypto::GenKey;
 
-use super::{fetch_bytes, org_key, verify_and_parse, ManagedBootstrap, ManagedError, VerifiedManaged};
+use super::{
+    fetch_bytes, org_key, verify_and_parse, ManagedBootstrap, ManagedError, VerifiedManaged,
+};
 
 /// The two failure modes of a fresh-load attempt (ADR-0055 D5); both retain last-known-good.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +81,10 @@ pub struct Reconciled {
 /// Pure: given a fresh-load result and the cached last-known-good, decide the active policy without
 /// ever failing open. A fresh bundle wins only if it is valid AND its sequence is not a rollback;
 /// otherwise the cache stands; and with neither available the verdict is `NoPolicy` (fail closed).
-pub fn reconcile(fresh: Result<VerifiedManaged, FreshError>, cached: Option<VerifiedManaged>) -> Reconciled {
+pub fn reconcile(
+    fresh: Result<VerifiedManaged, FreshError>,
+    cached: Option<VerifiedManaged>,
+) -> Reconciled {
     match (fresh, cached) {
         (Ok(f), None) => Reconciled {
             active: Some(f),
@@ -123,7 +128,11 @@ pub fn reconcile(fresh: Result<VerifiedManaged, FreshError>, cached: Option<Veri
 /// Read and RE-VERIFY the cached bundle. `None` when absent, unreadable, OR unverifiable: a tampered
 /// or corrupt cache is ignored (never trusted), which is safe because the caller still has the fresh
 /// attempt and the fail-closed backstop.
-pub fn read_cache(path: &Path, key: &GenKey, domain_pattern_valid: fn(&str) -> bool) -> Option<VerifiedManaged> {
+pub fn read_cache(
+    path: &Path,
+    key: &GenKey,
+    domain_pattern_valid: fn(&str) -> bool,
+) -> Option<VerifiedManaged> {
     let bytes = std::fs::read(path).ok()?;
     match verify_and_parse(&bytes, key, domain_pattern_valid) {
         Ok(v) => Some(v),
@@ -233,15 +242,24 @@ mod tests {
     fn fresh_with_a_lower_sequence_is_a_refused_rollback() {
         let seed = [3u8; 32];
         let r = reconcile(Ok(verified(2, "a", &seed)), Some(verified(9, "a", &seed)));
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::RollbackRefused));
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::RollbackRefused)
+        );
         assert!(!r.persist_fresh);
         assert_eq!(r.active.unwrap().seq, 9, "the cache stands");
     }
 
     #[test]
     fn unreachable_keeps_the_cache() {
-        let r = reconcile(Err(FreshError::Unreachable), Some(verified(4, "a", &[4u8; 32])));
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::SourceUnreachable));
+        let r = reconcile(
+            Err(FreshError::Unreachable),
+            Some(verified(4, "a", &[4u8; 32])),
+        );
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::SourceUnreachable)
+        );
         assert_eq!(r.active.unwrap().seq, 4);
     }
 
@@ -251,7 +269,10 @@ mod tests {
             Err(FreshError::Bad("bad signature".into())),
             Some(verified(4, "a", &[5u8; 32])),
         );
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::UpdateRejected));
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::UpdateRejected)
+        );
         assert_eq!(r.active.unwrap().seq, 4);
     }
 
@@ -259,7 +280,10 @@ mod tests {
     fn nothing_available_is_no_policy_never_open() {
         let r = reconcile(Err(FreshError::Unreachable), None);
         assert_eq!(r.freshness, Freshness::NoPolicy);
-        assert!(r.active.is_none(), "no policy -> caller fails closed, never all-open");
+        assert!(
+            r.active.is_none(),
+            "no policy -> caller fails closed, never all-open"
+        );
     }
 
     // --- cache I/O ---
@@ -316,7 +340,10 @@ mod tests {
         }
         assert_eq!(r.freshness, Freshness::Fresh);
         assert_eq!(r.active.unwrap().seq, 3);
-        assert!(cache_existed, "the accepted fresh bundle was written through");
+        assert!(
+            cache_existed,
+            "the accepted fresh bundle was written through"
+        );
     }
 
     #[test]
@@ -332,7 +359,10 @@ mod tests {
 
         let r = resolve_managed(&bootstrap_for(&seed, &missing), &cache, ok_pattern).unwrap();
         std::fs::remove_file(&cache).ok();
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::SourceUnreachable));
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::SourceUnreachable)
+        );
         assert_eq!(r.active.unwrap().seq, 4);
     }
 
@@ -350,7 +380,10 @@ mod tests {
         for p in [&src, &cache] {
             std::fs::remove_file(p).ok();
         }
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::RollbackRefused));
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::RollbackRefused)
+        );
         assert_eq!(r.active.unwrap().seq, 9);
     }
 
@@ -364,7 +397,12 @@ mod tests {
         for p in [&missing_src, &missing_cache] {
             let _ = std::fs::remove_file(p);
         }
-        let r = resolve_managed(&bootstrap_for(&seed, &missing_src), &missing_cache, ok_pattern).unwrap();
+        let r = resolve_managed(
+            &bootstrap_for(&seed, &missing_src),
+            &missing_cache,
+            ok_pattern,
+        )
+        .unwrap();
         assert_eq!(r.freshness, Freshness::NoPolicy);
         assert!(r.active.is_none());
     }
@@ -397,7 +435,10 @@ mod tests {
         for p in [&src, &cache] {
             std::fs::remove_file(p).ok();
         }
-        assert_eq!(r.freshness, Freshness::LastKnownGood(StaleReason::UpdateRejected));
+        assert_eq!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::UpdateRejected)
+        );
         assert_eq!(r.active.unwrap().seq, 5);
     }
 
