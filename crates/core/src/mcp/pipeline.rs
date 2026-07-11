@@ -1058,7 +1058,7 @@ mod tests {
         wait_for_seen_len(&seen, 8).await;
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["tab_url_request:5", "notification:blocked"].repeat(4),
+            ["tab_url_request:5", "notification:blocked"].repeat(4),
             "the extension must never see an actual tool_request for a denied call -- only the \
              tab_url_request pre-flight and the on-screen denial notification"
         );
