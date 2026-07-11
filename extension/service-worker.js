@@ -113,10 +113,21 @@ async function connect() {
       // Tab-URL query (g13): mechanism only. Reports chrome.tabs.get(tabId).url verbatim (or
       // null for an unknown/closed tab); the binary decides what it means. No matching, no
       // classification, no denial text here.
+      //
+      // Group-gated (SEC-MED-05): the URL is reported ONLY for a tab Ghostlight manages -- the
+      // same `inGroup` membership mechanism the tool-dispatch path enforces via effectiveTabId().
+      // A guessed tabId of one of the user's PERSONAL tabs returns null, indistinguishable from an
+      // unknown/closed tab, so the binary's governance domain-resolution probe cannot be turned
+      // into an enumeration of out-of-group browsing context. Still mechanism-only: membership is
+      // a fact about our own group, not a policy decision.
       if (msg && msg.type === "tab_url_request" && msg.id) {
-        chrome.tabs.get(msg.tabId).then(
-          (tab) => {
-            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: tab.url || null } }); } catch { /* port gone */ }
+        inGroup(msg.tabId).then(
+          async (managed) => {
+            let url = null;
+            if (managed) {
+              try { const tab = await chrome.tabs.get(msg.tabId); url = tab.url || null; } catch { url = null; }
+            }
+            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url } }); } catch { /* port gone */ }
           },
           () => {
             try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: null } }); } catch { /* port gone */ }
