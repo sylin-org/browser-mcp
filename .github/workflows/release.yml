@@ -157,6 +157,20 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --override-filename "ghostlight-v${VERSION}-sbom.cyclonedx"
+          # cargo-cyclonedx writes the root-package SBOM to the workspace root; stage it as a release asset.
+          find . -maxdepth 1 -name "ghostlight-v${VERSION}-sbom.cyclonedx*" -exec cp {} artifacts/ \;
+          ls -la artifacts/*.cyclonedx* || true
+
       - name: Package extension
         shell: bash
         run: |
@@ -167,12 +181,14 @@ jobs:
           shasum -a 256 "$EXT_ZIP" > "${EXT_ZIP}.sha256"
           cat "${EXT_ZIP}.sha256"
 
+      # Attest EVERY release asset (archives, raw per-target binaries, checksums, the
+      # extension zip, and the SBOM), not just the packaged archives -- the npm launcher and
+      # the get.sh/get.ps1 one-liners fetch the raw binaries directly, and those deserve the
+      # same provenance story (docs/trust/supply-chain.md).
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: |
-            artifacts/*.tar.gz
-            artifacts/*.zip
+          subject-path: artifacts/*
 
       - name: Generate release notes
         shell: bash

@@ -1283,8 +1283,24 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::Local(|ctx| {
             Box::pin(async move {
                 let _ = ctx;
+                let mut text = explain_text();
+                // ADR-0055 D9: append the managed:// Policy Passport when managed governance is
+                // active (a bootstrap is present AND the T2 status sidecar reads). Absent either,
+                // nothing is appended -- explain's text stays byte-identical to the all-open form.
+                let paths = crate::governance::paths::GovernancePaths::production();
+                if paths.managed_bootstrap.exists() {
+                    if let Some(cache_path) = paths.managed_cache.as_ref() {
+                        let sidecar = crate::governance::managed::status::sidecar_path(cache_path);
+                        if let Some(status) =
+                            crate::governance::managed::status::read_sidecar(&sidecar)
+                        {
+                            text.push('\n');
+                            text.push_str(&crate::governance::explain::managed_passport(&status));
+                        }
+                    }
+                }
                 crate::mcp::outcome::CallOutcome::Success {
-                    result: json!({ "content": [ { "type": "text", "text": explain_text() } ] }),
+                    result: json!({ "content": [ { "type": "text", "text": text } ] }),
                 }
             })
         }),

@@ -38,6 +38,11 @@ pub struct Recorder {
     /// `governance::license` and installed once at startup via [`Self::set_license_stamp`]. `None`
     /// (the common case) keeps the serialized output byte-identical to an unlicensed-field record.
     license_stamp: Mutex<Option<&'static str>>,
+    /// The org-signed policy sequence appended under the `"policy_seq"` key on every TOOL-CALL record
+    /// while set (ADR-0055 Impl.9c): "decision X was made under policy version N". The same additive
+    /// channel as [`Self::license_stamp`]. Installed only under managed governance (from the T2 status
+    /// sidecar); `None` for all-open and non-managed streams, keeping their output byte-identical.
+    policy_seq: Mutex<Option<u64>>,
 }
 
 /// Resolve the destination `Recorder::from_config` and `Recorder::reload` both need, from a
@@ -94,6 +99,7 @@ impl Recorder {
         Self {
             inner: Mutex::new(resolve_inner(config)),
             license_stamp: Mutex::new(None),
+            policy_seq: Mutex::new(None),
         }
     }
 
@@ -102,6 +108,7 @@ impl Recorder {
         Self {
             inner: Mutex::new(None),
             license_stamp: Mutex::new(None),
+            policy_seq: Mutex::new(None),
         }
     }
 
@@ -110,6 +117,7 @@ impl Recorder {
         Self {
             inner: Mutex::new(Some(Inner::File(path))),
             license_stamp: Mutex::new(None),
+            policy_seq: Mutex::new(None),
         }
     }
 
@@ -118,6 +126,7 @@ impl Recorder {
         Self {
             inner: Mutex::new(Some(Inner::Stderr)),
             license_stamp: Mutex::new(None),
+            policy_seq: Mutex::new(None),
         }
     }
 
@@ -129,6 +138,17 @@ impl Recorder {
             .license_stamp
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = stamp;
+    }
+
+    /// Install the org-signed policy sequence appended to every subsequent TOOL-CALL record under the
+    /// `"policy_seq"` key (ADR-0055 Impl.9c). Set under managed governance (from the T2 status
+    /// sidecar) and re-set on a live policy change; `None` clears it (all-open / non-managed streams
+    /// carry no `policy_seq`). Mirrors [`Self::set_license_stamp`]'s storage exactly.
+    pub fn set_policy_seq(&self, seq: Option<u64>) {
+        *self
+            .policy_seq
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = seq;
     }
 
     /// True while this recorder has a live destination (audit enabled).
@@ -173,19 +193,36 @@ impl Recorder {
         } else {
             None
         };
-        let serialized = match stamp {
-            None => serde_json::to_string(record),
-            Some(s) => match serde_json::to_value(record) {
+        // The org-signed policy sequence rides the SAME tool-call-only channel (ADR-0055 Impl.9c):
+        // session-event records keep their frozen shape, and the `"policy_seq"` key appends only when
+        // a managed policy is in effect. Both fields None -> the fast, byte-identical path below.
+        let seq = if kind == "tool_call" {
+            *self
+                .policy_seq
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        } else {
+            None
+        };
+        let serialized = if stamp.is_none() && seq.is_none() {
+            serde_json::to_string(record)
+        } else {
+            match serde_json::to_value(record) {
                 Ok(serde_json::Value::Object(mut map)) => {
-                    map.insert(
-                        "license".to_string(),
-                        serde_json::Value::String(s.to_string()),
-                    );
+                    if let Some(s) = stamp {
+                        map.insert(
+                            "license".to_string(),
+                            serde_json::Value::String(s.to_string()),
+                        );
+                    }
+                    if let Some(n) = seq {
+                        map.insert("policy_seq".to_string(), serde_json::Value::Number(n.into()));
+                    }
                     serde_json::to_string(&serde_json::Value::Object(map))
                 }
                 Ok(other) => serde_json::to_string(&other),
                 Err(e) => Err(e),
-            },
+            }
         };
         let line = match serialized {
             Ok(l) => l,
@@ -316,6 +353,41 @@ mod tests {
         assert!(event_line.get("tool").is_none());
         assert!(event_line.get("decision").is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn policy_seq_stamps_tool_call_records_only() {
+        let path = temp_path("policy-seq");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Recorder::to_file(path.clone());
+        recorder.set_policy_seq(Some(6));
+        recorder.record(&sample_record("navigate", None, "read"));
+        recorder.record_session_event(&sample_session_event());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].contains("\"policy_seq\":6"),
+            "tool-call record: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[1].contains("policy_seq"),
+            "session event must not carry policy_seq: {}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn no_seq_no_field() {
+        let path = temp_path("no-policy-seq");
+        let _ = std::fs::remove_file(&path);
+        let recorder = Recorder::to_file(path.clone());
+        recorder.record(&sample_record("navigate", None, "read"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(!content.contains("policy_seq"), "{content}");
     }
 
     #[test]

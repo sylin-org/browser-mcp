@@ -23,6 +23,7 @@ use std::path::Path;
 
 use crate::governance::config::layers::validate_value;
 use crate::governance::config::{key_def, Config, Preset};
+use crate::governance::managed::status::ManagedStatus;
 use crate::governance::manifest::document::{
     parse_manifest, ConfigEntry, Grant, IdentityBlock, Level, Manifest, ManifestError,
 };
@@ -462,6 +463,79 @@ fn parse_user_config_file(
     (UserConfigFile { preset, values }, warnings)
 }
 
+// --- Managed Policy Passport ---
+
+/// Render the managed:// Policy Passport (ADR-0055 D9): the additive section the `explain` tool
+/// appends to its output when managed governance is active. Reads only the T2 status sidecar
+/// (`ManagedStatus`) -- who governs the session, the policy sequence + freshness (including the
+/// guardian doors), the org rationale, sacred-domain reassurance, and how to reach a human. Pure:
+/// the block ends with a single trailing newline. Absent presentation fields are simply omitted.
+pub fn managed_passport(status: &ManagedStatus) -> String {
+    let mut lines: Vec<String> = vec!["Managed governance: active.".to_string()];
+
+    let org_name = status
+        .presentation
+        .as_ref()
+        .and_then(|p| p.org_name.as_deref());
+    if let Some(org) = org_name {
+        lines.push(format!("Governed by: {org}."));
+    }
+
+    let seq = status
+        .seq
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let freshness_phrase = match (status.freshness.as_str(), status.stale_reason.as_deref()) {
+        ("fresh", _) => format!("fetched {} (current)", status.fetched_at),
+        ("last_known_good", Some("source_unreachable")) => format!(
+            "enforcing your last verified policy from {} (the policy source is unreachable; \
+             you remain protected)",
+            status.fetched_at
+        ),
+        ("last_known_good", Some("update_rejected")) => format!(
+            "enforcing your last verified policy from {} (a newer update failed verification \
+             and was refused)",
+            status.fetched_at
+        ),
+        ("last_known_good", Some("rollback_refused")) => format!(
+            "enforcing your last verified policy from {} (an older policy was offered and \
+             refused)",
+            status.fetched_at
+        ),
+        // Any other state (no active policy, or an unknown freshness string) degrades to the
+        // last-verified phrasing without a parenthetical; the four cases above are the reachable
+        // ones when a policy is active.
+        _ => format!("enforcing your last verified policy from {}", status.fetched_at),
+    };
+    lines.push(format!("Policy version {seq}, {freshness_phrase}."));
+
+    if let Some(rationale) = status
+        .presentation
+        .as_ref()
+        .and_then(|p| p.rationale.as_deref())
+    {
+        lines.push(format!("Why: {rationale}"));
+    }
+
+    lines.push(
+        "Sacred domains remain off-limits to automation under any policy, including this one."
+            .to_string(),
+    );
+
+    let first_contact = status
+        .presentation
+        .as_ref()
+        .and_then(|p| p.contacts.first());
+    if let Some(contact) = first_contact {
+        let who = org_name.unwrap_or("your organization");
+        lines.push(format!("Questions? Contact {who}: {}", contact.value));
+    }
+
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 // --- File loading and kind detection ---
 
 /// Load a file, detect its kind, and render it (Required behavior section 1). Detection: strip
@@ -864,5 +938,56 @@ mod tests {
         let file = UserConfigFile::default();
         let rendered = explain_user_config(&file, &[]);
         assert!(rendered.contains("User settings: none."));
+    }
+
+    use crate::governance::manifest::bundle::{Contact, Presentation};
+
+    #[test]
+    fn passport_renders_fresh() {
+        let status = ManagedStatus {
+            v: 1,
+            freshness: "fresh".to_string(),
+            stale_reason: None,
+            seq: Some(6),
+            fetched_at: "2026-07-10T14:02:00+00:00".to_string(),
+            source: "https://policy.acme.example/x".to_string(),
+            presentation: Some(Presentation {
+                org_name: Some("Acme Security".to_string()),
+                rationale: Some("Baseline policy.".to_string()),
+                contacts: vec![Contact {
+                    kind: "email".to_string(),
+                    value: "security@acme.example".to_string(),
+                    label: None,
+                }],
+            }),
+            last_error: None,
+        };
+        assert_eq!(
+            managed_passport(&status),
+            "Managed governance: active.\nGoverned by: Acme Security.\nPolicy version 6, fetched \
+             2026-07-10T14:02:00+00:00 (current).\nWhy: Baseline policy.\nSacred domains remain \
+             off-limits to automation under any policy, including this one.\nQuestions? Contact \
+             Acme Security: security@acme.example\n"
+        );
+    }
+
+    #[test]
+    fn passport_renders_guardian() {
+        let status = ManagedStatus {
+            v: 1,
+            freshness: "last_known_good".to_string(),
+            stale_reason: Some("rollback_refused".to_string()),
+            seq: Some(9),
+            fetched_at: "2026-07-10T14:02:00+00:00".to_string(),
+            source: "https://policy.acme.example/x".to_string(),
+            presentation: None,
+            last_error: None,
+        };
+        let out = managed_passport(&status);
+        assert!(out.contains("an older policy was offered and refused"));
+        assert!(out.contains(
+            "Sacred domains remain off-limits to automation under any policy, including this one."
+        ));
+        assert!(!out.contains("Governed by"));
     }
 }

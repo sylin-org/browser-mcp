@@ -25,3 +25,8 @@ Thumbs.db
 
 # Local Claude Code settings (machine-specific paths, personal permission grants). Not shared.
 /.claude/
+
+# Founder-personal stash (entity/legal/insurance planning, personal to-dos, account notes).
+# Deliberately untracked: never pushed, never published. Backed up only by whatever covers
+# the working tree (NAS replica), not by git.
+/private/

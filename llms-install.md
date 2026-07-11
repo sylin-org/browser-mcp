@@ -35,12 +35,14 @@ value-level merge -- it never clobbers existing config and never duplicates entr
 
 ## 3. Ask the user to add the browser extension
 
-The extension cannot be installed from the command line. Ask the user to either:
+The extension cannot be installed from the command line. Ask the user to:
 
-- install **"Ghostlight in Browser"** from the Chrome Web Store (if the listing is available), or
 - download `ghostlight-extension-v*.zip` from
   https://github.com/sylin-org/ghostlight/releases/latest, unzip it, and load it unpacked at
   `chrome://extensions` (Developer mode -> Load unpacked).
+
+A Chrome Web Store listing ("Ghostlight in Browser") is in preparation; once it is live, the
+user can install from the store instead.
 
 Then ask the user to restart the MCP client (so it picks up the new server) and, if the browser
 was already open, reload the extension.

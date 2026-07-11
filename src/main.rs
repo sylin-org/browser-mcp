@@ -169,6 +169,12 @@ enum PolicyCommand {
     Simulate(SimulateArgs),
     /// Write an embedded example manifest as a starting point.
     Init(InitArgs),
+    /// (org authoring) Sign a manifest into a managed:// policy bundle.
+    Sign(PolicySignArgs),
+    /// (org authoring) Print the org verifying key(s) for the managed.json bootstrap.
+    Pubkey(PolicyPubkeyArgs),
+    /// (org authoring) Sign a manifest and emit a ready managed.json bootstrap snippet.
+    Publish(PolicySignArgs),
 }
 
 #[derive(Debug, Args)]
@@ -199,6 +205,36 @@ struct InitArgs {
     /// Overwrite an existing output file.
     #[arg(long)]
     force: bool,
+}
+
+#[derive(Debug, Args)]
+struct PolicySignArgs {
+    /// 32-byte Ed25519 seed file (the org's private signing seed; e.g. `openssl rand 32`).
+    #[arg(long, value_name = "FILE")]
+    seed: std::path::PathBuf,
+    /// 32-byte ML-DSA-65 seed file (composite / production signing; omit for an evaluation-grade
+    /// Ed25519-only bundle).
+    #[arg(long, value_name = "FILE")]
+    mldsa_seed: Option<std::path::PathBuf>,
+    /// Monotonic publish sequence: increase it with every release (anti-rollback, ADR-0055).
+    #[arg(long)]
+    seq: u64,
+    /// Path to the policy manifest JSON to sign.
+    #[arg(value_name = "MANIFEST")]
+    manifest: std::path::PathBuf,
+    /// Output bundle path (default policy.bundle.json). The armored block prints to stdout.
+    #[arg(long, value_name = "FILE")]
+    out: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct PolicyPubkeyArgs {
+    /// 32-byte Ed25519 seed file.
+    #[arg(long, value_name = "FILE")]
+    seed: std::path::PathBuf,
+    /// 32-byte ML-DSA-65 seed file (for a composite / production key).
+    #[arg(long, value_name = "FILE")]
+    mldsa_seed: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -491,6 +527,41 @@ fn main() -> Result<()> {
                 ghostlight::governance::templates::render_orientation(&outcome)
             );
         }
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command:
+                        PolicyCommand::Sign(PolicySignArgs {
+                            seed,
+                            mldsa_seed,
+                            seq,
+                            manifest,
+                            out,
+                        }),
+                })),
+            ..
+        } => ghostlight::governance::managed::cli::sign(seed, mldsa_seed, seq, manifest, out)?,
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command: PolicyCommand::Pubkey(PolicyPubkeyArgs { seed, mldsa_seed }),
+                })),
+            ..
+        } => ghostlight::governance::managed::cli::pubkey(seed, mldsa_seed)?,
+        Cli {
+            command:
+                Some(Command::Policy(PolicyArgs {
+                    command:
+                        PolicyCommand::Publish(PolicySignArgs {
+                            seed,
+                            mldsa_seed,
+                            seq,
+                            manifest,
+                            out,
+                        }),
+                })),
+            ..
+        } => ghostlight::governance::managed::cli::publish(seed, mldsa_seed, seq, manifest, out)?,
         Cli {
             command: Some(Command::Service),
             manifest,

@@ -74,7 +74,7 @@ Needs a Chromium browser (116+) and an MCP client. No Node, no Rust, nothing to 
 
 3. **Add the extension.** Download `ghostlight-extension-v*.zip` from the
    [latest release](https://github.com/sylin-org/ghostlight/releases/latest) and load it unpacked
-   at `chrome://extensions`. (A Chrome Web Store listing is on the way.)
+   at `chrome://extensions`. (A Chrome Web Store listing is in preparation.)
 
 Restart your client and the browser tools appear. If anything looks off, `npx ghostlight doctor`
 tells you exactly what. Prebuilt archives, building from source, and every other path live in the
@@ -203,6 +203,11 @@ and see the [governance configuration guide](docs/guides/governance-configuratio
 mechanics, with the [solo-developer](docs/guides/solo-developer.md) and
 [compliance-team](docs/guides/compliance-team.md) walkthroughs for the full journey.
 
+**Reviewing Ghostlight for procurement or a security assessment?** The
+[Trust Center](docs/trust/README.md) is public and ungated: it answers the questions reviewers
+ask first, each with linked evidence, and ships a CAIQ-shaped questionnaire plus MSA and DPA
+templates you can read and file before you ever talk to us.
+
 ## How it works
 
 ```
@@ -246,6 +251,7 @@ first, because a running server locks the exe.
 | [PRICING.md](PRICING.md)                                            | Editions, the founding program, and the Continuity Promise.              |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                  | How to ask questions, request features, and contribute code.             |
 | [SECURITY.md](SECURITY.md)                                          | Vulnerability reporting and what to expect.                              |
+| [Trust Center](docs/trust/README.md)                                | Procurement and security review, all public: FAQ, security overview, a CAIQ-shaped questionnaire, and MSA/DPA templates. |
 | [docs/SPEC.md](docs/SPEC.md)                                        | The authoritative design specification.                                  |
 | [docs/adr/](docs/adr/)                                              | Architecture Decision Records: why the design is the way it is.          |
 | [open-spec/](open-spec/)                                            | Open specs we publish for the ecosystem (starts with RAWX).              |
@@ -259,8 +265,8 @@ with reasoning: accepted, deferred, or declined against the project's recorded v
 
 ## License
 
-Ghostlight is open-core. The engine (everything outside `src/governance/`) is open source under
-Apache-2.0 OR MIT, at your option. The governance module (`src/governance/`) is source-available
+Ghostlight is open-core. The engine (everything outside `crates/core/src/governance/`) is open source under
+Apache-2.0 OR MIT, at your option. The governance module (`crates/core/src/governance/`) is source-available
 under the Ghostlight Commercial License, and it is free for almost everyone: individuals and solo
 developers, teams of up to five, evaluation and development at any size, all-open operation at any
 size, and noncommercial nonprofit or open-source use. Exactly one situation needs a paid

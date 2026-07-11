@@ -1,0 +1,50 @@
+header:
+  schema-version: 2.0.0
+  last-updated: '2026-07-10'
+  last-reviewed: '2026-07-10'
+  url: https://github.com/sylin-org/ghostlight/blob/main/security-insights.yml
+  comment: |
+    Ghostlight is a local-only governed browser automation tool. The runtime executes on
+    customer infrastructure; the vendor operates no service and receives no customer data.
+    See docs/trust/ for the full trust center.
+
+project:
+  name: Ghostlight
+  homepage: https://github.com/sylin-org/ghostlight
+  vulnerability-reporting:
+    reports-accepted: true
+    bug-bounty-available: false
+    email-contact: hello@sylin.org
+    security-policy: https://github.com/sylin-org/ghostlight/blob/main/SECURITY.md
+    comment: |
+      Report suspected vulnerabilities per SECURITY.md: email hello@sylin.org with SECURITY in
+      the subject line. There is no bug-bounty program.
+  documentation:
+    security-policy: https://github.com/sylin-org/ghostlight/blob/main/SECURITY.md
+    trust-center: https://github.com/sylin-org/ghostlight/blob/main/docs/trust/README.md
+
+repository:
+  url: https://github.com/sylin-org/ghostlight
+  status: active
+  accepts-change-request: true
+  accepts-automated-change-request: false
+  license:
+    expression: Apache-2.0 OR MIT
+    comment: |
+      The automation engine is licensed Apache-2.0 OR MIT. The governance module is
+      source-available under the Ghostlight Commercial License (LICENSE-GOVERNANCE).
+  security:
+    assessments:
+      self:
+        comment: |
+          No third-party security audit or penetration test has been completed. Any third-party
+          audit of Ghostlight will be published in full, including findings.
+  release:
+    distribution-points:
+      - https://github.com/sylin-org/ghostlight/releases
+      - https://www.npmjs.com/package/ghostlight
+    bill-of-materials:
+      - name: CycloneDX SBOM
+        comment: |
+          Each release publishes a CycloneDX SBOM asset named
+          ghostlight-v<version>-sbom.cyclonedx.json, introduced 2026-07.

@@ -11,6 +11,7 @@ mechanics guides instead of repeating them, so nothing here drifts out of sync w
 | Roll governance out across an organization | [compliance-team.md](compliance-team.md)                   |
 | Send the audit trail to your SIEM          | [siem-integration.md](siem-integration.md)                 |
 | Enter or check a license key (paid tier)   | [licensing.md](licensing.md)                               |
+| Review Ghostlight for procurement or security | [Trust Center (procurement and security review)](../trust/README.md) |
 
 ## Reference
 

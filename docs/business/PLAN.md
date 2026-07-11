@@ -168,7 +168,8 @@ All zero-dollar, all frontier-authored, all public under docs/ or the site:
 ## Sustainability (solo-dev upkeep)
 
 - Support SLAs, honest: free tier = GitHub issues best-effort; team = email,
-  2-business-day; enterprise/founding = 1-business-day. Never promise 24/7.
+  3-business-day acknowledgment; enterprise/founding = 2-business-day acknowledgment.
+  Never promise 24/7.
 - Release cadence: monthly patch releases; the recurring maintenance reality (Chrome,
   CDP, and the official extension's schema evolution) is ALSO the renewal value story:
   the license pays for keeping pace.

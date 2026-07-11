@@ -23,6 +23,20 @@ destinations (ADR-0028 Decision 9). The extension holds no policy logic; enforce
 audit live in the binary (docs/SPEC.md). License state never changes behavior (ADR-0028
 Decision 1).
 
+## Disclosures and advisories
+
+There is no bug-bounty program. As a solo-founder project, Ghostlight cannot administer or
+fund a bounty; reports are handled through the private channel above and credited in the
+release notes.
+
+Because the runtime holds no customer data on the vendor side, the vendor-side incident that
+matters is a compromise of what we ship (the build, the signing keys, or the update channel).
+For that case we commit to publishing a security advisory, with the affected versions and the
+remediation, within 3 business days of confirming a vendor-side compromise. Advisories are
+published as GitHub Security Advisories on this repository and named in release notes;
+watching the repository's releases is the subscription path. The vendor-side security
+posture is documented in docs/trust/security-overview.md.
+
 ## Supported versions
 
 The latest tagged release. Pre-1.0, fixes land on the tip; there are no backport
