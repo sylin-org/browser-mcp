@@ -13,9 +13,12 @@ audit, layered configuration with org policy locks, manifest hot-reload, the `ex
 `config` / `policy` CLIs. All-open stays first-class.
 
 The **Implementation Phases** and **Repository Structure** sections below are the ORIGINAL design
-plan, kept as historical intent. Some module paths have since moved (notably the stage-2
-reorganization into `src/transport/`, `src/governance/`, and `src/browser/`); trust the live tree
-over the tree drawn below. The sacred-surface constraint was AMENDED by ADR-0034 Decision 7
+plan, kept as historical intent. The code has since moved to a Cargo **workspace** (ADR-0044/0046
+exe-split): the single-binary `src/` tree drawn below is now spread across
+`crates/core/` (the engine + governance, with the stage-2 `governance/`, `browser/`, `mcp/`, `hub/`
+modules), `crates/transport/` (shared IPC/instance/observability), `crates/relay/` (the thin
+pass-through binary), and `crates/lightbox/` (a dev-only governance harness, ADR-0056). Trust the
+live tree over the tree drawn below. The sacred-surface constraint was AMENDED by ADR-0034 Decision 7
 (2026-07-06): the 13 trained tool schemas plus `explain` stay stable as the REFERENCE SHAPE
 (existing names, parameters, descriptions, and enums do not change), but additive growth is now
 sanctioned -- new tools join the directory via the capability registry (`script`, `form_fill`,
@@ -226,10 +229,23 @@ The extension is **policy-free**: it holds mechanism but makes no access decisio
 - **Manual verification:** After each phase, use the test prompt from the reference repo (adapted) to verify end-to-end behavior with Claude Code.
 
 ## What NOT To Build
-Read spec §10 carefully. These are explicit exclusions:
-- No OIDC/SAML/LDAP integration.
-- No remote policy service (HTTP manifest source).
-- No multi-user multiplexing.
-- No content inspection or DLP.
-- No manifest signing.
-- No Firefox support.
+These were the original spec §10 exclusions. Some still hold; several were deliberately superseded
+by later ADRs, and this list is annotated so the guidance is not mistaken for current scope (the
+ADR is authoritative where they differ). Read spec §10 for the original rationale.
+
+Still excluded (do not build):
+- No OIDC/SAML/LDAP integration. Identity is local-file / env-resolved, not federated.
+- No content inspection or DLP. Governance decides on capability + domain, never page content.
+- No Firefox support. Chromium (Manifest V3 + CDP) only.
+
+Superseded / nuanced (the original exclusion no longer reads literally):
+- ~~No remote policy service (HTTP manifest source).~~ Superseded by **managed://** central policy
+  distribution (ADR-0055): an org hosts, signs, and rolls out a policy bundle that devices fetch
+  over the network (with a fail-closed last-known-good cache). This is the sanctioned remote-policy
+  path; the per-user `--manifest` still has no HTTP source.
+- **No MULTI-USER multiplexing** (clarified, still true): the Hub (ADR-0030) multiplexes multiple
+  concurrent *sessions*, but they are all admitted as the *same OS user* (same-user admission). It
+  is multi-session, single-user -- not a shared multi-tenant server.
+- ~~No manifest signing.~~ Superseded for MANAGED policy: managed:// bundles and commercial licenses
+  carry a hybrid post-quantum signature (Ed25519 + ML-DSA-65, ADR-0055). A plain per-user manifest
+  file is still unsigned.
