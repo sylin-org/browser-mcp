@@ -85,4 +85,4 @@ third-party security audit of Ghostlight will be published in full, including fi
 See [SECURITY.md](../../SECURITY.md), [supply-chain.md](supply-chain.md), and
 [data-flows.md](data-flows.md).
 
-Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org

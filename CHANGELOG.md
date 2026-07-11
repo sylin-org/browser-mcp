@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-11
+
+Central policy distribution (ADR-0055): an organization can now host, sign, and roll out a
+governance policy from one place instead of hand-copying a manifest file to every machine. Plus a
+dev-only integration harness for the whole governance/managed stack (ADR-0056), and the Open Trust
+Center -- a public, evidence-linked set of procurement and security-review documents.
+
+### Added
+- **managed:// central policy distribution** (ADR-0055): a signed, versioned policy bundle an
+  organization publishes once and every device polls. `ghostlight policy sign` produces the bundle
+  (the same Ed25519 + ML-DSA-65 composite signature as the license engine); a device bootstraps from
+  a local file or a network fetch (`--no-default-features` opts out of the network path entirely),
+  keeps a last-known-good cache that is never allowed to fail open, and re-polls live with no
+  restart. `ghostlight doctor` and `explain` surface the active policy's provenance -- source,
+  freshness, signer -- from a single `ManagedStatus` sidecar; every audited tool call now carries a
+  `policy_seq` so the audit trail can prove which policy version was in effect at decision time; a
+  denial under a managed policy names the organization's contact line.
+- **Lightbox** (ADR-0056): a dev-only integration harness that exercises the real governance/managed
+  code path -- no mocks -- against injected time and a local fake-org endpoint, covering passport
+  freshness and multi-instance policy propagation. Not part of any shipped release artifact.
+- **The Open Trust Center** ([docs/trust/](docs/trust/)): public, evidence-linked procurement
+  documentation -- an FAQ, security overview, data-flow diagrams, sub-processor and supply-chain
+  disclosures, continuity commitments, a CAIQ-shaped controls questionnaire, the support policy, and
+  MSA/DPA drafts on Common Paper standard forms. Every non-obvious claim links the ADR, test, or
+  attestation that backs it; nothing here is gated behind a sales call.
+
 ## [0.5.4] - 2026-07-10
 
 ### Fixed
