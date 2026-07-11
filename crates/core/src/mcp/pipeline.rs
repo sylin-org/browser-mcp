@@ -305,6 +305,13 @@ pub(crate) async fn run_tool_call(
     if let Some(denial) = denial {
         if !dry_run {
             audit.sacred_deny(&denial, tab_domain.as_deref());
+            browser.notify(
+                args.get("tabId").and_then(Value::as_i64),
+                "blocked",
+                Some("lock"),
+                &denial_notification_text("sacred domain", &denial.domain),
+                Some(&denial.denial_id),
+            );
         }
         return CallOutcome::Denied {
             message: denial.message,
@@ -399,9 +406,7 @@ pub(crate) async fn run_tool_call(
                 {
                     crate::governance::ports::Decision::Allow { .. } => Gate::Proceed,
                     crate::governance::ports::Decision::ShadowDeny(_) => Gate::Proceed,
-                    crate::governance::ports::Decision::Deny(d) => {
-                        Gate::Deny { message: d.message }
-                    }
+                    crate::governance::ports::Decision::Deny(d) => Gate::Deny { denial: d },
                 }
             }
         }
@@ -409,11 +414,20 @@ pub(crate) async fn run_tool_call(
         governance.authorize(&mut audit, resource, config_mode)
     };
     match gate {
-        Gate::Deny { message } => {
-            return CallOutcome::Denied {
-                message,
-                source: DenialSource::Policy,
+        Gate::Deny { denial } => {
+            if !dry_run {
+                browser.notify(
+                    args.get("tabId").and_then(Value::as_i64),
+                    "warning",
+                    Some("shield"),
+                    &denial_notification_text("policy", &denial.domain),
+                    Some(&denial.denial_id),
+                );
             }
+            return CallOutcome::Denied {
+                message: denial.message,
+                source: DenialSource::Policy,
+            };
         }
         Gate::Proceed => {}
     }
@@ -518,6 +532,13 @@ pub(crate) async fn run_tool_call(
                 }
                 Decision::Deny(d) => {
                     audit.landing_deny(&d, landing_domain.as_deref());
+                    browser.notify(
+                        Some(tab_id),
+                        "warning",
+                        Some("shield"),
+                        &denial_notification_text("policy", &d.domain),
+                        Some(&d.denial_id),
+                    );
                     return CallOutcome::Denied {
                         message: d.message,
                         source: DenialSource::Policy,
@@ -555,6 +576,18 @@ pub(crate) async fn run_tool_call(
         // combination (extension connects within the handshake grace window, then the dispatched
         // call itself still errors); see LEDGER.md for the full note.
         Err(e) => CallOutcome::Failure { error: e },
+    }
+}
+
+/// The on-screen denial notification's description text (SAPS PRES-HIGH-01): "Blocked: <kind>
+/// (<domain>)", omitting the parenthetical when the denial carries no meaningful domain (an
+/// unresolved/miss denial's placeholder -- `enforcement.rs`'s `""` or `"(unknown)"` -- never a
+/// real host).
+fn denial_notification_text(kind: &str, domain: &str) -> String {
+    if domain.is_empty() || domain == "(unknown)" {
+        format!("Blocked: {kind}")
+    } else {
+        format!("Blocked: {kind} ({domain})")
     }
 }
 
@@ -856,6 +889,23 @@ mod tests {
         panic!("browser never reported connected");
     }
 
+    /// `Browser::notify` (like `request_group`) is fire-and-forget: `run_tool_call` returns as
+    /// soon as the frame is queued, not once the fake extension's reader task has actually
+    /// processed it. A test asserting on `seen` right after the last denied call can race that
+    /// delivery, so poll for it to settle first (same shape as `wait_connected` above).
+    async fn wait_for_seen_len(seen: &Arc<Mutex<Vec<String>>>, expected: usize) {
+        for _ in 0..200 {
+            if seen.lock().unwrap().len() >= expected {
+                return;
+            }
+            tokio::time::sleep(StdDuration::from_millis(5)).await;
+        }
+        panic!(
+            "seen never reached {expected} entries (stuck at {})",
+            seen.lock().unwrap().len()
+        );
+    }
+
     /// Attach a fake extension over an in-memory duplex pipe (the same pattern
     /// `hub::outbound::browser`'s own tests use). Answers a `tool_request` for any tool name found
     /// in `responses` with that canned result and records the tool names seen, in arrival order,
@@ -916,6 +966,17 @@ mod tests {
                         .unwrap();
                     continue;
                 }
+                // Fire-and-forget notification (SAPS PRES-HIGH-01, Browser::notify): no `id`, no
+                // reply expected -- same posture the real Browser::route_reply already gives an
+                // id-less event. Recorded into `seen` (distinguishable from a tool name) so a
+                // test can assert one fired, without needing to reply.
+                if v["type"] == "notification" {
+                    seen_for_task.lock().unwrap().push(format!(
+                        "notification:{}",
+                        v["class"].as_str().unwrap_or("")
+                    ));
+                    continue;
+                }
                 let tool = v["tool"].as_str().unwrap().to_string();
                 seen_for_task.lock().unwrap().push(tool.clone());
                 let result = responses
@@ -933,9 +994,10 @@ mod tests {
 
     /// Test 6 (g08 spec section 6): a tab showing a sacred host denies every tool that carries
     /// its `tabId`, including `navigate` (navigating AWAY is denied too), and the extension
-    /// never receives anything but the shared `tab_url_request` pre-flight (ADR-0024 Decision
-    /// 4: the sacred check's former internal `tabs_context_mcp` pre-flight is gone; this test's
-    /// `seen`-vector expectation is the sanctioned Decision 4 frame-traffic change, t05).
+    /// receives only the shared `tab_url_request` pre-flight (ADR-0024 Decision 4: the sacred
+    /// check's former internal `tabs_context_mcp` pre-flight is gone) plus the on-screen denial
+    /// notification (SAPS PRES-HIGH-01) -- never an actual `tool_request`, proving the denied
+    /// tool itself never runs.
     #[tokio::test]
     async fn sacred_tab_denies_every_tool_and_never_runs_it() {
         let path = temp_audit_path("sacred-tab");
@@ -993,10 +1055,12 @@ mod tests {
             assert_eq!(rec["denial_id"], "D-af6633ec");
             assert_eq!(rec["domain"], "www.mybank.com");
         }
+        wait_for_seen_len(&seen, 8).await;
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["tab_url_request:5"; 4],
-            "the extension must never see anything but the tab_url_request pre-flight"
+            ["tab_url_request:5", "notification:blocked"].repeat(4),
+            "the extension must never see an actual tool_request for a denied call -- only the \
+             tab_url_request pre-flight and the on-screen denial notification"
         );
 
         std::fs::remove_file(&path).ok();

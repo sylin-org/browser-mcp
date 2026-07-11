@@ -136,3 +136,19 @@
 //! GUID gets a distinct one (ADR-0030 Decision 7: "two adapters in one editor -> two GUIDs -> two
 //! groups"). The GUID here is the SAME secret material as the session-hello's `guid` member above
 //! and MUST NOT be written to any log/audit sink from this path.
+//!
+//! ## On-screen notification (SAPS PRES-HIGH-01)
+//!
+//! ## binary -> extension
+//! ```json
+//! { "type": "notification", "tabId": <number>, "class": "<string>", "icon": "<string>",
+//!   "description": "<string>", "ref": "<string>" }
+//! ```
+//!
+//! `icon` and `ref` are optional. Additive; ONE new `type` value on the SAME channel, the same
+//! fire-and-forget-presentation posture as `group_request` above (no `id`, no reply, no policy
+//! decision on the extension side -- it renders exactly what it is told). `class` is a small,
+//! open-ended vocabulary (today: `"blocked"` for a sacred-domain denial, `"warning"` for a policy
+//! denial); `ref` is an opaque cross-reference (today: a denial_id) a viewer can correlate back to
+//! the structured audit record later. First caller: [`crate::mcp::pipeline::run_tool_call`], at
+//! each of the three points a call is denied.

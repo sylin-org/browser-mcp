@@ -23,6 +23,13 @@
   // Ghostlight brand accent: a luminous sky blue. SKY_RGB is the same color for rgba() shadows.
   const SKY = "#38bdf8";
   const SKY_RGB = "56,189,248";
+  // Denial accents (SAPS PRES-HIGH-01): a DIFFERENT hue family from the SKY "go" vocabulary
+  // above, on purpose -- amber for a policy denial, red for a sacred-domain hard block, so the
+  // contrast itself reads as "this is a guardrail, not a glitch."
+  const AMBER = "#f59e0b";
+  const AMBER_RGB = "245,158,11";
+  const RED = "#f43f5e";
+  const RED_RGB = "244,63,94";
   const FADE_MS = 4000;
   const RIPPLE_MS = 620; // one click ring's expand-and-fade duration
   const RIPPLE_STAGGER_MS = 140; // gap between rings of a multi-click, so 2/3 read as a rhythm
@@ -69,6 +76,10 @@
       "@keyframes ghostlight-nav{0%{opacity:0;transform:translate(-50%,-14px)}14%{opacity:1;transform:translate(-50%,0)}82%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-8px)}}" +
       "@keyframes ghostlight-breath{0%,100%{opacity:.35;transform:translate(-50%,-50%) scale(.7)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.2)}}" +
       "@keyframes ghostlight-lozenge{0%{opacity:0;transform:translate(-50%,12px)}16%{opacity:1;transform:translate(-50%,0)}78%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-6px)}}" +
+      "@keyframes ghostlight-denial-edge{0%,100%{opacity:0}15%{opacity:1}40%{opacity:.35}60%{opacity:1}100%{opacity:0}}" +
+      "@keyframes ghostlight-denial-badge{0%{opacity:0;transform:translate(-50%,-50%) scale(.6)}" +
+      "18%{opacity:1;transform:translate(-50%,-50%) scale(1.08)}30%{transform:translate(-50%,-50%) scale(1)}" +
+      "78%{opacity:1}100%{opacity:0;transform:translate(-50%,-50%) scale(.92)}}" +
       ".ghostlight-cap{color:" + SKY + "}.ghostlight-arrow{color:" + SKY + ";margin-right:7px}" +
       "@media (prefers-reduced-motion:reduce){#" + GLOW_ID + "{animation:none}#" + CURSOR_ID + "{transition:none}}";
     (document.head || document.documentElement).appendChild(s);
@@ -266,9 +277,14 @@
   }
 
   // Optional subtitle track (off by default; SET_CAPTIONS toggles it): names the current action,
-  // bottom-center. Gorgeous for a recorded demo, too chatty for everyday driving.
-  function caption(label) {
+  // bottom-center. Gorgeous for a recorded demo, too chatty for everyday driving. `label` is
+  // ALWAYS rendered via textContent, never innerHTML -- it can carry attacker-influenced text
+  // (a denial's domain), and this runs as a content script on <all_urls>. `rgb`/`hex` recolor
+  // the border/glow for a denial (default: the SKY brand accent every other caller uses).
+  function caption(label, hex, rgb) {
     if (!captionsEnabled || hiddenForTool || document.hidden) return;
+    hex = hex || SKY;
+    rgb = rgb || SKY_RGB;
     if (!captionEl || !captionEl.isConnected) {
       captionEl = document.createElement("div");
       captionEl.id = "ghostlight-caption"; // ghostlight- prefix -> excluded from reads
@@ -276,11 +292,12 @@
       captionEl.style.cssText =
         "position:fixed;left:50%;bottom:22px;transform:translate(-50%,8px);z-index:2147483645;" +
         "pointer-events:none;opacity:0;font:12px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
-        "color:#eaf6ff;background:rgba(10,16,26,.82);border:1px solid rgba(" + SKY_RGB + ",.4);" +
+        "color:#eaf6ff;background:rgba(10,16,26,.82);" +
         "padding:6px 13px;border-radius:999px;transition:opacity .2s ease,transform .2s cubic-bezier(.22,1,.36,1)";
       (document.body || document.documentElement).appendChild(captionEl);
     }
-    captionEl.textContent = label;
+    captionEl.style.border = "1px solid rgba(" + rgb + ",.4)";
+    captionEl.textContent = label; // textContent, never innerHTML -- see the doc comment above
     captionEl.style.opacity = "1";
     captionEl.style.transform = "translate(-50%,0)";
     clearTimeout(caption._t);
@@ -422,6 +439,48 @@
     caption("Zoom");
   }
 
+  // denial notification (SAPS PRES-HIGH-01): governance blocks a call before the extension is
+  // ever contacted for the call itself, so without this nothing on screen shows a block
+  // happened. No x/y -- a denial isn't tied to a click point -- so the treatment is a brief
+  // edge vignette (unmissable even at small GIF size) plus a center shield badge, not a
+  // point-effect. `cls` selects red (sacred, "blocked") vs amber (policy, "warning") by fixed
+  // internal lookup only -- never interpolated into markup. `description` reaches the screen
+  // ONLY via caption()'s textContent path (never innerHTML): it can carry an attacker-
+  // influenced domain, and this runs as a content script on every page.
+  const SHIELD_SVG =
+    "<svg width='34' height='38' viewBox='0 0 24 26' aria-hidden='true'>" +
+    "<path d='M12 1 L21 4.5 V11 C21 17 17 21.5 12 24 C7 21.5 3 17 3 11 V4.5 Z' " +
+    "fill='%FILL%' stroke='white' stroke-width='1.4' stroke-linejoin='round'/></svg>";
+  function denialFx(cls, description) {
+    if (hiddenForTool || document.hidden) return;
+    ensureStyles();
+    const blocked = cls === "blocked";
+    const hex = blocked ? RED : AMBER;
+    const rgb = blocked ? RED_RGB : AMBER_RGB;
+
+    const edge = document.createElement("div");
+    edge.id = FX_LAYER_ID + "-de" + fxSeq++;
+    edge.setAttribute("aria-hidden", "true");
+    edge.style.cssText =
+      "position:fixed;inset:0;pointer-events:none;" +
+      "box-shadow:inset 0 0 22px rgba(" + rgb + ",.85),inset 0 0 44px rgba(" + rgb + ",.4);" +
+      "animation:ghostlight-denial-edge 900ms ease-in-out forwards";
+    addEphemeral(edge, 960);
+
+    const badge = document.createElement("div");
+    badge.id = FX_LAYER_ID + "-db" + fxSeq++;
+    badge.setAttribute("aria-hidden", "true");
+    badge.innerHTML = SHIELD_SVG.replace("%FILL%", hex); // fixed internal markup + a fixed color constant -- never wire text
+    badge.style.cssText =
+      "position:fixed;left:50%;top:50%;pointer-events:none;opacity:0;" +
+      "transform:translate(-50%,-50%) scale(.6);" +
+      "filter:drop-shadow(0 0 10px rgba(" + rgb + ",.7));" +
+      "animation:ghostlight-denial-badge 2000ms cubic-bezier(.22,1,.36,1) forwards";
+    addEphemeral(badge, 2060);
+
+    caption(String(description || "Blocked"), hex, rgb);
+  }
+
   // wait: a soft breathing dot while the agent pauses.
   function waitPulse() {
     if (hiddenForTool || document.hidden) return;
@@ -454,6 +513,7 @@
         case "AGENT_SCREENSHOT_FX":
         case "AGENT_ZOOM_FRAME":
         case "AGENT_WAIT_PULSE":
+        case "AGENT_NOTIFICATION":
         case "SHOW_AGENT_INDICATORS":
           sendResponse({ success: true });
           return true;
@@ -485,6 +545,8 @@
         zoomFrame(msg.x0, msg.y0, msg.x1, msg.y1); sendResponse({ success: true }); return true;
       case "AGENT_WAIT_PULSE":
         waitPulse(); sendResponse({ success: true }); return true;
+      case "AGENT_NOTIFICATION":
+        denialFx(msg.class, msg.description); sendResponse({ success: true }); return true;
       case "SET_CAPTIONS":
         captionsEnabled = !!msg.enabled; sendResponse({ success: true }); return true;
       case "SHOW_AGENT_INDICATORS":
