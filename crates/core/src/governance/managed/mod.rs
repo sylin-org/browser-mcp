@@ -86,7 +86,9 @@ pub enum ManagedError {
     Fetch(String),
     /// An `https://` source but this is a no-network (air-gap) build (`--no-default-features`, the
     /// `managed-fetch` feature off): use a local file or USB bundle source, or a network build.
-    #[error("this build has no network support (managed-fetch feature off); use a local managed source")]
+    #[error(
+        "this build has no network support (managed-fetch feature off); use a local managed source"
+    )]
     NetworkNotYet,
 }
 
@@ -181,7 +183,11 @@ pub fn verify_and_parse(
     };
     let verified =
         bundle::verify_bundle(&envelope, key).map_err(|e| ManagedError::Bundle(e.to_string()))?;
-    let manifest = parse_manifest(&verified.manifest_json, "managed://policy", domain_pattern_valid)?;
+    let manifest = parse_manifest(
+        &verified.manifest_json,
+        "managed://policy",
+        domain_pattern_valid,
+    )?;
     Ok(VerifiedManaged {
         manifest,
         seq: verified.seq,
@@ -225,9 +231,9 @@ fn fetch_http(b: &ManagedBootstrap) -> Result<Vec<u8>, ManagedError> {
     match http::fetch(b, None).map_err(|e| ManagedError::Fetch(e.to_string()))? {
         http::FetchOutcome::Modified { bytes, .. } => Ok(bytes),
         // A non-conditional GET should not answer 304; if it does, there is nothing fresh to return.
-        http::FetchOutcome::NotModified => {
-            Err(ManagedError::Fetch("unexpected 304 to a non-conditional request".into()))
-        }
+        http::FetchOutcome::NotModified => Err(ManagedError::Fetch(
+            "unexpected 304 to a non-conditional request".into(),
+        )),
     }
 }
 
@@ -357,7 +363,8 @@ mod tests {
     fn verify_and_parse_rejects_an_invalid_inner_manifest() {
         // A validly-signed bundle whose manifest is schema-2 must fail at manifest validation.
         let ed_seed = [43u8; 32];
-        let bad_manifest = serde_json::json!({ "schema": 2, "name": "x", "version": "1", "grants": [] });
+        let bad_manifest =
+            serde_json::json!({ "schema": 2, "name": "x", "version": "1", "grants": [] });
         let bytes = bundle::sign_bundle(&ed_seed, None, 1, bad_manifest, None);
         let key = bundle::org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
         assert!(matches!(
@@ -422,16 +429,19 @@ mod tests {
             "source": bundle_path.display().to_string(),
             "pubkey_ed25519": hex_encode(&crypto::admin::ed_public(&ed_seed)),
         });
-        std::fs::write(&paths.managed_bootstrap, serde_json::to_vec(&bootstrap).unwrap()).unwrap();
+        std::fs::write(
+            &paths.managed_bootstrap,
+            serde_json::to_vec(&bootstrap).unwrap(),
+        )
+        .unwrap();
 
         let reconciled = activate(&paths, ok_pattern).unwrap();
         let active = reconciled
             .and_then(|r| r.active)
             .map(|vm| (vm.manifest.name, vm.seq));
         // The single sidecar writer ran during activate: read it back (ADR-0055 Impl.8).
-        let sidecar = status::read_sidecar(&status::sidecar_path(
-            paths.managed_cache.as_ref().unwrap(),
-        ));
+        let sidecar =
+            status::read_sidecar(&status::sidecar_path(paths.managed_cache.as_ref().unwrap()));
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(active, Some(("acme-activate".to_string(), 4)));
         let sidecar = sidecar.expect("activate wrote the status sidecar");

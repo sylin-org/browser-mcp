@@ -28,7 +28,10 @@ pub fn registry() -> Vec<Scenario> {
         ("managed-activation-local", managed_activation_local),
         ("managed-activation-network", managed_activation_network),
         ("fail-closed-cold-boot", fail_closed_cold_boot),
-        ("continuity-source-unreachable", continuity_source_unreachable),
+        (
+            "continuity-source-unreachable",
+            continuity_source_unreachable,
+        ),
         ("rollback-guardian", rollback_guardian),
         ("update-on-reresolve", update_on_reresolve),
         ("no-clobber-on-reresolve", no_clobber_on_reresolve),
@@ -43,17 +46,31 @@ fn managed_activation_local() -> anyhow::Result<()> {
     let paths = GovernancePaths::under(tmp.path());
     let seed = [7u8; 32];
     let bundle_path = tmp.path().join("policy.bundle");
-    std::fs::write(&bundle_path, support::sign(&seed, 3, support::manifest("acme-corp")))?;
-    support::write_bootstrap(&paths.managed_bootstrap, &bundle_path.display().to_string(), &seed)?;
+    std::fs::write(
+        &bundle_path,
+        support::sign(&seed, 3, support::manifest("acme-corp")),
+    )?;
+    support::write_bootstrap(
+        &paths.managed_bootstrap,
+        &bundle_path.display().to_string(),
+        &seed,
+    )?;
 
     let reconciled = managed::activate(&paths, any_pattern)?
         .ok_or_else(|| anyhow!("bootstrap present but activate returned None"))?;
     let active = reconciled
         .active
         .ok_or_else(|| anyhow!("no active policy after activation"))?;
-    ensure!(active.manifest.name == "acme-corp", "wrong manifest: {}", active.manifest.name);
+    ensure!(
+        active.manifest.name == "acme-corp",
+        "wrong manifest: {}",
+        active.manifest.name
+    );
     ensure!(active.seq == 3, "wrong seq: {}", active.seq);
-    ensure!(matches!(reconciled.freshness, Freshness::Fresh), "expected Fresh");
+    ensure!(
+        matches!(reconciled.freshness, Freshness::Fresh),
+        "expected Fresh"
+    );
     Ok(())
 }
 
@@ -70,9 +87,16 @@ fn managed_activation_network() -> anyhow::Result<()> {
     let active = reconciled
         .active
         .ok_or_else(|| anyhow!("network fetch did not activate a policy"))?;
-    ensure!(active.manifest.name == "acme-net", "wrong manifest: {}", active.manifest.name);
+    ensure!(
+        active.manifest.name == "acme-net",
+        "wrong manifest: {}",
+        active.manifest.name
+    );
     ensure!(active.seq == 5, "wrong seq: {}", active.seq);
-    ensure!(matches!(reconciled.freshness, Freshness::Fresh), "expected Fresh");
+    ensure!(
+        matches!(reconciled.freshness, Freshness::Fresh),
+        "expected Fresh"
+    );
     Ok(())
 }
 
@@ -82,7 +106,11 @@ fn fail_closed_cold_boot() -> anyhow::Result<()> {
     let paths = GovernancePaths::under(tmp.path());
     let seed = [9u8; 32];
     // Port 1 is not listening: an immediate connection refusal, no cache to fall back on.
-    support::write_bootstrap(&paths.managed_bootstrap, "http://127.0.0.1:1/policy.bundle", &seed)?;
+    support::write_bootstrap(
+        &paths.managed_bootstrap,
+        "http://127.0.0.1:1/policy.bundle",
+        &seed,
+    )?;
 
     let reconciled = managed::activate(&paths, any_pattern)?
         .ok_or_else(|| anyhow!("bootstrap present but activate returned None"))?;
@@ -107,13 +135,19 @@ fn continuity_source_unreachable() -> anyhow::Result<()> {
         let server = BundleServer::start(support::sign(&seed, 6, support::manifest("acme-cont")))?;
         support::write_bootstrap(&paths.managed_bootstrap, &server.url(), &seed)?;
         let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
-        ensure!(matches!(r.freshness, Freshness::Fresh), "first activation should be Fresh");
+        ensure!(
+            matches!(r.freshness, Freshness::Fresh),
+            "first activation should be Fresh"
+        );
         ensure!(r.active.is_some(), "first activation should have a policy");
     } // server dropped -> the source is now unreachable
 
     let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
     ensure!(
-        matches!(r.freshness, Freshness::LastKnownGood(StaleReason::SourceUnreachable)),
+        matches!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::SourceUnreachable)
+        ),
         "expected cached last-known-good, got {:?}",
         r.freshness
     );
@@ -130,17 +164,33 @@ fn rollback_guardian() -> anyhow::Result<()> {
     let paths = GovernancePaths::under(tmp.path());
     let seed = [11u8; 32];
     let bundle_path = tmp.path().join("policy.bundle");
-    support::write_bootstrap(&paths.managed_bootstrap, &bundle_path.display().to_string(), &seed)?;
+    support::write_bootstrap(
+        &paths.managed_bootstrap,
+        &bundle_path.display().to_string(),
+        &seed,
+    )?;
 
-    std::fs::write(&bundle_path, support::sign(&seed, 9, support::manifest("acme-v9")))?;
-    let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
-    ensure!(r.active.as_ref().map(|v| v.seq) == Some(9), "seq 9 should activate");
-
-    // The source now serves an OLDER seq (a rollback attempt): refused, cache stands.
-    std::fs::write(&bundle_path, support::sign(&seed, 3, support::manifest("acme-v3")))?;
+    std::fs::write(
+        &bundle_path,
+        support::sign(&seed, 9, support::manifest("acme-v9")),
+    )?;
     let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
     ensure!(
-        matches!(r.freshness, Freshness::LastKnownGood(StaleReason::RollbackRefused)),
+        r.active.as_ref().map(|v| v.seq) == Some(9),
+        "seq 9 should activate"
+    );
+
+    // The source now serves an OLDER seq (a rollback attempt): refused, cache stands.
+    std::fs::write(
+        &bundle_path,
+        support::sign(&seed, 3, support::manifest("acme-v3")),
+    )?;
+    let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
+    ensure!(
+        matches!(
+            r.freshness,
+            Freshness::LastKnownGood(StaleReason::RollbackRefused)
+        ),
         "expected RollbackRefused, got {:?}",
         r.freshness
     );
@@ -161,12 +211,18 @@ fn update_on_reresolve() -> anyhow::Result<()> {
     support::write_bootstrap(&paths.managed_bootstrap, &server.url(), &seed)?;
 
     let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
-    ensure!(r.active.as_ref().map(|v| v.seq) == Some(5), "seq 5 should activate first");
+    ensure!(
+        r.active.as_ref().map(|v| v.seq) == Some(5),
+        "seq 5 should activate first"
+    );
 
     // The org publishes a newer policy; a re-resolve picks it up (bumped ETag => a fresh 200).
     server.set_bundle(support::sign(&seed, 6, support::manifest("acme-v6")));
     let r = managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
-    ensure!(matches!(r.freshness, Freshness::Fresh), "the update should be Fresh");
+    ensure!(
+        matches!(r.freshness, Freshness::Fresh),
+        "the update should be Fresh"
+    );
     ensure!(
         r.active.as_ref().map(|v| v.seq) == Some(6),
         "the newer policy should be picked up"
@@ -185,8 +241,15 @@ fn no_clobber_on_reresolve() -> anyhow::Result<()> {
     let paths = GovernancePaths::under(tmp.path());
     let seed = [13u8; 32];
     let bundle_path = tmp.path().join("policy.bundle");
-    std::fs::write(&bundle_path, support::sign(&seed, 4, support::manifest("acme-live")))?;
-    support::write_bootstrap(&paths.managed_bootstrap, &bundle_path.display().to_string(), &seed)?;
+    std::fs::write(
+        &bundle_path,
+        support::sign(&seed, 4, support::manifest("acme-live")),
+    )?;
+    support::write_bootstrap(
+        &paths.managed_bootstrap,
+        &bundle_path.display().to_string(),
+        &seed,
+    )?;
 
     // Build the live store with the MANAGED policy source, exactly as the service does.
     let initial = managed::activate(&paths, any_pattern)?
@@ -240,15 +303,23 @@ fn sidecar_propagation() -> anyhow::Result<()> {
         managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
         let s = status::read_sidecar(&sidecar)
             .ok_or_else(|| anyhow!("no sidecar after the first activate"))?;
-        ensure!(s.freshness == "fresh", "expected fresh, got {}", s.freshness);
+        ensure!(
+            s.freshness == "fresh",
+            "expected fresh, got {}",
+            s.freshness
+        );
         ensure!(s.seq == Some(5), "expected seq 5, got {:?}", s.seq);
 
         // The org publishes a newer policy; a re-resolve propagates it into the sidecar.
         server.set_bundle(support::sign(&seed, 6, support::manifest("acme-prop-v6")));
         managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
-        let s = status::read_sidecar(&sidecar)
-            .ok_or_else(|| anyhow!("no sidecar after the update"))?;
-        ensure!(s.seq == Some(6), "expected seq 6 after the update, got {:?}", s.seq);
+        let s =
+            status::read_sidecar(&sidecar).ok_or_else(|| anyhow!("no sidecar after the update"))?;
+        ensure!(
+            s.seq == Some(6),
+            "expected seq 6 after the update, got {:?}",
+            s.seq
+        );
     } // server dropped -> the source is now unreachable
 
     managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
@@ -297,7 +368,11 @@ fn passport_freshness() -> anyhow::Result<()> {
             Some(presentation),
         ),
     )?;
-    support::write_bootstrap(&paths.managed_bootstrap, &bundle_path.display().to_string(), &seed)?;
+    support::write_bootstrap(
+        &paths.managed_bootstrap,
+        &bundle_path.display().to_string(),
+        &seed,
+    )?;
 
     managed::activate(&paths, any_pattern)?.ok_or_else(|| anyhow!("bootstrap"))?;
     let cache_path = paths

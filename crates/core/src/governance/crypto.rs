@@ -132,7 +132,10 @@ mod tests {
         let claims = b"the exact claims bytes";
         let sig = admin::ed_sign(&seed, claims);
         let key = GenKey::Ed25519(ed_verifying_key(&admin::ed_public(&seed)).unwrap());
-        assert!(verify(&key, ctx, claims, &sig, None), "genuine signature verifies");
+        assert!(
+            verify(&key, ctx, claims, &sig, None),
+            "genuine signature verifies"
+        );
         assert!(
             !verify(&key, ctx, b"tampered claims bytes", &sig, None),
             "tampered claims fail"
@@ -193,11 +196,23 @@ mod tests {
         let sig_ed = admin::ed_sign(&ed_seed, claims);
         let sig_license = admin::mldsa_sign(&mldsa_seed, b"ghostlight/license", claims);
         assert!(
-            verify(&key, b"ghostlight/license", claims, &sig_ed, Some(&sig_license)),
+            verify(
+                &key,
+                b"ghostlight/license",
+                claims,
+                &sig_ed,
+                Some(&sig_license)
+            ),
             "verifies under its own context"
         );
         assert!(
-            !verify(&key, b"ghostlight/policy", claims, &sig_ed, Some(&sig_license)),
+            !verify(
+                &key,
+                b"ghostlight/policy",
+                claims,
+                &sig_ed,
+                Some(&sig_license)
+            ),
             "the same signature is rejected under a different context"
         );
     }

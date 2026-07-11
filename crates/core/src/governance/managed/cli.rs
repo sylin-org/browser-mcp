@@ -37,7 +37,13 @@ fn signed_bundle(
     let ed = read_seed(seed)?;
     let mldsa = mldsa_seed.as_ref().map(read_seed).transpose()?;
     let manifest_value = read_manifest_value(manifest)?;
-    Ok(bundle::sign_bundle(&ed, mldsa.as_ref(), seq, manifest_value, None))
+    Ok(bundle::sign_bundle(
+        &ed,
+        mldsa.as_ref(),
+        seq,
+        manifest_value,
+        None,
+    ))
 }
 
 fn write_bundle(bytes: &[u8], out: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -88,18 +94,29 @@ pub fn publish(
 
     let ed_hex = hex(&crypto_admin::ed_public(&read_seed(&seed)?));
     let mldsa_line = match &mldsa_seed {
-        Some(m) => format!(",\n  \"pubkey_mldsa\": \"{}\"", hex(&crypto_admin::mldsa_public(&read_seed(m)?))),
+        Some(m) => format!(
+            ",\n  \"pubkey_mldsa\": \"{}\"",
+            hex(&crypto_admin::mldsa_public(&read_seed(m)?))
+        ),
         None => String::new(),
     };
 
-    println!("Signed policy bundle written to {} (seq {seq}).", out_path.display());
+    println!(
+        "Signed policy bundle written to {} (seq {seq}).",
+        out_path.display()
+    );
     println!();
-    println!("Host it anywhere your fleet can reach -- an HTTPS URL, an object store, a file share,");
+    println!(
+        "Host it anywhere your fleet can reach -- an HTTPS URL, an object store, a file share,"
+    );
     println!("or a USB stick -- then drop this managed.json in the admin policy directory");
     println!("(%ProgramData%\\ghostlight on Windows, /etc/ghostlight on Linux) via your MDM:");
     println!();
     println!("{{");
-    println!("  \"source\": \"<where you hosted {}>\",", out_path.display());
+    println!(
+        "  \"source\": \"<where you hosted {}>\",",
+        out_path.display()
+    );
     println!("  \"pubkey_ed25519\": \"{ed_hex}\"{mldsa_line}");
     println!("}}");
     Ok(())

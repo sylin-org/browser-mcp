@@ -107,7 +107,9 @@ mod tests {
         let claims = b"composite license claims";
         let key = GenKey::Composite {
             ed: crypto::ed_verifying_key(&admin::ed_public(&ed_seed)).unwrap(),
-            mldsa: Box::new(crypto::mldsa_verifying_key(&admin::mldsa_public(&mldsa_seed)).unwrap()),
+            mldsa: Box::new(
+                crypto::mldsa_verifying_key(&admin::mldsa_public(&mldsa_seed)).unwrap(),
+            ),
         };
         let sig_ed = admin::ed_sign(&ed_seed, claims);
         let sig_mldsa = admin::mldsa_sign(&mldsa_seed, claims);

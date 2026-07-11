@@ -144,7 +144,10 @@ pub fn validate_presentation(p: &Presentation) -> Result<(), String> {
     if p.org_name.as_ref().is_some_and(|s| s.chars().count() > 120) {
         return Err("presentation org_name exceeds 120 characters".to_string());
     }
-    if p.rationale.as_ref().is_some_and(|s| s.chars().count() > 400) {
+    if p.rationale
+        .as_ref()
+        .is_some_and(|s| s.chars().count() > 400)
+    {
         return Err("presentation rationale exceeds 400 characters".to_string());
     }
     if p.contacts.len() > 8 {
@@ -391,7 +394,13 @@ mod tests {
     #[test]
     fn valid_presentation_passes() {
         let ed_seed = [53u8; 32];
-        let bytes = sign_bundle(&ed_seed, None, 1, sample_manifest(), Some(sample_presentation()));
+        let bytes = sign_bundle(
+            &ed_seed,
+            None,
+            1,
+            sample_manifest(),
+            Some(sample_presentation()),
+        );
         let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
         assert!(verify_bundle(&bytes, &key).is_ok());
     }
@@ -399,11 +408,20 @@ mod tests {
     #[test]
     fn ed_only_bundle_round_trips() {
         let ed_seed = [21u8; 32];
-        let bytes = sign_bundle(&ed_seed, None, 7, sample_manifest(), Some(sample_presentation()));
+        let bytes = sign_bundle(
+            &ed_seed,
+            None,
+            7,
+            sample_manifest(),
+            Some(sample_presentation()),
+        );
         let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
         let v = verify_bundle(&bytes, &key).expect("verifies");
         assert_eq!(v.seq, 7);
-        assert_eq!(v.presentation.as_ref().unwrap().org_name.as_deref(), Some("Acme Security"));
+        assert_eq!(
+            v.presentation.as_ref().unwrap().org_name.as_deref(),
+            Some("Acme Security")
+        );
         assert!(v.manifest_json.contains("acme-baseline"));
     }
 
@@ -426,7 +444,10 @@ mod tests {
     fn wrong_org_key_is_rejected() {
         let bytes = sign_bundle(&[1u8; 32], None, 1, sample_manifest(), None);
         let other = org_key(&crypto::admin::ed_public(&[2u8; 32]), None).unwrap();
-        assert_eq!(verify_bundle(&bytes, &other), Err(BundleError::BadSignature));
+        assert_eq!(
+            verify_bundle(&bytes, &other),
+            Err(BundleError::BadSignature)
+        );
     }
 
     #[test]
@@ -443,7 +464,10 @@ mod tests {
         env["claims"] = serde_json::Value::String(chars.into_iter().collect());
         let tampered = serde_json::to_vec(&env).unwrap();
         let key = org_key(&crypto::admin::ed_public(&ed_seed), None).unwrap();
-        assert_eq!(verify_bundle(&tampered, &key), Err(BundleError::BadSignature));
+        assert_eq!(
+            verify_bundle(&tampered, &key),
+            Err(BundleError::BadSignature)
+        );
     }
 
     #[test]
@@ -458,7 +482,10 @@ mod tests {
             Some(&crypto::admin::mldsa_public(&mldsa_seed)),
         )
         .unwrap();
-        assert_eq!(verify_bundle(&bytes, &composite), Err(BundleError::BadSignature));
+        assert_eq!(
+            verify_bundle(&bytes, &composite),
+            Err(BundleError::BadSignature)
+        );
     }
 
     #[test]

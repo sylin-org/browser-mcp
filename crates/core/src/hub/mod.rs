@@ -298,9 +298,13 @@ async fn run_service_loop(
 
     // Build the SHARED ServiceContext ONCE (PINS.md SS1 pin 4); every multiplexed adapter session
     // `serve_adapters` spawns clones it.
-    let ctx =
-        match ServiceContext::from_startup(browser, debug_sink, loaded_policy, policy_source, managed_poll)
-        {
+    let ctx = match ServiceContext::from_startup(
+        browser,
+        debug_sink,
+        loaded_policy,
+        policy_source,
+        managed_poll,
+    ) {
         Ok(ctx) => ctx,
         Err(e) => {
             tracing::error!(error = %e, "failed to build the shared service context");
@@ -479,8 +483,7 @@ impl ServiceContext {
                 let paths = crate::governance::paths::GovernancePaths::production();
                 if let Some(cache_path) = paths.managed_cache.as_ref() {
                     let sidecar = crate::governance::managed::status::sidecar_path(cache_path);
-                    if let Some(status) =
-                        crate::governance::managed::status::read_sidecar(&sidecar)
+                    if let Some(status) = crate::governance::managed::status::read_sidecar(&sidecar)
                     {
                         recorder.set_policy_seq(status.seq);
                     }

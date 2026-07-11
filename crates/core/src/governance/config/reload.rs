@@ -69,8 +69,11 @@ impl PolicySource {
         use crate::governance::manifest::source::{LoadedPolicy, ManifestOrigin};
         match self {
             PolicySource::SourceString { user_source } => {
-                crate::governance::manifest::source::load_policy(user_source.as_deref(), domain_pattern_valid)
-                    .map_err(|e| e.to_string())
+                crate::governance::manifest::source::load_policy(
+                    user_source.as_deref(),
+                    domain_pattern_valid,
+                )
+                .map_err(|e| e.to_string())
             }
             PolicySource::Managed { paths } => {
                 match crate::governance::managed::activate(paths, domain_pattern_valid)
@@ -89,7 +92,8 @@ impl PolicySource {
                         ),
                     },
                     None => Err(
-                        "managed bootstrap is no longer present; keeping last-known-good".to_string(),
+                        "managed bootstrap is no longer present; keeping last-known-good"
+                            .to_string(),
                     ),
                 }
             }
@@ -102,7 +106,9 @@ impl PolicySource {
         match self {
             PolicySource::SourceString { user_source } => user_source.as_deref().and_then(|s| {
                 match crate::governance::manifest::source::parse_source_string(s) {
-                    Ok(crate::governance::manifest::source::UserSource::FilePath(path)) => Some(path),
+                    Ok(crate::governance::manifest::source::UserSource::FilePath(path)) => {
+                        Some(path)
+                    }
                     _ => None,
                 }
             }),

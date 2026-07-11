@@ -99,7 +99,9 @@ impl Harness {
             browser,
             DebugSink::disabled(),
             policy,
-            ghostlight::governance::config::reload::PolicySource::SourceString { user_source: None },
+            ghostlight::governance::config::reload::PolicySource::SourceString {
+                user_source: None,
+            },
             None,
         )
         .expect("build the in-process ServiceContext");
