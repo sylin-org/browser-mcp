@@ -12,11 +12,13 @@
 //! otherwise. Schema TEXT is never altered -- a kept tool object is the advertisement object, cloned
 //! unchanged; only which tools appear in the array changes.
 //!
-//! Dynamic re-advertisement (emitting MCP `notifications/tools/list_changed` when a manifest
-//! reload changes the permitted set) is NOT implemented here: it needs a manifest-hot-reload
-//! mechanism that does not exist yet anywhere in the codebase. [`advertised_tools`] is called
-//! once, at connection time, from a static snapshot; wiring live re-advertisement is a
-//! follow-up task, not a gap in this one.
+//! [`advertised_tools`] computes the permitted set from a manifest snapshot; it is a pure
+//! function and holds no notification logic. Dynamic re-advertisement -- emitting MCP
+//! `notifications/tools/list_changed` when a manifest hot-reload changes the permitted set --
+//! IS implemented, in the MCP server: on reload it recomputes the advertised set and, when it
+//! differs, emits the notification through the single-writer stdout task (ADR-0025 Decision 4;
+//! see `mcp::server` and its `advertised_set_diff_gates_the_notification` test). This module
+//! stays the pure filter; the server owns the live diff-and-notify.
 
 use crate::browser::directory;
 use crate::governance::manifest::document::Grant;
