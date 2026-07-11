@@ -21,8 +21,13 @@ governance module) is open source, Apache-2.0 OR MIT, with no conditions at all.
 | Evaluation | Free (self-signed key) | Try, build, and test everything, at any org size. |
 | Community | Free (self-serve key) | Operational governance use for teams of up to 5. |
 | Founding | Free for 12 months, then 50% of list permanently | Enterprise terms for the first 10 organizations. See below. |
-| Team | ~$12 per user/month, billed annually, 5-seat minimum | Central policy, SIEM audit, email support (2-business-day response). |
-| Enterprise | From ~$10k/year | Everything in Team, plus security questionnaires, MSA, DPA, 1-business-day support, deployment help, and roadmap input. |
+| Team | ~$12 per user/month, billed annually, 5-seat minimum | Central policy, SIEM audit, email support (3-business-day acknowledgment). |
+| Enterprise | From ~$10k/year | Everything in Team, plus security questionnaires, MSA, DPA, 2-business-day acknowledgment, deployment help, and roadmap input. |
+
+Every procurement document behind these tiers is published openly in the
+[trust center](docs/trust/README.md): the security questionnaire, the evidence-linked FAQ,
+the MSA and DPA templates, and the [support policy](docs/trust/support-policy.md) that
+defines the acknowledgment commitments. Review first, talk to us after.
 
 Billing is annual. Your price is locked at signup for as long as you hold a continuous
 license. Two standing accommodations:

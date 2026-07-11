@@ -29,23 +29,22 @@ check that could be toggled off.
 
 ## Verify it yourself
 
-You do not have to take the promise on faith. Each of the following runnable scenarios
-exercises one leg of it:
+The promise is testable. Each of the following runnable scenarios exercises one leg of it:
 
     cargo run -p ghostlight-lightbox -- run continuity-source-unreachable
 
-This proves enforcement continues from the last-known-good cache when the policy source cannot
-be reached.
+This proves that enforcement continues from the last-known-good cache when the policy source
+cannot be reached.
 
     cargo run -p ghostlight-lightbox -- run fail-closed-cold-boot
 
-This proves a cold boot with no policy available fails closed to the protective state rather
-than opening up.
+This proves that a cold boot with no policy available fails closed to the protective state
+rather than opening up.
 
     cargo run -p ghostlight-lightbox -- run rollback-guardian
 
-This proves a stale or downgraded but validly signed policy is refused, so protection cannot
-be silently weakened.
+This proves that a stale or downgraded but validly signed policy is refused, so protection
+cannot be silently weakened.
 
 ## If the vendor ceases to exist
 
@@ -61,4 +60,4 @@ already run continues to run.
 See [ADR-0028](../adr/0028-tripwire-licensing-and-continuity-promise.md) and the
 [licensing guide](../guides/licensing.md).
 
-Last reviewed: 2026-07-10 against v0.5.4 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org

@@ -32,9 +32,10 @@ release notes.
 Because the runtime holds no customer data on the vendor side, the vendor-side incident that
 matters is a compromise of what we ship (the build, the signing keys, or the update channel).
 For that case we commit to publishing a security advisory, with the affected versions and the
-remediation, within 3 business days of confirming a vendor-side compromise, matching the
-support acknowledgment window. The vendor-side security posture is documented in
-docs/trust/security-overview.md.
+remediation, within 3 business days of confirming a vendor-side compromise. Advisories are
+published as GitHub Security Advisories on this repository and named in release notes;
+watching the repository's releases is the subscription path. The vendor-side security
+posture is documented in docs/trust/security-overview.md.
 
 ## Supported versions
 

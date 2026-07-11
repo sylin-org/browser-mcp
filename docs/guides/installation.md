@@ -31,10 +31,10 @@ The launcher fetches a single portable binary on first run and caches it. Nothin
 
        npx -y ghostlight install
 
-3. **Add the extension.** Either install "Ghostlight in Browser" from the Chrome Web Store, or
-   download `ghostlight-extension-v*.zip` from the
+3. **Add the extension.** Download `ghostlight-extension-v*.zip` from the
    [latest release](https://github.com/sylin-org/ghostlight/releases/latest), unzip it, and load it
-   unpacked at `chrome://extensions` (Developer mode, then Load unpacked).
+   unpacked at `chrome://extensions` (Developer mode, then Load unpacked). A Chrome Web
+   Store listing ("Ghostlight in Browser") is in preparation.
 
 4. **Restart your client and reload the extension,** then verify:
 

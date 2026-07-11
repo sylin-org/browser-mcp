@@ -21,7 +21,8 @@ than a single subscription license.
 
 ## 1. Definitions
 
-"Vendor" means the provider of the Ghostlight software. "Customer" means the organization
+"Vendor" means `[VENDOR LEGAL ENTITY AND FORM -- TO BE COMPLETED IN REVIEW]`, the provider
+of the Ghostlight software. "Customer" means the organization
 identified in the executed order. "Engine" means the Ghostlight automation engine, licensed
 Apache-2.0 OR MIT. "Governance Module" means the Ghostlight governance components licensed under
 the Ghostlight Commercial License (LICENSE-GOVERNANCE). "Software" means the Engine and the
@@ -79,9 +80,12 @@ apply to information that is public or independently developed.
 Each party represents that it has the full power and authority to enter into this Agreement.
 Vendor warrants that it has the right to grant the licenses in this Agreement, and that
 releases published during a paid term will not materially reduce the general functionality of
-the Software. Because the Software has no remote control channel, deployed versions cannot be
-degraded, disabled, or altered by Vendor at all; the functionality warranty therefore concerns
-only what future releases offer, never what Customer already runs.
+the Software. The Ghostlight binary has no remote-control channel: deployed binaries cannot
+be degraded, disabled, or altered by Vendor at all, so the functionality warranty concerns
+only what future releases offer, never what Customer already runs. The browser extension,
+when installed from the Chrome Web Store, follows Chrome's store update mechanism; Customers
+requiring change control over extension versions can self-host the extension and pin
+versions through Chromium enterprise policy.
 
 ## 10. Disclaimer
 
@@ -94,7 +98,7 @@ purpose, and the Software is otherwise provided "as is" to the fullest extent pe
 Neither party is liable for indirect, incidental, or consequential damages. Each party's
 aggregate liability under this Agreement is capped at the General Cap Amount of
 `[TO BE COMPLETED IN REVIEW]` (the standard form's default is the fees paid or payable in the
-twelve months before the claim). Claims arising from `[TO BE COMPLETED IN REVIEW]` are instead
+12 months before the claim). Claims arising from `[TO BE COMPLETED IN REVIEW]` are instead
 subject to an Increased Cap Amount of `[TO BE COMPLETED IN REVIEW]`. The caps do not apply to a
 party's indemnification obligations under Section 12, to breach of Section 8
 (Confidentiality), or to `[TO BE COMPLETED IN REVIEW]`.
@@ -115,7 +119,7 @@ Exclusions and procedures are `[TO BE COMPLETED IN REVIEW]`.
 
 This Agreement runs for the term stated in the Order. Either party may terminate for material
 breach not cured within 30 days of written notice, or immediately for a breach incapable of
-cure. Termination ends the commercial license to the Governance Module for future periods; it
+cure. Termination ends the Governance Module's commercial license for future periods; it
 does not disable, degrade, or interrupt the Software already deployed, consistent with the
 Continuity Promise and ADR-0028.
 
@@ -148,4 +152,4 @@ subject matter. If any provision is unenforceable, the rest remains in effect. N
 may assign this Agreement without the other's consent, except in connection with a merger or
 sale of substantially all assets.
 
-Last reviewed: 2026-07-10 against v0.5.4 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.4+dev | Contact: support@sylin.org
