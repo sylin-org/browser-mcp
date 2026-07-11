@@ -509,6 +509,62 @@ fn adapter_hello(guid: &crate::session_guid::SessionGuid) -> serde_json::Value {
     })
 }
 
+/// A liveness snapshot returned by a [`crate::handshake::ROLE_CONTROL`] `status` request
+/// (CAP-MED-01): the answer to "is the browser extension attached, and how many tool sessions are
+/// live?" Non-sensitive by design -- it carries no session ids, identities, or tab details -- so it
+/// is safe over the same-user-only control channel. `ghostlight doctor` renders it as the Extension
+/// verdict without needing `--debug` instrumentation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StatusReply {
+    /// The protocol major version the SERVICE answered with (always [`crate::handshake::HUB_PROTO`]).
+    pub hub: u32,
+    /// Whether a browser extension / native-host is currently attached to the service.
+    pub extension_connected: bool,
+    /// The number of live tool sessions (MCP adapters + web) at the moment of the reply.
+    pub live_sessions: u64,
+}
+
+/// Ask the running SERVICE for a control-plane liveness [`StatusReply`] (CAP-MED-01). Dials the
+/// ADAPTER/CONTROL endpoint, sends a `control`/`status` hello, and reads the one framed reply.
+///
+/// SYNCHRONOUS by design: `ghostlight doctor` is a one-shot, runtime-free CLI (like
+/// [`probe_endpoint`]), so this drives a private current-thread runtime for the single round-trip
+/// and hands back a plain value. Returns `None` -- never an error -- when the service is absent, too
+/// old to answer the control role (it drops the connection), or does not reply within a short
+/// timeout, so a caller degrades to "unknown" gracefully across service versions.
+pub fn query_status(endpoint: &str) -> Option<StatusReply> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), query_status_over(endpoint))
+            .await
+            .ok()?
+            .ok()
+    })
+}
+
+/// The async half of [`query_status`]: one dial + framed request/reply on the ADAPTER/CONTROL
+/// endpoint, reusing the same [`dial_once`] + `host` framing every adapter connection uses. No
+/// session is admitted (no guid, no anti-squat proof): this is a stateless control request.
+async fn query_status_over(endpoint: &str) -> Result<StatusReply> {
+    let mut stream = dial_once(&adapter_endpoint_name(endpoint)).await?;
+    let hello = json!({
+        "hub": crate::handshake::HUB_PROTO,
+        "role": crate::handshake::ROLE_CONTROL,
+        "request": crate::handshake::CONTROL_REQUEST_STATUS,
+    });
+    let hello_bytes = serde_json::to_vec(&hello)
+        .map_err(|e| Error::NativeMessaging(format!("failed to encode the control hello: {e}")))?;
+    host::write_message(&mut stream, &hello_bytes).await?;
+    let reply = host::read_message(&mut stream).await?.ok_or_else(|| {
+        Error::Ipc("the service closed the control connection with no reply".into())
+    })?;
+    serde_json::from_slice(&reply)
+        .map_err(|e| Error::NativeMessaging(format!("malformed control status reply: {e}")))
+}
+
 /// Connect to the SERVICE and complete the handshake, retrying the WHOLE attempt within a bounded
 /// window (ADR-0030 Decision 8 amendment / self-heal, PINS.md SS5.2; extended for ADR-0045). On
 /// the first failure, best-effort ask the OS supervisor to start the service

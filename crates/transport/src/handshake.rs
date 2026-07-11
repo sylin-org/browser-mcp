@@ -17,9 +17,18 @@ pub const HUB_PROTO: u32 = 1;
 /// [`crate::transport::mcp::server::serve_session`] on the service side.
 pub const ROLE_ADAPTER: &str = "adapter";
 
-/// The reserved control-plane role (doctor/console; not used before H8). Cleanly refused by the
-/// service until then (PINS.md SS1).
+/// The control-plane role (doctor/console): a non-session, read-only request/reply over the
+/// ADAPTER/CONTROL endpoint. The hello is `{ hub, role: "control", request: "<name>" }`; the
+/// service answers one framed reply and closes, admitting no session (no guid, no anti-squat
+/// proof, no `serve_session`). Access is bounded by the endpoint's owner-only transport ACL
+/// (same OS user only), and replies carry only non-sensitive liveness. The first request is
+/// [`CONTROL_REQUEST_STATUS`], which `ghostlight doctor` uses to render a real extension
+/// connected/disconnected verdict without requiring `--debug` instrumentation (CAP-MED-01).
 pub const ROLE_CONTROL: &str = "control";
+
+/// The `control` request that returns a liveness snapshot ([`crate::ipc::StatusReply`]): whether
+/// the browser extension is currently attached, and how many tool sessions are live.
+pub const CONTROL_REQUEST_STATUS: &str = "status";
 
 /// The SERVICE's anti-squat proof, sent AFTER admitting the adapter's hello and BEFORE
 /// `serve_session` (ADR-0030 Decision 8 amendment; PINS.md SS5.3): `{"hub":1,"role":"service-proof",

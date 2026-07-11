@@ -5,9 +5,13 @@
 Email hello@sylin.org with "SECURITY" in the subject. Do not open a public issue for a
 suspected vulnerability.
 
-- Acknowledgement within 48 hours.
-- Assessment and severity triage within 7 days.
-- Fix target for confirmed critical issues: 30 days, with a coordinated release.
+Ghostlight is a solo project, so the timelines below are **best-effort targets, not contractual
+guarantees** -- a report that arrives during a quiet maintenance period may take longer, and that
+is an honest description rather than a hidden asterisk:
+
+- Acknowledgement: typically within a few days.
+- Assessment and severity triage: as soon as the issue is understood, usually within a week or two.
+- Confirmed critical issues: prioritized for a fix and a coordinated release.
 - You will be credited in the release notes unless you ask not to be.
 
 ## Scope
@@ -23,6 +27,39 @@ destinations (ADR-0028 Decision 9). The extension holds no policy logic; enforce
 audit live in the binary (docs/SPEC.md). License state never changes behavior (ADR-0028
 Decision 1).
 
+## Enforcement model and residual risk
+
+Governance authorizes each tool call by identity, capability class (read / action / write /
+execute), and target domain. It constrains where an agent may act and what class of action it may
+take. It does not evaluate the semantic intent of an individual action. One residual risk follows
+directly and is documented here for clarity.
+
+**In-domain prompt injection executes within policy.** When an identity is granted `write` on a
+domain (for example, `mail.example.com` for email triage), page content on that domain that
+contains injected instructions can drive further writes on the same domain. Those writes are a
+permitted capability on a permitted domain and are authorized. This is inherent to capability-based
+authorization: tightening a policy does not remove it, because the authorized actions are exactly
+those the grant permits.
+
+Controls that reduce this risk:
+
+- **Least privilege.** Grant the narrowest domains and capabilities a task requires. Place domains
+  that must never be touched (banking, administrative consoles) on the sacred never-touch list to
+  bound the blast radius.
+- **Visibility and interruption.** Every action is rendered in the browser as it happens; an
+  operator can pause the session (take-the-wheel) or trigger the kill switch at any point.
+- **Audit.** The flight recorder is enabled by default in every mode, providing a reconstructable
+  record of every tool call.
+- **Intent confirmation is a client responsibility.** Determining whether an action matches the
+  user's intent requires the user's intent, which resides in the MCP client and the model, not in a
+  tool beneath the model. Current security research is consistent that server-side intent inference
+  from page content or DOM heuristics is unreliable and evadable by injection. Ghostlight enforces
+  capability and destination, provides visibility, and gives the operator direct control.
+
+In managed deployments, an organization may additionally declare confirm-required actions on its
+own applications via policy: a human-authored rule keyed on domain, element, and capability,
+surfaced to the operator for confirmation. This is a planned managed-mode capability.
+
 ## Disclosures and advisories
 
 There is no bug-bounty program. As a solo-founder project, Ghostlight cannot administer or
@@ -31,9 +68,10 @@ release notes.
 
 Because the runtime holds no customer data on the vendor side, the vendor-side incident that
 matters is a compromise of what we ship (the build, the signing keys, or the update channel).
-For that case we commit to publishing a security advisory, with the affected versions and the
-remediation, within 3 business days of confirming a vendor-side compromise. Advisories are
-published as GitHub Security Advisories on this repository and named in release notes;
+For that case the aim is to publish a security advisory, with the affected versions and the
+remediation, promptly (typically within a few business days) of confirming a vendor-side
+compromise -- again a best-effort target for a solo maintainer, not a contractual SLA. Advisories
+are published as GitHub Security Advisories on this repository and named in release notes;
 watching the repository's releases is the subscription path. The vendor-side security
 posture is documented in docs/trust/security-overview.md.
 

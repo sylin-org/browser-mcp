@@ -32,8 +32,9 @@ where
 /// session-hello FIRST (safe here -- unlike the extension endpoint, this peer always speaks
 /// first), parse and admit its presented GUID (H3, ADR-0030 Decision 4), and route `"adapter"`
 /// into the SAME governance chokepoint every transport calls
-/// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is
-/// reserved until H8; an unknown or absent role, a malformed/empty guid, or a guid refused by
+/// (`transport::mcp::server::serve_session`), never a second dispatch path. `"control"` is a
+/// stateless read-only request/reply ([`answer_control_request`], CAP-MED-01) admitting no session;
+/// an unknown or absent role, a malformed/empty guid, or a guid refused by
 /// [`crate::hub::session::SessionRegistry::admit`] are all refused cleanly, never a panic, and
 /// never surface the presented GUID in a log. Runs entirely INSIDE the spawned per-connection
 /// task (never inline in the accept loop), so a silent peer cannot head-of-line-block admission
@@ -122,7 +123,14 @@ async fn handle_adapter_connection<S>(
             }
         }
         Some(role) if role == ghostlight_transport::handshake::ROLE_CONTROL => {
-            tracing::debug!("the control role is reserved until H8; refusing the connection");
+            let live_sessions = ctx.live_sessions.load(std::sync::atomic::Ordering::Relaxed) as u64;
+            answer_control_request(
+                &mut stream,
+                &hello,
+                ctx.browser.is_connected(),
+                live_sessions,
+            )
+            .await;
         }
         other => {
             tracing::warn!(
@@ -133,27 +141,86 @@ async fn handle_adapter_connection<S>(
     }
 }
 
+/// Answer a [`ghostlight_transport::handshake::ROLE_CONTROL`] request (CAP-MED-01): a stateless,
+/// read-only reply with NO session admission (no guid, no mint quota, no anti-squat proof, no
+/// `serve_session`). Today the only request is `status`, which returns a liveness
+/// [`ghostlight_transport::ipc::StatusReply`] -- whether the extension is attached and how many tool
+/// sessions are live -- so `ghostlight doctor` can render a real Extension verdict without
+/// `--debug`. An unknown request is ignored (the connection just closes), keeping the control
+/// vocabulary forward-compatible. Access is already bounded to the same OS user by the endpoint's
+/// owner-only transport ACL, and the reply carries only non-sensitive liveness, so no per-request
+/// credential check is needed here. Takes the two liveness values directly (not the whole
+/// `ServiceContext`) so the reply shape is unit-testable over an in-memory duplex.
+async fn answer_control_request<S>(
+    stream: &mut S,
+    hello: &Value,
+    extension_connected: bool,
+    live_sessions: u64,
+) where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let request = hello.get("request").and_then(Value::as_str).unwrap_or("");
+    if request != ghostlight_transport::handshake::CONTROL_REQUEST_STATUS {
+        tracing::debug!(
+            request,
+            "control connection sent an unknown request; ignoring"
+        );
+        return;
+    }
+    let reply = ghostlight_transport::ipc::StatusReply {
+        hub: ghostlight_transport::handshake::HUB_PROTO,
+        extension_connected,
+        live_sessions,
+    };
+    let bytes = match serde_json::to_vec(&reply) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to encode the control status reply");
+            return;
+        }
+    };
+    if let Err(e) = host::write_message(stream, &bytes).await {
+        tracing::debug!(error = %e, "control status reply could not be written (peer gone)");
+    }
+}
+
+/// Fail-closed guard for the pipe DACL (SEC-LOW-09): a Ghostlight pipe MUST carry the owner-only
+/// DACL that restricts it to this user and Local System. If the descriptor could not be built,
+/// REFUSE to create the pipe rather than fall back to the broader default named-pipe DACL, which
+/// would silently weaken the cross-user guarantee. Constant-SDDL construction failure is
+/// essentially theoretical, so this never fires in practice -- but "silently less safe" is not an
+/// acceptable failure mode for the boundary that keeps other local users off this session's pipe.
+#[cfg(windows)]
+fn require_owner_only(built: Option<win_security::OwnerOnly>) -> Result<win_security::OwnerOnly> {
+    built.ok_or_else(|| {
+        Error::Ipc(
+            "refusing to create the IPC pipe: could not build the owner-only DACL (restricting it \
+             to this user and Local System); failing closed rather than opening it with the \
+             broader default DACL (SEC-LOW-09)"
+                .to_string(),
+        )
+    })
+}
+
 /// mcp-server role (Windows): own the named pipe (single active session) and serve native-host
 /// connections. Each accepted connection is handed to [`Browser::attach`] until it closes.
 #[cfg(windows)]
 pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
     let path = pipe_path(endpoint);
-    let security = win_security::OwnerOnly::build();
-    if security.is_none() {
-        tracing::warn!("could not build an owner-only pipe DACL; falling back to the default DACL");
-    }
+    // Fail closed (SEC-LOW-09): the pipe MUST carry the owner-only DACL; never fall back to the
+    // broader default DACL.
+    let security = require_owner_only(win_security::OwnerOnly::build())?;
 
     // First instance: `first_pipe_instance(true)` both enforces the single active session (creation
     // fails if a pipe of this name already exists) and prevents another local process from squatting
     // the name.
-    let mut server =
-        win_security::create_instance(&path, true, security.as_ref()).map_err(|e| {
-            match e.raw_os_error() {
-                // ACCESS_DENIED / PIPE_BUSY: a first instance already exists -> another session owns it.
-                Some(5) | Some(231) => Error::SessionBusy,
-                _ => Error::Ipc(format!("cannot create named pipe {path}: {e}")),
-            }
-        })?;
+    let mut server = win_security::create_instance(&path, true, Some(&security)).map_err(|e| {
+        match e.raw_os_error() {
+            // ACCESS_DENIED / PIPE_BUSY: a first instance already exists -> another session owns it.
+            Some(5) | Some(231) => Error::SessionBusy,
+            _ => Error::Ipc(format!("cannot create named pipe {path}: {e}")),
+        }
+    })?;
     tracing::info!(path, "mcp-server owns the named pipe (single session)");
 
     loop {
@@ -163,7 +230,7 @@ pub async fn serve(browser: Browser, endpoint: &str) -> Result<()> {
             .map_err(|e| Error::Ipc(format!("named-pipe accept failed: {e}")))?;
         // Pre-create the NEXT instance before handling this one, so there is no window in which the
         // pipe name does not exist (a client connecting then would get NotFound).
-        let next = win_security::create_instance(&path, false, security.as_ref())
+        let next = win_security::create_instance(&path, false, Some(&security))
             .map_err(|e| Error::Ipc(format!("cannot create next pipe instance: {e}")))?;
         let connected = std::mem::replace(&mut server, next);
         tracing::info!("native-host connected");
@@ -200,16 +267,11 @@ pub type AdapterListener = tokio::net::windows::named_pipe::NamedPipeServer;
 #[cfg(windows)]
 pub async fn claim_adapter_endpoint(endpoint: &str) -> Result<AdapterListener> {
     let path = pipe_path(&adapter_endpoint_name(endpoint));
-    let security = win_security::OwnerOnly::build();
-    if security.is_none() {
-        tracing::warn!(
-            "could not build an owner-only pipe DACL for the adapter/control endpoint; falling \
-             back to the default DACL"
-        );
-    }
+    // Fail closed (SEC-LOW-09): the adapter/control pipe MUST carry the owner-only DACL.
+    let security = require_owner_only(win_security::OwnerOnly::build())?;
 
     let server =
-        win_security::create_instance(&path, true, security.as_ref()).map_err(|e| {
+        win_security::create_instance(&path, true, Some(&security)).map_err(|e| {
             match e.raw_os_error() {
                 Some(5) | Some(231) => Error::SessionBusy,
                 _ => Error::Ipc(format!(
@@ -237,7 +299,8 @@ pub async fn serve_adapters(
     mut server: AdapterListener,
 ) -> Result<()> {
     let path = pipe_path(&adapter_endpoint_name(&default_endpoint()));
-    let security = win_security::OwnerOnly::build();
+    // Fail closed (SEC-LOW-09): the adapter/control pipe MUST carry the owner-only DACL.
+    let security = require_owner_only(win_security::OwnerOnly::build())?;
 
     loop {
         server
@@ -248,7 +311,7 @@ pub async fn serve_adapters(
         // PINS.md SS9), before it is replaced by the next spare instance below and moved into the
         // spawned task (where it is erased to generic `S` and can no longer yield a raw handle).
         let peer_cred = capture_peer_cred(&server);
-        let next = win_security::create_instance(&path, false, security.as_ref()).map_err(|e| {
+        let next = win_security::create_instance(&path, false, Some(&security)).map_err(|e| {
             Error::Ipc(format!(
                 "cannot create next adapter/control pipe instance: {e}"
             ))
@@ -667,6 +730,71 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
     use tokio::time::{sleep, Duration};
+
+    /// SEC-LOW-09: a missing owner-only DACL must ABORT pipe creation (fail closed), not fall
+    /// back to the broader default DACL. The guard maps `None` to an `Ipc` error whose message
+    /// names the fail-closed decision so an operator can see why the pipe refused to bind.
+    #[cfg(windows)]
+    #[test]
+    fn require_owner_only_fails_closed_on_a_missing_dacl() {
+        match require_owner_only(None) {
+            Err(Error::Ipc(msg)) => {
+                assert!(msg.contains("owner-only DACL"), "message: {msg}");
+                assert!(msg.contains("failing closed"), "message: {msg}");
+            }
+            Err(other) => panic!("expected an Ipc error, got a different error: {other:?}"),
+            Ok(_) => panic!("expected a fail-closed error, got Ok"),
+        }
+    }
+
+    /// The owner-only DACL is a constant SDDL, so on a real Windows host it always converts:
+    /// `build()` returns `Some` and `require_owner_only` passes it through.
+    #[cfg(windows)]
+    #[test]
+    fn require_owner_only_passes_a_built_dacl_through() {
+        let built = win_security::OwnerOnly::build();
+        assert!(built.is_some(), "constant SDDL must convert on Windows");
+        assert!(require_owner_only(built).is_ok());
+    }
+
+    /// CAP-MED-01: a `control`/`status` request produces exactly one framed [`StatusReply`] whose
+    /// fields echo the liveness values, over an in-memory duplex (no spawned service).
+    #[tokio::test]
+    async fn control_status_request_writes_a_status_reply() {
+        let (mut server_side, mut client_side) = tokio::io::duplex(4096);
+        let hello = json!({
+            "hub": ghostlight_transport::handshake::HUB_PROTO,
+            "role": ghostlight_transport::handshake::ROLE_CONTROL,
+            "request": ghostlight_transport::handshake::CONTROL_REQUEST_STATUS,
+        });
+        answer_control_request(&mut server_side, &hello, true, 3).await;
+
+        let bytes = host::read_message(&mut client_side)
+            .await
+            .unwrap()
+            .expect("a framed reply");
+        let reply: ghostlight_transport::ipc::StatusReply = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply.hub, ghostlight_transport::handshake::HUB_PROTO);
+        assert!(reply.extension_connected);
+        assert_eq!(reply.live_sessions, 3);
+    }
+
+    /// An unrecognized control request writes nothing and simply closes -- keeping the vocabulary
+    /// forward-compatible (a future request name never crashes an older service).
+    #[tokio::test]
+    async fn unknown_control_request_writes_nothing() {
+        let (mut server_side, mut client_side) = tokio::io::duplex(4096);
+        let hello = json!({ "role": ghostlight_transport::handshake::ROLE_CONTROL, "request": "future-thing" });
+        answer_control_request(&mut server_side, &hello, true, 0).await;
+        drop(server_side); // close the write half so the read observes EOF, not a hang
+        assert!(
+            host::read_message(&mut client_side)
+                .await
+                .unwrap()
+                .is_none(),
+            "an unknown request must produce no reply"
+        );
+    }
 
     #[tokio::test]
     async fn serve_bridges_a_tool_call_over_the_real_ipc() {

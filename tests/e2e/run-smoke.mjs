@@ -2,6 +2,12 @@
 // Headless smoke: real extension + real binary over native messaging, driven as an MCP server
 // over stdio (ADR-0026 Decision 6). See docs/tasks/maturity-1/00-design.md "Headless smoke (m06)"
 // for the pinned architecture this file implements.
+//
+// Wired into CI as the `e2e-smoke` job (.github/workflows/ci.yml), blocking, no
+// continue-on-error. Previously retired (2026-07) after hanging to the runner ceiling; the root
+// causes were a stale `ghostlight-adapter-*` binary name left over from the ADR-0051 relay merge
+// and a test asserting against the wrong tool -- both fixed, proven green in ~1 minute across
+// three separate PRs before this job definition existed to run it directly.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";

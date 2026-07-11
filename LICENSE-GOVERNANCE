@@ -3,8 +3,8 @@ Ghostlight Commercial License, version 1.1
 Copyright (c) 2026 Leonardo Botinelly (the "Licensor")
 
 This license applies to the source code and associated files in the
-src/governance/ directory of the Ghostlight repository, and to any other
-file that carries the SPDX identifier LicenseRef-Ghostlight-Commercial
+crates/core/src/governance/ directory of the Ghostlight repository, and to any
+other file that carries the SPDX identifier LicenseRef-Ghostlight-Commercial
 (together, the "Governance Software"). All other Ghostlight code is
 licensed separately under the Apache License 2.0 or the MIT License, at
 your option; see the LICENSE file at the repository root.

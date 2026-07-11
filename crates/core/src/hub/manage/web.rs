@@ -19,13 +19,46 @@
 //! Every response writer flushes and shuts down the write half of the stream before returning, so
 //! the full body drains cleanly to the client regardless of OS-specific socket-close timing.
 
-use crate::governance::ports::{AuditSink, Decision, SessionEventRecord};
-use crate::hub::inbound::web::{decide_inbound_web_from, write_http_error};
+use crate::governance::ports::Decision;
+use crate::hub::inbound::web::{decide_inbound_web_from, header, write_http_error};
 use crate::hub::manage::assets;
 use crate::hub::ServiceContext;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+
+/// The live `manage.web.enabled` resolution: `false` means the management plane is disabled by
+/// policy (an org can take the Console off-line without affecting tool ingestion) and the router
+/// answers every request 404. Also consulted at startup: the shared TCP listener binds when this
+/// key OR `inbound.web.enabled` resolves true (the two planes are independently enableable).
+pub fn enabled(store: &crate::governance::config::reload::ConfigStore) -> bool {
+    let resolution = store.current_resolution();
+    let resolved = resolution
+        .get(crate::governance::config::MANAGE_WEB_ENABLED)
+        .expect("registered key resolves");
+    resolved.value.as_bool().unwrap_or(true)
+}
+
+/// Whether an HTTP `Host` header names this loopback listener (`localhost`, `127.0.0.1`, or
+/// `[::1]`, with or without a port) -- the DNS-rebinding defense (SEC hardening pass, 2026-07).
+/// A page at `attacker.example` whose DNS was rebound to 127.0.0.1 reaches the socket as a
+/// loopback peer, but its requests carry `Host: attacker.example`; refusing any non-loopback
+/// Host closes that vector before routing. Case-insensitive per RFC 9110 section 4.2.3.
+fn host_is_loopback(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    // Bracketed IPv6 literal: the port separator follows the closing bracket.
+    let hostname = if let Some(rest) = h.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inside, _)) => format!("[{inside}]"),
+            None => return false,
+        }
+    } else {
+        h.rsplit_once(':')
+            .map_or(h.as_str(), |(name, _)| name)
+            .to_string()
+    };
+    matches!(hostname.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+}
 
 /// Every path this router recognizes, regardless of method -- distinguishes a 404 ("no such
 /// path") from a 405 ("wrong method on a path that exists"). Grows as new management actions
@@ -54,10 +87,32 @@ pub(crate) async fn route(
     ctx: &ServiceContext,
     peer_addr: SocketAddr,
 ) -> crate::Result<()> {
+    // Plane gate: an org-mandatory `manage.web.enabled = false` takes the Console off-line
+    // without affecting tool ingestion. Answered as 404 so a disabled plane exposes nothing,
+    // not even its own existence.
+    if !enabled(&ctx.store) {
+        write_plain_error(stream, 404, "Not Found", "not found").await?;
+        stream.flush().await.ok();
+        stream.shutdown().await.ok();
+        return Ok(());
+    }
+
     // Permanent loopback hard-lock (defense-in-depth on top of the validator): even if the policy
     // allowlist were somehow widened, the management plane refuses any non-loopback peer before
     // routing.
     if !peer_addr.ip().is_loopback() {
+        write_http_error(stream, 403, "Forbidden").await?;
+        return Ok(());
+    }
+
+    // DNS-rebinding defense (SEC hardening pass, 2026-07): a browser always sends Host, and for
+    // this loopback plane it must name a loopback form. A rebound hostname arrives from a
+    // loopback peer but carries the attacker's Host; it is refused before any routing.
+    if !header(headers, "Host")
+        .map(host_is_loopback)
+        .unwrap_or(false)
+    {
+        tracing::info!("manage.web request refused: missing or non-loopback Host header");
         write_http_error(stream, 403, "Forbidden").await?;
         return Ok(());
     }
@@ -86,7 +141,24 @@ pub(crate) async fn route(
         ("GET", "/api/v1/config") => write_config_response(stream, ctx).await,
         ("GET", "/api/v1/sessions") => write_sessions_response(stream, ctx).await,
         ("POST", "/api/v1/config/inbound-web-enable-remote") => {
-            write_enable_remote_response(stream, ctx).await
+            // CSRF hard-stop (SEC hardening pass, 2026-07): the request must carry a custom header a
+            // cross-origin page cannot attach without a CORS preflight this router never approves.
+            // Kept as defense-in-depth even though the action is now disabled below, so the gate is
+            // already in place for whatever secure remote-access action eventually replaces it.
+            if intent_header_matches(headers) {
+                write_enable_remote_response(stream).await
+            } else {
+                tracing::info!(
+                    "enable-remote refused: missing X-Ghostlight-Intent: enable-remote header"
+                );
+                write_plain_error(
+                    stream,
+                    403,
+                    "Forbidden",
+                    "missing X-Ghostlight-Intent: enable-remote header",
+                )
+                .await
+            }
         }
         _ if is_known_path(stripped_path) => {
             write_plain_error(stream, 405, "Method Not Allowed", "method not allowed").await
@@ -99,6 +171,15 @@ pub(crate) async fn route(
     stream.flush().await.ok();
     stream.shutdown().await.ok();
     Ok(())
+}
+
+/// Whether the request carries the write-action consent header
+/// `X-Ghostlight-Intent: enable-remote` (value match is case-insensitive; header-name lookup
+/// already is). Pure, so the CSRF gate is unit-testable without a socket.
+fn intent_header_matches(headers: &[(String, String)]) -> bool {
+    header(headers, "X-Ghostlight-Intent")
+        .map(|v| v.eq_ignore_ascii_case("enable-remote"))
+        .unwrap_or(false)
 }
 
 /// The live `inbound.web.from` allowlist, read from the store's current resolution. Re-read on
@@ -195,57 +276,23 @@ fn sessions_payload(
     })
 }
 
-/// `POST /api/v1/config/inbound-web-enable-remote` (PINS.md CS4/CS5): the management plane's ONE write
-/// action. The request body is NEVER read -- the written value is the ONE pinned literal below,
-/// never caller-supplied. Writes the single user-layer `inbound.web.from` key via K1's
-/// `set_user_value` (the SAME path `ghostlight config set` uses), refusing cleanly under an
-/// org-mandatory lock (or any other failure) with a uniform 409, and records exactly one
-/// `config_changed` session-event audit record on success.
-async fn write_enable_remote_response(
-    stream: &mut TcpStream,
-    ctx: &ServiceContext,
-) -> crate::Result<()> {
-    let key = crate::governance::config::INBOUND_WEB_FROM;
-    let value = serde_json::json!(["*"]);
-    let outcome = crate::governance::config::cli::set_user_value(
-        key,
-        value.clone(),
-        crate::browser::pattern::is_valid_pattern,
-    );
-    match outcome {
-        Ok(path) => {
-            record_config_changed(ctx);
-            let payload = serde_json::json!({
-                "key": key,
-                "value": value,
-                "written_to": path.display().to_string(),
-                "note": "takes effect the next time the Ghostlight service restarts",
-            })
-            .to_string();
-            write_json(stream, 200, "OK", &payload).await
-        }
-        Err(e) => {
-            let payload = serde_json::json!({ "error": e.to_string() }).to_string();
-            write_json(stream, 409, "Conflict", &payload).await
-        }
-    }
-}
-
-/// Record ONE `config_changed` session-event audit record on a SUCCESSFUL write (mirroring
-/// `Governance::record_manifest_reload`'s own "callers only invoke this on a successful swap"
-/// rule). The management-plane POST handler has no per-session `Governance` (it is a plain HTTP
-/// action on the shared service, never a tool-call dispatch through `serve_session`), so it calls
-/// the underlying `AuditSink` directly.
-fn record_config_changed(ctx: &ServiceContext) {
-    let record = SessionEventRecord {
-        event_id: uuid::Uuid::new_v4().to_string(),
-        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        identity: None,
-        client: None,
-        event: "config_changed",
-        manifest: None,
-    };
-    ctx.recorder.record_session_event(&record);
+/// `POST /api/v1/config/inbound-web-enable-remote`: TEMPORARILY DISABLED (SEC-HIGH-02, 2026-07).
+///
+/// This action used to open `inbound.web` to the LAN by writing `inbound.web.from: ["*"]`, which
+/// binds the WS/HTTP listener on `0.0.0.0` over PLAINTEXT -- the exact foot-gun the prior art is
+/// littered with (mass-exposed Ollama/Selenium/Ray with no auth -> RCE/botnet). Until a secure
+/// remote-access path exists, the action refuses and points the operator at a tunnel over the
+/// loopback service. The real design (tunnel-first for personal use; an org-opt-in, IdP-verified
+/// path for managed mode, consistent with managed:// already making network calls) is under
+/// discussion; when it lands it replaces this action rather than restoring the plaintext write.
+async fn write_enable_remote_response(stream: &mut TcpStream) -> crate::Result<()> {
+    let payload = serde_json::json!({
+        "error": "remote access is temporarily disabled pending a secure remote-authentication design; \
+                  reach the loopback service through a tunnel (SSH port-forward, Tailscale, or WireGuard) instead",
+        "disabled": true,
+    })
+    .to_string();
+    write_json(stream, 403, "Forbidden", &payload).await
 }
 
 /// Serve one embedded static asset verbatim, with a `Content-Length` computed from its actual
