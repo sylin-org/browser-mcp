@@ -26,7 +26,7 @@ url = "2"
 # the image-rs GIF encoder (weezl LZW -- the reference implementation; a hand-rolled LZW carried a
 # latent width-timing bug at the 4096-code reset that only a strict third-party decoder exposed).
 jpeg-decoder = { version = "0.3", default-features = false }
-color_quant = "1.1"
+color_quant = "2.0"
 gif = { version = "0.14", default-features = false, features = ["std"] }
 # License verification (ADR-0028 Decision 11): composite Ed25519 + ML-DSA-65 (FIPS 204) signature
 # over the license claims, verified fully offline against an embedded key table. ML-DSA is the
