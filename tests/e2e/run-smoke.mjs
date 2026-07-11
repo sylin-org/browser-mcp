@@ -45,8 +45,9 @@ function resolveBinaryPath() {
   return binPath;
 }
 
-// Derive a sibling role executable (ADR-0046) beside the resolved `ghostlight` binary: same dir,
-// platform suffix. `cargo build --workspace` builds all three bins into target/debug.
+// Derive the sibling `ghostlight-relay` executable (ADR-0051 Phase 3) beside the resolved
+// `ghostlight` binary: same dir, platform suffix. `cargo build --workspace` builds both bins into
+// target/debug; role (agent vs. browser) is selected at launch, not by binary name.
 function siblingBin(binaryPath, name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   return path.join(path.dirname(binaryPath), exe);
@@ -223,8 +224,9 @@ function reExecUnderXvfb() {
 }
 
 async function runDryRun(binaryPath, endpoint) {
-  // Chrome launches the native host, so the manifest/wrapper wraps the BROWSER adapter (ADR-0046).
-  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
+  // Chrome launches the native host, so the manifest/wrapper wraps ghostlight-relay; the browser
+  // role auto-detects from the chrome-extension:// origin Chrome passes (ADR-0051 Phase 3).
+  const browserBin = siblingBin(binaryPath, "ghostlight-relay");
   const { server, url: fixtureUrl } = await startFixtureServer();
   const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, browserBin);
   const plan = {
@@ -245,10 +247,12 @@ async function runDryRun(binaryPath, endpoint) {
 }
 
 async function runLive(binaryPath, endpoint) {
-  // ADR-0046: Chrome launches the BROWSER adapter (wrapped by the native-messaging manifest); the
-  // MCP client launches the AGENT adapter; the `service` spawn below stays on the `ghostlight` bin.
-  const browserBin = siblingBin(binaryPath, "ghostlight-adapter-browser");
-  const agentBin = siblingBin(binaryPath, "ghostlight-adapter-agent");
+  // ADR-0051 Phase 3: both roles are the same ghostlight-relay binary. Chrome launches it via the
+  // native-messaging manifest (browser role auto-detected from the chrome-extension:// origin);
+  // the MCP client launches it with an explicit `--role agent`. The `service` spawn below stays on
+  // the separate `ghostlight` bin.
+  const browserBin = siblingBin(binaryPath, "ghostlight-relay");
+  const agentBin = siblingBin(binaryPath, "ghostlight-relay");
   const { server, url: fixtureUrl } = await startFixtureServer();
   const { userDataDir } = buildProfile(endpoint, browserBin);
 
@@ -307,7 +311,7 @@ async function runLive(binaryPath, endpoint) {
     fail("no extension service worker appeared within the retry budget", 3);
   }
 
-  const child = spawn(agentBin, [], {
+  const child = spawn(agentBin, ["--role", "agent"], {
     stdio: ["pipe", "pipe", "inherit"],
     env: { ...process.env, GHOSTLIGHT_ENDPOINT: endpoint },
   });
