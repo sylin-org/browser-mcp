@@ -43,7 +43,7 @@ fips204 = "0.4"
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
-webpki-roots = { version = "0.26", optional = true }
+webpki-roots = { version = "1.0", optional = true }
 
 [features]
 # managed:// network fetch (ADR-0055 Phase 3). On by default so the shipped binary can fetch policy
