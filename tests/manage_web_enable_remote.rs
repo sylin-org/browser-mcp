@@ -302,7 +302,10 @@ fn enable_remote_without_the_intent_header_is_refused_and_writes_nothing() {
     assert_eq!(status_line(&response), "HTTP/1.1 403 Forbidden");
 
     assert!(
-        !user_config_dir.join("ghostlight").join("config.json").exists(),
+        !user_config_dir
+            .join("ghostlight")
+            .join("config.json")
+            .exists(),
         "a refused write must not touch the user config file"
     );
 

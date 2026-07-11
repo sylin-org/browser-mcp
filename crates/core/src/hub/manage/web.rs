@@ -53,7 +53,9 @@ fn host_is_loopback(host: &str) -> bool {
             None => return false,
         }
     } else {
-        h.rsplit_once(':').map_or(h.as_str(), |(name, _)| name).to_string()
+        h.rsplit_once(':')
+            .map_or(h.as_str(), |(name, _)| name)
+            .to_string()
     };
     matches!(hostname.as_str(), "localhost" | "127.0.0.1" | "[::1]")
 }
@@ -106,7 +108,10 @@ pub(crate) async fn route(
     // DNS-rebinding defense (SEC hardening pass, 2026-07): a browser always sends Host, and for
     // this loopback plane it must name a loopback form. A rebound hostname arrives from a
     // loopback peer but carries the attacker's Host; it is refused before any routing.
-    if !header(headers, "Host").map(host_is_loopback).unwrap_or(false) {
+    if !header(headers, "Host")
+        .map(host_is_loopback)
+        .unwrap_or(false)
+    {
         tracing::info!("manage.web request refused: missing or non-loopback Host header");
         write_http_error(stream, 403, "Forbidden").await?;
         return Ok(());
