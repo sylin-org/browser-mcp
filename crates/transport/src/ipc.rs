@@ -42,14 +42,15 @@ pub fn default_endpoint() -> String {
         .unwrap_or_else(|_| crate::instance::Instance::resolve().endpoint())
 }
 
-/// The ordered MAIN-endpoint candidates an adapter dials (ADR-0048 D2/D3), pure core: the
-/// single-endpoint override wins, then the list override, then the selection's instances. Split
-/// from [`endpoint_candidates`] so it is unit-testable without racing parallel tests over
-/// process-global env state.
+/// The MAIN-endpoint candidates a client dials, pure core: the single-endpoint override wins, then
+/// the list override, then `instance`'s own ONE endpoint (ADR-0064: a client pins exactly one
+/// instance -- no more `[dev, default]` shadow). Split from [`endpoint_candidates`] so it is
+/// unit-testable without racing parallel tests over process-global env state. Still returns a `Vec`
+/// because `GHOSTLIGHT_ENDPOINTS` (the override integration tests' seam) can name several.
 fn candidates_from(
     single: Option<&str>,
     list: Option<&str>,
-    selection: &crate::instance::Selection,
+    instance: &crate::instance::Instance,
 ) -> Vec<String> {
     if let Some(ep) = single.map(str::trim).filter(|s| !s.is_empty()) {
         return vec![ep.to_string()];
@@ -65,22 +66,17 @@ fn candidates_from(
             return eps;
         }
     }
-    selection
-        .candidates()
-        .iter()
-        .map(crate::instance::Instance::endpoint)
-        .collect()
+    vec![instance.endpoint()]
 }
 
-/// The ordered endpoint candidates for `selection` (ADR-0048 D2/D3): `GHOSTLIGHT_ENDPOINT` (one
-/// pinned endpoint; tests and advanced deployments) wins, then `GHOSTLIGHT_ENDPOINTS` (a
-/// comma-separated pinned candidate LIST -- the override integration tests' seam), then the
-/// selection's instances' endpoints (`[dev, default]` when unpinned, exactly one when pinned).
-pub fn endpoint_candidates(selection: &crate::instance::Selection) -> Vec<String> {
+/// The endpoint candidates for `instance` (ADR-0064): `GHOSTLIGHT_ENDPOINT` (one pinned endpoint;
+/// tests and advanced deployments) wins, then `GHOSTLIGHT_ENDPOINTS` (a comma-separated candidate
+/// LIST -- the override integration tests' seam), then the instance's own single endpoint.
+pub fn endpoint_candidates(instance: &crate::instance::Instance) -> Vec<String> {
     candidates_from(
         std::env::var("GHOSTLIGHT_ENDPOINT").ok().as_deref(),
         std::env::var("GHOSTLIGHT_ENDPOINTS").ok().as_deref(),
-        selection,
+        instance,
     )
 }
 
@@ -1016,31 +1012,31 @@ mod tests {
     /// selection's instances (dev first when unpinned). Pure: no env access.
     #[test]
     fn candidates_from_honors_the_precedence_order() {
-        use crate::instance::{Instance, Selection};
-        let unpinned = Selection::Unpinned;
+        use crate::instance::Instance;
+        let default = Instance::default();
+        // Single-endpoint override wins over everything.
         assert_eq!(
-            candidates_from(Some("ep-one"), Some("a,b"), &unpinned),
+            candidates_from(Some("ep-one"), Some("a,b"), &default),
             vec!["ep-one".to_string()]
         );
+        // List override next (the GHOSTLIGHT_ENDPOINTS test seam; still multi-valued).
         assert_eq!(
-            candidates_from(None, Some(" a , b ,,"), &unpinned),
+            candidates_from(None, Some(" a , b ,,"), &default),
             vec!["a".to_string(), "b".to_string()]
         );
+        // ADR-0064: no override -> the instance's OWN single endpoint (no [dev, default] shadow).
         assert_eq!(
-            candidates_from(None, None, &unpinned),
-            vec![
-                "org.sylin.ghostlight.dev.v1".to_string(),
-                "org.sylin.ghostlight.v1".to_string()
-            ]
+            candidates_from(None, None, &default),
+            vec!["org.sylin.ghostlight.v1".to_string()]
         );
-        let pinned = Selection::Pinned(Instance::from_name("qa").unwrap());
+        let qa = Instance::from_name("qa").unwrap();
         assert_eq!(
-            candidates_from(None, None, &pinned),
+            candidates_from(None, None, &qa),
             vec!["org.sylin.ghostlight.qa.v1".to_string()]
         );
         // Blank overrides fall through rather than pinning an empty endpoint.
         assert_eq!(
-            candidates_from(Some("  "), None, &pinned),
+            candidates_from(Some("  "), None, &qa),
             vec!["org.sylin.ghostlight.qa.v1".to_string()]
         );
     }
