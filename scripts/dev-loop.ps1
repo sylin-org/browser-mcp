@@ -61,17 +61,31 @@ try {
     $ghostlightExe = Join-Path $repoRoot "$targetDir\ghostlight.exe"
     $relayExe = Join-Path $repoRoot "$targetDir\ghostlight-relay.exe"
 
+    # -Restore only considers releases new enough for the one-stack swap (ADR-0065). A release
+    # older than this floor predates the relay reconnect (ADR-0062) and the deploy.lock quiesce
+    # (ADR-0063): its relays cannot see the lock and self-heal the OLD engine back mid-swap, and
+    # its engine cannot parse the current extension's identity frame (ADR-0061). Restoring one
+    # reintroduces exactly the endpoint fight the swap is designed to avoid.
+    $minRestoreVersion = [version]"0.5.5"
+
     # Every directory that may hold an engine a relay could self-heal: the repo build dir plus
-    # each versioned install dir. A deploy.lock in each (ADR-0063) suppresses self-heal there.
+    # each versioned install dir (ALL of them, floor or not -- the lock is placed everywhere; the
+    # floor only gates what -Restore will start). Sorted by parsed version, not name, so v0.5.10
+    # outranks v0.5.9.
     $engineDirs = @((Join-Path $repoRoot $targetDir))
     $installRoot = Join-Path $env:USERPROFILE ".ghostlight\bin"
-    $installedExes = @()
+    $installed = @()
     if (Test-Path $installRoot) {
-        $installedExes = @(Get-ChildItem $installRoot -Directory -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName "ghostlight.exe" } |
-            Where-Object { Test-Path $_ })
-        $engineDirs += @($installedExes | ForEach-Object { Split-Path $_ })
+        $installed = @(Get-ChildItem $installRoot -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $v = $null
+                if ($_.Name -match '^v(\d+\.\d+\.\d+)$' -and [version]::TryParse($Matches[1], [ref]$v)) {
+                    $exe = Join-Path $_.FullName "ghostlight.exe"
+                    if (Test-Path $exe) { [pscustomobject]@{ Version = $v; Exe = $exe } }
+                }
+            } |
+            Sort-Object Version -Descending)
+        $engineDirs += @($installed | ForEach-Object { Split-Path $_.Exe })
     }
 
     function Set-DeployLocks {
@@ -109,22 +123,25 @@ try {
     }
 
     if ($Restore) {
+        $candidate = $installed | Where-Object { $_.Version -ge $minRestoreVersion } | Select-Object -First 1
+        if (-not $candidate) {
+            $found = if ($installed) { ($installed | ForEach-Object { "v$($_.Version)" }) -join ", " } else { "none" }
+            Write-Host "No installed release is one-stack capable (>= v$minRestoreVersion) under $installRoot (found: $found)."
+            Write-Host "A pre-v$minRestoreVersion release predates the relay reconnect (ADR-0062) and the deploy.lock"
+            Write-Host "quiesce (ADR-0063); restoring one would fight the swap and cannot talk to the current"
+            Write-Host "extension. Install a current release first -- the repo build stays the engine for now."
+            exit 1
+        }
         Write-Host "[1/3] Quiescing self-heal and stopping the repo-built engine..."
         Set-DeployLocks
         Stop-Engines @($repoRoot)
 
-        $installed = $installedExes | Select-Object -First 1
-        if (-not $installed) {
-            Write-Host "[2/3] No installed release found under $installRoot -- nothing to restore."
-            Write-Host "      Run 'ghostlight install' (or a package manager install) first."
-            exit 1
-        }
-        Write-Host "[2/3] Starting the installed engine: $installed"
-        Start-Process -FilePath $installed -ArgumentList @("service") -WindowStyle Hidden
+        Write-Host "[2/3] Starting the installed engine: $($candidate.Exe) (v$($candidate.Version))"
+        Start-Process -FilePath $candidate.Exe -ArgumentList @("service") -WindowStyle Hidden
 
         Write-Host "[3/3] Waiting up to ${TimeoutSec}s for the endpoint..."
-        if (-not (Wait-Healthy $installed)) {
-            throw "the installed engine never reported healthy within ${TimeoutSec}s; run '$installed doctor' by hand"
+        if (-not (Wait-Healthy $candidate.Exe)) {
+            throw "the installed engine never reported healthy within ${TimeoutSec}s; run '$($candidate.Exe) doctor' by hand"
         }
         Write-Host "Restored: the installed release holds the endpoint again."
         exit 0

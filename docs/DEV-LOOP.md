@@ -73,7 +73,30 @@ policy (default is none: the engine serves real use with the real config).
 When NO dev build is running and a relay finds the endpoint down, self-heal launches the engine
 sibling to that relay's own directory -- the system reverts to an available engine on its own.
 `-Restore` does it deterministically: stops the repo-built engine and starts the newest installed
-release.
+release that is one-stack capable (v0.5.5 or newer -- see the next section for why the floor
+exists). If no installed release meets the floor, `-Restore` refuses and leaves the repo build
+serving rather than resurrecting an engine that would fight the swap.
+
+### Machines with a pre-v0.5.5 release installed
+
+The one-stack swap only holds once the INSTALLED release is itself swap-aware. A release older
+than v0.5.5 predates the browser-relay reconnect (ADR-0062) and the `deploy.lock` quiesce
+(ADR-0063), which produces two concrete failures, both observed live:
+
+- **The swap does not hold.** The old release's relays cannot see `deploy.lock`, so during the
+  brief endpoint-down window of a swap they self-heal the OLD engine back, and it wins the pipe
+  race; your fresh build exits. The swap appears to work (doctor shows the new version for a few
+  seconds) and then silently reverts.
+- **The browser cannot attach.** The old engine cannot parse the current extension's identity
+  frame (ADR-0061 `browser_hello`), so doctor reports `extension not connected` even in steady
+  state.
+
+The fix is a one-time upgrade of the machine: run `ghostlight install` from a current build (it
+repoints the host manifest, client entries, and the auto-start supervisor), then stop any
+still-running processes of the old release (service AND its agent relays -- identify them by
+executable path under `~\.ghostlight\bin\<old-version>`, never by bare name). After that,
+`dev-loop.ps1` swaps hold cleanly and the extension reconnects on its own. Deleting the old
+release directories under `~\.ghostlight\bin` removes the last way they can come back.
 
 ## 2. Who is serving right now?
 
