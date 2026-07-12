@@ -37,9 +37,24 @@ try {
     $targetDir = if ($Configuration -eq "Release") { "target\release" } else { "target\debug" }
     $ghostlightExe = Join-Path $repoRoot "$targetDir\ghostlight.exe"
     $relayExe = Join-Path $repoRoot "$targetDir\ghostlight-relay.exe"
+    $deployLock = Join-Path $repoRoot "$targetDir\deploy.lock"
     $fixture = Join-Path $repoRoot "examples\dev-live-test.json"
 
-    Write-Host "[1/4] Stopping this repo's own dev-instance processes..."
+    # ADR-0063: quiesce the two respawners so the rebuild never fights them.
+    #   - deploy.lock (next to the service exe) suppresses the service self-heal, so killing the
+    #     service to free its .exe does not race a relaunch of the OLD image.
+    #   - renaming the running relay.exe aside (Windows permits renaming a running image) frees the
+    #     canonical relay path so the build writes a fresh one; extension respawns during the build
+    #     find no exe and retry harmlessly until the new one lands.
+    Write-Host "[1/5] Quiescing self-heal (deploy.lock) and moving any running relay aside..."
+    New-Item -ItemType Directory -Force -Path (Split-Path $deployLock) | Out-Null
+    Set-Content -Path $deployLock -Value "dev-loop $(Get-Date -Format o)" -Encoding ascii
+    if (Test-Path $relayExe) {
+        $aside = "$relayExe.$([System.Guid]::NewGuid().ToString('N')).old"
+        try { Rename-Item -Path $relayExe -NewName (Split-Path $aside -Leaf) -Force } catch { Write-Host "  (relay.exe not moved: $($_.Exception.Message))" }
+    }
+
+    Write-Host "[2/5] Stopping this repo's own dev-instance processes..."
     $mine = Get-CimInstance Win32_Process -Filter "Name='ghostlight.exe' OR Name='ghostlight-relay.exe'" |
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase) }
     foreach ($p in $mine) {
@@ -48,7 +63,7 @@ try {
     }
     Start-Sleep -Milliseconds 500
 
-    Write-Host "[2/4] Building ghostlight + ghostlight-relay + lightbox ($Configuration)..."
+    Write-Host "[3/5] Building ghostlight + ghostlight-relay + lightbox ($Configuration)..."
     if ($profileFlag) {
         cargo build $profileFlag -p ghostlight -p ghostlight-relay -p ghostlight-lightbox
     } else {
@@ -56,13 +71,18 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
 
-    Write-Host "[3/4] Starting the dev service with examples\dev-live-test.json..."
+    # Swap done: release the self-heal quiesce and clean up the moved-aside relay images.
+    Remove-Item -Path $deployLock -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path (Split-Path $relayExe) -Filter "ghostlight-relay.exe.*.old" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+
+    Write-Host "[4/5] Starting the dev service with examples\dev-live-test.json..."
     $manifestUri = "file://" + ($fixture -replace '\\', '/')
     Start-Process -FilePath $ghostlightExe -ArgumentList @(
         "--debug", "--instance", "dev", "--manifest", $manifestUri, "service", "--keep-warm"
     ) -WindowStyle Hidden
 
-    Write-Host "[4/4] Waiting up to ${TimeoutSec}s for the dev endpoint to accept connections..."
+    Write-Host "[5/5] Waiting up to ${TimeoutSec}s for the dev endpoint to accept connections..."
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $healthy = $false
     while ((Get-Date) -lt $deadline) {
@@ -95,5 +115,8 @@ try {
     exit 0
 }
 finally {
+    # Never leave the self-heal quiesced if a step above threw (the stale-lock guard would
+    # eventually expire it, but releasing it now restores self-heal immediately).
+    if ($deployLock) { Remove-Item -Path $deployLock -Force -ErrorAction SilentlyContinue }
     Pop-Location
 }
