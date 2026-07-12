@@ -7,7 +7,12 @@ service carries the churny code; the relay is a thin, resilient pipe. That split
 loop frictionless: you rebuild and restart the service while the relay keeps your editor and browser
 connected.
 
-Use a named instance (here `dev`) so your work never touches the default install.
+Use a named instance (here `dev`) so your work never touches the default install. Since ADR-0064,
+`dev` is a FULLY ISOLATED stack: its own native host (`org.sylin.ghostlight.dev`), its own relay copy
+(`ghostlight-relay-dev`), its own service and dirs. The unpacked dev extension self-selects the dev
+host by its identity, so it targets the dev service explicitly -- there is no auto-shadow that makes
+an unpinned client "prefer a live dev" anymore. Your real browser + store extension keep talking to
+the default install, untouched.
 
 ## 1. Build
 
@@ -19,25 +24,26 @@ Build ONLY the `ghostlight` package. It does not relink the `ghostlight-relay` b
 relay (launched by your editor as `ghostlight-relay --role agent`) is never locked, and the rebuild
 always succeeds even while an editor session is live.
 
-## 2. Install (once)
+## 2. Install the dev instance (once)
 
 ```
-ghostlight install --debug --no-supervisor
+ghostlight --instance dev install --debug --no-supervisor
 ```
 
-Since ADR-0048 the plain DEFAULT install is all the dev loop needs: it registers ONE browser
-native host (whose manifest already allows the unpacked-dev extension id -- no --extension-id)
-and ONE unpinned MCP-client entry (`ghostlight`). An unpinned client resolves at connect time and
-PREFERS a live dev instance, so the moment your terminal service (next step) is up, unpinned
-clients and the browser route to it; when it is down, they fall back to a default service if one
-exists. `--no-supervisor` matters when installing FROM target/debug: an auto-started default
-service would hold the exe lock during rebuilds. Then load the unpacked extension at
-chrome://extensions and restart your editor once so it picks up the registration.
+ADR-0064: a `dev` install registers the FULL isolated dev stack -- the `org.sylin.ghostlight.dev`
+native host (allowing the unpacked-dev extension id), a `ghostlight-relay-dev.exe` copy the browser
+launches by name (it pins `instance=dev` from its own argv[0]), and a PINNED `ghostlight-dev`
+MCP-client entry. `--no-supervisor` skips the OS auto-start (a developer runs the dev service from a
+terminal, next step; an auto-started service would hold the exe lock during rebuilds). Then load the
+unpacked extension at chrome://extensions -- it self-selects the dev host by its pinned identity.
 
-Optional pin: `ghostlight --instance dev install --debug` additionally registers a PINNED
-`ghostlight-dev` client entry (client entries only since ADR-0048 D6 -- no second native host, no
-supervisor). Pin a client when you want it bound to dev even while a default service is running
-(dev-or-nothing, e.g. mid-rebuild).
+Rebuilds and the relay copy: the dev host points at the `ghostlight-relay-dev.exe` copy the install
+placed under the dev data dir, so a plain `cargo build` does NOT reach the browser relay. Use
+`.\scripts\dev-loop.ps1`, which refreshes that copy from the fresh build on every run; if you rebuild
+by hand, re-copy `target/release/ghostlight-relay.exe` over the dev copy yourself.
+
+Your real browser + the Web Store extension keep talking to the default `org.sylin.ghostlight` host
+and default service the whole time -- the dev stack never shadows them.
 
 ## 3. Run the service in a terminal
 
@@ -99,11 +105,11 @@ recipe, and the gotchas that cost real time the first few passes.
 
 ### 6.1 Before you touch anything: check who is attached
 
-Your own MCP client tools (`mcp__ghostlight__*` if you are an agent working inside this repo, or
-any other unpinned client) resolve at connect time and PREFER a live dev instance (ADR-0048). If
-you start issuing `navigate`/`computer` calls without checking first, and dev happens to be down,
-you may be driving the DEFAULT instance instead -- i.e. the user's real, authenticated browser
-session. Always check first:
+Since ADR-0064 each client targets exactly ONE instance explicitly: a `dev`-pinned MCP client (the
+`ghostlight-dev` entry the dev install wrote, or one launched with `--instance dev`) drives the dev
+service; a default client drives the default service -- the user's real, authenticated browser
+session. There is no auto-shadow, so a client never silently jumps between them. Still check who is
+attached before driving, so you know your `navigate`/`computer` calls land where you expect:
 
 ```
 ghostlight doctor                       # default instance: what's attached right now?
@@ -142,12 +148,13 @@ and the "does this reproduce normally" surface separate.
 
 ### 6.3 Drive the browser with your own tool calls
 
-Once attached, your own `mcp__ghostlight__*` tools (or any other unpinned MCP client) resolve to
-the SAME live dev instance per ADR-0048, and land in the disposable browser you just opened --
-not the user's real one, precisely because you checked 6.1 first.
+Once attached, a `dev`-pinned MCP client's `mcp__ghostlight__*` tools drive the dev service (ADR-0064)
+and land in the disposable browser you just opened -- not the user's real one. (If your MCP client
+is NOT dev-pinned, it drives the default service; pin it with `--instance dev` or use the
+`ghostlight-dev` client entry.)
 
 ```
-tabs_context_mcp(createIfEmpty: true)   # note the huge composite tabId -- (pid << 32) | native_tab_id, expected
+tabs_context_mcp(createIfEmpty: true)   # note the huge composite tabId -- (slot << 32) | native_tab_id, expected
 navigate(tabId, url)
 computer(action: "screenshot", tabId)
 ```

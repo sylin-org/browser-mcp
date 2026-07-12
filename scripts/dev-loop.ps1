@@ -76,6 +76,23 @@ try {
     Get-ChildItem -Path (Split-Path $relayExe) -Filter "ghostlight-relay.exe.*.old" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
 
+    # ADR-0064: the dev extension self-selects host org.sylin.ghostlight.dev, which a one-time
+    # `ghostlight --instance dev install` registered pointing at a `ghostlight-relay-dev.exe` COPY
+    # under the dev data dir. Refresh that copy from the fresh build so a rebuild takes effect for
+    # the browser relay too (rename any running copy aside first, as with the sibling above). Skipped
+    # if the dev host was never installed.
+    $devRelay = Join-Path $env:LOCALAPPDATA "ghostlight-dev\ghostlight-relay-dev.exe"
+    if (Test-Path (Split-Path $devRelay)) {
+        if (Test-Path $devRelay) {
+            $devAside = "$devRelay.$([System.Guid]::NewGuid().ToString('N')).old"
+            try { Rename-Item -Path $devRelay -NewName (Split-Path $devAside -Leaf) -Force } catch {}
+        }
+        Copy-Item -Path $relayExe -Destination $devRelay -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path (Split-Path $devRelay) -Filter "ghostlight-relay-dev.exe.*.old" -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+        Write-Host "  refreshed the dev relay copy: $devRelay"
+    }
+
     Write-Host "[4/5] Starting the dev service with examples\dev-live-test.json..."
     $manifestUri = "file://" + ($fixture -replace '\\', '/')
     Start-Process -FilePath $ghostlightExe -ArgumentList @(

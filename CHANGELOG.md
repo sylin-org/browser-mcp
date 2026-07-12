@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security-hardening and activation-UX pass following the SAPS strategic assessment.
 
 ### Changed
+- **Explicit dev isolation replaces the dev auto-shadow (ADR-0064).** Running a `dev` build
+  alongside the installed release no longer relies on an unpinned client "preferring a live dev
+  instance" resolved at connect time. Instead the unpacked dev extension self-selects its own native
+  host (`org.sylin.ghostlight.dev`), a `dev` install registers that host + a dev-pinned relay copy,
+  and every client targets exactly one instance explicitly. This removes the `Selection`/`Unpinned`
+  candidate-list machinery, makes the anti-squat hub-key per-instance, and simplifies the browser
+  relay's reconnect to "wait for my one service" (correct across a dev-service restart by
+  construction). The default install and default identity are unchanged; ADR-0048's auto-shadow is
+  superseded.
 - **Safe-by-default posture.** The audit flight recorder now defaults ON in every preset,
   all-open included (a session always leaves a trail), and `inbound.web.enabled` now defaults
   OFF in every preset (driving the browser over a local TCP port is opt-in; the pipe path remains
