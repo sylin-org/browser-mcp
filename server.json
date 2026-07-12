@@ -7,7 +7,7 @@
     "source": "github"
   },
   "version": "0.5.6",
-  "websiteUrl": "https://sylin-org.github.io/ghostlight/",
+  "websiteUrl": "https://sylin.org/ghostlight/",
   "packages": [
     {
       "registryType": "npm",
