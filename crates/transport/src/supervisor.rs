@@ -63,11 +63,11 @@ pub const DEPLOY_LOCK_NAME: &str = "deploy.lock";
 pub const DEPLOY_LOCK_MAX_AGE: Duration = Duration::from_secs(30 * 60);
 
 /// True if a fresh deploy-quiesce lock (ADR-0063) sits next to `service_exe`. Scoped to the exe's
-/// DIRECTORY, not the instance, so it correctly covers the ADR-0048 unpinned adapter -- whose own
-/// identity is `default` but whose sibling exe is whatever build directory it ships in, which is the
-/// binary a deploy is actually replacing. A lock older than [`DEPLOY_LOCK_MAX_AGE`] is treated as
-/// stale (ignored). Any filesystem error (no lock, unreadable) reads as "not locked" -- self-heal is
-/// best-effort, so it fails OPEN, never wedging on a lock it cannot stat.
+/// DIRECTORY -- a deploy replaces the binaries in ONE directory (a build's `target/release`, an
+/// install's `bin/<version>`), and the lock lives there, so it quiesces the self-heal for exactly
+/// the binaries being swapped and nothing else. A lock older than [`DEPLOY_LOCK_MAX_AGE`] is treated
+/// as stale (ignored). Any filesystem error (no lock, unreadable) reads as "not locked" -- self-heal
+/// is best-effort, so it fails OPEN, never wedging on a lock it cannot stat.
 fn deploy_lock_present(service_exe: &std::path::Path) -> bool {
     let Some(lock) = service_exe.parent().map(|d| d.join(DEPLOY_LOCK_NAME)) else {
         return false;

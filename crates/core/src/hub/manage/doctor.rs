@@ -120,25 +120,8 @@ pub fn run(opts: DoctorOptions) -> Result<bool> {
         }
     }
 
-    // ADR-0048 D7: when this report is for the DEFAULT instance, say where UNPINNED clients
-    // (agent adapters and the browser native host with no --instance) currently route: a live
-    // dev instance shadows the default (the development override).
-    if instance.is_default() {
-        let dev = ghostlight_transport::instance::Instance::from_name(
-            ghostlight_transport::instance::DEV_INSTANCE,
-        )
-        .expect("'dev' is a valid instance name");
-        let dev_probe = ipc::probe_endpoint(&ipc::adapter_endpoint_name(&dev.endpoint()));
-        println!();
-        println!("Development override:");
-        if matches!(dev_probe, ipc::EndpointProbe::Absent) {
-            println!(
-                "  no dev instance is running; unpinned clients route to this default instance"
-            );
-        } else {
-            println!("  a dev instance is LIVE; unpinned clients currently route to it (ADR-0048)");
-        }
-    }
+    // ADR-0064 retired the auto-shadow: there is no "development override" to report -- each
+    // instance is a separate, explicitly-targeted stack (a `dev` install registers its own host).
 
     let (log_dir, rows) = gather_sessions();
     println!();

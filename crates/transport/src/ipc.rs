@@ -149,11 +149,11 @@ pub async fn relay_native_host(
 /// real `stdin`/`stdout`; tests pass in-memory streams.
 ///
 /// ADR-0062: this is now a RECONNECT loop, mirroring the adapter's ADR-0045 resilience. A service
-/// drop no longer ends the relay -- it reconnects (re-resolving the endpoint, so a live dev instance
-/// is preferred again) and replays the extension's cached opening identity frame, keeping Chrome's
-/// native port alive the whole time. Only Chrome's stdin closing (the browser is gone) ends it. The
-/// Chrome-frame reader lives in its own task feeding a channel, so a frame is never cancelled
-/// mid-read and frames buffer across a brief reconnect instead of being lost.
+/// drop no longer ends the relay -- it reconnects to its one pinned instance's service (ADR-0064:
+/// the relay targets exactly one endpoint) and replays the extension's cached opening identity
+/// frame, keeping Chrome's native port alive the whole time. Only Chrome's stdin closing (the
+/// browser is gone) ends it. The Chrome-frame reader lives in its own task feeding a channel, so a
+/// frame is never cancelled mid-read and frames buffer across a brief reconnect instead of lost.
 pub async fn relay_native_host_over<I, O>(
     endpoints: &[String],
     hello: &[u8],
@@ -217,10 +217,10 @@ where
     }
 }
 
-/// Connect the native-host relay to the service (ADR-0062), re-resolving the endpoint each attempt
-/// so a live dev instance is preferred again on a reconnect. The FIRST connect stays fail-fast (a
-/// misconfigured install errors immediately); a RECONNECT is patient ([`RECONNECT_RETRY_WINDOW`]) so
-/// a rebuild-length service gap or a restart never gives up prematurely. Unlike the adapter's
+/// Connect the native-host relay to its pinned instance's service (ADR-0062/0064). The FIRST connect
+/// stays fail-fast (a misconfigured install errors immediately); a RECONNECT is patient
+/// ([`RECONNECT_RETRY_WINDOW`]) so a rebuild-length service gap or a restart never gives up
+/// prematurely -- it simply waits for the one service to come back. Unlike the adapter's
 /// `connect_and_handshake` there is no anti-squat proof step: the browser endpoint's ACL is the
 /// transport's, and the browser hello carries no session-guid to squat.
 async fn connect_native_with_retry(
@@ -489,10 +489,10 @@ where
 /// re-presenting an identity, so tab ownership and this session's Chrome tab group survive the
 /// service gap instead of being orphaned when the connection drops.
 ///
-/// ADR-0048 D3: `endpoints` is the ORDERED main-endpoint candidate list (exactly one when
-/// pinned; `[dev, default]` when unpinned). Every connect episode -- the first connect and each
-/// reconnect tick -- walks the list in order, so a live dev instance shadows the default and a
-/// dead one fails over to it at reconnect speed.
+/// ADR-0064: `endpoints` is the pinned instance's endpoint (exactly one), or the multi-valued
+/// `GHOSTLIGHT_ENDPOINTS` test-override list. Every connect episode -- the first connect and each
+/// reconnect tick -- walks the list in order and connects to the first present one, waiting for it
+/// to come back on a restart.
 pub async fn relay_adapter(
     endpoints: &[String],
     debug: &crate::observability::DebugSink,
