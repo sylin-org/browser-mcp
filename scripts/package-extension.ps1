@@ -49,7 +49,9 @@ $ExcludeRelativePaths = @(
   'icons/ghost-mark.svg'
 )
 
-$StageDir = Join-Path $env:TEMP "ghostlight-extension-stage-$([guid]::NewGuid())"
+# Cross-platform temp root ($env:TEMP is Windows-only; this script also runs on the ubuntu
+# release runner via pwsh, so it must not depend on it).
+$StageDir = Join-Path ([System.IO.Path]::GetTempPath()) "ghostlight-extension-stage-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Path $StageDir | Out-Null
 
 try {

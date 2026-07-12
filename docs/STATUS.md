@@ -19,22 +19,32 @@ when they disagree**, and update it when you land something that changes the pic
   one-stack model (ADR-0064 amended by ADR-0065), the redesigned on-screen governance
   ribbon + unlisted `notify` tool, the field-splash FX pass, and the SAPS
   security-hardening pass.
-- **PR #41 (dev -> main) is OPEN**: "v0.5.6: session-policy governance, browser identity
-  root-fixes, one-stack dev model, visual language". Owner reviews before merge.
-- **Working tree**: clean as of this snapshot. The spawn-tier e2e tests were aligned with
-  the ADR-0061/0062 contracts (identity-frame admission, tab-URL probe answers, the
-  rewritten relay-lifecycle test) on `dev`; the four changed e2e binaries verified green.
+- **PR #42 (dev -> main) is MERGED**: v0.5.6 is on `main` (merge `53907f7`); `main` and
+  `dev` are tree-identical. (PR #41 was an earlier, already-merged dev->main squash; the
+  divergence it left was reconciled by merge `1d54def` -- its only unique content was the
+  stale `scripts/dev-browser.ps1`, which ADR-0065 removed.) The RELEASE ITSELF IS NOT CUT:
+  no `v0.5.6` tag, no npm/homebrew/scoop/winget publish yet -- that is the owner's
+  irreversible-publish step below.
+- **Working tree**: clean. Full suite green (fast tier + the entire `--ignored` spawn tier
+  locally, and CI on the merge). The spawn-tier e2e tests were aligned with the ADR-0061/0062
+  contracts (identity-frame admission, tab-URL probe answers, the rewritten relay-lifecycle
+  test); the deploy-quiesce lock is now honored in the Unix self-heal too.
 
 ## Release pipeline (what shipping 0.5.6 takes)
 
-1. Owner merges PR #41 to `main`.
-2. `scripts/release.ps1 0.5.6` from `main` (battle-tested across 0.5.1/0.5.2/0.5.4: tag,
-   watch CI, verify assets, fill package-manager sums, update homebrew tap, npm publish +
-   smoke). Winget needs a fresh PR per version.
-3. The extension CHANGED since the 0.5.0 CWS submission (ribbon, FX, identity frames):
-   rebuild the CWS zip from `extension/` and resubmit after release.
-4. Restamp the `v0.5.4+dev` footers across `docs/trust/` to the real released version
-   (one sed pass; the trust README explains the `+dev` suffix).
+The complete, canonical channel-by-channel map is now **`docs/RELEASE.md`**. In short:
+
+1. ~~Owner merges the dev -> main PR.~~ DONE (PR #42, merge `53907f7`).
+2. `scripts/release.ps1 0.5.6` from `main`. It now automates: tag, watch CI, verify assets,
+   fill package-manager sums, homebrew tap, npm publish + smoke, trust-footer restamp,
+   extension publish (Chrome Web Store + Edge; auto if `CWS_*`/`EDGE_*` creds are set, else it
+   prints exact steps and points at the built zip), and the website install-guide refresh.
+3. Manual remainder only: a winget PR to `microsoft/winget-pkgs` (per version, CLA), and the
+   MCP Registry `mcp-publisher` step (DNS auth). Both are called out in the script's report.
+
+The old extension-zip trap is fixed: the Release workflow now builds the CWS-ready zip (key
+stripped, dev files excluded) via `package-extension.ps1`, so the shipped asset is submittable.
+Store API auto-submit needs one-time credential setup (documented in `docs/RELEASE.md`).
 
 ## Owed engineering work (in rough priority order)
 
@@ -62,7 +72,7 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Owner-side gates (agents cannot do these)
 
-- Merge PR #41; cut the v0.5.6 release.
+- Cut the v0.5.6 release (owner: scripts/release.ps1 0.5.6 from main). PR #42 is merged.
 - Chrome Web Store: 0.5.0 zip was submitted 2026-07-10; resubmit after 0.5.6 (extension
   changed). Edge Add-ons: same zip, never submitted.
 - MCP Registry: needs DNS TXT auth on the sylin.org apex + `mcp-publisher`.
