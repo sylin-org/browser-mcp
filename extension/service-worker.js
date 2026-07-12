@@ -38,15 +38,12 @@ const {
 const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups } =
   self.GhostlightGrouping;
 
-// Native-messaging host name (ADR-0064: explicit dev isolation). The unpacked DEV extension -- whose
-// id is pinned to DEV_EXTENSION_ID by the committed manifest `key` (ADR-0016) -- talks to its OWN
-// host `org.sylin.ghostlight.dev`, which a `--instance dev` install registers pointing at the dev
-// relay + dev service. The Web Store build talks to production `org.sylin.ghostlight`. Same code,
-// host chosen by identity -- replacing ADR-0048's single-host auto-shadow (no more connect-time
-// "which service?" guessing; each extension has exactly one target).
-const DEV_EXTENSION_ID = "cjcmhepmagomefjggkcohdbfemacojoa";
-const NATIVE_HOST =
-  chrome.runtime.id === DEV_EXTENSION_ID ? "org.sylin.ghostlight.dev" : "org.sylin.ghostlight";
+// Native-messaging host name (ADR-0065: one stack). Every build of this extension -- the Web
+// Store release and the unpacked dev copy alike -- talks to the ONE host `org.sylin.ghostlight`,
+// whose manifest allows both extension ids. Whatever engine currently holds the endpoint behind
+// that host (the installed release, or a fresh build a developer just started) serves everyone;
+// the extension never picks an engine.
+const NATIVE_HOST = "org.sylin.ghostlight";
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
 // name. The emoji is written as an escape so this source file stays ASCII; it renders as
 // the glyph at runtime.

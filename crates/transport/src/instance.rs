@@ -240,12 +240,6 @@ impl Instance {
     }
 }
 
-/// The conventional development instance name. Since ADR-0064 it is an ordinary named instance
-/// like any other (its own isolated stack); the ADR-0048 auto-shadow that made an UNPINNED client
-/// prefer a live `dev` over the default was retired. Kept as a named constant for the dev
-/// conventions that remain -- the install's no-auto-start-supervisor choice, dev tooling, and docs.
-pub const DEV_INSTANCE: &str = "dev";
-
 /// Classify one raw instance source (a `--instance` value or the env var's content) into an
 /// [`Instance`] (ADR-0064: every client pins exactly one instance; there is no "resolve at connect
 /// time, prefer dev" state). Pure (no environment access), so it is unit-testable without racing
@@ -449,7 +443,10 @@ mod tests {
         assert!(classify(Some("default")).unwrap().is_default());
         assert!(classify(Some("DEFAULT")).unwrap().is_default());
         assert_eq!(classify(Some("dev")).unwrap().name(), Some("dev"));
-        assert_eq!(classify(Some("qa-staging")).unwrap().name(), Some("qa-staging"));
+        assert_eq!(
+            classify(Some("qa-staging")).unwrap().name(),
+            Some("qa-staging")
+        );
         assert!(classify(Some("Not Valid")).is_err());
     }
 }

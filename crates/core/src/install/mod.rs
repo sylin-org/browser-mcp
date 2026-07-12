@@ -780,11 +780,6 @@ pub fn run_install(opts: InstallOptions) -> Result<()> {
         // ADR-0046 dev loop: an auto-started dev service would hold the exe lock during a rebuild;
         // the developer runs `ghostlight service` in a terminal instead (see docs/DEV-LOOP.md).
         println!("  (skipped: --no-supervisor)");
-    } else if ghostlight_transport::instance::Instance::resolve().name()
-        == Some(ghostlight_transport::instance::DEV_INSTANCE)
-    {
-        // ADR-0048 D6: a dev service runs in a terminal (docs/DEV-LOOP.md); never auto-started.
-        println!("  (skipped: the dev instance runs its service in a terminal; ADR-0048)");
     } else {
         supervisor::apply_steps(
             &ghostlight_transport::supervisor::supervisor_task_name(),

@@ -1,6 +1,11 @@
 # ADR-0064: Explicit dev isolation (retire the auto-shadow dev override)
 
-- Status: Accepted
+- Status: Accepted; AMENDED by ADR-0065 (one stack). The dev-stack-as-WORKFLOW half of this ADR is
+  retired: the extension's identity-based host selection (Decision 1), the host-per-extension
+  origin pairing (Decision 2), and the installed dev instance are gone -- there is one host, one
+  endpoint, and the dev loop swaps which engine holds it. The STRUCTURAL half survives unchanged
+  and is what makes the swap correct: no `Selection::Unpinned`, one endpoint per resolution
+  (Decision 3), the per-instance hub key (Decision 4), and the single-target reconnect (Decision 5).
 - Date: 2026-07-12
 - Supersedes: ADR-0048 (development override -- the auto-shadow half)
 - Builds on: ADR-0044 (named instances), ADR-0046/0051 (per-instance relay copy)

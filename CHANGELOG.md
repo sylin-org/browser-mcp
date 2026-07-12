@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security-hardening and activation-UX pass following the SAPS strategic assessment.
 
 ### Changed
+- **One stack: the engine is whoever holds the endpoint (ADR-0065).** There is one native host
+  (`org.sylin.ghostlight`, allowing both the Web Store and the unpacked dev extension ids), one
+  service endpoint, and one `ghostlight` MCP entry -- no dev install, no `-dev` host, no second
+  tool namespace. The dev loop becomes an engine swap (`scripts/dev-loop.ps1`: deploy-lock
+  quiesce, stop the engine, rebuild, start the fresh build; `-Restore` hands the endpoint back to
+  the installed release), ridden through transparently by the relay reconnects (ADR-0045/0062).
+  Amends ADR-0064: its dev-stack-as-workflow half (extension identity host selection,
+  instance-aware `allowed_origins`, the installed dev instance) is retired; its structural
+  simplifications survive. Named instances remain only as a test-isolation seam;
+  `scripts/dev-browser.ps1` is removed.
 - **Explicit dev isolation replaces the dev auto-shadow (ADR-0064).** Running a `dev` build
   alongside the installed release no longer relies on an unpinned client "preferring a live dev
   instance" resolved at connect time. Instead the unpacked dev extension self-selects its own native
