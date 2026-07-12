@@ -62,9 +62,10 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
     `extension/service-worker.js:374` now opens it. Website pushed to `main` (auto-deployed).
   - `server.json` websiteUrl was already FIXED to `https://sylin.org/ghostlight/` (applies on the
     next registry version, not 0.5.6 -- immutable).
-  - REMAINING: README distribution-channels listing. Owner asked to list channels; recommendation is
-    LIVE-only (GitHub, npm, homebrew, MCP registry), NOT CWS (blocked)/Edge/winget (not submitted).
-    Draft + confirm before pushing ([[confirm-public-content-before-posting]]).
+  - README now lists the LIVE distribution channels (MCP registry + Homebrew badges, an "Other ways
+    to get it" line). CWS (blocked), Edge, winget, and scoop are omitted until each actually ships.
+  This workstream is now COMPLETE; the only distribution follow-up left is the owner-side CWS listing
+  gate below.
 - **CWS listing completion** (owner): privacy practices + remote-code justification + video in the
   Web Store dashboard, then publish the already-uploaded v0.5.6 package (or re-run
   `scripts/publish-extension.ps1`).
