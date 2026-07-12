@@ -179,9 +179,11 @@ fn merge_tab_id(args: &Value, native: i64) -> Value {
 /// walking both real JSON structure (`structuredContent`, nested objects/arrays) and any
 /// `content[].text` block whose text happens to parse as JSON (`tabs_context_mcp`/
 /// `tabs_create_mcp` report their tab list this way, as a JSON-stringified text block AND as
-/// `structuredContent`). A text block that is not valid JSON is left untouched. Generic on
-/// purpose: covers every current tabId-reporting tool and any future one without a matching
-/// manual edit here.
+/// `structuredContent`). A text block that is not valid JSON has its `Created tab {native}.` prose
+/// prefix rewritten too (see [`encode_created_tab_prose`]) so a consumer reading the human text gets
+/// the SAME composite id structuredContent carries; any other prose is left untouched. Generic on
+/// purpose: covers every current tabId-reporting tool and any future one without a matching manual
+/// edit here.
 fn encode_tab_ids_in_value(v: &mut Value, target: u32) {
     match v {
         Value::Object(map) => {
@@ -199,6 +201,8 @@ fn encode_tab_ids_in_value(v: &mut Value, target: u32) {
                     if let Ok(restr) = serde_json::to_string(&parsed) {
                         map.insert("text".to_string(), Value::String(restr));
                     }
+                } else if let Some(rewritten) = encode_created_tab_prose(text, target) {
+                    map.insert("text".to_string(), Value::String(rewritten));
                 }
             }
             for value in map.values_mut() {
@@ -212,6 +216,35 @@ fn encode_tab_ids_in_value(v: &mut Value, target: u32) {
         }
         _ => {}
     }
+}
+
+/// Rewrite the `Created tab {native}.` prose the extension prepends to a `tabs_create_mcp` result
+/// (`extension/service-worker.js`) so its tab id is the SAME composite structuredContent already
+/// carries (ADR-0058 encoding, completed here per the ADR-0061 live-verify finding). Without this,
+/// the human-readable text leaked the raw native id while structuredContent was slot-encoded, so a
+/// consumer that reads the prose (our own `demo`/scripts/smoke parsers, or a model reading the text
+/// rather than structuredContent) would route by an un-encoded id -- which only works by the slot-0
+/// focus fallback and mis-routes with more than one browser attached. Returns the rewritten string
+/// only when the exact `Created tab <digits>` prefix is present; every other prose is untouched.
+/// Deliberately narrow (one known phrase, not a fuzzy number sweep) so it never rewrites an
+/// unrelated integer that happens to appear in some other tool's text.
+fn encode_created_tab_prose(text: &str, target: u32) -> Option<String> {
+    const PREFIX: &str = "Created tab ";
+    let digits_start = text.find(PREFIX)? + PREFIX.len();
+    let digits_end = text[digits_start..]
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or(text.len(), |i| digits_start + i);
+    if digits_end == digits_start {
+        return None; // "Created tab " not followed by a number
+    }
+    let native: i64 = text[digits_start..digits_end].parse().ok()?;
+    let composite = crate::constants::tab_id::encode(target, native);
+    Some(format!(
+        "{}{}{}",
+        &text[..digits_start],
+        composite,
+        &text[digits_end..]
+    ))
 }
 
 /// Parse the extension's `rescale_coords` reply: a text content block holding
@@ -2253,5 +2286,47 @@ mod tests {
             browser.cache_and_inject_screenshot("g3", "computer", click.clone()),
             click
         );
+    }
+
+    /// ADR-0058/0061: the `Created tab {native}.` prose the extension prepends is rewritten to the
+    /// SAME composite structuredContent carries, so a consumer reading the human text routes by the
+    /// encoded id (not the raw native one, which only works by the slot-0 focus fallback and
+    /// mis-routes with more than one browser attached). Every other prose is untouched.
+    #[test]
+    fn encode_tab_ids_rewrites_the_created_tab_prose_to_composite() {
+        let slot = 3u32;
+        let native = 1_246_199_443i64;
+        let composite = crate::constants::tab_id::encode(slot, native);
+
+        // The tabs_create result shape: a prose text block + structuredContent, both native.
+        let mut result = json!({
+            "content": [{ "type": "text", "text": format!("Created tab {native}.\nThe group has 1 tab.") }],
+            "structuredContent": { "tabId": native, "tabs": [] }
+        });
+        encode_tab_ids_in_value(&mut result, slot);
+
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with(&format!("Created tab {composite}.")),
+            "the prose id is now composite: {text}"
+        );
+        assert!(
+            text.ends_with("The group has 1 tab."),
+            "the rest of the prose is preserved: {text}"
+        );
+        assert_eq!(
+            result["structuredContent"]["tabId"].as_i64(),
+            Some(composite),
+            "structuredContent stays consistent with the prose"
+        );
+
+        // A prose with no `Created tab` prefix, and the prefix with no number, are both untouched.
+        assert_eq!(
+            encode_created_tab_prose("Navigated to https://example.com/", slot),
+            None
+        );
+        assert_eq!(encode_created_tab_prose("Created tab .", slot), None);
+        // The round trip decodes back to (slot, native).
+        assert_eq!(crate::constants::tab_id::decode(composite), (slot, native));
     }
 }
