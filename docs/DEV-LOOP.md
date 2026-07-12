@@ -90,3 +90,87 @@ extension's "Developer diagnostics" option is on, the extension's `connect_attem
 `connect_disconnect` notes) lands in the SAME structured event ring `debug-state-<pid>.json`
 already carries -- `ghostlight --instance dev doctor` and that file are the first places to look,
 before reasoning about timing from raw process logs.
+
+## 6. Live-testing a browser-visible feature end-to-end
+
+For anything you actually need to SEE (FX, notifications, layout) rather than just wire-protocol
+correctness, `fake-browser` is not enough -- it never renders a page. This is the concrete
+recipe, and the gotchas that cost real time the first few passes.
+
+### 6.1 Before you touch anything: check who is attached
+
+Your own MCP client tools (`mcp__ghostlight__*` if you are an agent working inside this repo, or
+any other unpinned client) resolve at connect time and PREFER a live dev instance (ADR-0048). If
+you start issuing `navigate`/`computer` calls without checking first, and dev happens to be down,
+you may be driving the DEFAULT instance instead -- i.e. the user's real, authenticated browser
+session. Always check first:
+
+```
+ghostlight doctor                       # default instance: what's attached right now?
+ghostlight --instance dev doctor        # dev instance: same question
+```
+
+If the default instance's most recent session shows `extension not connected` / `[exited]`,
+nothing routes there and it is safe to proceed. If it shows `extension connected (live)`, treat
+the browser as live and do not send it tool calls as part of a test.
+
+### 6.2 Bring up dev and a disposable browser
+
+```
+.\scripts\dev-loop.ps1        # kill this repo's own dev processes, rebuild, restart, health-check
+.\scripts\dev-browser.ps1     # isolated, disposable Chrome profile + unpacked dev extension
+```
+
+Then confirm attachment before doing anything else:
+
+```
+.\target\release\ghostlight.exe --instance dev doctor
+```
+
+Look for `extension connected (live)` and a `Browsers:` line naming a pid, and verdict `OK`.
+
+**Known flake:** the first `dev-browser.ps1` launch sometimes produces a relay process that stays
+alive but never registers ANY attach attempt server-side (zero entries in
+`debug-state-<pid>.json`'s `recent` ring, even after minutes). Not root-caused as of 2026-07 --
+suspected a Chrome/native-messaging cold-start race, not a code defect, since the exact same
+binaries attach cleanly on the next attempt. If doctor does not show `extension connected` within
+~15 seconds, kill the disposable Chrome + its relay (both are safe to kill -- never anything
+matching your real profile) and re-run `dev-browser.ps1`. Do not add `--remote-debugging-port` to
+chase this: doing so caused the extension to fail to load AT ALL (absent from `chrome://extensions`
+entirely) in the one session that tried it, whatever the cause -- keep the CDP-debugging surface
+and the "does this reproduce normally" surface separate.
+
+### 6.3 Drive the browser with your own tool calls
+
+Once attached, your own `mcp__ghostlight__*` tools (or any other unpinned MCP client) resolve to
+the SAME live dev instance per ADR-0048, and land in the disposable browser you just opened --
+not the user's real one, precisely because you checked 6.1 first.
+
+```
+tabs_context_mcp(createIfEmpty: true)   # note the huge composite tabId -- (pid << 32) | native_tab_id, expected
+navigate(tabId, url)
+computer(action: "screenshot", tabId)
+```
+
+Two gotchas:
+
+- **`chrome://newtab/` and other `chrome://` pages cannot host a content script.** Anything that
+  renders via `agent-visual-indicator.js` or `content.js` (FX, denial notifications) needs a real
+  `http(s)` page loaded in the tab first. Navigate to an in-grant page (the committed
+  `examples/dev-live-test.json` fixture grants `example.org`) before triggering the thing you
+  actually want to see.
+- **A persistent notification cannot be screenshotted on the same tab that triggered it.** Per
+  its own design, ANY subsequent tool action on that tab dismisses it -- and `computer screenshot`
+  is itself such an action (`AGENT_SCREENSHOT_FX` is in `agent-visual-indicator.js`'s dismiss-
+  trigger set), so the screenshot captures the page AFTER the dismissal, not the notification. To
+  actually see it, either ask the user to look at their own screen (the fastest path in practice),
+  or capture it out-of-band over the browser's own devtools websocket
+  (`Page.captureScreenshot` via `--remote-debugging-port`, launched fresh and separately from the
+  attach you are trying to observe -- see the caution in 6.2 about combining the two).
+
+### 6.4 Clean up
+
+Kill only processes whose executable path is under this repo's own `target\` directory, or whose
+command line names the disposable `ghostlight-dev-browser` profile directory -- the same rule
+`dev-loop.ps1` itself follows. Never a bare `taskkill /IM ghostlight.exe` or `/IM chrome.exe`: the
+user's real, installed instance and real browser windows share those names.
