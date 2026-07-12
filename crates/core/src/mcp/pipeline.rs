@@ -958,6 +958,11 @@ mod tests {
         let tab_urls: std::collections::HashMap<i64, Option<&'static str>> =
             tab_urls.into_iter().collect();
         let handle = tokio::spawn(async move {
+            // ADR-0058: identify as pid 0, the SAME value `constants::tab_id::decode` returns
+            // for a plain, un-encoded small tabId (the shape every test below already uses), so
+            // every existing test's tabId keeps working unchanged with no per-test encoding.
+            let hello = ghostlight_transport::handshake::browser_hello_bytes(1, None);
+            host::write_message(&mut ext_side, &hello).await.unwrap();
             loop {
                 let Some(req) = host::read_message(&mut ext_side).await.unwrap() else {
                     break;

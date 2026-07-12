@@ -157,3 +157,20 @@
 //! (today: a denial_id) a viewer can correlate back to
 //! the structured audit record later. First caller: [`crate::mcp::pipeline::run_tool_call`], at
 //! each of the three points a call is denied.
+//!
+//! ## Extension debug events (ADR-0059)
+//!
+//! ## extension -> binary (event; no `id` -- fire-and-forget, same posture as `focus`)
+//! ```json
+//! { "type": "debug_event", "event": "<string>", "detail": <any>? }
+//! ```
+//!
+//! Sent ONLY when the extension's own `chrome.storage.local` debug flag is on (default off,
+//! toggled from the options page); never sent otherwise, so a normal install produces zero
+//! extra traffic. `event` is a short name (`"connect_attempt"`, `"connect_disconnect"` today);
+//! `detail` is optional, freeform, and never policy-bearing -- purely a developer breadcrumb.
+//! The binary appends it verbatim into [`crate::hub::outbound::browser::Browser`]'s existing
+//! debug-state event ring (the SAME file `ghostlight doctor`/a raw `debug-state-<pid>.json`
+//! read already surfaces every other lifecycle note from), so the extension's own view of a
+//! connection interleaves with the service's, ordered by arrival -- one file, not two to
+//! correlate by hand.
