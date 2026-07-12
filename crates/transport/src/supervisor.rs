@@ -181,6 +181,20 @@ pub fn start_service() {
 
     #[cfg(not(windows))]
     {
+        // ADR-0063: the deploy-quiesce lock holds off self-heal on EVERY platform. The Unix
+        // self-heal goes through the OS supervisor rather than a direct spawn, but the lock's
+        // meaning is identical -- a deploy owns the sibling binaries; do not relaunch the old
+        // image mid-swap. (Until v0.5.6 only the Windows branch checked it.)
+        let deploying = std::env::current_exe()
+            .ok()
+            .and_then(|p| sibling_service_exe(&p))
+            .is_some_and(|exe| deploy_lock_present(&exe));
+        if deploying {
+            tracing::info!(
+                "deploy in progress (deploy.lock present); not self-healing the service"
+            );
+            return;
+        }
         let Some((program, args)) = supervisor_start_command() else {
             tracing::debug!("no OS supervisor mechanism on this platform; nothing to start");
             return;
