@@ -5,9 +5,12 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.6] - 2026-07-12
 
-Security-hardening and activation-UX pass following the SAPS strategic assessment.
+Session-policy governance and a scripted demo, root-fixed browser identity and reconnect
+resilience, the one-stack dev model, an on-screen governance ribbon, the field-splash effect
+with a codified visual language, and the SAPS security-hardening pass. (Includes everything
+listed under 0.5.5 below, which was prepared but never published.)
 
 ### Changed
 - **One stack: the engine is whoever holds the endpoint (ADR-0065).** There is one native host
@@ -38,6 +41,33 @@ Security-hardening and activation-UX pass following the SAPS strategic assessmen
 - Softened the security/support SLAs to explicit best-effort targets (solo project).
 
 ### Added
+- **On-screen denial notifications (SAPS PRES-HIGH-01).** When governance refuses an action, the
+  browser shows a persistent top ribbon -- a neutral near-black band with a severity-colored icon
+  medallion (error/warn/info/debug) -- explaining the denial in plain language, on the page where
+  it happened. It persists until the next genuine page action or an explicit close click;
+  read-only actions (screenshot, read, zoom, wait) deliberately never dismiss it.
+- **Session policy overlays and the policy composition model (ADR-0060).** A client can declare a
+  tighten-only policy at `initialize` (`_meta.ghostlightSessionPolicy`, a schema-3 manifest):
+  grants intersect, sacred domains union, the stricter mode wins -- the AWS-session-policy shape,
+  escalation-safe by construction. An overlay tightens even an all-open service.
+- **`ghostlight demo`:** a scripted, watchable tour of the public demo stage driven through the
+  real MCP surface under a session overlay, ending with a governance refusal on screen. Exits
+  non-zero on any failure, so it doubles as an end-to-end smoke test.
+- **Multi-browser sessions (ADR-0058/0061).** Every attached browser gets its own identity-keyed
+  session and tab-id slot, with focus-chain routing for slot-less calls; `ghostlight doctor` lists
+  every connected browser. Browser identity is a persistent UUID the extension itself mints and
+  stores (stable across relay reconnects AND service-worker restarts), replacing the relay's
+  guessed parent pid -- the root fix for tab ids mis-routing under pid 0.
+- **Browser-relay restart resilience (ADR-0062).** A service restart or upgrade no longer drops
+  Chrome's native-messaging port: the browser relay reconnects and replays the extension's
+  identity frame, keeping the same session and slot with no extension reload.
+- **Deploy-quiesce lock (ADR-0063):** a `deploy.lock` beside the service executable holds off
+  relay self-heal while a binary is being replaced, so a swap never races a relaunch of the old
+  image (stale locks self-expire after 30 minutes).
+- **Developer instrumentation (ADR-0059):** `lightbox fake-browser` (an offline wire-protocol
+  driver -- no Chrome needed, with a deliberately billion-scale canned tab id so encoding bugs
+  surface offline), structured native-host attach/reject diagnostics in the debug state ring, and
+  the one-command `scripts/dev-loop.ps1`.
 - **Field splash effect + a codified visual language.** Every form write (`form_input`,
   `form_fill`, `file_upload`, `upload_image`) now draws a sky-blue splash hugging the field it
   just set -- the click ripple's language applied to the field's own rectangle -- so a watcher
@@ -64,10 +94,12 @@ Security-hardening and activation-UX pass following the SAPS strategic assessmen
 - **One-liner installers verify integrity** (SHA-256 + best-effort `gh attestation verify`) before
   trusting a downloaded binary.
 - **Group-gated the tab-URL probe** so it cannot enumerate the user's non-Ghostlight tabs.
+- **`tabs_create` prose now carries the composite tab id**, matching `structuredContent`, instead
+  of leaking the raw native id a follow-up call could mis-route on.
 - Retired the perpetually-hanging `e2e-smoke` CI job; corrected stale docstrings and the governance
   license path.
 
-## [0.5.5] - 2026-07-11
+## [0.5.5] - 2026-07-11 (prepared but not published; first shipped as part of 0.5.6)
 
 Central policy distribution (ADR-0055): an organization can now host, sign, and roll out a
 governance policy from one place instead of hand-copying a manifest file to every machine. Plus a
