@@ -179,7 +179,32 @@ Three gotchas:
   2026-07. After any content-script/service-worker edit, reload the extension explicitly before
   trusting a "still broken" observation, even on a fresh profile.
 
-### 6.4 Clean up
+### 6.4 The `notify` tool: iterating on notifications without a denial
+
+`notify` is an UNLISTED tool: a direct entry point onto `Browser::notify()` -- the same primitive
+governance denials call to draw the on-screen ribbon. It takes `tabId`, `class`
+(`error`/`warn`/`info`/`debug`), optional `icon` (`lock` or anything else -> shield), `title`, and
+optional `description`, and renders the ribbon immediately, bypassing governance (it IS the channel
+governance speaks through). It is deliberately absent from `tools/list` and NOT registered in
+`browser/directory.rs` -- the ribbon is a governance-authority signal, not something the trained
+model should emit -- so it exists only as the first branch of `run_tool_call` in
+`crates/core/src/mcp/pipeline.rs`. Look there, not in the directory, when auditing what tools exist.
+
+For notification-design work this is the fast path: rebuild the service ONCE (to pick up the tool),
+reload the extension ONCE (to pick up any renderer CSS), then fire every severity/icon combination
+as plain `notify` calls -- no rebuild per variant.
+
+Two caveats when driving it:
+- Because it is unlisted, an MCP client's own tool list will not contain it. Send a raw JSON-RPC
+  `tools/call` (name `notify`) over the agent relay (`ghostlight-relay --role agent --instance dev`)
+  rather than through a client's advertised-tool surface.
+- `server.rs`'s cross-session tab-ownership guard runs BEFORE `run_tool_call` and refuses a
+  `tools/call` naming a `tabId` a DIFFERENT live session owns (returns "unknown tab"). So the notify
+  call must come from a session that OWNS the tab: have the same relay session create its own tab
+  (`tabs_create_mcp`) and navigate it before calling `notify`. The internal denial path is
+  unaffected -- it calls `Browser::notify()` directly, never through an incoming `tools/call`.
+
+### 6.5 Clean up
 
 Kill only processes whose executable path is under this repo's own `target\` directory, or whose
 command line names the disposable `ghostlight-dev-browser` profile directory -- the same rule
