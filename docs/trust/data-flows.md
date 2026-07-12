@@ -61,4 +61,4 @@ control.
 
 See [security-overview.md](security-overview.md) and [sub-processors.md](sub-processors.md).
 
-Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.6 | Contact: support@sylin.org

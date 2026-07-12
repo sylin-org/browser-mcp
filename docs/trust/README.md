@@ -78,4 +78,4 @@ checkmarks.
   licensed, and the governance module is source-available, so a customer's ability to keep
   operating never depends on the company's survival. See [continuity.md](continuity.md).
 
-Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.6 | Contact: support@sylin.org

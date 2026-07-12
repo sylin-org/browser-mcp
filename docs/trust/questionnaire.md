@@ -30,4 +30,4 @@ structural reason, rather than left blank or answered as if a service existed.
 | TVM (Threat & Vulnerability Management) | Vulnerabilities are reported through a private channel with a 48-hour acknowledgment, 7-day triage, and a 30-day fix target for confirmed critical issues; there is no bug bounty today; a third-party penetration test is planned when funded. | [SECURITY.md](../../SECURITY.md), [supply-chain.md](supply-chain.md) |
 | UEM (Universal Endpoint Management) | N/A -- structurally impossible: Ghostlight manages no fleet of vendor endpoints; endpoint management is yours, and central policy ships through your own MDM. | [governance configuration guide](../guides/governance-configuration.md) |
 
-Last reviewed: 2026-07-10 against v0.5.5 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.6 | Contact: support@sylin.org
