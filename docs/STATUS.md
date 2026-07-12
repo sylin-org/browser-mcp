@@ -49,22 +49,22 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
 
 ## Owed engineering work (in rough priority order)
 
-- **Content / URL consistency pass (IN PROGRESS, owner-driven)**: a sweep of outward-facing
-  content for stale/branded-URL issues and the post-install UX. Known items so far:
-  - The extension's post-install page: `extension/service-worker.js:374` opens
-    `https://sylin-org.github.io/ghostlight/install.html?from=extension` on `onInstalled` (a raw
-    github.io URL). OWNER WANTS: move this page to the SITE at
-    `sylin.org/ghostlight/chromium-extension/post-install`, style it like the rest of the website,
-    and point the extension there. Touches BOTH repos (browser-mcp extension + `sylin-org/website`
-    at `F:\Replica\NAS\Files\repo\github\sylin-org\website`, an Eleventy site).
-  - `server.json` websiteUrl was `sylin-org.github.io` -> FIXED to `https://sylin.org/ghostlight/`
-    (committed; applies on the next registry version, not 0.5.6 -- immutable).
-  - TODO: finish the `git grep sylin-org.github.io` sweep (server.json + service-worker.js:374
-    found; confirm no others) and reconcile all raw-github.io URLs to `sylin.org`.
-  - README distribution channels: owner asked to list all channels (npm/CWS/MCP-registry/brew...).
-    RECOMMENDATION: list only LIVE channels (GitHub, npm, homebrew, MCP registry), NOT the
-    not-yet-published ones (CWS blocked, Edge/winget not submitted). Public content -> DRAFT + get
-    owner confirm before pushing ([[confirm-public-content-before-posting]]).
+- **Content / URL consistency pass (owner-driven, mostly DONE)**: swept outward-facing content
+  for stale/branded URLs and moved the post-install UX onto the site. What landed:
+  - **github.io fully retired.** The canonical home is `sylin.org/ghostlight`. Every reference to
+    `sylin-org.github.io/ghostlight` was repointed (extension onInstalled, homebrew/scoop/winget/npm
+    homepage + walkthrough URLs, `scripts/get.sh`/`get.ps1`, npm launcher fallback). `site/index.html`
+    and `site/install.html` became meta-refresh redirect stubs to sylin.org (index -> project page,
+    install -> post-install page). Committed on `dev` (b55102e). The Pages deploy is path-scoped to
+    `site/**` on `main`, so the redirect stubs go live at the next dev->main merge.
+  - **Post-install page is LIVE**: `sylin.org/ghostlight/chromium-extension/post-install/`
+    (website repo `src/ghostlight/chromium-extension/post-install.njk`, teal accent, base.njk layout).
+    `extension/service-worker.js:374` now opens it. Website pushed to `main` (auto-deployed).
+  - `server.json` websiteUrl was already FIXED to `https://sylin.org/ghostlight/` (applies on the
+    next registry version, not 0.5.6 -- immutable).
+  - REMAINING: README distribution-channels listing. Owner asked to list channels; recommendation is
+    LIVE-only (GitHub, npm, homebrew, MCP registry), NOT CWS (blocked)/Edge/winget (not submitted).
+    Draft + confirm before pushing ([[confirm-public-content-before-posting]]).
 - **CWS listing completion** (owner): privacy practices + remote-code justification + video in the
   Web Store dashboard, then publish the already-uploaded v0.5.6 package (or re-run
   `scripts/publish-extension.ps1`).
