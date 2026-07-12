@@ -40,6 +40,13 @@
 .PARAMETER SkipNpm
     Do not publish to npm.
 
+.PARAMETER SkipExtension
+    Do not publish the browser extension (Chrome Web Store / Edge). The extension step is also
+    skipped automatically when extension/ did not change since the previous tag.
+
+.PARAMETER SkipWebsite
+    Do not refresh the sylin.org website (the install-guide fallback + rebuild trigger).
+
 .EXAMPLE
     pwsh -File scripts/release.ps1 0.5.1
         Full release, with confirmations.
@@ -61,11 +68,13 @@ param(
     [switch] $DryRun,
     [switch] $Yes,
 
-    [ValidateSet('preflight', 'tag', 'watch', 'verify', 'sums', 'tap', 'npm', 'report')]
+    [ValidateSet('preflight', 'tag', 'watch', 'verify', 'sums', 'tap', 'npm', 'trust', 'extension', 'website', 'report')]
     [string] $From = 'preflight',
 
     [switch] $SkipTap,
-    [switch] $SkipNpm
+    [switch] $SkipNpm,
+    [switch] $SkipExtension,
+    [switch] $SkipWebsite
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,7 +96,7 @@ $Targets = @(
     @{ Target = 'x86_64-unknown-linux-gnu'; Ext = 'tar.gz'; Windows = $false }
 )
 
-$StepOrder = @('preflight', 'tag', 'watch', 'verify', 'sums', 'tap', 'npm', 'report')
+$StepOrder = @('preflight', 'tag', 'watch', 'verify', 'sums', 'tap', 'npm', 'trust', 'extension', 'website', 'report')
 
 # --- Output helpers --------------------------------------------------------------------
 
@@ -574,23 +583,116 @@ function Step-Npm {
     else { Write-Warn2 "doctor exited $code -- the launcher fetched v$Version (see output above); a nonzero here is expected when this machine has no browser/extension configured" }
 }
 
+# Restamp the "Last reviewed ... against v<x>" version token in every docs/trust/ footer to the
+# release version. Idempotent: matches any existing vX.Y.Z (with or without a +dev suffix).
+function Set-TrustFooters([string] $Ver) {
+    $trustDir = Join-Path $RepoRoot 'docs/trust'
+    if (-not (Test-Path $trustDir)) { return @() }
+    $touched = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in Get-ChildItem $trustDir -Filter '*.md' -File) {
+        $text = Get-Content -Raw $f.FullName
+        $new = [regex]::Replace($text, '(against )v\d+\.\d+\.\d+(\+dev)?', "`${1}v$Ver")
+        if ($new -ne $text) {
+            Set-Content -Path $f.FullName -Value $new -NoNewline
+            $touched.Add("docs/trust/$($f.Name)")
+        }
+    }
+    return $touched
+}
+
+function Step-Trust {
+    Write-Banner 'Restamp trust-center footers'
+    if ($DryRun) {
+        Write-Would "set every docs/trust/*.md 'against v<x>' footer to v$Version, commit + push origin main"
+        return
+    }
+    $touched = @(Set-TrustFooters $Version)
+    if ($touched.Count -eq 0) { Write-Skip "trust footers already at v$Version (or none present)"; return }
+    Write-Ok "restamped $($touched.Count) trust footer(s) to v$Version"
+    Push-Location $RepoRoot
+    try {
+        $addArgs = @('add') + $touched
+        Invoke-Native 'git' $addArgs | Out-Null
+        Invoke-Native 'git' @('commit', '-m', "docs(trust): restamp reviewed-against footers to v$Version") | Out-Null
+        Invoke-Native 'git' @('push', 'origin', 'main') -AllowFail | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn2 'push to origin/main was rejected (protected branch?); the commit is local -- open a PR to land it.'
+        }
+        else { Write-Ok 'pushed trust-footer restamp to origin/main' }
+    }
+    finally { Pop-Location }
+}
+
+# True if extension/ changed between the previous release tag and this one -- the only case that
+# needs a store resubmission (a Rust-only release reuses the store's existing/pending version).
+function Test-ExtensionChanged {
+    Push-Location $RepoRoot
+    try {
+        $prev = git tag --list 'v*' --sort=-version:refname | Where-Object { $_ -ne $Tag } | Select-Object -First 1
+        if (-not $prev) { return $true } # no prior tag: treat as changed (first submission)
+        git diff --quiet "$prev" "$Tag" -- extension/ 2>$null
+        return ($LASTEXITCODE -ne 0)
+    }
+    finally { Pop-Location }
+}
+
+function Step-Extension {
+    Write-Banner 'Publish the browser extension'
+    if ($SkipExtension) { Write-Skip '-SkipExtension set'; return }
+
+    if (-not (Test-ExtensionChanged)) {
+        Write-Skip 'extension/ is unchanged since the previous tag; no Chrome Web Store / Edge resubmission needed'
+        return
+    }
+    Write-Info 'extension/ changed this release -> a store resubmission is due'
+
+    $script = Join-Path $PSScriptRoot 'publish-extension.ps1'
+    if ($DryRun) {
+        Write-Would "pwsh $script -Version $Version -DryRun  (auto-publishes where store creds are set, else prints steps)"
+        & pwsh -File $script -Version $Version -DryRun
+        return
+    }
+    # publish-extension.ps1 auto-submits to each store whose credentials are present and prints
+    # manual instructions for the rest; it never fails the release for a missing credential.
+    & pwsh -File $script -Version $Version
+    if ($LASTEXITCODE -ne 0) { Write-Warn2 "publish-extension.ps1 exited $LASTEXITCODE -- review its output above" }
+}
+
+function Step-Website {
+    Write-Banner 'Refresh the sylin.org website'
+    if ($SkipWebsite) { Write-Skip '-SkipWebsite set'; return }
+
+    $script = Join-Path $PSScriptRoot 'publish-website.ps1'
+    if ($DryRun) {
+        Write-Would "pwsh $script -Version $Version -DryRun  (refresh the install-guide fallback; push only if it changed)"
+        & pwsh -File $script -Version $Version -DryRun
+        return
+    }
+    & pwsh -File $script -Version $Version
+    if ($LASTEXITCODE -ne 0) { Write-Warn2 "publish-website.ps1 exited $LASTEXITCODE -- review its output above" }
+}
+
 function Step-Report {
-    Write-Banner 'Done -- manual remainder'
+    Write-Banner 'Done -- summary + remaining manual steps'
     Write-Host @"
   Automated by this script:
     - tag $Tag pushed, Release workflow watched to green
     - assets verified, package-manager checksums filled + committed
     - homebrew tap updated$(if ($SkipTap) { ' (SKIPPED)' })
     - npm publish + smoke$(if ($SkipNpm) { ' (SKIPPED)' })
+    - trust-center footers restamped to v$Version
+    - extension published$(if ($SkipExtension) { ' (SKIPPED)' }) -- auto where store creds are set, else steps printed above
+    - website install-guide fallback refreshed$(if ($SkipWebsite) { ' (SKIPPED)' })
 
-  Still manual (by nature -- external systems / per-version submissions):
-    - Chrome Web Store: resubmit ONLY if extension/ changed this release.
-        (Rust-only releases reuse the pending review; see docs/legal/STORE_LISTING.md.)
-    - Edge Add-ons: same zip as CWS, when the extension changed.
+  Still manual (by nature -- external systems that need a human or a per-version PR):
     - winget: a NEW PR per version to microsoft/winget-pkgs
         (copy the filled packaging/winget/Sylin.Ghostlight.yaml sections; needs the CLA).
     - MCP Registry: mcp-publisher with DNS auth on the sylin.org apex (founder-side).
+    - Extension stores: if you have NOT set the store API credentials, follow the steps this
+        script printed above (nothing auto-submitted). See docs/RELEASE.md -> "Extension stores".
     - Verify: https://github.com/$RepoSlug/releases/tag/$Tag
+
+  The complete channel-by-channel map is docs/RELEASE.md.
 "@
 }
 
@@ -614,6 +716,9 @@ $dispatch = @{
     sums      = { Step-Sums }
     tap       = { Step-Tap }
     npm       = { Step-Npm }
+    trust     = { Step-Trust }
+    extension = { Step-Extension }
+    website   = { Step-Website }
     report    = { Step-Report }
 }
 

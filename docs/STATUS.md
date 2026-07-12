@@ -32,14 +32,19 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Release pipeline (what shipping 0.5.6 takes)
 
+The complete, canonical channel-by-channel map is now **`docs/RELEASE.md`**. In short:
+
 1. ~~Owner merges the dev -> main PR.~~ DONE (PR #42, merge `53907f7`).
-2. `scripts/release.ps1 0.5.6` from `main` (battle-tested across 0.5.1/0.5.2/0.5.4: tag,
-   watch CI, verify assets, fill package-manager sums, update homebrew tap, npm publish +
-   smoke). Winget needs a fresh PR per version.
-3. The extension CHANGED since the 0.5.0 CWS submission (ribbon, FX, identity frames):
-   rebuild the CWS zip from `extension/` and resubmit after release.
-4. Restamp the `v0.5.4+dev` footers across `docs/trust/` to the real released version
-   (one sed pass; the trust README explains the `+dev` suffix).
+2. `scripts/release.ps1 0.5.6` from `main`. It now automates: tag, watch CI, verify assets,
+   fill package-manager sums, homebrew tap, npm publish + smoke, trust-footer restamp,
+   extension publish (Chrome Web Store + Edge; auto if `CWS_*`/`EDGE_*` creds are set, else it
+   prints exact steps and points at the built zip), and the website install-guide refresh.
+3. Manual remainder only: a winget PR to `microsoft/winget-pkgs` (per version, CLA), and the
+   MCP Registry `mcp-publisher` step (DNS auth). Both are called out in the script's report.
+
+The old extension-zip trap is fixed: the Release workflow now builds the CWS-ready zip (key
+stripped, dev files excluded) via `package-extension.ps1`, so the shipped asset is submittable.
+Store API auto-submit needs one-time credential setup (documented in `docs/RELEASE.md`).
 
 ## Owed engineering work (in rough priority order)
 

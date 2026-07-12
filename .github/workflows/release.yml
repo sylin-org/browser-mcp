@@ -179,13 +179,20 @@ jobs:
           # without it (SAPS OSS-LOW-03).
           ls -la artifacts/*.cyclonedx*
 
-      - name: Package extension
+      - name: Package extension (Chrome Web Store ready)
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
+          # Single source of truth for the store zip: the SAME script the local flow uses
+          # (scripts/package-extension.ps1, run here via the preinstalled pwsh). It excludes
+          # dev-only files AND strips the manifest `key` field -- the Chrome Web Store rejects a
+          # `key` on upload -- so this release asset is directly submittable, unlike the old bare
+          # `zip -r extension/` which shipped the key and dev files and would be rejected.
+          pwsh -File scripts/package-extension.ps1 -Version "$VERSION"
           EXT_ZIP="artifacts/${BIN_NAME}-extension-${TAG}.zip"
-          ( cd extension && zip -r "../${EXT_ZIP}" . -x "native-messaging-host.json" >/dev/null )
+          cp "dist/${BIN_NAME}-extension-v${VERSION}.zip" "$EXT_ZIP"
           shasum -a 256 "$EXT_ZIP" > "${EXT_ZIP}.sha256"
           cat "${EXT_ZIP}.sha256"
 
