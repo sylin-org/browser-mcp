@@ -116,11 +116,13 @@ Uses the Chrome Web Store API v1.1 (OAuth2). One-time setup:
 1. In a Google Cloud project, enable the "Chrome Web Store API".
 2. Create an OAuth client of type "Desktop app"; note the client id and secret.
 3. Obtain a refresh token once via the OAuth consent flow for scope
-   `https://www.googleapis.com/auth/chromewebstore` (authorize as the account that owns the listing;
-   exchange the returned code for a refresh token).
+   `https://www.googleapis.com/auth/chromewebstore`. `scripts/get-cws-refresh-token.ps1` runs the
+   loopback flow end to end (opens the consent page, catches the redirect, prints the refresh
+   token); authorize as the account that owns the listing.
 4. The item id is the extension's Web Store id (in the dashboard URL).
 
-Set: `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_ITEM_ID`.
+Set: `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_ITEM_ID`. The full click-by-click
+walkthrough (kept machine-local) is `local/RELEASE-CREDENTIALS.md`.
 
 ### Edge Add-ons (`EDGE_*`)
 
