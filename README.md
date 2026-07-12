@@ -10,6 +10,8 @@
   <a href="https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml"><img src="https://github.com/sylin-org/ghostlight/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
   <a href="https://www.npmjs.com/package/ghostlight"><img src="https://img.shields.io/npm/v/ghostlight?color=38BDF8&label=npm" alt="npm"></a>
   <a href="https://github.com/sylin-org/ghostlight/releases/latest"><img src="https://img.shields.io/github/v/release/sylin-org/ghostlight?color=38BDF8&label=release" alt="release"></a>
+  <a href="https://registry.modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP_registry-org.sylin%2Fghostlight-38BDF8" alt="MCP registry"></a>
+  <a href="https://github.com/sylin-org/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-sylin--org%2Ftap-38BDF8" alt="Homebrew tap"></a>
 </p>
 
 Your browser, with your logins, your tabs, your sessions, driven by your agent. It works from any
@@ -75,6 +77,11 @@ Needs a Chromium browser (116+) and an MCP client. No Node, no Rust, nothing to 
 Restart your client and the browser tools appear. If anything looks off, `npx ghostlight doctor`
 tells you exactly what. Prebuilt archives, building from source, and every other path live in the
 [installation guide](docs/guides/installation.md) and the manual steps below.
+
+**Other ways to get it.** Homebrew: `brew install sylin-org/tap/ghostlight`. On the
+[MCP registry](https://registry.modelcontextprotocol.io) as `org.sylin/ghostlight`. Every release
+also ships prebuilt binaries and checksums on the
+[Releases page](https://github.com/sylin-org/ghostlight/releases/latest).
 
 <details>
 <summary><strong>Manual install (inspect everything)</strong></summary>
