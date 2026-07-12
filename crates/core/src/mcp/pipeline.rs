@@ -1045,11 +1045,18 @@ mod tests {
         let tab_urls: std::collections::HashMap<i64, Option<&'static str>> =
             tab_urls.into_iter().collect();
         let handle = tokio::spawn(async move {
-            // ADR-0058: identify as pid 0, the SAME value `constants::tab_id::decode` returns
-            // for a plain, un-encoded small tabId (the shape every test below already uses), so
-            // every existing test's tabId keeps working unchanged with no per-test encoding.
+            // ADR-0058/0061: relay hello then the extension identity frame. The plain, un-encoded
+            // small tabIds every test below uses decode to slot 0, which `resolve_target` treats as
+            // "unrouted" and resolves to this sole focus-front browser -- so every existing test's
+            // tabId keeps working unchanged with no per-test encoding.
             let hello = ghostlight_transport::handshake::browser_hello_bytes(1, None);
             host::write_message(&mut ext_side, &hello).await.unwrap();
+            let identity = serde_json::to_vec(&serde_json::json!({
+                "type": ghostlight_transport::handshake::EXTENSION_IDENTITY_TYPE,
+                ghostlight_transport::handshake::BROWSER_ID_FIELD: "pipeline-fixture",
+            }))
+            .unwrap();
+            host::write_message(&mut ext_side, &identity).await.unwrap();
             loop {
                 let Some(req) = host::read_message(&mut ext_side).await.unwrap() else {
                     break;
@@ -1264,6 +1271,8 @@ mod tests {
             r#"{"schema":3,"name":"o","version":"1","mode":"enforce",
                 "grants":[{"id":"s","hosts":{"allow":["sylin.org","*.sylin.org"]},
                 "allowed":["read","action"],"description":"the stage"}]}"#,
+            crate::browser::pattern::is_valid_pattern,
+            crate::browser::polarity::evaluate_host,
         )
         .expect("overlay parses");
 

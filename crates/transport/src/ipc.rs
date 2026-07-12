@@ -541,21 +541,22 @@ pub struct StatusReply {
     /// The number of live tool sessions (MCP adapters + web) at the moment of the reply.
     pub live_sessions: u64,
     /// Every currently-attached browser (ADR-0058), most-recently-focused first. Non-sensitive:
-    /// a pid and a live tab count, nothing identifying beyond what the local OS process list
-    /// already shows any same-user process.
+    /// a server-assigned slot and a focus flag, nothing identifying about the user's machine.
     #[serde(default)]
     pub browsers: Vec<BrowserInfo>,
 }
 
-/// One attached browser, as reported by `ghostlight doctor` (ADR-0058). Deliberately does not
-/// carry a tab count: the service has no live source for "how many tabs does this browser have"
-/// without a synchronous round-trip doctor's one-shot control query does not make (that number is
-/// the extension's own `chrome.tabs.query` state, never mirrored server-side today) -- a future
-/// addition, not a gap in this one.
+/// One attached browser, as reported by `ghostlight doctor` (ADR-0058, amended by ADR-0061).
+/// Deliberately does not carry a tab count: the service has no live source for "how many tabs does
+/// this browser have" without a synchronous round-trip doctor's one-shot control query does not make
+/// (that number is the extension's own `chrome.tabs.query` state, never mirrored server-side today)
+/// -- a future addition, not a gap in this one.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrowserInfo {
-    /// The browser (Chrome/Edge) process id -- the identity a session is keyed by.
-    pub pid: u32,
+    /// The service-assigned slot (ADR-0061): a small, stable, non-zero number a session is keyed by,
+    /// mapped from the extension's persistent browser UUID. Replaces the pre-0061 `pid` (which could
+    /// degrade to a colliding 0). Also the high bits of every composite tab id this browser owns.
+    pub slot: u32,
     /// Whether this browser most recently reported window focus (the front of the focus chain).
     pub focused: bool,
 }

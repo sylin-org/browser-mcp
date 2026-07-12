@@ -458,7 +458,7 @@ fn browser_lines(browsers: &[ghostlight_transport::ipc::BrowserInfo]) -> Vec<Str
     let mut lines = vec!["  Browsers:".to_string()];
     for b in browsers {
         let focus_note = if b.focused { " (focused)" } else { "" };
-        lines.push(format!("    pid {}{}", b.pid, focus_note));
+        lines.push(format!("    slot {}{}", b.slot, focus_note));
     }
     lines
 }
@@ -1204,11 +1204,11 @@ mod tests {
     fn browser_lines_marks_exactly_the_focused_one() {
         let browsers = vec![
             ghostlight_transport::ipc::BrowserInfo {
-                pid: 1001,
+                slot: 1,
                 focused: true,
             },
             ghostlight_transport::ipc::BrowserInfo {
-                pid: 2002,
+                slot: 2,
                 focused: false,
             },
         ];
@@ -1216,11 +1216,11 @@ mod tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!(lines[0], "  Browsers:");
         assert!(
-            lines[1].contains("1001") && lines[1].contains("(focused)"),
+            lines[1].contains("slot 1") && lines[1].contains("(focused)"),
             "{lines:?}"
         );
         assert!(
-            lines[2].contains("2002") && !lines[2].contains("(focused)"),
+            lines[2].contains("slot 2") && !lines[2].contains("(focused)"),
             "{lines:?}"
         );
     }

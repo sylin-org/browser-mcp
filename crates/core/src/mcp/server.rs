@@ -710,7 +710,11 @@ pub(super) async fn handle_line(
                 .and_then(|m| m.get("ghostlightSessionPolicy"))
                 .and_then(Value::as_str)
             {
-                match SessionOverlay::parse(policy_text) {
+                match SessionOverlay::parse(
+                    policy_text,
+                    crate::browser::pattern::is_valid_pattern,
+                    crate::browser::polarity::evaluate_host,
+                ) {
                     Ok(overlay) => {
                         *seat.overlay.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(Arc::new(overlay));

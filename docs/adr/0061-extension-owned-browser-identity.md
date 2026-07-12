@@ -1,6 +1,6 @@
 # ADR-0061: Extension-owned browser identity and server-assigned tab slots
 
-- Status: Accepted (design; implementation pending)
+- Status: Accepted (implemented 2026-07-12)
 - Date: 2026-07-12
 - Amends: ADR-0058 (per-browser identity and focus routing)
 
@@ -43,9 +43,15 @@ persists across every relay reconnect and service-worker relaunch, so it owns th
    survives service-worker death). It reads it back on every startup and includes it in every
    native-messaging hello. Always present, never 0, unique per browser profile, stable across relay
    reconnects AND SW relaunches -- strictly more than `browserPid` or `relayPid` gives.
-2. **The hello carries `browserId`** (`handshake::browser_hello_bytes`), alongside the existing
-   fields. `proc::parent()` stays ONLY for the browser-role parent-death watchdog (what it is
-   actually good at); it is no longer the identity.
+2. **The extension announces `browserId` as its opening frame**, and the relay forwards it
+   verbatim. The relay stays a pure byte pipe: it never parses the extension's frames, so identity
+   is NOT folded into the relay's `ROLE_BROWSER` hello. Instead the extension posts
+   `{"type":"browser_hello","browserId":"<uuid>"}` as its first native message on every connect; the
+   service reads it as the second frame on a browser connection, right after the relay's hello. This
+   keeps the extension->service identity handshake entirely between those two parties (see the
+   implementation plan for why this is preferred over threading the id through the relay). The
+   relay's `browserPid` stays purely diagnostic; `proc::parent()` stays ONLY for the browser-role
+   parent-death watchdog (what it is actually good at) and is no longer the identity.
 3. **The service keys browser sessions by `browserId`.** A reconnect from the same browser (same
    UUID) cleanly REPLACES its session -- the exact ADR-0058 semantics, now hung on a stable,
    reliable, never-zero identity.
@@ -66,8 +72,8 @@ canonical way to get identity that survives transport churn without relying on p
 
 ## Consequences
 
-- Fixes the pid-0 routing failure at the root; a freshly created tab always carries the pid... slot
-  of the actual live browser.
+- Fixes the pid-0 routing failure at the root; a freshly created tab always carries the slot of the
+  actual live browser.
 - Identity survives relay reconnects and service-worker relaunches, which `browserPid` did not
   reliably do.
 - The number tab id and the composite arithmetic are preserved; Claude stays on trained rails.
@@ -79,24 +85,44 @@ canonical way to get identity that survives transport churn without relying on p
 
 ## Implementation plan (three layers)
 
-1. **Extension (`extension/service-worker.js`, maybe `extension/lib/`):** a small module that reads
-   `ghostlight_browser_id` from `chrome.storage.local`, generating + persisting a `crypto.randomUUID()`
-   if absent, and exposes it to the hello-send path. Mirror the injected-dependency, unit-testable
-   shape of `lib/debug.js` / `lib/grouping.js` (a `createBrowserIdentity(storage)` factory), with a
-   `tests/extension/*.test.js`.
-2. **Transport (`crates/transport/src/handshake.rs`):** `browser_hello_bytes` gains a `browser_id:
-   &str` (UUID) field; `ROLE_BROWSER` hello carries `browserId`. Keep `browserPid`/`browserCreated`
-   for the watchdog only, or drop from identity use.
+Note on mechanism (as implemented): the browserId travels as the extension's own opening frame, not
+folded into the relay's hello. Two shapes were considered:
+
+- **A (relay carries it):** the relay reads the extension's identity frame and folds the UUID into
+  its `ROLE_BROWSER` hello. Rejected: it makes the deliberately-dumb byte-pipe relay parse the
+  extension's message semantics -- a coupling the codebase avoids (the relay does not parse
+  `tool_request`, `notification`, etc.; it pumps bytes).
+- **B (service reads it), chosen:** the relay is unchanged; the extension posts
+  `{"type":"browser_hello","browserId"}` first, and the service reads it as the second frame on a
+  browser connection. Protocol semantics live in the service, which already parses every frame. The
+  only cost is a second, bounded read in `attach` -- localized and testable.
+
+1. **Extension (`extension/lib/identity.js` + `extension/service-worker.js`):** a small
+   injected-dependency module, `createBrowserIdentity(storage, generate)` (mirroring
+   `lib/debug.js` / `lib/grouping.js`), reads/generates/persists a `crypto.randomUUID()` under
+   `ghostlight_browser_id` in `chrome.storage.local`. `connect()` resolves it before opening the
+   port and posts `{type:"browser_hello", browserId}` as the very first frame. Unit-tested in
+   `tests/extension/identity.test.js`.
+2. **Transport (`crates/transport/src/handshake.rs`):** `browser_hello_bytes` is UNCHANGED (the
+   relay stays a byte pipe). Add the identity-frame vocabulary (`EXTENSION_IDENTITY_TYPE`,
+   `BROWSER_ID_FIELD`) and a `parse_extension_identity(bytes) -> Option<String>` the service uses.
+   `BrowserInfo.pid` becomes `BrowserInfo.slot` (`crates/transport/src/ipc.rs`).
 3. **Core (`crates/core/src/hub/outbound/browser.rs` + `crates/core/src/constants.rs`):**
-   - A `BrowserRegistry`: `browser_id (String) -> slot (u32, monotonic from 1)`, plus the reverse
-     for decode. `attach()` looks up/inserts by `browserId`, assigns a slot, keys `sessions` by slot.
-   - `tab_id::{encode,decode}` unchanged (already `slot * 2^32 + native`); callers pass `slot`.
-   - `resolve_target(None)` picks the most-recently-focused LIVE slot; drop the `min()` fallback in
-     favor of "any live slot, focus-ordered" (still deterministic, never a corpse). Evict a slot's
-     session on relay disconnect (tighten the detach path).
-   - `note_focus`, `focus_chain`, `encode_tab_ids`, `merge_tab_id` all key on slot.
-   - `ghostlight doctor`'s browser list shows slot + (optionally) a short id prefix.
-- Tests: a reconnect from the same `browserId` replaces (not duplicates) the session; two distinct
-  `browserId`s get distinct non-zero slots; a `tabs_create` mint + `navigate` round trip routes to
-  the same live browser; `browserId` absent/blank is rejected at attach (fail closed, no pid-0
-  fallback path remaining).
+   - A slot registry: `slots: HashMap<browser_id (String), slot (u32)>` + a monotonic `next_slot`
+     from 1. `slot_for()` gets-or-assigns; `slot_of()` is a pure lookup. The mapping is NEVER
+     evicted (a reconnect keeps its slot); only the live `sessions` entry is evicted on detach.
+   - `attach()` reads the relay hello, then the identity frame (bounded by `IDENTITY_WINDOW`),
+     assigns a slot, keys `sessions` by slot, and seeds the focus chain. A missing/blank identity is
+     rejected fail-closed (`AttachOutcome::AlreadyAttached`, `Diagnostic::MissingIdentity`).
+   - `tab_id::{encode,decode}` arithmetic unchanged (now `slot * 2^32 + native`; params renamed).
+   - `resolve_target(None)` picks the most-recently-active LIVE slot (`focus_front_live`); the
+     `min()` corpse fallback is retired (the chain is seeded on attach, so it always covers a live
+     session). A composite that decodes to `slot 0` (a plain/un-encoded id or a pre-0061 client) is
+     treated as unrouted and resolved by focus, keeping the native tab id.
+   - `note_focus`/`focus_chain`/`encode_tab_ids`/`merge_tab_id`/diagnostics all key on slot;
+     `ghostlight doctor`'s browser list shows `slot`.
+- Tests (all landed + green): a reconnect from the same `browserId` replaces (not duplicates) the
+  session and keeps its slot; two distinct `browserId`s get distinct non-zero slots and route
+  independently; a `ROLE_BROWSER` hello with no valid identity frame is rejected (no slot minted);
+  the `parse_extension_identity` shape/blank/non-JSON cases; the extension module's mint/persist/
+  read-back/degraded-storage cases.

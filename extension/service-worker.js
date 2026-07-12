@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -50,6 +50,12 @@ const GROUP_TITLE = "\u{1F47B}Ghostlight";
 
 let nativePort = null;
 let groupId = null;
+// Extension-owned browser identity (ADR-0061): a UUID minted once and persisted in
+// chrome.storage.local, announced to the service as the opening frame of every native-messaging
+// connection. This -- not the relay's guessed parent pid -- is what the service keys a browser's
+// session (and its composite tab ids) by, so identity survives relay reconnects and worker deaths
+// and never collides on a degraded pid=0.
+const browserIdentity = self.GhostlightIdentity.createBrowserIdentity(chrome.storage.local);
 // H7 (ADR-0030 Decision 6/7) + ADR-0047 D1: the per-session presentation map, guid -> Chrome
 // tab-group id. Since ADR-0047 D1 the single-group access-control gate
 // (groupTabs/inGroup/effectiveTabId) CONSULTS this map through the managed-surface predicate
@@ -99,8 +105,16 @@ async function connect() {
   const s = await chrome.storage.session.get("session_killed");
   if (s.session_killed) return; // killed: only an explicit user reconnect resumes
   if (nativePort) return; // re-check: another caller may have won an await above
+  // ADR-0061: resolve the persistent browser id BEFORE opening the port, so it can be sent as the
+  // very first frame (below) with no await interleaving another message ahead of it.
+  const browserId = await browserIdentity.get();
+  if (nativePort) return; // re-check after the await above
   try {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
+    // ADR-0061: announce identity FIRST, before any other frame. The relay forwards it verbatim, so
+    // the service reads it as the extension's opening handshake frame (right after the relay's own
+    // ROLE_BROWSER hello) and keys this browser's session by it. Fire-and-forget, mechanism only.
+    try { nativePort.postMessage({ type: "browser_hello", browserId }); } catch { /* port gone */ }
     sendDebugEvent("connect_attempt");
     flushPendingDebugEvents(); // deliver any notes buffered while no port was open (ADR-0059)
     nativePort.onMessage.addListener((msg) => {
