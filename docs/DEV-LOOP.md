@@ -152,21 +152,32 @@ navigate(tabId, url)
 computer(action: "screenshot", tabId)
 ```
 
-Two gotchas:
+Three gotchas:
 
 - **`chrome://newtab/` and other `chrome://` pages cannot host a content script.** Anything that
   renders via `agent-visual-indicator.js` or `content.js` (FX, denial notifications) needs a real
   `http(s)` page loaded in the tab first. Navigate to an in-grant page (the committed
   `examples/dev-live-test.json` fixture grants `example.org`) before triggering the thing you
   actually want to see.
-- **A persistent notification cannot be screenshotted on the same tab that triggered it.** Per
-  its own design, ANY subsequent tool action on that tab dismisses it -- and `computer screenshot`
-  is itself such an action (`AGENT_SCREENSHOT_FX` is in `agent-visual-indicator.js`'s dismiss-
-  trigger set), so the screenshot captures the page AFTER the dismissal, not the notification. To
-  actually see it, either ask the user to look at their own screen (the fastest path in practice),
-  or capture it out-of-band over the browser's own devtools websocket
+- **A screenshot NEVER shows FX or the notification bar in the captured pixels, by design** --
+  every effect (cursor, ripples, the notification layer) is hidden for the duration of the
+  capture so the agent's own screenshot stays clean, then restored after. Do not read a clean
+  screenshot as "it didn't render" or "it got dismissed" -- it means neither on its own. Only a
+  read-only action (screenshot, zoom, get_page_text, wait) hides-and-restores; a genuine
+  mutating action (click, type, scroll, navigate) on the SAME tab actually dismisses a
+  notification, by its own design (persistent until the next real action or an explicit close).
+  To see whether something is still there, either ask the user to look at their own screen (the
+  fastest path in practice), or capture it out-of-band over the browser's own devtools websocket
   (`Page.captureScreenshot` via `--remote-debugging-port`, launched fresh and separately from the
   attach you are trying to observe -- see the caution in 6.2 about combining the two).
+- **After editing extension JS, a fresh disposable profile is not enough on its own.** One
+  session's testing showed a content-script edit NOT taking effect even in a brand-new
+  `--load-extension` profile (the stale behavior persisted identically to before the edit) until
+  the extension was explicitly reloaded via `chrome://extensions`'s Reload button -- suggesting
+  Chrome caches something (plausibly V8 bytecode) keyed by the extension's pinned id
+  (`manifest.json`'s `key` field) across profiles, not just within one. Not root-caused as of
+  2026-07. After any content-script/service-worker edit, reload the extension explicitly before
+  trusting a "still broken" observation, even on a fresh profile.
 
 ### 6.4 Clean up
 

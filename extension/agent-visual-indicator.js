@@ -573,15 +573,21 @@
     caption("Waiting");
   }
 
-  // A tool action taken on this tab dismisses any lingering notification -- checked ahead of
-  // both switches below, since dismissal is state cleanup, not a decorative effect (it must fire
-  // even with the effects master switch off). AGENT_NOTIFICATION itself is excluded: a fresh
-  // notification replaces the old one via showNotification's own dismissNotification() call,
-  // not this generic hook.
+  // A tool action that ACTS ON the page (clicks, drags, types, scrolls, navigates) dismisses any
+  // lingering notification -- checked ahead of both switches below, since dismissal is state
+  // cleanup, not a decorative effect (it must fire even with the effects master switch off).
+  // AGENT_NOTIFICATION itself is excluded: a fresh notification replaces the old one via
+  // showNotification's own dismissNotification() call, not this generic hook.
+  //
+  // Deliberately NOT in this set: AGENT_READ_SCAN, AGENT_SCREENSHOT_FX, AGENT_ZOOM_FRAME,
+  // AGENT_WAIT_PULSE. Those fire for read-only/observation calls (get_page_text, computer
+  // screenshot/zoom/wait) that never touch the page -- the agent (or a human) looking at the
+  // result of a denial is not "moving on" from it. Including them meant the single most natural
+  // next step after a denial (check what happened) silently destroyed the notification before
+  // anyone could see it.
   const TOOL_ACTION_MESSAGE_TYPES = new Set([
     "UPDATE_PHANTOM_CURSOR", "AGENT_CLICK_RIPPLE", "AGENT_DRAG_TRAIL", "AGENT_TYPE_SHIMMER",
-    "AGENT_TARGET_GLOW", "AGENT_KEYSTROKE", "AGENT_SCROLL_CUE", "AGENT_READ_SCAN",
-    "AGENT_NAVIGATE_PILL", "AGENT_SCREENSHOT_FX", "AGENT_ZOOM_FRAME", "AGENT_WAIT_PULSE",
+    "AGENT_TARGET_GLOW", "AGENT_KEYSTROKE", "AGENT_SCROLL_CUE", "AGENT_NAVIGATE_PILL",
   ]);
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
