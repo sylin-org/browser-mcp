@@ -16,22 +16,55 @@ real, authenticated browser and your real editors ride the engine under test -- 
 dev exercises the real scenario. The symmetric cost: while a broken build holds the endpoint, real
 use is broken until you swap back (`-Restore`) or land a fix.
 
-## 1. The loop
+## 1. When code changes: what to do
 
-```
-.\scripts\dev-loop.ps1              # quiesce, stop the engine, rebuild, start the fresh build
-# ... edit code, repeat ...
-.\scripts\dev-loop.ps1 -Restore     # hand the endpoint back to the newest installed release
-```
+The Rust engine and the JavaScript extension live in different processes and refresh by different
+mechanisms, so a new dev version "comes to life" through one of two triggers. Pick the row that
+matches what you edited.
 
-What the script does, in order: writes `deploy.lock` into every candidate engine directory (the
-repo `target\` dir and each versioned dir under `~\.ghostlight\bin`) so no relay self-heals the old
-image mid-swap; stops SERVICE processes only (identified by executable path, never a bare taskkill
--- and never relays, which stay connected and ride through); renames any running relay exe aside
-(Windows allows renaming a running image) so the build can write; builds `ghostlight` +
-`ghostlight-relay` + `lightbox`; starts the fresh build as THE engine (`--debug service
---keep-warm`); waits for `ghostlight doctor` to report the endpoint healthy; removes the locks; and
-runs one offline `fake-browser` smoke check.
+| You changed                         | Do this                                              | Editor / browser |
+| ----------------------------------- | ---------------------------------------------------- | ---------------- |
+| Rust: service or core code (usual)  | `.\scripts\dev-loop.ps1`                             | Both ride through untouched |
+| Extension JS or CSS                 | Reload at `chrome://extensions` (no rebuild)         | Reload the extension only |
+| Both of the above                   | `.\scripts\dev-loop.ps1`, then Reload the extension  | Engine first, then Reload |
+| Rust: the relay crate (rare)        | `.\scripts\dev-loop.ps1`, then respawn the relay     | See the relay note below |
+| Revert to the installed release     | `.\scripts\dev-loop.ps1 -Restore`                    | Both ride through untouched |
+
+**Rust: service or core code** -- the everyday case. `dev-loop.ps1` swaps which engine holds the
+endpoint (see the mechanics below); your editor's agent relay and the browser's native relay stay
+alive and reconnect on their own (ADR-0045 replays the MCP handshake, ADR-0062 replays the
+extension identity frame and keeps the same browser slot). You do not restart the editor and do not
+touch the browser -- the next tool call is served by the new code.
+
+**Extension JS or CSS** -- no rebuild, no `dev-loop.ps1`. Click Reload at `chrome://extensions`.
+The reload tears down the service worker and its native port; the extension reconnects, re-reads
+its stored `browserId`, and the engine re-attaches it to the same slot. Chrome caches aggressively
+(plausibly V8 bytecode keyed by the pinned extension id), so the explicit Reload is mandatory -- a
+stale worker has survived even a fresh profile. Never trust a "still broken" observation until
+after a Reload (section 3).
+
+**Both** -- swap the engine first, wait for `ghostlight doctor` to report healthy, then Reload the
+extension. Ordering it engine-first means the extension reconnects to a live endpoint instead of a
+down one (it would buffer and retry either way, but this avoids a needless reconnect churn).
+
+**The relay note.** The `ghostlight-relay` binary is the thin, stable crate (ADR-0046) and you will
+rarely touch it. `dev-loop.ps1` always rebuilds it, but the RUNNING relay processes are
+already-loaded images that keep the old code until they respawn. The browser relay respawns when
+you Reload the extension (the old native port EOFs, Chrome launches a fresh relay from the manifest
+path = your new binary), so an extension Reload covers the browser side for free. The agent relay
+is a child of your editor and only respawns when the editor relaunches it, so a relay-only change
+that must reach the AGENT side needs an editor restart (or reopening the MCP connection).
+
+### What `dev-loop.ps1` does
+
+In order: writes `deploy.lock` into every candidate engine directory (the repo `target\` dir and
+each versioned dir under `~\.ghostlight\bin`) so no relay self-heals the old image mid-swap; stops
+SERVICE processes only (identified by executable path, never a bare taskkill -- and never relays,
+which stay connected and ride through); renames any running relay exe aside (Windows allows
+renaming a running image) so the build can write; builds `ghostlight` + `ghostlight-relay` +
+`lightbox`; starts the fresh build as THE engine (`--debug service --keep-warm`); waits for
+`ghostlight doctor` to report the endpoint healthy; removes the locks; and runs one offline
+`fake-browser` smoke check.
 
 `--keep-warm` disables the idle-grace shutdown so the engine stays up between actions. Add
 `-Manifest examples\dev-live-test.json` when you want the engine started under a restrictive test
