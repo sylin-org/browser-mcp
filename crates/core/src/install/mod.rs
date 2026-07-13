@@ -1194,6 +1194,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn plan_client_install_routes_jsonc_parse_failure_to_manual() {
+        let dir =
+            std::env::temp_dir().join(format!("ghostlight-jsonc-manual-{}", std::process::id()));
+        let home = dir.join("home");
+        let cursor_dir = home.join(".cursor");
+        std::fs::create_dir_all(&cursor_dir).unwrap();
+        std::fs::write(
+            cursor_dir.join("mcp.json"),
+            "{\n  // preserve this comment\n  \"mcpServers\": {}\n}\n",
+        )
+        .unwrap();
+        let ctx = PlanCtx {
+            current_exe: PathBuf::from("/abs/ghostlight"),
+            home,
+            config: dir.join("config"),
+            local: dir.join("local"),
+        };
+        let cursor = clients::client_by_id("cursor").unwrap();
+
+        let action = plan_client_install(cursor, &ctx, &entry());
+        assert!(matches!(action.op, Op::Manual));
+        assert!(action.noop.is_none());
+        assert!(action.manual.contains("mcpServers"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A targeted Codex install plans a TOML merge against the shared home config and does not
     /// require the external `codex` CLI to be on PATH.
     #[test]
