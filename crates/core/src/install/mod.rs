@@ -430,9 +430,12 @@ fn plan_client_install(
         AddVia::JsonFileMerge(dialect) => {
             let path = clients::config_path(c, ctx);
             let target = path.display().to_string();
+            let entry_json = serde_json::to_string_pretty(&entry.to_value(dialect))
+                .expect("serializing a JSON value cannot fail");
             let manual = format!(
-                "merge our server into {target} under \"{}\"",
-                dialect.top_key()
+                "add the \"{}\" entry under \"{}\" in {target}:\n{entry_json}",
+                entry.name,
+                dialect.top_key(),
             );
             // Missing config => empty (new file); an unreadable *existing* file blocks this client.
             let existing = match read_config_or_empty(&path) {
@@ -1218,6 +1221,8 @@ mod tests {
         assert!(matches!(action.op, Op::Manual));
         assert!(action.noop.is_none());
         assert!(action.manual.contains("mcpServers"));
+        assert!(action.manual.contains("\"ghostlight\" entry"));
+        assert!(action.manual.contains("\"command\""));
         std::fs::remove_dir_all(&dir).ok();
     }
 
