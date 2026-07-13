@@ -1,18 +1,20 @@
 # BOOTSTRAP: additional installer targets (ADR-0071)
 
-Adds MCP clients to the `ghostlight install` auto-registration set. ADR-0071 is normative.
-Only **T1 (Windsurf)** is ready: it reuses the existing `mcpServers` JSON dialect and has no open
-questions. T2-T4 (Zed, OpenCode, Crush) are BLOCKED on the ADR-0071 `PIN AT IMPLEMENTATION`
-items and on the comment-safe JSONC merge; their task files are authored only after a research
-task resolves those pins. Do not attempt them from this batch yet.
+Adds MCP clients to the `ghostlight install` auto-registration set. ADR-0071 is normative; `PINS.md`
+holds the resolved research and every code-level oracle. All five tasks are authored and READY:
+T1 (Windsurf) is standalone; T2 is the merge-dialect + JSONC-safe foundation; T3-T5 (Zed, OpenCode,
+Crush) each add one client and depend on T2. Two RESIDUAL pins (OpenCode's Windows path, Zed's
+`source` field) are confirm-at-execution notes inside T3/T4, not blockers.
 
 ## Authority order (on conflict, higher wins; an unanticipated conflict = STOP)
 
 1. The live tree (facts). Task files state tree facts AS OF AUTHORING (2026-07-13, dev @ the commit
    that added `docs/adr/0071-additional-installer-targets.md`). ALWAYS re-read the named files
    before editing -- the `install/` module was recently edited by a concurrent workstream.
-2. `docs/adr/0071-additional-installer-targets.md` (semantics: paths, dialects, shapes, sequencing).
-3. The task file being executed.
+2. `PINS.md` in this directory (exact code-level shapes and oracles; the frontier author resolved
+   these -- transcribe, never derive).
+3. `docs/adr/0071-additional-installer-targets.md` (semantics: paths, dialects, shapes, sequencing).
+4. The task file being executed.
 
 Do not re-litigate decided questions (ADR-0071 Decision + Provenance). Do not resolve ambiguity by
 judgment: STOP per the failure protocol.
@@ -36,15 +38,17 @@ judgment: STOP per the failure protocol.
 
 ## Task sequence (strict order; every prefix leaves a coherent, green tree)
 
-| # | File | One-line goal | Status | On block |
+| # | File | One-line goal | Depends on | On block |
 |---|---|---|---|---|
-| T1 | T1-windsurf.md | Add Windsurf as an installer target (reuses `mcpServers`) | READY | HALT |
-| T2 | (not authored) | Zed -- `context_servers`, JSONC | BLOCKED on ADR-0071 pins (`source:"custom"`, dir casing) + JSONC merge | -- |
-| T3 | (not authored) | OpenCode -- `mcp` (type local, command array), JSONC | BLOCKED on pins (Windows path) + JSONC merge | -- |
-| T4 | (not authored) | Crush -- `mcp` (type stdio), format PIN | BLOCKED on pins (JSONC vs plain) + JSONC merge | -- |
+| T1 | T1-windsurf.md | Windsurf target (reuses `mcpServers`, plain JSON) | -- | HALT |
+| T2 | T2-merge-foundation.md | 3 merge dialects + JSONC-safe `Manual` fallback + tolerant detect | -- | HALT |
+| T3 | T3-zed.md | Zed target (`context_servers`) | T2 | HALT |
+| T4 | T4-opencode.md | OpenCode target (`mcp`, type local, command array) | T2 | HALT |
+| T5 | T5-crush.md | Crush target (`mcp`, type stdio) | T2 | HALT |
 
-T2-T4 also depend on a not-yet-written dialect+JSONC change to `merge.rs`. That change is authored
-as its own task once the pins are resolved; until then, T2-T4 do not exist.
+Order: T1 and T2 are mutually independent (do either first). T3-T5 require T2. Every prefix of
+`T1, T2, T3, T4, T5` leaves a coherent, green tree. T2 alone is shippable (new dialects compile,
+unused until a client references them).
 
 ## Per-task procedure
 
@@ -58,9 +62,11 @@ as its own task once the pins are resolved; until then, T2-T4 do not exist.
 
 ## Completion criteria
 
-- T1: `client_by_id("windsurf")` resolves; `ghostlight install --client windsurf --dry-run` plans a
-  `mcpServers.ghostlight` entry at `~/.codeium/windsurf/mcp_config.json`; the pinned test passes;
-  all gates green.
+- Per task: the pinned test(s) pass, all three gates green, one commit.
+- Batch done: `client_by_id` resolves for `windsurf`, `zed`, `opencode`, `crush`; `ghostlight
+  install --dry-run` plans the correct entry per client (Windsurf/Cursor-style `mcpServers`; Zed
+  `context_servers`; OpenCode/Crush `mcp`); a JSONC config carrying comments plans as `manual`
+  (printed steps), never `failed`.
 
 ## Failure protocol
 
@@ -71,8 +77,8 @@ and HALT. Do not improvise around a broken assumption. Do not skip ahead.
 ## NEVER touch (each NEVER names its one sanctioned exception, if any)
 
 - The sacred MCP tool schemas / any tool surface. (No exception.)
-- `install/merge.rs`. (No exception in T1 -- Windsurf reuses `Dialect::McpServers` unchanged. The
-  future JSONC/dialect task is the only sanctioned editor, and it is not in this batch yet.)
+- `install/merge.rs`. Sanctioned editor: **T2 only** (adds the three dialects + `to_value` arms).
+  T1/T3/T4/T5 must not touch it -- they only reference dialects T2 created.
 - Any client arm other than the one you are adding. (No exception.)
 - `extension/`, `crates/core/src/governance/**`, docs/README/`llms-install.md` prose. (Doc/prose
   sync for the new client is a SEPARATE follow-up task, deliberately out of scope so the code lands

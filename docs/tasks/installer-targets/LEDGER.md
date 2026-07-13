@@ -4,34 +4,40 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 
 ## RESUME HERE
 
-- Next task: **T1 (Windsurf)** -- ready to execute. See `T1-windsurf.md`.
-- T2-T4 (Zed, OpenCode, Crush) are BLOCKED: their ADR-0071 `PIN AT IMPLEMENTATION` items and the
-  comment-safe JSONC merge are unresolved. A research task must resolve the pins and a `merge.rs`
-  dialect+JSONC task must land before T2-T4 are authored. Do NOT start them.
+- Next task: **T1 (Windsurf)** or **T2 (merge foundation)** -- mutually independent, do either first.
+  T3-T5 require T2. All five tasks are authored and ready; oracles are in `PINS.md`.
+- Two RESIDUAL confirms live inside the tasks (not blockers): OpenCode's Windows config path (T4),
+  and whether Zed needs `"source": "custom"` (T3). Confirm at execution; the pinned defaults follow
+  current vendor docs.
+
+## Task sequence
+
+`T1, T2, T3, T4, T5` -- every prefix leaves a green tree. T1/T2 independent; T3-T5 depend on T2.
 
 ## Task log
 
 | Task | Commit | Status | Notes |
 |------|--------|--------|-------|
-| T1 Windsurf | (pending) | NOT STARTED | clients.rs only; reuses `Dialect::McpServers` |
-| T2 Zed | -- | BLOCKED | pins: `source:"custom"`?, `Zed`/`zed` dir casing; needs JSONC merge |
-| T3 OpenCode | -- | BLOCKED | pins: Windows config path; `mcp` command-array dialect; JSONC |
-| T4 Crush | -- | BLOCKED | pins: plain-JSON vs JSONC; `mcp` type-stdio dialect |
+| T1 Windsurf | (pending) | READY | clients.rs only; reuses `Dialect::McpServers` |
+| T2 merge foundation | (pending) | READY | merge.rs 3 dialects + mod.rs JSONC->Manual + clients.rs tolerant detect |
+| T3 Zed | (pending) | READY (needs T2) | `context_servers`; per-OS dir casing; RESIDUAL: source field |
+| T4 OpenCode | (pending) | READY (needs T2) | `mcp` type:local command-array; RESIDUAL: Windows path |
+| T5 Crush | (pending) | READY (needs T2) | `mcp` type:stdio |
 
 ## Deviations
 
 (record any numbered deviation from a task file here, with the reason, as it happens)
 
-## Open pins to resolve before T2-T4 (research task input)
+## Research resolution (was: open pins)
 
-1. **Zed** -- does the current Zed settings schema require `"source": "custom"` on a custom
-   `context_servers` entry? Confirm against a live Zed. Confirm the settings dir casing per OS
-   (`Zed` on macOS/Windows, `zed` on Linux).
-2. **OpenCode** -- exact global config path on Windows (is it `~/.config/opencode/opencode.json`
-   there too, or `%APPDATA%`?). Confirm the `mcp` entry requires `type:"local"` + `enabled:true`
-   and combines command+args into one array with env under `environment`.
-3. **Crush** -- is `crush.json` parsed as strict JSON or JSONC? Confirm the `mcp` entry shape
-   (`type:"stdio"`, separate `command`/`args`, `env`).
-4. **merge.rs** -- design the comment-safe JSONC path (ADR-0071 D2): tolerant detection read; write
-   only when the file has no comments, else print exact manual steps. Plus the three new dialect
-   arms in `ServerEntry::to_value` (command-string vs command-array; `type`/`enabled`/`source`).
+Resolved 2026-07-13 (see `PINS.md` for the pinned shapes):
+1. **Zed** -- entry shape == `mcpServers` (NO `source` field, command string), under key
+   `context_servers`. Settings.json is JSONC; dir casing is per-OS (`Zed` mac/win, `zed` linux).
+   RESIDUAL: re-confirm the no-`source` fact against a running Zed (T3).
+2. **OpenCode** -- key `mcp`, entry `{type:"local", command:[cmd,...args], enabled:true}`, env under
+   `environment`; JSONC. RESIDUAL: Windows config path (T4).
+3. **Crush** -- key `mcp`, entry `{type:"stdio", command, args, env}`; JSON-vs-JSONC is moot because
+   T2's JSONC-safe fallback handles both.
+4. **merge.rs** -- the JSONC-safe path is NOT new machinery: it is routing a JSON `MergeError::Parse`
+   to `Op::Manual` (already exists) + a substring detection fallback (VS Code already does this).
+   Three dialects added to `to_value`/`top_key`. Full spec + oracles in `PINS.md` P2-P4.
