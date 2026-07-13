@@ -100,8 +100,21 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
   This workstream is now COMPLETE; the only distribution follow-up left is the owner-side CWS listing
   gate below.
 - **CWS listing completion** (owner): confirm the public privacy URL is live, paste the privacy
-  practices and remote-code justification, upload the promotional video, then publish the
-  already-uploaded v0.5.6 package (or re-run `scripts/publish-extension.ps1`).
+  practices and remote-code justification, record and upload the promotional video using the
+  proven `ghostlight demo` recipe in `docs/legal/STORE_LISTING.md`, then publish the already-uploaded
+  package. The currently staged v0.5.6 package predates `narrate`; do not pair a narration video
+  with that package. Cut and upload the next release first (or re-run the extension publish step
+  after that release), then record. The earlier live rehearsal passed on 2026-07-13, including the
+  session-policy denial finale.
+- **Agent narration is implemented** (ADR-0072): additive `narrate` is domainless RAWX none,
+  bounded and schema-validated, ordinarily audited, ownership/hold/sacred checked, and legal in
+  `script`/`browser_batch`. The policy-free extension renders one timed Agent card per tab with
+  deterministic replacement, remaining-time navigation replay, effects/capture handling, and
+  tab/session/panic cleanup. `ghostlight demo` narrates its six story beats. Rust and extension
+  suites are green. Live browser verification passed on 2026-07-13 through the real MCP `script`
+  path: `shown: true`, timed placement, replacement, active-navigation replay, and audit
+  `capability: "none"` with no grant attribution. Existing MCP clients need one restart to add the
+  new direct `narrate` schema to their callable tool list.
 - **Lightbox legacy-27 migration** (ADR-0056): the 27 `#[ignore = "e2e"]` spawn tests +
   `scripts/test-e2e.*` migrate scenario-by-scenario into the lightbox harness against a
   per-test parity ledger. Not started; CI runs both tiers until the ledger completes.
@@ -113,8 +126,8 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
     pending.
   - SEC-HIGH-02 full fix: token/auth for non-loopback sources once `enable-remote` returns
     (the action is currently disabled as the interim fix). Same design note; build pending.
-  - A1 demo GIF for the README hero slot (README has a commented placeholder): drive
-    `gif_creator` or `scripts/capture-readme-tour.ps1`, write `docs/assets/demo.gif`.
+  - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
+    same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
 - **tabs_create prose leaks the un-encoded native tab id** (found in the ADR-0061 live
   verify; pre-existing, non-regression). Small fix in the tabs_create response text.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real

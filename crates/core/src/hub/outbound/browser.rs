@@ -942,9 +942,34 @@ impl Browser {
         self.send_fire_and_forget(target, framed);
     }
 
+    /// Clear the transient narration card on each named composite tab when its MCP session ends
+    /// (ADR-0072). This is policy-free, fire-and-forget presentation cleanup: each tab id selects
+    /// its owning browser, and the extension receives only the native tab id. A disconnected
+    /// browser or encoding failure is a harmless no-op; every narration also has a hard 30-second
+    /// lifetime, so cleanup never becomes a correctness dependency.
+    pub fn clear_narrations(&self, tab_ids: &[i64]) {
+        for &tab_id in tab_ids {
+            let (target, native_tab) = self.resolve_target(Some(tab_id));
+            let (Some(target), Some(native_tab)) = (target, native_tab) else {
+                continue;
+            };
+            let Ok(bytes) = serde_json::to_vec(&json!({
+                "type": "narration_clear",
+                "tabId": native_tab,
+            })) else {
+                continue;
+            };
+            let Ok(framed) = host::encode(&bytes) else {
+                continue;
+            };
+            self.send_fire_and_forget(target, framed);
+        }
+    }
+
     /// Enqueue an already-framed, fire-and-forget message onto `target`'s session, dropping it
     /// silently if that browser is not (or no longer) attached -- the shared tail of
-    /// [`Browser::request_group`], [`Browser::notify`], and [`Browser::send_hold_reply`].
+    /// [`Browser::request_group`], [`Browser::clear_narrations`], [`Browser::notify`], and
+    /// [`Browser::send_hold_reply`].
     fn send_fire_and_forget(&self, target: u32, framed: Vec<u8>) {
         if let Some(session) = self.sessions.lock().unwrap().get(&target) {
             let _ = session.sender.send(framed);
@@ -1640,6 +1665,25 @@ mod tests {
             .unwrap();
         assert_eq!(result, json!({ "ok": true }));
         fake_ext.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn clear_narrations_routes_each_composite_tab_as_fire_and_forget() {
+        let browser = Browser::new();
+        let (mut ext_side, slot) = attach_fake_extension_as(&browser, TEST_BROWSER_ID).await;
+        browser.clear_narrations(&[
+            crate::constants::tab_id::encode(slot, 101),
+            crate::constants::tab_id::encode(slot, 202),
+        ]);
+
+        for expected_tab in [101, 202] {
+            let req = host::read_message(&mut ext_side).await.unwrap().unwrap();
+            let value: Value = serde_json::from_slice(&req).unwrap();
+            assert_eq!(
+                value,
+                json!({ "type": "narration_clear", "tabId": expected_tab })
+            );
+        }
     }
 
     #[tokio::test]

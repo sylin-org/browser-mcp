@@ -172,8 +172,61 @@ Policy reference: [Chrome Web Store privacy fields](https://developer.chrome.com
 - Store icon: 128x128 PNG. Present at `extension/icons/icon128.png` (also in the package).
 - Screenshots: at least one required; 1280x800 or 640x400, PNG or JPEG (a 24-bit PNG is safest).
   The shot list and how to capture each are below.
-- Small promo tile: 440x280 PNG. Optional; helps search placement. Not yet produced.
+- Promotional video: a YouTube URL that shows the extension's features. Required by the current
+  dashboard listing guidance. The recording recipe is below.
+- Small promo tile: 440x280 PNG. Required. Confirm the existing dashboard asset before submission;
+  no source asset is currently tracked in this repository.
 - Marquee promo tile: 1400x560 PNG. Optional; only used if the item is featured.
+
+Policy references: [complete the listing](https://developer.chrome.com/docs/webstore/cws-dashboard-listing)
+and [supply images](https://developer.chrome.com/docs/webstore/images).
+
+### Promotional video: the shortest honest story
+
+Use the built-in `ghostlight demo` tour. It drives the public demo stage through the same MCP relay
+and tool surface an agent uses. It shows the dedicated Ghostlight tab, visible actions, form work,
+console and network observation, page reading, and a tighten-only session policy refusing an
+off-domain navigation. The default pacing is designed for a roughly 90-second recording.
+
+1. Run `target\release\ghostlight.exe doctor`. Do not record until the verdict is OK and it says
+   `extension connected (live)`.
+2. In the extension popup, turn on **Show action captions**. Close or hide unrelated tabs and any
+   notification surface that could reveal personal information.
+3. In OBS, capture only the Chrome window at 1920x1080. Record without microphone or desktop audio.
+   Keep the browser chrome visible so the Ghostlight tab group and real-browser context are clear.
+4. Start recording, then run:
+
+   ```powershell
+   target\release\ghostlight.exe demo --setup-pause 10 --pause 3
+   ```
+
+   Use the setup pause to bring Chrome to the front. Do not interact until the terminal reports
+   `Demo complete -- every tool ran, and the guardrail held.`
+5. Stop recording. Trim only the idle setup and tail; keep the denial ribbon and its plain-language
+   explanation on screen for at least three seconds. Do not add claims, stock footage, or a sales
+   voice-over. The product behavior is the pitch.
+6. Upload the MP4 to YouTube as **Unlisted** with this metadata:
+
+   **Title**
+
+   ```text
+   Ghostlight: governed browser automation in your real browser
+   ```
+
+   **Description**
+
+   ```text
+   Ghostlight gives MCP agents visible, local access to the Chromium session you already use.
+   This uncut product tour shows real browser actions and a session policy refusing an off-domain
+   request. No cloud browser and no developer-operated service.
+
+   Project and source: https://github.com/sylin-org/ghostlight
+   Privacy: https://sylin.org/ghostlight/privacy/
+   ```
+
+7. Paste the YouTube share URL into **Promotional video** in the Store listing tab. Watch the
+   uploaded video once from a private window before submitting so its visibility and playback are
+   proven.
 
 ### How to capture an exact 1280x800 still
 
@@ -200,10 +253,11 @@ The hook: the sky-blue phantom cursor plus a click ripple, on a recognizable sit
 ghost-marked "Ghostlight" tab group. Because the effects are hidden from the agent's own captures,
 this one is recorded from the outside:
 
-1. Close this session's Ghostlight connection first (the capture script must own the IPC endpoint).
-2. Run `pwsh -File scripts/capture-readme-tour.ps1` and record the 1280x800 window with OBS (or any
-   screen recorder). The tour self-narrates: nav pill, click ripple and target glow, type shimmer,
-   scroll chevrons, the read scan-line.
+1. Run `target\release\ghostlight.exe doctor`; continue only when the extension is connected.
+2. Run the `ghostlight demo` command from the promotional-video recipe and record the browser window
+   with OBS. The tour self-narrates through timed Agent cards, action effects, and the purpose-built
+   demo pages. Do this only after the staged extension package includes ADR-0072 `narrate`; the
+   current v0.5.6 draft predates it.
 3. Extract the peak frame of an effect from the recording (VLC "Take Snapshot", or ffmpeg). Crop to
    1280x800 if the recorder added window chrome. Turning on "Show action captions" in the extension
    popup before recording adds the subtitle line, which reads well in a still.
@@ -228,7 +282,8 @@ audience. Capture the terminal window with the OS and crop to 1280x800.
 
 1. Create a Chrome Web Store developer account (one-time 5 USD fee). Agent cannot do this.
 2. Add new item; upload `dist/ghostlight-extension-v<version>.zip`.
-3. Fill the Store listing and Privacy tabs from this file; upload at least one screenshot.
+3. Fill the Store listing and Privacy tabs from this file; upload at least one screenshot and the
+   required small promo tile, then paste the YouTube promotional-video URL.
 4. Submit for review. Expect extra scrutiny on `debugger` + `<all_urls>` + `nativeMessaging`; the
    justifications and privacy policy are written to answer exactly that.
 

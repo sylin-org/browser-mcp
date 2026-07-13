@@ -51,7 +51,8 @@ use serde_json::{json, Value};
 /// itself be wrong for a malformed call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceShape {
-    /// No governed resource: `tabs_context_mcp`, `tabs_create_mcp`, `update_plan`, `explain`.
+    /// No governed resource: `tabs_context_mcp`, `tabs_create_mcp`, `update_plan`, `narrate`,
+    /// `explain`.
     DomainLess,
     /// Governed by the tab's current URL, resolved via `tabId`: `read_page`, `computer`,
     /// `find`, `form_input`, and the other tab-scoped tools.
@@ -143,9 +144,9 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 21 descriptors (the 13 browser tools plus `wait_for`, `script`, `form_fill`,
-/// `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in the order they
-/// appear in `tools/list`. `computer`'s 13 variants are in the
+/// The tool registry: 22 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
+/// `form_fill`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in
+/// the order they appear in `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
     ToolDescriptor {
@@ -827,6 +828,67 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         output_schema: None,
     },
     ToolDescriptor {
+        tool: "narrate",
+        advertised_description: "Show a short, temporary narration card in the controlled browser tab so the person watching understands the current workflow phase. Use it for meaningful phase changes, not routine clicks or keystrokes. A new narration replaces the current one.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID in which to show the narration. Must be a tab owned by this session."
+                },
+                "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240,
+                    "description": "One short, user-visible sentence describing the current workflow phase."
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["top", "center", "bottom"],
+                    "default": "bottom",
+                    "description": "Where to place the narration card. Defaults to bottom."
+                },
+                "duration_ms": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 30000,
+                    "default": 5000,
+                    "description": "How long to show the narration, in milliseconds. Defaults to 5000."
+                }
+            },
+            "required": ["tabId", "text"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"text":"Checking the result before making changes.","position":"bottom","duration_ms":5000}"#,
+            returns: Some("Shows one timed, pointer-transparent agent narration card; a new call replaces it."),
+        }),
+        action_key: None,
+        variants: &[ActionVariant {
+            action: None,
+            requires: &[],
+            directory_description: "Show temporary agent commentary in an owned tab; touches no page content and requires no RAWX capability.",
+        }],
+        resource: ResourceShape::DomainLess,
+        handler: Handler::ExtensionForward,
+        postprocess: None,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "shown": { "type": "boolean" },
+                    "position": { "type": "string" },
+                    "duration_ms": { "type": "number" },
+                    "replaced": { "type": "boolean" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["shown", "position", "duration_ms", "replaced"]
+            })
+        }),
+    },
+    ToolDescriptor {
         tool: "wait_for",
         advertised_description: "Wait until the page is ready. By default waits for BOTH your condition and page settlement (DOM mutation rate decayed). Provide selector (CSS) or text (visible substring) with state visible|present|gone, or call with neither to wait for settlement alone. min_ms sets a minimum elapsed time; settle:false gates on the condition only. Returns elapsed_ms, settle diagnostics, and the matched element's ref for follow-up clicks. Times out with an error naming what WAS on the page.",
         input_schema: || json!({
@@ -1319,14 +1381,14 @@ pub const REGISTRY: &[ToolDescriptor] = &[
 /// into the exact same `initialize.instructions` string.
 ///
 /// Prose revised 2026-07-10 (ergonomics pass; ADR-0031 Decision 1 field contract unchanged): the
-/// `flow` field now reveals the higher-level tools (`wait_for`, `script`, `browser_batch`,
-/// `form_fill`) and steers tool choice, and all cost guidance is consolidated into `cost_notes`
-/// (the duplicated COST DISCIPLINE clause left `workflow`). The five-field set and the non-empty,
-/// `tabId`, and `Cost notes:` guarantees the tests pin are all preserved.
+/// `flow` field now reveals the higher-level tools (`narrate`, `wait_for`, `script`,
+/// `browser_batch`, `form_fill`) and steers tool choice, and all cost guidance is consolidated
+/// into `cost_notes` (the duplicated COST DISCIPLINE clause left `workflow`). The five-field set
+/// and the non-empty, `tabId`, and `Cost notes:` guarantees the tests pin are all preserved.
 pub const AGENT_GUIDE: AgentGuide = AgentGuide {
     summary: "Ghostlight drives the user's own authenticated browser. You observe and act on the web pages they're already logged into, in an isolated Ghostlight tab group separate from their own tabs. Default (no policy) is unrestricted; a policy can scope what's allowed.",
     workflow: "BEFORE ANYTHING ELSE: GET A tabId. Every tool that touches a page requires a `tabId` (a number) -- it is required, not optional. Get one with tabs_context_mcp (pass `createIfEmpty: true` to create the group if none exists; usually your first call) or tabs_create_mcp (open a new tab). Then navigate (tabId + url) to go somewhere.",
-    flow: "tabs_context_mcp -> navigate -> read (read_page for structure, get_page_text for prose, find for one element; screenshot only to see layout) -> act (form_fill for forms, computer for clicks and keys, form_input for a single field) -> re-read to confirm. On dynamic pages, use wait_for between navigating and reading so you see the settled page, not a spinner. When you can predict two or more steps ahead, run them in one call: script chains steps and passes results forward (e.g. `$prev.results.0.ref` after a find), and browser_batch runs a fixed sequence in one round-trip.",
+    flow: "tabs_context_mcp -> navigate -> read (read_page for structure, get_page_text for prose, find for one element; screenshot only to see layout) -> act (form_fill for forms, computer for clicks and keys, form_input for a single field) -> re-read to confirm. On dynamic pages, use wait_for between navigating and reading so you see the settled page, not a spinner. When a person is watching a longer workflow, use narrate at meaningful phase changes, not for routine clicks or keystrokes. When you can predict two or more steps ahead, run them in one call: script chains steps and passes results forward (e.g. `$prev.results.0.ref` after a find), and browser_batch runs a fixed sequence in one round-trip.",
     denials: "If a call is denied you'll see `Denied (D-xxxxxxxx): ...`. Call explain (no arguments) to see what's permitted -- you can do this any time to plan, not just after a denial -- and hand the denial id to the policy administrator.",
     cost_notes: "Cost notes: prefer read_page (structured tree) or get_page_text (plain text) over screenshots when you only need structure or text; a screenshot or zoom costs roughly 1,600 tokens, so capture one only when you need to see layout. read_page full is large on complex pages -- filter interactive is dramatically smaller, and diff true returns only what changed since your last read. get_page_text can return tens of thousands of tokens on document-heavy pages; prefer find for targeted lookups. Each script or browser_batch step is still one browser round-trip -- they save your tokens and turns, not the browser's work.",
 };
@@ -1387,7 +1449,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 21 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over 22 rows; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1561,7 +1623,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 37);
+        assert_eq!(total_variants, 38);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1604,6 +1666,7 @@ mod tests {
             ("read_page", None, &[Capability::Read]),
             ("resize_window", None, &[]),
             ("update_plan", None, &[]),
+            ("narrate", None, &[]),
             ("wait_for", None, &[Capability::Read]),
             ("script", None, &[]),
             ("form_fill", None, &[Capability::Read, Capability::Write]),
@@ -1644,6 +1707,7 @@ mod tests {
         assert_eq!(requires("computer", Some("no_such_action")), None);
         assert_eq!(requires("tabs_create_mcp", None), Some(&[][..]));
         assert_eq!(requires("update_plan", None), Some(&[][..]));
+        assert_eq!(requires("narrate", None), Some(&[][..]));
         assert_eq!(requires("explain", None), Some(&[][..]));
         assert_eq!(requires("computer", Some("wait")), Some(&[][..]));
         assert_eq!(requires("navigate", None), Some(&[Capability::Read][..]));
@@ -1813,6 +1877,14 @@ mod tests {
             ),
             (
                 "update_plan",
+                None,
+                ResourceShape::DomainLess,
+                false,
+                false,
+                PostDispatch::None,
+            ),
+            (
+                "narrate",
                 None,
                 ResourceShape::DomainLess,
                 false,

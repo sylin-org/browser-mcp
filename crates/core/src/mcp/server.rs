@@ -480,6 +480,10 @@ where
             let _ = tx.send(Outbound::Response(resp));
         }
     }
+    // ADR-0072: narration is presentation owned by this MCP session. Clear it from every tab the
+    // session owns before dropping the session seat; the extension also enforces the timer, tab,
+    // and panic cleanup paths independently.
+    browser.clear_narrations(&crate::hub::session::owned_tab_ids(&owned_tabs, &guid));
     // Stop the policy-subscription task FIRST (and wait for the cancellation to actually take
     // effect) so its own `Outbound` sender clone is released before the writer's shutdown check
     // below relies on every sender being dropped.

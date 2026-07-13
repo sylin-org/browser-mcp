@@ -22,6 +22,7 @@
   const CURSOR_ID = "ghostlight-cursor";
   const GLOW_ID = "ghostlight-active";
   const FX_LAYER_ID = "ghostlight-ripples"; // holds all transient effects (rings, trail, shimmer)
+  const NARRATION_LAYER_ID = "ghostlight-narration-layer";
   const STYLE_ID = "ghostlight-indicator-styles";
   // Ghostlight brand accent: a luminous sky blue. SKY_RGB is the same color for rgba() shadows.
   const SKY = "#38bdf8";
@@ -68,6 +69,10 @@
   // instant the agent took a screenshot, defeating the whole point of it persisting)
   let activeNotifEl = null; // the currently-shown notification, if any (tracked so the next tool
   // action on this tab, or a fresh notification, can dismiss/replace it)
+  let narrationLayer = null;
+  let activeNarrationEl = null;
+  let activeNarrationGeneration = null;
+  let narrationTimer = null;
 
   function reduceMotion() {
     return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches);
@@ -106,6 +111,24 @@
       "@keyframes ghostlight-notif-grow{0%{opacity:0;transform:scaleY(0)}100%{opacity:1;transform:scaleY(1)}}" +
       "@keyframes ghostlight-notif-grow-rm{0%{opacity:0}100%{opacity:1}}" +
       "@keyframes ghostlight-notif-desc{0%{opacity:0}100%{opacity:.85}}" +
+      "@keyframes ghostlight-narration-in{0%{opacity:0;transform:translate(-50%,10px) scale(.98)}100%{opacity:1;transform:translate(-50%,0) scale(1)}}" +
+      "@keyframes ghostlight-narration-in-rm{0%{opacity:0}100%{opacity:1}}" +
+      "@keyframes ghostlight-narration-progress{0%{transform:scaleX(1)}100%{transform:scaleX(0)}}" +
+      ".ghostlight-narration-card{position:absolute;left:50%;transform:translate(-50%,0);width:min(620px,calc(100vw - 48px));" +
+      "box-sizing:border-box;pointer-events:none;overflow:hidden;padding:13px 18px 15px;border-radius:14px;" +
+      "color:#eaf6ff;background:rgba(10,16,26,.94);border:1px solid rgba(" + SKY_RGB + ",.5);" +
+      "box-shadow:0 16px 44px -18px rgba(" + SKY_RGB + ",.78),inset 0 1px 0 rgba(255,255,255,.08);" +
+      "animation:ghostlight-narration-in 220ms cubic-bezier(.22,1,.36,1) forwards}" +
+      ".ghostlight-narration-card.top{top:24px}.ghostlight-narration-card.center{top:calc(50% - 48px)}" +
+      ".ghostlight-narration-card.bottom{bottom:112px}" +
+      ".ghostlight-narration-label{display:block;margin:0 0 4px;color:" + SKY + ";" +
+      "font:700 10px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.13em;text-transform:uppercase}" +
+      ".ghostlight-narration-text{display:block;font:500 15px/1.42 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "overflow-wrap:anywhere}" +
+      ".ghostlight-narration-time{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(" + SKY_RGB + ",.13)}" +
+      ".ghostlight-narration-time::after{content:'';display:block;width:100%;height:100%;transform-origin:left;" +
+      "background:" + SKY + ";animation:ghostlight-narration-progress var(--ghostlight-narration-ms) linear forwards}" +
+      "@media (prefers-reduced-motion:reduce){.ghostlight-narration-card{animation:ghostlight-narration-in-rm 180ms ease-out forwards}.ghostlight-narration-time::after{animation:none}}" +
       // Real CSS classes (not per-call inline strings like the transient effects above): a
       // notification has four named severity variants sharing everything but one color, so the
       // base rules live in `.ghostlight-notif-ribbon`/`-badge` and `.error`/`.warn`/`.info`/
@@ -364,6 +387,7 @@
     // notification is persistent state, not an in-flight effect; wiping it on every screenshot
     // (which fires constantly during normal operation) would defeat its whole purpose.
     if (notifLayer) notifLayer.style.display = v ? "none" : "";
+    if (narrationLayer) narrationLayer.style.display = v ? "none" : "";
   }
 
   // ----- Extended vocabulary: one visible treatment per agent action (the visual feedback
@@ -657,6 +681,72 @@
     activeNotifEl = band;
   }
 
+  function ensureNarrationLayer() {
+    if (!narrationLayer || !narrationLayer.isConnected) {
+      narrationLayer = document.createElement("div");
+      narrationLayer.id = NARRATION_LAYER_ID;
+      narrationLayer.setAttribute("aria-hidden", "true");
+      narrationLayer.style.cssText =
+        "position:fixed;inset:0;pointer-events:none;z-index:2147483646";
+      (document.body || document.documentElement).appendChild(narrationLayer);
+    }
+    narrationLayer.style.display = hiddenForTool ? "none" : "";
+    return narrationLayer;
+  }
+
+  function clearNarration(generation) {
+    if (generation !== undefined && activeNarrationGeneration !== generation) return false;
+    clearTimeout(narrationTimer);
+    narrationTimer = null;
+    if (activeNarrationEl) activeNarrationEl.remove();
+    activeNarrationEl = null;
+    activeNarrationGeneration = null;
+    return true;
+  }
+
+  // ADR-0072: semantic agent commentary. This is deliberately separate from both the terse action
+  // caption and the authoritative governance ribbon. Wire text reaches the DOM only via
+  // textContent, and the whole layer remains pointer-transparent.
+  function showNarration(msg) {
+    if (!effectsEnabled) {
+      clearNarration();
+      return { shown: false, reason: "visual effects are disabled" };
+    }
+    if (hiddenForTool || document.hidden) {
+      return { shown: false, reason: "the tab is not currently visible" };
+    }
+    ensureStyles();
+    clearNarration();
+    const position = ["top", "center", "bottom"].includes(msg.position)
+      ? msg.position
+      : "bottom";
+    const durationMs = Math.max(1, Number(msg.durationMs) || 5000);
+    const card = document.createElement("div");
+    card.id = "ghostlight-narration-" + String(msg.generation);
+    card.className = "ghostlight-narration-card " + position;
+    card.style.setProperty("--ghostlight-narration-ms", durationMs + "ms");
+
+    const label = document.createElement("span");
+    label.className = "ghostlight-narration-label";
+    label.textContent = "Agent";
+    card.appendChild(label);
+    const narrationText = document.createElement("span");
+    narrationText.className = "ghostlight-narration-text";
+    narrationText.textContent = String(msg.text || "");
+    card.appendChild(narrationText);
+    const time = document.createElement("span");
+    time.className = "ghostlight-narration-time";
+    card.appendChild(time);
+
+    ensureNarrationLayer().appendChild(card);
+    activeNarrationEl = card;
+    activeNarrationGeneration = msg.generation;
+    narrationTimer = setTimeout(function () {
+      clearNarration(msg.generation);
+    }, durationMs);
+    return { shown: true };
+  }
+
   // wait: a soft breathing dot while the agent pauses.
   function waitPulse() {
     if (hiddenForTool || document.hidden) return;
@@ -697,6 +787,10 @@
     // showNotification: a notification is substantive, not decorative, and must always render.
     if (!effectsEnabled) {
       switch (msg && msg.type) {
+        case "AGENT_NARRATION":
+          clearNarration();
+          sendResponse({ shown: false, reason: "visual effects are disabled" });
+          return true;
         case "UPDATE_PHANTOM_CURSOR":
         case "AGENT_CLICK_RIPPLE":
         case "AGENT_DRAG_TRAIL":
@@ -742,6 +836,10 @@
         waitPulse(); sendResponse({ success: true }); return true;
       case "AGENT_NOTIFICATION":
         showNotification(msg.class, msg.icon, msg.title, msg.description); sendResponse({ success: true }); return true;
+      case "AGENT_NARRATION":
+        sendResponse(showNarration(msg)); return true;
+      case "AGENT_NARRATION_CLEAR":
+        clearNarration(); sendResponse({ success: true }); return true;
       case "SET_CAPTIONS":
         captionsEnabled = !!msg.enabled; sendResponse({ success: true }); return true;
       case "SHOW_AGENT_INDICATORS":
@@ -769,7 +867,10 @@
     });
     chrome.storage.onChanged.addListener(function (changes, area) {
       if (area !== "local") return;
-      if (changes.ghostlight_effects) effectsEnabled = changes.ghostlight_effects.newValue !== false;
+      if (changes.ghostlight_effects) {
+        effectsEnabled = changes.ghostlight_effects.newValue !== false;
+        if (!effectsEnabled) clearNarration();
+      }
       if (changes.ghostlight_captions) captionsEnabled = !!changes.ghostlight_captions.newValue;
     });
   } catch (e) { /* storage unavailable: effects on, captions off */ }
@@ -790,5 +891,5 @@
     },
   };
 
-  window.addEventListener("beforeunload", () => { hideGlow(); });
+  window.addEventListener("beforeunload", () => { hideGlow(); clearNarration(); });
 })();

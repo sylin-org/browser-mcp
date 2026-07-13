@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -37,6 +37,9 @@ const {
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
 const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups, reclaimGroupsByTitle } =
   self.GhostlightGrouping;
+// ADR-0072: pure, memory-only replacement and expiry state. The worker supplies tab routing;
+// this store contains no policy or page-content logic.
+const narrationStore = self.GhostlightNarration.createNarrationStore();
 
 // Native-messaging host name (ADR-0065: one stack). Every build of this extension -- the Web
 // Store release and the unpacked dev copy alike -- talks to the ONE host `org.sylin.ghostlight`,
@@ -199,6 +202,13 @@ async function connect() {
           title: msg.title,
           description: msg.description,
         });
+        return;
+      }
+      // ADR-0072 session cleanup: the binary names only this MCP session's owned tabs. The
+      // extension clears the transient mechanism state and the matching on-page card.
+      if (msg && msg.type === "narration_clear" && typeof msg.tabId === "number") {
+        narrationStore.remove(msg.tabId);
+        sendToTab(msg.tabId, { type: "AGENT_NARRATION_CLEAR" });
         return;
       }
       if (msg && (msg.type === "hold_state" || msg.type === "hold_error") && msg.id) {
@@ -366,6 +376,10 @@ async function killSession() {
   }
 
   await sweepDetachAll();
+
+  for (const tabId of narrationStore.clear()) {
+    sendToTab(tabId, { type: "AGENT_NARRATION_CLEAR" });
+  }
 
   attached.clear();
   attaching.clear();
@@ -585,6 +599,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabHost.delete(tabId);
   tabUrl.delete(tabId);
   managedTabs.delete(tabId); // ADR-0066 D5: a closed tab is no longer ours to reach
+  narrationStore.remove(tabId);
   persistSessionState();
 });
 chrome.debugger.onDetach.addListener((src) => attached.delete(src.tabId));
@@ -595,6 +610,10 @@ function hostOf(url) {
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.url !== undefined) { tabHost.set(tabId, hostOf(info.url)); tabUrl.set(tabId, info.url); }
+  if (info.status === "complete") {
+    const narration = narrationStore.current(tabId);
+    if (narration) renderNarration(tabId, narration);
+  }
 });
 // Render an uncaught-exception CDP event as one single-line string: base message, then an
 // optional (url:line) location, then an optional compact [at frame, frame, ...] stack.
@@ -1097,6 +1116,18 @@ function navigatePill(tabId, url) { sendToTab(tabId, { type: "AGENT_NAVIGATE_PIL
 function screenshotFx(tabId) { sendToTab(tabId, { type: "AGENT_SCREENSHOT_FX" }); }
 function zoomFrameCue(tabId, x0, y0, x1, y1) { sendToTab(tabId, { type: "AGENT_ZOOM_FRAME", x0, y0, x1, y1 }); }
 function waitPulse(tabId) { sendToTab(tabId, { type: "AGENT_WAIT_PULSE" }); }
+// ADR-0072: render one active narration record. Replays pass the record's remaining duration;
+// an expired record is filtered by the pure store before this function is called.
+function renderNarration(tabId, narration) {
+  const durationMs = Math.max(1, Math.round(narration.remainingMs || narration.durationMs));
+  return sendToTab(tabId, {
+    type: "AGENT_NARRATION",
+    generation: narration.generation,
+    text: narration.text,
+    position: narration.position,
+    durationMs,
+  });
+}
 const { KEY_MAP, BUTTON_BITS, modifierBits, keyCode, VK_NAMED, VK_PUNCT, CODE_PUNCT, vkCode, SHIFT_BASE, charKeyInfo } = self.GhostlightKeys;
 // CLICK_GAP_MS (press/release + inter-click spacing) comes from lib/constants.js.
 async function click(tabId, x, y, opts) {
@@ -1781,6 +1812,44 @@ const handlers = {
     const domains = (a.domains || []).join(", ");
     const approach = (a.approach || []).map((s) => `- ${s}`).join("\n");
     return text(`Plan (auto-approved by the v1.0 engine):\nDomains: ${domains}\n${approach}`);
+  },
+  async narrate(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    if (typeof a.text !== "string" || a.text.trim().length === 0 || a.text.length > 240) {
+      throw hopError("page", "text must be one non-empty sentence of at most 240 characters");
+    }
+    if (a.position !== undefined && !["top", "center", "bottom"].includes(a.position)) {
+      throw hopError("page", 'position must be one of "top", "center", or "bottom"');
+    }
+    if (a.duration_ms !== undefined &&
+        (!Number.isInteger(a.duration_ms) || a.duration_ms < 1000 || a.duration_ms > 30000)) {
+      throw hopError("page", "duration_ms must be an integer from 1000 through 30000");
+    }
+
+    const { record, replaced } = narrationStore.show(
+      tabId,
+      a.text,
+      a.position,
+      a.duration_ms
+    );
+    const response = await renderNarration(tabId, record);
+    setTimeout(() => narrationStore.remove(tabId, record.generation), record.durationMs + 50);
+
+    const shown = !!(response && response.shown === true);
+    const reason = shown
+      ? null
+      : ((response && response.reason) || "the visual layer is unavailable on this page");
+    const out = text(shown
+      ? `Narration shown at ${record.position} for ${record.durationMs}ms.`
+      : `Narration not shown: ${reason}.`);
+    out.structuredContent = {
+      shown,
+      position: record.position,
+      duration_ms: record.durationMs,
+      replaced,
+    };
+    if (reason) out.structuredContent.reason = reason;
+    return out;
   },
   // Internal read for form_fill (ADR-0036 D5, PINS.md SS12): NOT in the tool REGISTRY, so models
   // cannot call it -- only form_fill's handler dials it via browser.call. Returns the value-free

@@ -383,7 +383,7 @@ pub(crate) async fn run_tool_call(
     // here, with no extension frame ever produced; a `Handler::Local` tool that does NOT qualify
     // ([`is_free_local_action`] false -- C10's `form_fill`) falls through to grant enforcement
     // below and dispatches at the post-grant Local position instead. Every OTHER free action
-    // (`tabs_create_mcp`, `resize_window`, `update_plan`, `computer` `wait`) falls through to an
+    // (`tabs_create_mcp`, `resize_window`, `update_plan`, `narrate`, `computer` `wait`) falls through to an
     // ordinary allowed `ExtensionForward` dispatch below, and to `governance.authorize`'s own
     // free-action arm. All are audited as an allow with no grant attribution and a real (not
     // hardcoded) `duration_ms`.
@@ -2129,7 +2129,7 @@ mod tests {
     /// version uses a fake extension so the observe-mode call can actually "execute". The
     /// would-deny call is `tabs_context_mcp` (domain-less, requires `read`, denied via the
     /// union rule) under a grant that permits `action`/`write` but not `read` (ADR-0022):
-    /// `tabs_create_mcp`/`update_plan`/`resize_window` all require `[]` and short-circuit to
+    /// `tabs_create_mcp`/`update_plan`/`narrate`/`resize_window` all require `[]` and short-circuit to
     /// Allow unconditionally, so they can no longer demonstrate a would-deny; `tabs_context_mcp`
     /// is the only domain-less tool with a non-empty capability requirement.
     #[tokio::test]
@@ -2292,6 +2292,8 @@ mod tests {
              touches no page content.",
             "update_plan: requires nothing. Present a plan of intended actions to the user; \
              informational only.",
+            "narrate: requires nothing. Show temporary agent commentary in an owned tab; \
+             touches no page content and requires no RAWX capability.",
             "wait_for: requires read. Wait for a condition and page settlement; observes the \
              DOM, touches nothing.",
             "script: requires nothing. Run up to 20 tool calls sequentially in one request; \
