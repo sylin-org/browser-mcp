@@ -113,7 +113,9 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
   and tab/session/panic cleanup. Placement is `auto`/`top`/`bottom`; auto chooses one stable edge
   away from recent touched-control, pointer, and scroll activity. The separate central governance
   ribbon now has viewport-bounded sizing and wrapped, untruncated security text. `ghostlight demo`
-  narrates its six story beats. Rust and the 67-test extension suite are green. Live browser
+  narrates its six story beats after each stage loads, holds each caption for its full six-second
+  lifetime, and only then begins the visible actions. Rust and the 67-test extension suite are
+  green. Live browser
   verification passed on 2026-07-13 through the real MCP `script`
   path: `shown: true`, timed placement, replacement, active-navigation replay, and audit
   `capability: "none"` with no grant attribution. After the responsive refinement reload, a

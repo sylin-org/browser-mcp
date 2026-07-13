@@ -26,6 +26,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 /// the whole tour works on the demo pages and the finale's off-domain navigation is refused.
 const DEMO_POLICY: &str = include_str!("../examples/demo-policy.json");
 
+/// How long each chapter caption remains visible and how long the demo waits before acting. The
+/// matching values make narration a deliberate chapter card instead of an overlay the next action
+/// races underneath.
+const NARRATION_DURATION: Duration = Duration::from_secs(6);
+
 /// The demo's three watchability rhythms, all operator-tunable: a short beat after each visible
 /// step, a long hold right after the tab opens (time to resize/position the window before the
 /// tour starts), and a breather between sections so each "test" reads as its own scene.
@@ -201,9 +206,9 @@ async fn section_break(pacing: &Pacing) {
     tokio::time::sleep(Duration::from_secs_f64(pacing.section_secs.max(0.0))).await;
 }
 
-/// Put the demo's own semantic caption track on screen, then hold one ordinary step beat so the
-/// sentence can be read before the section begins. The visual layer controls replacement and
-/// expiry; this helper is only pacing and copy.
+/// Put the demo's own semantic caption track on screen, then leave it undisturbed for its full
+/// lifetime so the sentence reads as a chapter card before the section begins. The visual layer
+/// controls replacement and expiry; this helper is only pacing and copy.
 async fn narrate(c: &mut Client, tab_id: i64, message: &str) -> Result<()> {
     c.call_tool(
         "narrate",
@@ -211,11 +216,11 @@ async fn narrate(c: &mut Client, tab_id: i64, message: &str) -> Result<()> {
             "tabId": tab_id,
             "text": message,
             "position": "auto",
-            "duration_ms": 6000
+            "duration_ms": NARRATION_DURATION.as_millis()
         }),
     )
     .await?;
-    c.pause().await;
+    tokio::time::sleep(NARRATION_DURATION).await;
     Ok(())
 }
 
@@ -255,6 +260,13 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
 
     // --- Desk: point and act ---
     section_break(&pacing).await;
+    step("Desk: navigate, then click the button and type in the field");
+    c.call_tool(
+        "navigate",
+        json!({ "tabId": tab_id, "url": format!("{base}/desk/") }),
+    )
+    .await?;
+    c.pause().await;
     narrate(
         &mut c,
         tab_id,
@@ -267,13 +279,6 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
         "The agent can point, click, and type visibly.",
     )
     .await?;
-    step("Desk: navigate, then click the button and type in the field");
-    c.call_tool(
-        "navigate",
-        json!({ "tabId": tab_id, "url": format!("{base}/desk/") }),
-    )
-    .await?;
-    c.pause().await;
     if let Some(btn) = find_ref(&mut c, tab_id, "the big call-to-action button").await? {
         c.call_tool(
             "computer",
@@ -295,12 +300,6 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
 
     // --- Form: fill it in ---
     section_break(&pacing).await;
-    narrate(
-        &mut c,
-        tab_id,
-        "Structured tools can complete an entire form.",
-    )
-    .await?;
     step("Form: fill every field and submit (nothing is sent anywhere)");
     c.call_tool(
         "navigate",
@@ -308,6 +307,12 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
     )
     .await?;
     c.pause().await;
+    narrate(
+        &mut c,
+        tab_id,
+        "Structured tools can complete an entire form.",
+    )
+    .await?;
     c.call_tool(
         "form_fill",
         json!({
@@ -333,12 +338,6 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
 
     // --- Signals: watch the wire ---
     section_break(&pacing).await;
-    narrate(
-        &mut c,
-        tab_id,
-        "The agent can inspect console and network signals.",
-    )
-    .await?;
     step("Signals: log to the console, fetch data, and wait for a slow task");
     c.call_tool(
         "navigate",
@@ -346,6 +345,12 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
     )
     .await?;
     c.pause().await;
+    narrate(
+        &mut c,
+        tab_id,
+        "The agent can inspect console and network signals.",
+    )
+    .await?;
     if let Some(log_btn) = find_ref(&mut c, tab_id, "the log to the console button").await? {
         c.call_tool(
             "computer",
@@ -388,12 +393,6 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
 
     // --- Reading room: take it in ---
     section_break(&pacing).await;
-    narrate(
-        &mut c,
-        tab_id,
-        "It can read page content without moving the session elsewhere.",
-    )
-    .await?;
     step("Reading room: extract the text and find a passage");
     c.call_tool(
         "navigate",
@@ -401,6 +400,12 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
     )
     .await?;
     c.pause().await;
+    narrate(
+        &mut c,
+        tab_id,
+        "It can read page content without moving the session elsewhere.",
+    )
+    .await?;
     let text = c
         .call_tool("get_page_text", json!({ "tabId": tab_id }))
         .await?;
