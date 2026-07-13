@@ -4,7 +4,7 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 
 ## RESUME HERE
 
-- Next task: **T4 (OpenCode)**. T2 is complete, so every remaining task has its merge substrate. All
+- Next task: **T5 (Crush)**. T2 is complete, so the final task has its merge substrate. All
   remaining tasks are authored and ready; oracles are in `PINS.md`.
 - Two RESIDUAL confirms live inside the tasks (not blockers): OpenCode's Windows config path (T4),
   and whether Zed needs `"source": "custom"` (T3). Confirm at execution; the pinned defaults follow
@@ -20,8 +20,8 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 |------|--------|--------|-------|
 | T1 Windsurf | d4ad8ab | DONE | clients.rs; reuses `Dialect::McpServers` |
 | T2 merge foundation | e219d60 | DONE | merge.rs 3 dialects + mod.rs JSONC->Manual + clients.rs tolerant detect |
-| T3 Zed | (this commit) | DONE | `context_servers`; per-OS dir casing; no `source` per current official docs |
-| T4 OpenCode | (pending) | READY (needs T2) | `mcp` type:local command-array; RESIDUAL: Windows path |
+| T3 Zed | 8f3f18e | DONE | `context_servers`; per-OS dir casing; no `source` per current official docs |
+| T4 OpenCode | (this commit) | DONE | `mcp` type:local command-array; Windows path confirmed |
 | T5 Crush | (pending) | READY (needs T2) | `mcp` type:stdio |
 
 ## Deviations
@@ -29,6 +29,9 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 1. T3 runtime confirmation: Zed is not installed on the execution machine. Current official Zed
    documentation was re-checked on 2026-07-13 and shows local entries with `command`, `args`, and
    `env`, without `source`. The pinned no-`source` shape is unchanged.
+2. T4 runtime confirmation: OpenCode is not installed on the execution machine. Current official
+   OpenCode documentation explicitly directs Windows users to `%USERPROFILE%/.config/opencode`,
+   corroborated by a Windows execution log in the OpenCode repository. The pinned path is unchanged.
 
 ## Research resolution (was: open pins)
 

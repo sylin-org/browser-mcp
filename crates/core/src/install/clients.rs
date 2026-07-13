@@ -18,6 +18,7 @@ pub enum ClientId {
     Codex,
     Windsurf,
     Zed,
+    OpenCode,
 }
 
 /// How we register with a client. `FileMerge` is the idempotent value-level merge used for every
@@ -85,6 +86,13 @@ pub const CLIENTS: &[ClientSpec] = &[
         // settings.json is JSONC; a commented file degrades to a printed manual step (T2).
         add_via: AddVia::JsonFileMerge(Dialect::ContextServers),
     },
+    ClientSpec {
+        id: ClientId::OpenCode,
+        cli_id: "opencode",
+        display: "OpenCode",
+        // opencode.json is JSONC; the `mcp` entry uses type:"local" + a command array (T2 dialect).
+        add_via: AddVia::JsonFileMerge(Dialect::OpenCodeMcp),
+    },
 ];
 
 pub fn client_by_id(id: &str) -> Option<&'static ClientSpec> {
@@ -112,6 +120,11 @@ pub fn config_path(spec: &ClientSpec, ctx: &PlanCtx) -> PathBuf {
                 ctx.config.join("Zed").join("settings.json")
             }
         }
+        ClientId::OpenCode => ctx
+            .home
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json"),
     }
 }
 
@@ -136,6 +149,9 @@ pub fn detect(spec: &ClientSpec, ctx: &PlanCtx) -> bool {
                 || config_path(spec, ctx)
                     .parent()
                     .is_some_and(std::path::Path::is_dir)
+        }
+        ClientId::OpenCode => {
+            on_path("opencode") || ctx.home.join(".config").join("opencode").is_dir()
         }
     }
 }
@@ -293,6 +309,27 @@ mod tests {
         assert_eq!(
             config_path(zed, &ctx),
             PathBuf::from("/home/tester/.config/zed/settings.json")
+        );
+    }
+
+    /// OpenCode registers under the mcp (type:local, command-array) dialect at ~/.config/opencode (ADR-0071).
+    #[test]
+    fn opencode_uses_the_mcp_dialect_at_config_opencode() {
+        let ctx = PlanCtx {
+            current_exe: PathBuf::from("/opt/gl/ghostlight"),
+            home: PathBuf::from("/home/tester"),
+            config: PathBuf::from("/config"),
+            local: PathBuf::from("/local"),
+        };
+        let oc = client_by_id("opencode").expect("OpenCode is a supported client");
+        assert_eq!(oc.display, "OpenCode");
+        assert!(matches!(
+            oc.add_via,
+            AddVia::JsonFileMerge(Dialect::OpenCodeMcp)
+        ));
+        assert_eq!(
+            config_path(oc, &ctx),
+            PathBuf::from("/home/tester/.config/opencode/opencode.json")
         );
     }
 }
