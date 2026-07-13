@@ -53,10 +53,29 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
 
 ## Owed engineering work (in rough priority order)
 
+- **Public documentation was rebalanced around responsible delight**: the applied review lives in
+  `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
+  problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
+  It also corrects stale topology, audit-default, roadmap, and install-time-vs-runtime claims.
+  Remaining high-value work: CWS publication, the hero GIF, and macOS/Linux live verification.
+- **WebMCP participation can begin without product support**: research 15 records the current
+  governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
+  WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
+  and choose a controlled experiment origin. ADR-0043's no-implementation stance remains intact.
+- **Agent journey evaluation artifacts are proposed** (ADR-0069): local, minimized evidence for
+  comparing models and clients across a browser journey. Acceptance requires concrete journeys, a
+  data inventory and threat review, a versioned artifact schema, lightbox production, and evidence
+  from at least two client or model configurations.
+- **Bounded delegation needs scenario validation before an ADR**: the release-candidate triage
+  journey in `docs/design/bounded-delegation-scenario.md` exercises the ADR-0060 session overlay and
+  identifies the unresolved approval, expiry, budget, intent, and digest questions.
 - **Bidirectional installation handoff is implemented on `dev`** (ADR-0070): an explicit first
   `ghostlight install` opens the stable extension walkthrough once; `--no-open`, dry-run,
   CI, failed, and idempotent paths stay quiet. The canonical service-first page is live at
   `sylin.org/ghostlight/service/post-install/`; the website publication gate is complete.
+- **Scoped MCP cancellation is proposed and deferred** (ADR-0068): first verify that supported
+  clients emit `notifications/cancelled`. If demand exists, stop `script`/`browser_batch` only
+  between steps, let the active step settle, preserve audit, and never claim rollback.
 - **Content / URL consistency pass (owner-driven, mostly DONE)**: swept outward-facing content
   for stale/branded URLs and moved the post-install UX onto the site. What landed:
   - **github.io fully retired.** The canonical home is `sylin.org/ghostlight`. Every reference to
