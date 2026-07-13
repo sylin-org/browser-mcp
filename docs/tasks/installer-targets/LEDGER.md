@@ -4,8 +4,8 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 
 ## RESUME HERE
 
-- Next task: **T5 (Crush)**. T2 is complete, so the final task has its merge substrate. All
-  remaining tasks are authored and ready; oracles are in `PINS.md`.
+- Implementation complete: **T1-T5 are done**. Run the full batch gate, replace the final
+  `(this commit)` marker with its hash, and synchronize project status and user-facing client lists.
 - Two RESIDUAL confirms live inside the tasks (not blockers): OpenCode's Windows config path (T4),
   and whether Zed needs `"source": "custom"` (T3). Confirm at execution; the pinned defaults follow
   current vendor docs.
@@ -21,8 +21,8 @@ Durable progress. One task = one commit. Update RESUME HERE and add a log entry 
 | T1 Windsurf | d4ad8ab | DONE | clients.rs; reuses `Dialect::McpServers` |
 | T2 merge foundation | e219d60 | DONE | merge.rs 3 dialects + mod.rs JSONC->Manual + clients.rs tolerant detect |
 | T3 Zed | 8f3f18e | DONE | `context_servers`; per-OS dir casing; no `source` per current official docs |
-| T4 OpenCode | (this commit) | DONE | `mcp` type:local command-array; Windows path confirmed |
-| T5 Crush | (pending) | READY (needs T2) | `mcp` type:stdio |
+| T4 OpenCode | fbf8502 | DONE | `mcp` type:local command-array; Windows path confirmed |
+| T5 Crush | (this commit) | DONE | `mcp` type:stdio |
 
 ## Deviations
 

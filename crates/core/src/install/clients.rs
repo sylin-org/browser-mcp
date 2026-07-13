@@ -19,6 +19,7 @@ pub enum ClientId {
     Windsurf,
     Zed,
     OpenCode,
+    Crush,
 }
 
 /// How we register with a client. `FileMerge` is the idempotent value-level merge used for every
@@ -93,6 +94,14 @@ pub const CLIENTS: &[ClientSpec] = &[
         // opencode.json is JSONC; the `mcp` entry uses type:"local" + a command array (T2 dialect).
         add_via: AddVia::JsonFileMerge(Dialect::OpenCodeMcp),
     },
+    ClientSpec {
+        id: ClientId::Crush,
+        cli_id: "crush",
+        display: "Crush",
+        // crush.json's `mcp` entry uses type:"stdio" + command/args/env (T2 dialect). A commented
+        // file degrades to a printed manual step (T2 JSONC-safe fallback).
+        add_via: AddVia::JsonFileMerge(Dialect::CrushMcp),
+    },
 ];
 
 pub fn client_by_id(id: &str) -> Option<&'static ClientSpec> {
@@ -125,6 +134,7 @@ pub fn config_path(spec: &ClientSpec, ctx: &PlanCtx) -> PathBuf {
             .join(".config")
             .join("opencode")
             .join("opencode.json"),
+        ClientId::Crush => ctx.home.join(".config").join("crush").join("crush.json"),
     }
 }
 
@@ -153,6 +163,7 @@ pub fn detect(spec: &ClientSpec, ctx: &PlanCtx) -> bool {
         ClientId::OpenCode => {
             on_path("opencode") || ctx.home.join(".config").join("opencode").is_dir()
         }
+        ClientId::Crush => on_path("crush") || ctx.home.join(".config").join("crush").is_dir(),
     }
 }
 
@@ -330,6 +341,27 @@ mod tests {
         assert_eq!(
             config_path(oc, &ctx),
             PathBuf::from("/home/tester/.config/opencode/opencode.json")
+        );
+    }
+
+    /// Crush registers under the mcp (type:stdio) dialect at ~/.config/crush/crush.json (ADR-0071).
+    #[test]
+    fn crush_uses_the_mcp_stdio_dialect_at_config_crush() {
+        let ctx = PlanCtx {
+            current_exe: PathBuf::from("/opt/gl/ghostlight"),
+            home: PathBuf::from("/home/tester"),
+            config: PathBuf::from("/config"),
+            local: PathBuf::from("/local"),
+        };
+        let crush = client_by_id("crush").expect("Crush is a supported client");
+        assert_eq!(crush.display, "Crush");
+        assert!(matches!(
+            crush.add_via,
+            AddVia::JsonFileMerge(Dialect::CrushMcp)
+        ));
+        assert_eq!(
+            config_path(crush, &ctx),
+            PathBuf::from("/home/tester/.config/crush/crush.json")
         );
     }
 }
