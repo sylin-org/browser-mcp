@@ -210,7 +210,7 @@ async fn narrate(c: &mut Client, tab_id: i64, message: &str) -> Result<()> {
         json!({
             "tabId": tab_id,
             "text": message,
-            "position": "bottom",
+            "position": "auto",
             "duration_ms": 6000
         }),
     )

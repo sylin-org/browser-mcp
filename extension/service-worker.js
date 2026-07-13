@@ -1818,8 +1818,8 @@ const handlers = {
     if (typeof a.text !== "string" || a.text.trim().length === 0 || a.text.length > 240) {
       throw hopError("page", "text must be one non-empty sentence of at most 240 characters");
     }
-    if (a.position !== undefined && !["top", "center", "bottom"].includes(a.position)) {
-      throw hopError("page", 'position must be one of "top", "center", or "bottom"');
+    if (a.position !== undefined && !["auto", "top", "bottom"].includes(a.position)) {
+      throw hopError("page", 'position must be one of "auto", "top", or "bottom"');
     }
     if (a.duration_ms !== undefined &&
         (!Number.isInteger(a.duration_ms) || a.duration_ms < 1000 || a.duration_ms > 30000)) {
@@ -1839,12 +1839,13 @@ const handlers = {
     const reason = shown
       ? null
       : ((response && response.reason) || "the visual layer is unavailable on this page");
+    const effectivePosition = (response && response.position) || record.position;
     const out = text(shown
-      ? `Narration shown at ${record.position} for ${record.durationMs}ms.`
+      ? `Narration shown at ${effectivePosition} for ${record.durationMs}ms.`
       : `Narration not shown: ${reason}.`);
     out.structuredContent = {
       shown,
-      position: record.position,
+      position: effectivePosition,
       duration_ms: record.durationMs,
       replaced,
     };

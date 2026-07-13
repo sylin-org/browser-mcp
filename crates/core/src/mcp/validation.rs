@@ -427,7 +427,7 @@ mod tests {
             &serde_json::json!({
                 "tabId": 1,
                 "text": "ok",
-                "position": "center",
+                "position": "auto",
                 "duration_ms": 5000
             })
         )

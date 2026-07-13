@@ -108,13 +108,18 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
   session-policy denial finale.
 - **Agent narration is implemented** (ADR-0072): additive `narrate` is domainless RAWX none,
   bounded and schema-validated, ordinarily audited, ownership/hold/sacred checked, and legal in
-  `script`/`browser_batch`. The policy-free extension renders one timed Agent card per tab with
-  deterministic replacement, remaining-time navigation replay, effects/capture handling, and
-  tab/session/panic cleanup. `ghostlight demo` narrates its six story beats. Rust and extension
-  suites are green. Live browser verification passed on 2026-07-13 through the real MCP `script`
+  `script`/`browser_batch`. The policy-free extension renders one timed responsive Agent ribbon per
+  tab with deterministic replacement, remaining-time navigation replay, effects/capture handling,
+  and tab/session/panic cleanup. Placement is `auto`/`top`/`bottom`; auto chooses one stable edge
+  away from recent touched-control, pointer, and scroll activity. The separate central governance
+  ribbon now has viewport-bounded sizing and wrapped, untruncated security text. `ghostlight demo`
+  narrates its six story beats. Rust and the 67-test extension suite are green. Live browser
+  verification passed on 2026-07-13 through the real MCP `script`
   path: `shown: true`, timed placement, replacement, active-navigation replay, and audit
-  `capability: "none"` with no grant attribution. Existing MCP clients need one restart to add the
-  new direct `narrate` schema to their callable tool list.
+  `capability: "none"` with no grant attribution. After the responsive refinement reload, a
+  top-area hover resolved `auto` to bottom and a bottom-area hover resolved it to top; both calls
+  returned the effective edge and the user-visible wide ribbon. Existing MCP clients need one
+  restart to add the new direct `narrate` schema to their callable tool list.
 - **Lightbox legacy-27 migration** (ADR-0056): the 27 `#[ignore = "e2e"]` spawn tests +
   `scripts/test-e2e.*` migrate scenario-by-scenario into the lightbox harness against a
   per-test parity ledger. Not started; CI runs both tiers until the ledger completes.

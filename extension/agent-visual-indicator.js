@@ -24,6 +24,7 @@
   const FX_LAYER_ID = "ghostlight-ripples"; // holds all transient effects (rings, trail, shimmer)
   const NARRATION_LAYER_ID = "ghostlight-narration-layer";
   const STYLE_ID = "ghostlight-indicator-styles";
+  const narrationPlacement = window.GhostlightNarrationPlacement;
   // Ghostlight brand accent: a luminous sky blue. SKY_RGB is the same color for rgba() shadows.
   const SKY = "#38bdf8";
   const SKY_RGB = "56,189,248";
@@ -73,6 +74,10 @@
   let activeNarrationEl = null;
   let activeNarrationGeneration = null;
   let narrationTimer = null;
+  let recentPointer = null;
+  let recentTouched = null;
+  let recentScroll = null;
+  const scrollOffsets = new WeakMap();
 
   function reduceMotion() {
     return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches);
@@ -114,17 +119,21 @@
       "@keyframes ghostlight-narration-in{0%{opacity:0;transform:translate(-50%,10px) scale(.98)}100%{opacity:1;transform:translate(-50%,0) scale(1)}}" +
       "@keyframes ghostlight-narration-in-rm{0%{opacity:0}100%{opacity:1}}" +
       "@keyframes ghostlight-narration-progress{0%{transform:scaleX(1)}100%{transform:scaleX(0)}}" +
-      ".ghostlight-narration-card{position:absolute;left:50%;transform:translate(-50%,0);width:min(620px,calc(100vw - 48px));" +
-      "box-sizing:border-box;pointer-events:none;overflow:hidden;padding:13px 18px 15px;border-radius:14px;" +
+      ".ghostlight-narration-card{position:absolute;left:50%;transform:translate(-50%,0);width:min(92vw,1600px);" +
+      "min-height:clamp(76px,11vh,132px);box-sizing:border-box;pointer-events:none;overflow:hidden;" +
+      "display:flex;flex-direction:column;justify-content:center;padding:clamp(16px,2.4vh,28px) clamp(24px,3.5vw,58px);" +
+      "border-radius:clamp(14px,1.4vw,24px);" +
       "color:#eaf6ff;background:rgba(10,16,26,.94);border:1px solid rgba(" + SKY_RGB + ",.5);" +
       "box-shadow:0 16px 44px -18px rgba(" + SKY_RGB + ",.78),inset 0 1px 0 rgba(255,255,255,.08);" +
       "animation:ghostlight-narration-in 220ms cubic-bezier(.22,1,.36,1) forwards}" +
-      ".ghostlight-narration-card.top{top:24px}.ghostlight-narration-card.center{top:calc(50% - 48px)}" +
-      ".ghostlight-narration-card.bottom{bottom:112px}" +
-      ".ghostlight-narration-label{display:block;margin:0 0 4px;color:" + SKY + ";" +
-      "font:700 10px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.13em;text-transform:uppercase}" +
-      ".ghostlight-narration-text{display:block;font:500 15px/1.42 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      ".ghostlight-narration-card.top{top:clamp(16px,3.5vh,48px)}" +
+      ".ghostlight-narration-card.bottom{bottom:clamp(76px,12vh,128px)}" +
+      ".ghostlight-narration-card.chapter{min-height:clamp(92px,14vh,164px)}" +
+      ".ghostlight-narration-label{display:block;margin:0 0 clamp(5px,.8vh,10px);color:" + SKY + ";" +
+      "font:700 clamp(10px,min(.8vw,1.5vh),14px)/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.13em;text-transform:uppercase}" +
+      ".ghostlight-narration-text{display:block;font:500 clamp(16px,min(2vw,3vh),34px)/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
       "overflow-wrap:anywhere}" +
+      ".ghostlight-narration-card.chapter .ghostlight-narration-text{font-weight:650}" +
       ".ghostlight-narration-time{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(" + SKY_RGB + ",.13)}" +
       ".ghostlight-narration-time::after{content:'';display:block;width:100%;height:100%;transform-origin:left;" +
       "background:" + SKY + ";animation:ghostlight-narration-progress var(--ghostlight-narration-ms) linear forwards}" +
@@ -133,8 +142,9 @@
       // notification has four named severity variants sharing everything but one color, so the
       // base rules live in `.ghostlight-notif-ribbon`/`-badge` and `.error`/`.warn`/`.info`/
       // `.debug` each set only `--gl-rgb` (badge, icon, and glow all derive from it).
-      ".ghostlight-notif-ribbon{position:relative;display:flex;align-items:center;justify-content:center;" +
-      "gap:16px;height:" + NOTIF_BAND_H + "px;padding:0 64px;box-sizing:border-box;overflow:visible;" +
+      ".ghostlight-notif-ribbon{--gl-notif-band-h:clamp(56px,9vh,84px);position:relative;display:flex;align-items:center;justify-content:center;" +
+      "gap:clamp(10px,1.4vw,20px);min-height:var(--gl-notif-band-h);height:auto;" +
+      "padding:clamp(10px,1.6vh,18px) clamp(48px,6vw,80px);box-sizing:border-box;overflow:visible;" +
       // The ribbon's own surface is the SAME neutral for every severity -- the badge and glow
       // below carry the color-coded signal, so four different saturated full-bleed colors never
       // compete with each other across a session (an established, consistent chrome).
@@ -154,24 +164,25 @@
       // The icon medallion: a circle in the severity's bright accent (--gl-rgb), sized 1.5x the
       // ribbon height so it overflows the top/bottom edges as a badge rather than sitting inside.
       // `color` matches `background` so the glyph's `fill='currentColor'` reads as punched through.
-      ".ghostlight-notif-badge{flex:0 0 auto;width:" + NOTIF_BADGE_D + "px;height:" + NOTIF_BADGE_D + "px;" +
+      ".ghostlight-notif-badge{flex:0 0 auto;width:calc(var(--gl-notif-band-h) * 1.5);height:calc(var(--gl-notif-band-h) * 1.5);" +
       "border-radius:50%;display:flex;align-items:center;justify-content:center;" +
       "box-shadow:0 4px 16px rgba(0,0,0,.35);background:rgb(var(--gl-rgb));color:rgb(var(--gl-rgb))}" +
-      ".ghostlight-notif-textcol{flex:0 1 auto;min-width:0;max-width:min(60vw,480px);" +
+      ".ghostlight-notif-badge svg{display:block;width:60%;height:auto}" +
+      ".ghostlight-notif-textcol{flex:0 1 auto;min-width:0;max-width:min(72vw,900px);" +
       "display:flex;flex-direction:column;justify-content:center}" +
-      ".ghostlight-notif-title{font:600 15px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
-      "color:" + NOTIF_TEXT + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
-      ".ghostlight-notif-desc{font:12.5px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
-      "color:" + NOTIF_TEXT + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;" +
+      ".ghostlight-notif-title{font:600 clamp(14px,min(1.4vw,2.2vh),20px)/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "color:" + NOTIF_TEXT + ";white-space:normal;overflow-wrap:anywhere}" +
+      ".ghostlight-notif-desc{font:clamp(12px,min(1.05vw,1.8vh),16px)/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "color:" + NOTIF_TEXT + ";white-space:normal;overflow-wrap:anywhere;opacity:0;" +
       "animation:ghostlight-notif-desc " + NOTIF_DESC_MS + "ms ease-out " + NOTIF_DESC_DELAY_MS + "ms forwards}" +
       "@media (prefers-reduced-motion:reduce){.ghostlight-notif-desc{opacity:.85;animation:none}}" +
       // Close button: the one interactive element in the whole layer -- everything else is
       // pointer-events:none. Absolutely positioned within the ribbon (not a flex sibling), so the
       // icon+text duo centers as its own group regardless of where this sits in the corner.
-      ".ghostlight-notif-close{position:absolute;right:16px;top:50%;transform:translateY(-50%);" +
+      ".ghostlight-notif-close{position:absolute;right:clamp(10px,1.5vw,20px);top:50%;transform:translateY(-50%);" +
       "pointer-events:auto;cursor:pointer;background:transparent;border:none;color:" + NOTIF_TEXT + ";" +
-      "opacity:.75;font:20px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
-      "width:28px;height:28px;border-radius:50%;transition:background-color 120ms ease-out}" +
+      "opacity:.75;font:clamp(18px,min(1.8vw,3vh),26px)/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      "width:clamp(28px,4.5vh,38px);height:clamp(28px,4.5vh,38px);border-radius:50%;transition:background-color 120ms ease-out}" +
       ".ghostlight-notif-close:hover{background:rgba(255,255,255,.16)}" +
       ".ghostlight-notif-close:focus-visible{outline:2px solid " + NOTIF_TEXT + ";outline-offset:2px;background:rgba(255,255,255,.16)}" +
       ".ghostlight-cap{color:" + SKY + "}.ghostlight-arrow{color:" + SKY + ";margin-right:7px}" +
@@ -277,6 +288,7 @@
     if (hiddenForTool || document.hidden) return;
     const target = document.activeElement;
     if (!target || target === document.body || target === document.documentElement) return;
+    noteTouchedElement(target);
     let rect;
     try { rect = target.getBoundingClientRect(); } catch (e) { return; }
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
@@ -305,6 +317,7 @@
   function fieldSplash(target) {
     if (hiddenForTool || document.hidden) return;
     if (!target || typeof target.getBoundingClientRect !== "function") return;
+    noteTouchedElement(target);
     let rect;
     try { rect = target.getBoundingClientRect(); } catch (e) { return; }
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
@@ -352,6 +365,7 @@
 
   function moveCursor(x, y) {
     return new Promise((resolve) => {
+      recentPointer = { x: Number(x), y: Number(y), at: Date.now() };
       showGlow();
       if (hiddenForTool || document.hidden) return resolve();
       ensureStyles();
@@ -488,6 +502,7 @@
 
   // scroll: directional chevrons cascading the way the page moves (Keyviz).
   function scrollCue(direction) {
+    noteScroll(direction);
     if (hiddenForTool || document.hidden) return;
     ensureStyles();
     const rot = direction === "up" ? 180 : direction === "left" ? 90 : direction === "right" ? -90 : 0;
@@ -593,8 +608,8 @@
   // "never touch") for a sacred block, anything else an exclamation mark ("a boundary was hit"),
   // matching the distinct hints notify()'s callers already pass. `fill='currentColor'` takes the
   // glyph color from the badge's own per-severity `color`, so this markup is severity-agnostic.
-  // `iconName`/`px` are internal values, never wire text.
-  function notifIconSvg(iconName, px) {
+  // `iconName` is an internal value, never wire text.
+  function notifIconSvg(iconName) {
     const shield = "<path d='M12 1 L21 4.5 V11 C21 17 17 21.5 12 24 C7 21.5 3 17 3 11 V4.5 Z' fill='#fff'/>";
     const glyph = iconName === "lock"
       ? "<rect x='8.1' y='12.4' width='7.8' height='6.8' rx='1.5' fill='currentColor'/>" +
@@ -602,15 +617,10 @@
       : "<rect x='10.9' y='7.4' width='2.2' height='8.4' rx='1.1' fill='currentColor'/>" +
         "<circle cx='12' cy='18.3' r='1.35' fill='currentColor'/>";
     return (
-      "<svg width='" + px + "' height='" + Math.round(px * 26 / 24) + "' viewBox='0 0 24 26' aria-hidden='true'>" +
+      "<svg viewBox='0 0 24 26' aria-hidden='true'>" +
       shield + glyph + "</svg>"
     );
   }
-  // The band's own resting height and the icon medallion's diameter -- the medallion is 1.5x the
-  // band's height by design, so it overflows the band's top/bottom edges as a badge rather than
-  // being clipped to fit inside it.
-  const NOTIF_BAND_H = 64;
-  const NOTIF_BADGE_D = Math.round(NOTIF_BAND_H * 1.5);
 
   function ensureNotifLayer() {
     if (!notifLayer || !notifLayer.isConnected) {
@@ -648,7 +658,7 @@
     // ribbon's own edges.
     const badge = document.createElement("span");
     badge.className = "ghostlight-notif-badge";
-    badge.innerHTML = notifIconSvg(icon, Math.round(NOTIF_BAND_H * 0.9));
+    badge.innerHTML = notifIconSvg(icon);
     band.appendChild(badge);
 
     const textCol = document.createElement("span");
@@ -704,6 +714,40 @@
     return true;
   }
 
+  function visibleElementCenter(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") return null;
+    if (target.closest && target.closest("[id^='ghostlight-']")) return null;
+    let rect;
+    try { rect = target.getBoundingClientRect(); } catch (e) { return null; }
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const x = Math.max(0, Math.min(window.innerWidth, rect.left + rect.width / 2));
+    const y = Math.max(0, Math.min(window.innerHeight, rect.top + rect.height / 2));
+    return { x, y, at: Date.now() };
+  }
+
+  function noteTouchedElement(target) {
+    const center = visibleElementCenter(target);
+    if (center) recentTouched = center;
+  }
+
+  function noteScroll(direction) {
+    if (direction === "up" || direction === "down") {
+      recentScroll = { direction, at: Date.now() };
+    }
+  }
+
+  function effectiveNarrationPosition(requested) {
+    if (!narrationPlacement || typeof narrationPlacement.chooseNarrationPosition !== "function") {
+      return requested === "top" ? "top" : "bottom";
+    }
+    return narrationPlacement.chooseNarrationPosition(requested, {
+      viewportHeight: window.innerHeight,
+      pointer: recentPointer,
+      touched: recentTouched,
+      scroll: recentScroll,
+    });
+  }
+
   // ADR-0072: semantic agent commentary. This is deliberately separate from both the terse action
   // caption and the authoritative governance ribbon. Wire text reaches the DOM only via
   // textContent, and the whole layer remains pointer-transparent.
@@ -717,13 +761,15 @@
     }
     ensureStyles();
     clearNarration();
-    const position = ["top", "center", "bottom"].includes(msg.position)
+    const requestedPosition = ["auto", "top", "bottom"].includes(msg.position)
       ? msg.position
-      : "bottom";
+      : "auto";
+    const position = effectiveNarrationPosition(requestedPosition);
     const durationMs = Math.max(1, Number(msg.durationMs) || 5000);
+    const text = String(msg.text || "");
     const card = document.createElement("div");
     card.id = "ghostlight-narration-" + String(msg.generation);
-    card.className = "ghostlight-narration-card " + position;
+    card.className = "ghostlight-narration-card " + position + (text.trim().length <= 72 ? " chapter" : "");
     card.style.setProperty("--ghostlight-narration-ms", durationMs + "ms");
 
     const label = document.createElement("span");
@@ -732,7 +778,7 @@
     card.appendChild(label);
     const narrationText = document.createElement("span");
     narrationText.className = "ghostlight-narration-text";
-    narrationText.textContent = String(msg.text || "");
+    narrationText.textContent = text;
     card.appendChild(narrationText);
     const time = document.createElement("span");
     time.className = "ghostlight-narration-time";
@@ -744,7 +790,7 @@
     narrationTimer = setTimeout(function () {
       clearNarration(msg.generation);
     }, durationMs);
-    return { shown: true };
+    return { shown: true, position };
   }
 
   // wait: a soft breathing dot while the agent pauses.
@@ -874,6 +920,32 @@
       if (changes.ghostlight_captions) captionsEnabled = !!changes.ghostlight_captions.newValue;
     });
   } catch (e) { /* storage unavailable: effects on, captions off */ }
+
+  // Placement context is transient and never leaves the page. Signals only choose an edge when a
+  // narration is created; an active ribbon never chases the pointer or moves during scrolling.
+  document.addEventListener("pointermove", function (event) {
+    recentPointer = { x: event.clientX, y: event.clientY, at: Date.now() };
+  }, { capture: true, passive: true });
+  document.addEventListener("pointerdown", function (event) {
+    noteTouchedElement(event.target);
+  }, { capture: true, passive: true });
+  document.addEventListener("focusin", function (event) {
+    noteTouchedElement(event.target);
+  }, true);
+  document.addEventListener("wheel", function (event) {
+    if (event.deltaY !== 0) noteScroll(event.deltaY > 0 ? "down" : "up");
+  }, { capture: true, passive: true });
+  document.addEventListener("scroll", function (event) {
+    const target = event.target === document ? document.documentElement : event.target;
+    if (!target || typeof target !== "object") return;
+    const offset = target === document.documentElement ? window.scrollY : Number(target.scrollTop);
+    if (!Number.isFinite(offset)) return;
+    const previous = scrollOffsets.get(target);
+    scrollOffsets.set(target, offset);
+    if (Number.isFinite(previous) && offset !== previous) {
+      noteScroll(offset > previous ? "down" : "up");
+    }
+  }, { capture: true, passive: true });
 
   // Same-isolated-world seam for sibling content scripts (content.js): a form write calls
   // fieldSplash directly with the element it just set -- the writer is the one place that knows

@@ -155,9 +155,9 @@ fn narrate_is_additive_and_pins_its_bounded_schema() {
                 },
                 "position": {
                     "type": "string",
-                    "enum": ["top", "center", "bottom"],
-                    "default": "bottom",
-                    "description": "Where to place the narration card. Defaults to bottom."
+                    "enum": ["auto", "top", "bottom"],
+                    "default": "auto",
+                    "description": "Which viewport edge holds the narration ribbon. Auto avoids recent interaction and scroll activity; defaults to auto."
                 },
                 "duration_ms": {
                     "type": "integer",

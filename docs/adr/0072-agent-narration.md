@@ -17,6 +17,19 @@ authorization from the tool because none of those page-content authorities are e
 always-on sacred-tab check may still resolve the tab host and seed it as audit context; that host is
 not a governing resource and does not change the RAWX-none classification.
 
+Amendment 2026-07-13 (responsive edge ribbons): live review found the first narration card too
+small to read as a video caption. The `position` vocabulary in D1 is now `auto`, `top`, and
+`bottom`, with `auto` as the default; the unshipped `center` option is removed. Auto placement
+chooses one edge when the narration appears, preferring the edge away from a recent touched or
+focused control, pointer position, and scroll direction. It does not move an active narration as
+those signals change. D4's compact card becomes a wide responsive edge ribbon with viewport-bounded
+type, spacing, and height. Short messages receive a taller chapter treatment through product-owned
+styling, not a model parameter. The governance notification remains a separate, full-width central
+ribbon with visual priority; its height, badge, type, padding, and wrapping now respond within firm
+minimum and maximum bounds. Governance text wraps rather than truncates. These changes preserve
+the two layers' separate authority, pointer and capture behavior, deterministic replacement, and
+the ban on arbitrary styling parameters.
+
 ## Context
 
 Ghostlight already explains low-level actions visually. A watcher can see the phantom cursor,

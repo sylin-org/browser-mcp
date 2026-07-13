@@ -9,10 +9,10 @@
 const DEFAULT_DURATION_MS = 5000;
 const MIN_DURATION_MS = 1000;
 const MAX_DURATION_MS = 30000;
-const POSITIONS = new Set(["top", "center", "bottom"]);
+const POSITIONS = new Set(["auto", "top", "bottom"]);
 
 function normalizePosition(position) {
-  return POSITIONS.has(position) ? position : "bottom";
+  return POSITIONS.has(position) ? position : "auto";
 }
 
 function normalizeDuration(durationMs) {

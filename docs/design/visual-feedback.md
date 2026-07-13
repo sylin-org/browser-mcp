@@ -32,7 +32,7 @@ consistent on-page treatment: a small visual "dictionary" the phantom cursor spe
 | zoom | a magnifier frame closes on the captured region |
 | read_page / find / get_page_text | a scan-line sweeps down the page ("the agent is reading") |
 | wait | a soft breathing dot |
-| narrate | a timed sky-accent Agent card that explains a meaningful workflow phase |
+| narrate | a timed, responsive sky-accent Agent ribbon that explains a meaningful workflow phase |
 | ambient | the "agent active" glow while a tool runs, plus an optional action caption (below) |
 
 The scan-line is ours: no recording tool has it, because none of them is an agent reading a page.
@@ -64,10 +64,12 @@ captures like every other effect, so it never lands in the model's image.
 ## Agent narration
 
 `narrate` is the semantic track for a person watching a longer workflow. It is not a mechanical
-action caption and cannot imitate the governance ribbon. One card appears per tab, a new call
-replaces it, and the original deadline survives navigation. It requires no RAWX capability because
-it does not touch page content. It still follows tab ownership, audit, take-the-wheel, capture
-hiding, and the visual-effects preference.
+action caption and cannot imitate the governance ribbon. One wide edge ribbon appears per tab, a
+new call replaces it, and the original deadline survives navigation. `auto` chooses top or bottom
+once, away from recent focus, pointer, and scroll activity; explicit edges stay deterministic. The
+ribbon does not chase the user after it appears. It requires no RAWX capability because it does not
+touch page content. It still follows tab ownership, audit, take-the-wheel, capture hiding, and the
+visual-effects preference.
 
 ## Sources
 

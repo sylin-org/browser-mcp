@@ -48,8 +48,8 @@ set in `agent-visual-indicator.js`.
 | Zoom frame | `zoom` | "the agent is inspecting this region" | rectangle converging onto the region |
 | Wait pulse | `wait` | "deliberately pausing" | breathing dot, center-screen |
 | Caption track | any action (opt-in) | subtitle naming the action | bottom-center pill; off by default, gorgeous for demos |
-| Narration card | `narrate` | "the agent wants the watcher to understand this workflow phase" | timed sky-accent card with an Agent label and progress line; top, center, or bottom |
-| Notification ribbon | governance speaks (denials via `Browser::notify()`) | "a guardrail held; here is why" | persistent top ribbon: neutral band, severity-colored icon medallion overflowing its edges |
+| Narration ribbon | `narrate` | "the agent wants the watcher to understand this workflow phase" | timed, responsive sky-accent edge ribbon with an Agent label and progress line; auto, top, or bottom |
+| Notification ribbon | governance speaks (denials via `Browser::notify()`) | "a guardrail held; here is why" | persistent responsive center ribbon: neutral full-width band, wrapped text, severity-colored icon medallion overflowing its edges |
 
 ## Invariants
 
@@ -97,8 +97,11 @@ than merely pretty.
 
 Narration uses the service-worker seam but has a longer lifecycle than an action effect. Its
 memory-only worker record survives navigation only until the original deadline, then replays the
-remaining duration into the new document. It is commentary, never governance: sky accent, compact
-card, optional under the effects switch, and always below the notification layer.
+remaining duration into the new document. It is commentary, never governance: sky accent, inset
+edge ribbon, optional under the effects switch, and always below the notification layer. Auto
+placement chooses top or bottom once from recent touched-control, pointer, and scroll signals, then
+stays put. Both narration and notification geometry use bounded viewport-responsive sizing. The
+notification remains full-width, central, visually stronger, and never truncates its security text.
 
 ## Adding a new effect
 

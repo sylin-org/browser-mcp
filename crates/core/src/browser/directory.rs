@@ -829,7 +829,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "narrate",
-        advertised_description: "Show a short, temporary narration card in the controlled browser tab so the person watching understands the current workflow phase. Use it for meaningful phase changes, not routine clicks or keystrokes. A new narration replaces the current one.",
+        advertised_description: "Show a short, temporary narration ribbon in the controlled browser tab so the person watching understands the current workflow phase. Use it for meaningful phase changes, not routine clicks or keystrokes. A new narration replaces the current one.",
         input_schema: || json!({
             "type": "object",
             "properties": {
@@ -845,9 +845,9 @@ pub const REGISTRY: &[ToolDescriptor] = &[
                 },
                 "position": {
                     "type": "string",
-                    "enum": ["top", "center", "bottom"],
-                    "default": "bottom",
-                    "description": "Where to place the narration card. Defaults to bottom."
+                    "enum": ["auto", "top", "bottom"],
+                    "default": "auto",
+                    "description": "Which viewport edge holds the narration ribbon. Auto avoids recent interaction and scroll activity; defaults to auto."
                 },
                 "duration_ms": {
                     "type": "integer",
@@ -861,8 +861,8 @@ pub const REGISTRY: &[ToolDescriptor] = &[
             "additionalProperties": false
         }),
         example: Some(ToolExample {
-            call: r#"{"tabId":0,"text":"Checking the result before making changes.","position":"bottom","duration_ms":5000}"#,
-            returns: Some("Shows one timed, pointer-transparent agent narration card; a new call replaces it."),
+            call: r#"{"tabId":0,"text":"Checking the result before making changes.","position":"auto","duration_ms":5000}"#,
+            returns: Some("Shows one timed, pointer-transparent agent narration ribbon; a new call replaces it."),
         }),
         action_key: None,
         variants: &[ActionVariant {

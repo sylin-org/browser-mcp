@@ -35,14 +35,14 @@ test("stale_generation_cannot_remove_a_replacement", () => {
 test("expiry_and_navigation_replay_use_only_the_remaining_duration", () => {
   let now = 1000;
   const store = createNarrationStore(() => now);
-  store.show(4, "Still working", "center", 5000);
+  store.show(4, "Still working", "auto", 5000);
   now = 3400;
   assert.deepStrictEqual(
     store.current(4),
     {
       generation: 1,
       text: "Still working",
-      position: "center",
+      position: "auto",
       durationMs: 5000,
       deadline: 6000,
       remainingMs: 2600,
@@ -62,7 +62,7 @@ test("tabs_are_independent_and_clear_returns_every_live_tab", () => {
 });
 
 test("defense_in_depth_normalizes_position_and_duration", () => {
-  assert.strictEqual(normalizePosition("sideways"), "bottom");
+  assert.strictEqual(normalizePosition("sideways"), "auto");
   assert.strictEqual(normalizeDuration(undefined), 5000);
   assert.strictEqual(normalizeDuration(20), 1000);
   assert.strictEqual(normalizeDuration(90000), 30000);
@@ -73,12 +73,18 @@ test("renderer_contract_is_pointer_transparent_text_only_and_capture_hidden", ()
     path.join(__dirname, "../../extension/agent-visual-indicator.js"),
     "utf8"
   );
-  assert.match(source, /narrationText\.textContent = String\(msg\.text/);
+  assert.match(source, /narrationText\.textContent = text/);
   assert.match(source, /ghostlight-narration-layer/);
   assert.match(source, /pointer-events:none/);
   assert.match(source, /if \(narrationLayer\) narrationLayer\.style\.display = v \? "none" : ""/);
   assert.match(source, /prefers-reduced-motion:reduce/);
   assert.match(source, /shown: false, reason: "visual effects are disabled"/);
+  assert.match(source, /width:min\(92vw,1600px\)/);
+  assert.match(source, /min-height:clamp\(76px,11vh,132px\)/);
+  assert.match(source, /return \{ shown: true, position \}/);
+  assert.match(source, /--gl-notif-band-h:clamp\(56px,9vh,84px\)/);
+  assert.match(source, /ghostlight-notif-title[^}]+white-space:normal/);
+  assert.doesNotMatch(source, /ghostlight-notif-title[^}]+text-overflow:ellipsis/);
 });
 
 test("worker_contract_replays_and_clears_transient_state", () => {
@@ -91,4 +97,15 @@ test("worker_contract_replays_and_clears_transient_state", () => {
   assert.match(source, /narrationStore\.remove\(tabId\)/);
   assert.match(source, /for \(const tabId of narrationStore\.clear\(\)\)/);
   assert.match(source, /type: "AGENT_NARRATION_CLEAR"/);
+});
+
+test("manifest_loads_the_pure_placement_module_before_the_renderer", () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "../../extension/manifest.json"),
+    "utf8"
+  ));
+  const visualScripts = manifest.content_scripts.find((entry) =>
+    entry.js.includes("agent-visual-indicator.js")
+  ).js;
+  assert.deepStrictEqual(visualScripts, ["lib/narration-placement.js", "agent-visual-indicator.js"]);
 });
