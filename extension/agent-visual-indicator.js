@@ -142,7 +142,8 @@
       // notification has four named severity variants sharing everything but one color, so the
       // base rules live in `.ghostlight-notif-ribbon`/`-badge` and `.error`/`.warn`/`.info`/
       // `.debug` each set only `--gl-rgb` (badge, icon, and glow all derive from it).
-      ".ghostlight-notif-ribbon{--gl-notif-band-h:clamp(56px,9vh,84px);position:relative;display:flex;align-items:center;justify-content:center;" +
+      ".ghostlight-notif-ribbon{--gl-notif-band-h:clamp(56px,9vh,84px);--gl-notif-badge-d:clamp(90px,15vh,126px);" +
+      "position:relative;display:flex;align-items:center;justify-content:center;" +
       "gap:clamp(10px,1.4vw,20px);min-height:var(--gl-notif-band-h);height:auto;" +
       "padding:clamp(10px,1.6vh,18px) clamp(48px,6vw,80px);box-sizing:border-box;overflow:visible;" +
       // The ribbon's own surface is the SAME neutral for every severity -- the badge and glow
@@ -161,18 +162,20 @@
       ".ghostlight-notif-ribbon.warn{--gl-rgb:245,158,11}" +
       ".ghostlight-notif-ribbon.info{--gl-rgb:56,189,248}" +
       ".ghostlight-notif-ribbon.debug{--gl-rgb:148,163,184}" +
-      // The icon medallion: a circle in the severity's bright accent (--gl-rgb), sized 1.5x the
-      // ribbon height so it overflows the top/bottom edges as a badge rather than sitting inside.
+      // The icon medallion: a circle in the severity's bright accent (--gl-rgb), deliberately
+      // taller than the ribbon. Negative block margins keep its flex footprint at band height, so
+      // auto-height wrapping cannot make the ribbon grow merely to encapsulate the circle.
       // `color` matches `background` so the glyph's `fill='currentColor'` reads as punched through.
-      ".ghostlight-notif-badge{flex:0 0 auto;width:calc(var(--gl-notif-band-h) * 1.5);height:calc(var(--gl-notif-band-h) * 1.5);" +
+      ".ghostlight-notif-badge{flex:0 0 auto;width:var(--gl-notif-badge-d);height:var(--gl-notif-badge-d);" +
+      "margin-block:clamp(-21px,-3vh,-14px);" +
       "border-radius:50%;display:flex;align-items:center;justify-content:center;" +
       "box-shadow:0 4px 16px rgba(0,0,0,.35);background:rgb(var(--gl-rgb));color:rgb(var(--gl-rgb))}" +
-      ".ghostlight-notif-badge svg{display:block;width:60%;height:auto}" +
+      ".ghostlight-notif-badge svg{display:block;width:72%;height:auto}" +
       ".ghostlight-notif-textcol{flex:0 1 auto;min-width:0;max-width:min(72vw,900px);" +
       "display:flex;flex-direction:column;justify-content:center}" +
-      ".ghostlight-notif-title{font:600 clamp(14px,min(1.4vw,2.2vh),20px)/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      ".ghostlight-notif-title{font:600 clamp(17px,min(2vw,2.8vh),23px)/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
       "color:" + NOTIF_TEXT + ";white-space:normal;overflow-wrap:anywhere}" +
-      ".ghostlight-notif-desc{font:clamp(12px,min(1.05vw,1.8vh),16px)/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
+      ".ghostlight-notif-desc{font:clamp(14px,min(1.45vw,2.1vh),18px)/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;" +
       "color:" + NOTIF_TEXT + ";white-space:normal;overflow-wrap:anywhere;opacity:0;" +
       "animation:ghostlight-notif-desc " + NOTIF_DESC_MS + "ms ease-out " + NOTIF_DESC_DELAY_MS + "ms forwards}" +
       "@media (prefers-reduced-motion:reduce){.ghostlight-notif-desc{opacity:.85;animation:none}}" +

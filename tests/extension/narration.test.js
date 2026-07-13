@@ -83,6 +83,12 @@ test("renderer_contract_is_pointer_transparent_text_only_and_capture_hidden", ()
   assert.match(source, /min-height:clamp\(76px,11vh,132px\)/);
   assert.match(source, /return \{ shown: true, position \}/);
   assert.match(source, /--gl-notif-band-h:clamp\(56px,9vh,84px\)/);
+  assert.match(source, /--gl-notif-badge-d:clamp\(90px,15vh,126px\)/);
+  assert.match(source, /margin-block:clamp\(-21px,-3vh,-14px\)/);
+  assert.match(source, /ghostlight-notif-badge svg[^}]+width:72%/);
+  assert.match(source, /ghostlight-notif-title[^}]+clamp\(17px/);
+  assert.match(source, /ghostlight-notif-desc[^}]+clamp\(14px/);
+  assert.doesNotMatch(source, /gl-notif-band-h\) \*/);
   assert.match(source, /ghostlight-notif-title[^}]+white-space:normal/);
   assert.doesNotMatch(source, /ghostlight-notif-title[^}]+text-overflow:ellipsis/);
 });
