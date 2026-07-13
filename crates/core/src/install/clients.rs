@@ -16,6 +16,7 @@ pub enum ClientId {
     Cursor,
     VsCode,
     Codex,
+    Windsurf,
 }
 
 /// How we register with a client. `FileMerge` is the idempotent value-level merge used for every
@@ -68,6 +69,14 @@ pub const CLIENTS: &[ClientSpec] = &[
         display: "Codex",
         add_via: AddVia::TomlFileMerge,
     },
+    ClientSpec {
+        id: ClientId::Windsurf,
+        cli_id: "windsurf",
+        display: "Windsurf",
+        // ~/.codeium/windsurf/mcp_config.json is plain JSON with an `mcpServers` map, identical in
+        // shape to Cursor's -- the value-level merge is idempotent and safe (ADR-0071 D1).
+        add_via: AddVia::JsonFileMerge(Dialect::McpServers),
+    },
 ];
 
 pub fn client_by_id(id: &str) -> Option<&'static ClientSpec> {
@@ -83,6 +92,11 @@ pub fn config_path(spec: &ClientSpec, ctx: &PlanCtx) -> PathBuf {
         ClientId::Cursor => ctx.home.join(".cursor").join("mcp.json"),
         ClientId::VsCode => ctx.config.join("Code").join("User").join("mcp.json"),
         ClientId::Codex => ctx.home.join(".codex").join("config.toml"),
+        ClientId::Windsurf => ctx
+            .home
+            .join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json"),
     }
 }
 
@@ -99,6 +113,9 @@ pub fn detect(spec: &ClientSpec, ctx: &PlanCtx) -> bool {
                     .is_some_and(std::path::Path::is_dir)
         }
         ClientId::Codex => on_path("codex") || ctx.home.join(".codex").is_dir(),
+        ClientId::Windsurf => {
+            on_path("windsurf") || ctx.home.join(".codeium").join("windsurf").is_dir()
+        }
     }
 }
 
@@ -200,5 +217,27 @@ mod tests {
             "[mcp_servers.ghostlight]\ncommand = \"relay\"\nargs = [\"--role\", \"agent\"]\n";
         assert!(server_registered(codex, configured, "ghostlight"));
         assert!(!server_registered(codex, configured, "other"));
+    }
+
+    /// Windsurf (Devin Desktop / Cascade) registers under the same plain-JSON `mcpServers` dialect as
+    /// Cursor, at ~/.codeium/windsurf/mcp_config.json (ADR-0071 D1).
+    #[test]
+    fn windsurf_uses_the_codeium_mcp_config_path() {
+        let ctx = PlanCtx {
+            current_exe: PathBuf::from("/opt/gl/ghostlight"),
+            home: PathBuf::from("/home/tester"),
+            config: PathBuf::from("/config"),
+            local: PathBuf::from("/local"),
+        };
+        let windsurf = client_by_id("windsurf").expect("Windsurf is a supported client");
+        assert_eq!(windsurf.display, "Windsurf");
+        assert_eq!(
+            config_path(windsurf, &ctx),
+            PathBuf::from("/home/tester/.codeium/windsurf/mcp_config.json")
+        );
+        assert!(matches!(
+            windsurf.add_via,
+            AddVia::JsonFileMerge(Dialect::McpServers)
+        ));
     }
 }
