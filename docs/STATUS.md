@@ -108,8 +108,12 @@ when they disagree**, and update it when you land something that changes the pic
   Ready signals and activation are gated to Ghostlight-managed tabs. The prior narration and
   attention stores are consolidated into the broker; the renderer keeps DOM/CSS ownership and
   governance authority remains in the Rust service. Strict clippy, the full Rust workspace, all
-  34 Lightbox scenarios, extension syntax checks, and all 100 extension tests pass. Visible Chrome
-  reload/navigation/signage verification is the remaining local gate.
+  34 Lightbox scenarios, extension syntax checks, and all 100 extension tests pass. A live Chrome
+  probe acknowledged narration on an unchanged managed document, acknowledged it again immediately
+  after navigation, and completed a screenshot capture. A raw-relay concurrency probe returned
+  narration in 4 ms while a same-tab page wait completed in 4,203 ms; the tool connector, not
+  Ghostlight, explained an initially serialized measurement. Owner-visible confirmation of the
+  camera and navigation styling is the remaining local gate.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
