@@ -45,9 +45,12 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Active work: reliable ephemeral GIF recording
 
-- **The demo tour is deliberately paused.** The owner chose to solve recording architecture before
-  returning to presentation work. The Capture Studio website block remains complete and live at
-  `/ghostlight/demo/studio/`; no browser-side capability-tour implementation has started.
+- **The cohesive Card Foundry tour is implemented on `dev`.** It replaces the old
+  capability checklist with one simulated foil-card QA story: inspect and rotate the proof, mark
+  defects, request Revision B, attach screenshot evidence, fill the release packet, prove a real
+  off-domain policy denial, export the GIF into the page, and clear captured bytes. The companion
+  site route is `/ghostlight/demo/foundry/`; its design and acceptance contract live in
+  `docs/design/tcg-foundry-demo.md`.
 - **The failed export was a transport defect, not an encoder stall.** The preserved 12-frame
   fixture encoded in under one second. The seven-frame coordinate export exceeded Chrome's 1 MiB
   host-to-extension message limit, disconnected the native host, and then waited for the generic
@@ -67,6 +70,16 @@ when they disagree**, and update it when you land something that changes the pic
   20 accepted frames (2,707,795 compressed bytes) encoded to a 7,046,417-byte GIF, crossed the
   bounded chunk transport, and returned `dispatched` with `unverified` acceptance and
   `retry_safe: false`. The test recording was cleared and its synthetic page overlay removed.
+- **The new story has passed compressed and normal-paced live local rehearsals.** The final normal
+  run captured 100 frames, delivered a 21,466,581-byte GIF through the bounded chunk transport,
+  observed `Replay ready` in the page, cleared the recording, and proved that the session overlay
+  denied `example.com`. Its enclosing build-and-run command took 113.3 seconds, including a
+  3.98-second build and pre-recording setup, so capture remained inside the 120-second hard lease.
+  The runner inventories controls once per stable page phase: two meaningful read scans replace
+  the prior scan before each click, type, and screenshot. Screenshot and drag geometry follow the
+  live viewport using the extension's canonical coordinate constants, so an accidental resize does
+  not invalidate the run. Formatting, strict clippy, website checks, responsive checks, and the
+  full fast-tier Rust workspace suite are green.
 
 ## Release pipeline (canonical map: `docs/RELEASE.md`)
 
