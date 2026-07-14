@@ -503,9 +503,8 @@ mod tests {
     /// `set_user_value` this module can exercise for real without touching the real,
     /// non-injectable `user_config_path()`/`org_policy_path()` (the lock-refusal and success
     /// paths both call `resolve_with_warnings` first, which reads those real, fixed platform
-    /// paths; testing them safely needs the path-isolation K5 -- `docs/tasks/console/
-    /// K5-enable-remote-connections.md` -- addresses for the Console's own write action; this
-    /// task does not attempt that isolation for the CLI's own end-to-end path).
+    /// paths. Tests that exercise writes must inject an isolated user-config directory; this test
+    /// does not attempt that isolation for the CLI's own end-to-end path).
     #[test]
     fn set_user_value_rejects_an_unregistered_key_before_touching_any_file() {
         let err = set_user_value("totally.unregistered.key", json!(true), |_| true)

@@ -9,10 +9,8 @@
 //!      `Decision::Allow { grant_id: None }` without touching any decision port (audit is
 //!      orthogonal to all-open, shared format doc section 4.5, so the facade still carries an
 //!      audit sink).
-//!   3. `read_page` secret redaction is still wired at the chokepoint (governed by the
-//!      unchanged `content.security.secrets.redact` key), exercised end-to-end over stdio.
-
-mod support;
+//!
+//! Process-boundary redaction coverage lives in the ADR-0056 Lightbox scenario library.
 
 use ghostlight::browser::directory::{descriptor, requires};
 use ghostlight::governance::dispatch::Governance;
@@ -20,18 +18,13 @@ use ghostlight::governance::ports::{
     AuditRecord, AuditSink, Capability, Decision, EffectiveMode, GoverningResource,
 };
 use ghostlight::transport::mcp::tools::advertised_tools_json;
-use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
 
-static SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// The 22 tool names in advertised order (the 13 trained tools plus `narrate`, `wait_for`, `script`,
-/// `form_fill`, `file_upload` (ADR-0050 Decision 2), `browser_batch` (ADR-0050 Decision 3),
+/// The 25 tool names in advertised order (the 13 trained tools plus `narrate`, `wait_for`, `script`,
+/// `form_fill`, `act_on`, `dialog`, `tab_control`, `file_upload` (ADR-0050 Decision 2), `browser_batch` (ADR-0050 Decision 3),
 /// `upload_image` (ADR-0050 Decision 4), `gif_creator` (ADR-0050 Decision 5), and ADR-0022
 /// Decision 7's sanctioned `explain` addition, positioned last), copied from the code-declared
 /// registry (`browser::directory::REGISTRY`), in declared order.
-const GOLDEN_TOOL_NAMES: [&str; 22] = [
+const GOLDEN_TOOL_NAMES: [&str; 25] = [
     "tabs_context_mcp",
     "tabs_create_mcp",
     "navigate",
@@ -49,6 +42,9 @@ const GOLDEN_TOOL_NAMES: [&str; 22] = [
     "wait_for",
     "script",
     "form_fill",
+    "act_on",
+    "dialog",
+    "tab_control",
     "file_upload",
     "browser_batch",
     "upload_image",
@@ -63,7 +59,7 @@ fn tools_list_is_byte_stable_through_the_move() {
     assert_eq!(
         tools.len(),
         GOLDEN_TOOL_NAMES.len(),
-        "all 22 tools advertised (13 trained plus narrate, wait_for, script, form_fill, file_upload, browser_batch, upload_image, gif_creator, and explain)"
+        "all 25 tools advertised (13 trained plus narrate, wait_for, script, form_fill, act_on, dialog, tab_control, file_upload, browser_batch, upload_image, gif_creator, and explain)"
     );
     for (i, name) in GOLDEN_TOOL_NAMES.iter().enumerate() {
         assert_eq!(
@@ -84,6 +80,11 @@ struct NullAuditSink;
 impl AuditSink for NullAuditSink {
     fn record(&self, _record: &AuditRecord) {}
     fn record_session_event(&self, _record: &ghostlight::governance::ports::SessionEventRecord) {}
+    fn record_attention_event(
+        &self,
+        _record: &ghostlight::governance::ports::AttentionEventRecord,
+    ) {
+    }
 }
 
 #[test]
@@ -130,107 +131,4 @@ fn file_upload_is_all_open_allowed_and_classifies_write() {
         Some(&[Capability::Write][..]),
         "file_upload classifies as a Write capability"
     );
-}
-
-/// Proves the facade change at the dispatch chokepoint did not disturb the `read_page`
-/// secret-redaction overlay: a fake extension answers with a result carrying the engine's
-/// `secret_value="..."` marker, and the client-visible text must come back redacted (the safe
-/// default keeps `content.security.secrets.redact` on) with the marker gone.
-///
-/// H6 (ADR-0030 Decision 8 amendment; the ONE sanctioned exception to this file's otherwise-frozen
-/// spawn choreography, BOOTSTRAP "only delight is sacred"): drives the standalone SERVICE + thin
-/// ADAPTER topology. Every assertion below is verbatim -- the redaction wiring is the invariant;
-/// only WHICH two processes are spawned changed.
-#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
-#[test]
-fn read_page_redaction_is_still_wired_at_the_chokepoint() {
-    let endpoint = format!(
-        "ghostlight-golden-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let mut service = support::spawn_service(&endpoint);
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // o04 (ADR-0031 Decision 4): inputSchema validation now runs before dispatch, so the
-        // read_page call needs a tabId to reach the redaction chokepoint (previously the empty
-        // arguments object was forwarded as-is; the validator now catches it earlier). The test's
-        // oracle -- the redacted text in the extension's reply -- is unchanged.
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{"tabId":1}}}),
-    ];
-    for req in &requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    let fake_endpoint = endpoint.clone();
-    let fake_ext = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
-        rt.block_on(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let stream = ghostlight::native::ipc::connect(&fake_endpoint)
-                .await
-                .expect("fake extension connects to the real IPC endpoint");
-            let (mut read_half, mut write_half) = tokio::io::split(stream);
-            support::send_extension_attach_frames(&mut write_half).await;
-            let req = ghostlight::native::host::read_message(&mut read_half)
-                .await
-                .unwrap()
-                .expect("one framed tool_request");
-            let v: Value = serde_json::from_slice(&req).unwrap();
-            let reply = json!({
-                "id": v["id"],
-                "type": "tool_response",
-                "result": { "content": [ {
-                    "type": "text",
-                    "text": "textbox \"Password\" [ref_3] secret_value=\"hunter2\" type=\"password\""
-                } ] },
-            });
-            ghostlight::native::host::write_message(
-                &mut write_half,
-                &serde_json::to_vec(&reply).unwrap(),
-            )
-            .await
-            .unwrap();
-        });
-    });
-
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-
-    let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(first["id"], 1, "first response is the initialize reply");
-
-    let second: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(second["id"], 2, "second response is the read_page reply");
-    assert_ne!(
-        second["result"]["isError"], true,
-        "the call must succeed: {second:?}"
-    );
-    let text = second["result"]["content"][0]["text"]
-        .as_str()
-        .expect("first content block carries text");
-    assert!(
-        text.contains("value=\"[value redacted]\""),
-        "secret value must be redacted: {text}"
-    );
-    assert!(
-        !text.contains("secret_value="),
-        "the raw marker must never reach the client: {text}"
-    );
-    assert!(
-        !text.contains("hunter2"),
-        "the raw secret value must never reach the client: {text}"
-    );
-
-    fake_ext.join().expect("fake-extension thread panicked");
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
 }

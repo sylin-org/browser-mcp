@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Ghostlight binary -- a thin shell over the `ghostlight` library crate.
 //!
-//! Governed browser automation over the user's **own authenticated Chromium session**. In v1.0
-//! this is the unconstrained engine (all-open); the governance overlay is a v1.5 addition.
+//! Governed browser automation over the user's **own authenticated Chromium session**. Browser
+//! control stays local to the current OS user; governance is an optional overlay on the all-open
+//! engine.
 //!
 //! Since ADR-0046 this executable is the CLI + the standalone SERVICE; the thin pass-through relay
 //! ships as a SEPARATE executable, so a service rebuild never relinks (locks) it:
@@ -28,7 +29,13 @@ mod demo;
 
 /// Ghostlight -- the user's own authenticated browser, for AI agents.
 #[derive(Debug, Parser)]
-#[command(name = "ghostlight", version, about, long_about = None)]
+#[command(
+    name = "ghostlight",
+    version,
+    about,
+    long_about = "Connect AI agents to the Chromium session you already use, with optional local policy enforcement and structured audit logging. Browser control stays on this machine and runs as the current OS user.",
+    after_help = "Quick start:\n  ghostlight install\n  ghostlight doctor\n\nThe browser extension is a separate, visible install step. Run `ghostlight install --help` for client selection and install options."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

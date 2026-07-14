@@ -231,6 +231,8 @@ pub struct AuditRecord {
     /// executing (a user hold, g10); on a held record `decision` is `"allow"` and
     /// `duration_ms` is `0`. `false` on every other record; always present, never omitted.
     pub held: bool,
+    /// `true` when this session's denial circuit refused the call before dispatch.
+    pub attention_required: bool,
     /// `"script"` | `"form_fill"` | `None`. Present only on orchestrated internal executions.
     pub orchestrator: Option<&'static str>,
     /// Correlates one parent call with its steps. Set on the parent AND each step/internal.
@@ -241,6 +243,12 @@ pub struct AuditRecord {
     /// `true` only on a script dry-run parent record. `false` on every other record; always
     /// present, never omitted, matching `held`'s always-present style.
     pub dry_run: bool,
+    /// Content-free confidence class for how the interaction target was selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_assurance: Option<String>,
+    /// Content-free observed outcome category. This is correlation evidence, not causation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// A session EVENT record (shared format doc section 6, g11): additive to the tool-call
@@ -270,6 +278,35 @@ pub struct SessionEventRecord {
     pub event: &'static str,
     /// Active manifest identity; always `None` until the manifest task (g12) wires it in.
     pub manifest: Option<crate::governance::manifest::identity::ManifestIdentity>,
+}
+
+/// A content-free attention-circuit transition record (ADR-0079). This is separate from both a
+/// tool-call record and a generic session event because its bounded threshold and disposition
+/// facts have a stable shape of their own. It never carries request arguments or page payloads.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AttentionEventRecord {
+    /// UUID v4, lowercase, hyphenated. Unique per record.
+    pub event_id: String,
+    /// RFC 3339 UTC timestamp, millisecond precision.
+    pub ts: String,
+    /// MCP client identity captured for this session, when supplied.
+    pub client: Option<ClientInfo>,
+    /// `attention_opened`, `attention_resumed`, `attention_quieted`, or `attention_ended`.
+    pub event: &'static str,
+    /// `sacred` or `policy`.
+    pub category: &'static str,
+    /// Bounded capability vocabulary joined in deterministic order.
+    pub capability: String,
+    /// Normalized governing origin, never a full URL.
+    pub domain: Option<String>,
+    /// `matching` or `session` on open; absent on a disposition.
+    pub threshold: Option<&'static str>,
+    /// Count that opened the circuit.
+    pub count: Option<u32>,
+    /// Rolling window length for the opening threshold.
+    pub window_ms: Option<u64>,
+    /// Human disposition on a closing transition.
+    pub disposition: Option<&'static str>,
 }
 
 // --- The core decision types (serde is load-bearing) ---
@@ -332,15 +369,6 @@ pub struct DecisionRequest {
     /// from the request alone -- g17 (simulate) replays a recorded request through the same
     /// decision function and must get the same `D-...` id back.
     pub manifest_hash: String,
-    /// The resolved connecting SOURCE for an `inbound.web.from` decision (ADR-0030 Decision
-    /// 5/9, H8), stamped by the inbound.web enforcement point BEFORE the pure decision runs,
-    /// EXACTLY as `resource` is stamped above. `None` for every non-web session (a local MCP
-    /// pipe adapter, or any all-open session) -- byte-identical to today, since no inbound
-    /// decision is even consulted for those paths. The resolved `inbound.web.from` ALLOWLIST
-    /// itself is not carried here; it is held by the deciding
-    /// [`crate::governance::inbound::InboundPdp`] instance, exactly as `LocalPdp` holds its own
-    /// `evaluate_host` fn rather than the request.
-    pub inbound_source: Option<String>,
 }
 
 /// The outcome of a policy decision. `Allow` optionally names the grant that permitted the
@@ -378,6 +406,8 @@ pub trait AuditSink: Send + Sync {
     /// destination and framing as [`Self::record`]; a distinct method because the two record
     /// shapes are deliberately different types, not a variant of one enum.
     fn record_session_event(&self, record: &SessionEventRecord);
+    /// Record one content-free attention-circuit transition (ADR-0079).
+    fn record_attention_event(&self, record: &AttentionEventRecord);
 }
 
 // --- Zero-policy implementations ---
@@ -402,6 +432,7 @@ pub struct NullSink;
 impl AuditSink for NullSink {
     fn record(&self, _record: &AuditRecord) {}
     fn record_session_event(&self, _record: &SessionEventRecord) {}
+    fn record_attention_event(&self, _record: &AttentionEventRecord) {}
 }
 
 #[cfg(test)]
@@ -435,7 +466,6 @@ mod tests {
             manifest_mode: None,
             config_mode,
             manifest_hash: String::new(),
-            inbound_source: None,
         }
     }
 
@@ -462,7 +492,6 @@ mod tests {
                 manifest_mode: None,
                 config_mode: EffectiveMode::Enforce,
                 manifest_hash: String::new(),
-                inbound_source: None,
             },
         ];
         for req in &requests {
@@ -488,10 +517,13 @@ mod tests {
             duration_ms: 0,
             manifest: None,
             held: false,
+            attention_required: false,
             orchestrator: None,
             batch_id: None,
             step: None,
             dry_run: false,
+            target_assurance: None,
+            outcome: None,
         }
     }
 
@@ -517,6 +549,64 @@ mod tests {
     fn null_sink_record_session_event_is_a_noop() {
         let sink = NullSink;
         sink.record_session_event(&sample_session_event_record());
+    }
+
+    fn sample_attention_event_record() -> AttentionEventRecord {
+        AttentionEventRecord {
+            event_id: "00000000-0000-4000-8000-000000000000".to_string(),
+            ts: "2026-07-14T00:00:00.000Z".to_string(),
+            client: None,
+            event: "attention_opened",
+            category: "policy",
+            capability: "action".to_string(),
+            domain: Some("example.com".to_string()),
+            threshold: Some("matching"),
+            count: Some(3),
+            window_ms: Some(60_000),
+            disposition: None,
+        }
+    }
+
+    #[test]
+    fn attention_event_record_is_content_free_and_stably_ordered() {
+        let record = sample_attention_event_record();
+        let value = serde_json::to_value(&record).unwrap();
+        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                "event_id",
+                "ts",
+                "client",
+                "event",
+                "category",
+                "capability",
+                "domain",
+                "threshold",
+                "count",
+                "window_ms",
+                "disposition",
+            ]
+        );
+        for forbidden in [
+            "identity",
+            "session_guid",
+            "tool",
+            "action",
+            "description",
+            "url",
+            "query",
+            "value",
+            "screenshot",
+        ] {
+            assert!(value.get(forbidden).is_none());
+        }
+    }
+
+    #[test]
+    fn null_sink_record_attention_event_is_a_noop() {
+        let sink = NullSink;
+        sink.record_attention_event(&sample_attention_event_record());
     }
 
     #[test]
@@ -570,6 +660,7 @@ mod tests {
                 "duration_ms",
                 "manifest",
                 "held",
+                "attention_required",
                 "orchestrator",
                 "batch_id",
                 "step",
@@ -584,6 +675,7 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
         assert_eq!(v["held"], false);
+        assert_eq!(v["attention_required"], false);
     }
 
     #[test]
@@ -646,7 +738,6 @@ mod tests {
             manifest_mode: Some(EffectiveMode::Observe),
             config_mode: EffectiveMode::Enforce,
             manifest_hash: "abc123".to_string(),
-            inbound_source: None,
         };
         let json = serde_json::to_string(&req).expect("serializes");
         let round_tripped: DecisionRequest = serde_json::from_str(&json).expect("deserializes");

@@ -4,16 +4,10 @@
 //! reaches dispatch and returns a `Denied (D-...)` text result instead -- that contrast is the test
 //! signal.
 //!
-//! ADR-0051 Phase 4 (P4.2): all but one of these migrated from spawn-a-service-plus-adapter onto
-//! the in-process `support::inproc::Harness`, which drives the SAME serve_session -> governance
-//! decide -> dispatch path with no OS process. Governed cases carry their `audit.*` config in the
-//! manifest pointing at a temp file; the harness's user-layer config resolution writes there
-//! exactly as a `--manifest file://` spawn would, so every audit read is unchanged. The one
-//! exception is `form_fill_without_extension_fails_with_parent_audit` (see its own doc): it needs
-//! an ALL-OPEN session with audit enabled via the USER CONFIG FILE layer, which the in-process
-//! harness does not override (that would take a process-global `GHOSTLIGHT_USER_CONFIG_DIR` env var,
-//! racing every parallel in-process test in this binary), so it stays a spawn test and belongs to
-//! the P4.3 quarantined end-to-end tier.
+//! ADR-0051 Phase 4 moved these cases onto the in-process `support::inproc::Harness`, which drives
+//! the same serve_session -> governance decide -> dispatch path with no OS process. Governed cases
+//! carry their `audit.*` config in the manifest. The all-open parent-audit process case lives in
+//! the ADR-0056 Lightbox scenario library.
 //!
 //! `file:///etc/passwd` is deliberately NOT used for the scheme-denial scenario (unlike the g13
 //! task doc's own worked example): the extension's `navigate` normalization -- which the g13
@@ -28,7 +22,6 @@
 mod support;
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use support::inproc::{by_id, init_and_call, manifest_from_value, text_of, Harness};
@@ -513,122 +506,4 @@ async fn form_fill_denied_upfront_under_write_deny() {
     );
 
     std::fs::remove_file(&audit_path).ok();
-}
-
-/// ADR-0036 Decision 5/7: under ALL-OPEN (no manifest at all -- `form_fill` is `TabScoped`, so
-/// under any GOVERNED manifest a call with no extension connected fails closed before the
-/// handler ever runs, since the tab's URL cannot be resolved; this scenario needs the grant gate
-/// skipped entirely), the parent call reaches its handler, which dispatches the dedicated
-/// `form_structure` internal read; with no extension connected that dispatch itself fails, and
-/// the result is an isError text naming the extension hop. The correlated audit still carries
-/// BOTH the parent `form_fill` record (batch_id set, no action, capability from the `action: None`
-/// variant) and the `form_structure` step record (orchestrator `form_fill`, same batch_id, step
-/// 1, a real -- not hardcoded -- duration_ms, since the failed internal read still completes its
-/// own scope).
-///
-/// STAYS a spawn test (ADR-0051 Phase 4, quarantined E2E tier): audit cannot be turned on via a
-/// manifest here (any manifest at all makes the session governed, which would deny `form_fill`
-/// upfront per the note above), so it drives the USER CONFIG FILE layer
-/// (`GHOSTLIGHT_USER_CONFIG_DIR`) to enable audit while leaving the session manifest-less
-/// (`Governance::all_open`). The in-process harness deliberately does not override that env var
-/// (it is process-global and would race every parallel in-process test in this binary), so this
-/// one case keeps the spawn-a-service pattern.
-#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
-#[test]
-fn form_fill_without_extension_fails_with_parent_audit() {
-    let pid = std::process::id();
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let audit_path = temp_path("case-form-fill-no-ext-audit");
-    let _ = std::fs::remove_file(&audit_path);
-
-    let user_config_dir = std::env::temp_dir().join(format!(
-        "ghostlight-tool-enforcement-no-ext-config-{pid}-{seq}"
-    ));
-    std::fs::create_dir_all(user_config_dir.join("ghostlight")).unwrap();
-    std::fs::write(
-        user_config_dir.join("ghostlight").join("config.json"),
-        serde_json::to_vec(&json!({
-            "config": {
-                "audit.enabled": true,
-                "audit.destination": "file",
-                "audit.file.path": audit_path.to_string_lossy(),
-            }
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let endpoint = format!("ghostlight-ge-noext-{pid}-{seq}");
-    // The web API listener is unused by this test, but
-    // `spawn_service_with_user_config_dir_and_webapi_port` is the one existing support helper that
-    // spawns an ALL-OPEN service (no `--manifest`) with an isolated `GHOSTLIGHT_USER_CONFIG_DIR`;
-    // it binds an OS-assigned port, which this test simply ignores.
-    let (mut service, _port) =
-        support::spawn_service_with_user_config_dir_and_webapi_port(&endpoint, &user_config_dir);
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    let requests = init_and_call(
-        "form_fill",
-        json!({"tabId": 0, "fields": {"Email": "a@b.c"}}),
-    );
-    for req in &requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-    let expected = requests.iter().filter(|r| r.get("id").is_some()).count();
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines_reader = BufReader::new(stdout).lines();
-    let responses: Vec<Value> = (0..expected)
-        .map(|_| {
-            let line = lines_reader
-                .next()
-                .expect("the adapter's stdout closed before every expected reply arrived")
-                .unwrap();
-            serde_json::from_str(&line).expect("each stdout line is JSON")
-        })
-        .collect();
-
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
-
-    let call = by_id(&responses, 2);
-    assert_eq!(
-        call["result"]["isError"], true,
-        "no extension -> isError: {call:?}"
-    );
-    let text = text_of(call);
-    assert!(text.contains("extension"), "{text}");
-
-    let audit_lines = read_audit_lines(&audit_path);
-    let parent = audit_lines
-        .iter()
-        .find(|l| l["tool"] == "form_fill")
-        .unwrap_or_else(|| panic!("no form_fill parent record in {audit_lines:?}"));
-    assert!(parent["batch_id"].is_string(), "parent batch_id set");
-    assert!(parent["action"].is_null(), "parent action is null");
-    assert_eq!(
-        parent["capability"], "read",
-        "capability from the action:None variant [read, write]"
-    );
-    let batch_id = parent["batch_id"].as_str().unwrap();
-
-    let structure = audit_lines
-        .iter()
-        .find(|l| l["tool"] == "form_structure")
-        .unwrap_or_else(|| panic!("no form_structure step record in {audit_lines:?}"));
-    assert_eq!(structure["orchestrator"], "form_fill");
-    assert_eq!(structure["batch_id"], batch_id);
-    assert_eq!(structure["step"], 1);
-    assert!(
-        structure["duration_ms"].is_u64(),
-        "a real duration_ms, not hardcoded: {structure:?}"
-    );
-
-    std::fs::remove_file(&audit_path).ok();
-    std::fs::remove_dir_all(&user_config_dir).ok();
 }

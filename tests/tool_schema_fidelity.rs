@@ -32,6 +32,14 @@ short description of what it does, plus definitions of the capability vocabulary
 learn what you are allowed to do in this session. It does not read, summarize, or explain web \
 pages.";
 
+const DIALOG_DESCRIPTION: &str = "Inspect or explicitly resolve the JavaScript dialog blocking \
+one owned tab. Use status when the dialog state is unknown. Never accept, dismiss, or respond \
+without intent from the current task.";
+
+const TAB_CONTROL_DESCRIPTION: &str = "Focus, reload, or close one tab owned by this Ghostlight \
+session. Close is always explicit and never affects a user-owned tab or automatically deletes the \
+containing tab group.";
+
 fn tools() -> Vec<Value> {
     let v = advertised_tools_json();
     v["tools"]
@@ -53,8 +61,8 @@ fn advertises_the_thirteen_trained_tools_plus_sanctioned_additions_with_explain_
         .collect();
     assert_eq!(
         names.len(),
-        22,
-        "13 trained tools plus narrate, wait_for, script, form_fill, file_upload, browser_batch, upload_image, gif_creator, and explain"
+        25,
+        "13 trained tools plus narrate, wait_for, script, form_fill, act_on, dialog, tab_control, file_upload, browser_batch, upload_image, gif_creator, and explain"
     );
     assert_eq!(
         names[..13],
@@ -65,14 +73,17 @@ fn advertises_the_thirteen_trained_tools_plus_sanctioned_additions_with_explain_
     assert_eq!(names[14], "wait_for", "the 15th tool is wait_for");
     assert_eq!(names[15], "script", "the 16th tool is script");
     assert_eq!(names[16], "form_fill", "the 17th tool is form_fill");
-    assert_eq!(names[17], "file_upload", "the 18th tool is file_upload");
-    assert_eq!(names[18], "browser_batch", "the 19th tool is browser_batch");
-    assert_eq!(names[19], "upload_image", "the 20th tool is upload_image");
+    assert_eq!(names[17], "act_on", "the 18th tool is act_on");
+    assert_eq!(names[18], "dialog", "the 19th tool is dialog");
+    assert_eq!(names[19], "tab_control", "the 20th tool is tab_control");
+    assert_eq!(names[20], "file_upload", "the 21st tool is file_upload");
+    assert_eq!(names[21], "browser_batch", "the 22nd tool is browser_batch");
+    assert_eq!(names[22], "upload_image", "the 23rd tool is upload_image");
     assert_eq!(
-        names[20], "gif_creator",
-        "the 21st tool is gif_creator, immediately before explain"
+        names[23], "gif_creator",
+        "the 24th tool is gif_creator, immediately before explain"
     );
-    assert_eq!(names[21], "explain", "explain stays positioned last");
+    assert_eq!(names[24], "explain", "explain stays positioned last");
 }
 
 /// The `explain` tool's own object matches ADR-0022 Decision 7 exactly: name, the pinned
@@ -110,8 +121,70 @@ fn explain_tool_object_matches_the_pinned_adr_0022_decision_7_shape() {
 
     assert_eq!(
         all.len(),
-        22,
-        "no tool other than narrate, wait_for, script, form_fill, file_upload, browser_batch, upload_image, gif_creator, and explain was added to the sacred fixture"
+        25,
+        "no tool other than narrate, wait_for, script, form_fill, act_on, dialog, tab_control, file_upload, browser_batch, upload_image, gif_creator, and explain was added to the sacred fixture"
+    );
+}
+
+#[test]
+fn dialog_tool_matches_the_pinned_adr_0078_shape() {
+    let dialog = tool("dialog");
+    assert_eq!(dialog["description"], DIALOG_DESCRIPTION);
+    assert_eq!(
+        dialog["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to inspect or resolve. The tab must belong to this Ghostlight session."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "accept", "dismiss", "respond"],
+                    "description": "Inspect the current dialog or explicitly resolve it."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Prompt response text. Required only for respond."
+                }
+            },
+            "required": ["tabId", "action"],
+            "allOf": [{
+                "if": {
+                    "properties": { "action": { "const": "respond" } },
+                    "required": ["action"]
+                },
+                "then": { "required": ["text"] },
+                "else": { "not": { "required": ["text"] } }
+            }],
+            "additionalProperties": false
+        })
+    );
+}
+
+#[test]
+fn tab_control_tool_matches_the_pinned_adr_0078_shape() {
+    let tab_control = tool("tab_control");
+    assert_eq!(tab_control["description"], TAB_CONTROL_DESCRIPTION);
+    assert_eq!(
+        tab_control["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to control. The tab must belong to this Ghostlight session."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["focus", "reload", "close"],
+                    "description": "Focus the tab, reload its page, or explicitly close that one tab."
+                }
+            },
+            "required": ["tabId", "action"],
+            "additionalProperties": false
+        })
     );
 }
 
@@ -365,8 +438,8 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
 
 /// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
 /// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
-/// each is a JSON-Schema object. ADR-0072 adds `narrate`; C4 adds `wait_for`; C7 adds `script`;
-/// C10 adds `form_fill`.
+/// each is a JSON-Schema object. ADR-0078 C1 adds targeted `read_page`; C2 adds interaction
+/// receipts to the low-level mutating tools.
 #[test]
 fn output_schemas_present_exactly_where_declared() {
     let with_schema: Vec<String> = tools()
@@ -380,11 +453,24 @@ fn output_schemas_present_exactly_where_declared() {
             "tabs_context_mcp",
             "tabs_create_mcp",
             "navigate",
+            "computer",
             "find",
+            "form_input",
+            "get_page_text",
+            "javascript_tool",
+            "read_console_messages",
+            "read_network_requests",
+            "read_page",
             "narrate",
             "wait_for",
             "script",
-            "form_fill"
+            "form_fill",
+            "act_on",
+            "dialog",
+            "tab_control",
+            "file_upload",
+            "upload_image",
+            "gif_creator"
         ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );
@@ -394,6 +480,33 @@ fn output_schemas_present_exactly_where_declared() {
             schema["type"].as_str(),
             Some("object"),
             "{name}: outputSchema.type must be \"object\""
+        );
+    }
+    for name in [
+        "tabs_context_mcp",
+        "tabs_create_mcp",
+        "navigate",
+        "computer",
+        "find",
+        "form_input",
+        "get_page_text",
+        "javascript_tool",
+        "read_console_messages",
+        "read_network_requests",
+        "read_page",
+        "wait_for",
+        "form_fill",
+        "act_on",
+        "dialog",
+        "file_upload",
+        "upload_image",
+        "gif_creator",
+    ] {
+        assert!(
+            tool(name)["outputSchema"]["properties"]
+                .get("provenance")
+                .is_some(),
+            "{name}: page-sourced output declares provenance"
         );
     }
 }

@@ -32,8 +32,9 @@ use std::time::{Duration, Instant};
 use crate::governance::manifest::document::Grant;
 use crate::governance::manifest::identity::ManifestIdentity;
 use crate::governance::ports::{
-    AuditRecord, AuditSink, Capability, ClientInfo, Decision, DecisionRequest, Denial,
-    EffectiveMode, GoverningResource, PolicyDecisionPoint, SessionEventRecord,
+    AttentionEventRecord, AuditRecord, AuditSink, Capability, ClientInfo, Decision,
+    DecisionRequest, Denial, EffectiveMode, GoverningResource, PolicyDecisionPoint,
+    SessionEventRecord,
 };
 
 /// How long a take-the-wheel hold may last before [`hold_message`] appends the resume hint
@@ -256,12 +257,6 @@ impl Governance {
                     manifest_mode: state.manifest_mode,
                     config_mode,
                     manifest_hash: state.manifest_hash.clone(),
-                    // H8 (ADR-0030 Decision 9): the tool-call chokepoint never carries a
-                    // connecting-source axis -- that is decided separately, only for an
-                    // inbound.web session's connection admission
-                    // (`crate::governance::inbound::InboundPdp`), never here. Byte-identical to
-                    // today for every existing caller.
-                    inbound_source: None,
                 };
                 state.pdp.decide(&req)
             }
@@ -296,6 +291,8 @@ impl Governance {
             batch_id: None,
             step: None,
             dry_run: false,
+            target_assurance: None,
+            outcome: None,
         }
     }
 
@@ -471,6 +468,38 @@ impl Governance {
         };
         self.audit.record_session_event(&record);
     }
+
+    /// Record one content-free attention-circuit transition (ADR-0079).
+    pub fn record_attention_event(&self, event: crate::governance::attention::AttentionEvent) {
+        let signal = event.state.signal;
+        let record = AttentionEventRecord {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            client: self.current_client(),
+            event: event.event,
+            category: signal.category.as_str(),
+            capability: capability_names(&signal.capabilities),
+            domain: signal.origin,
+            threshold: event.threshold.map(|value| value.as_str()),
+            count: event.count,
+            window_ms: event
+                .threshold
+                .map(|value| value.window().as_millis() as u64),
+            disposition: event.disposition.map(|value| value.as_str()),
+        };
+        self.audit.record_attention_event(&record);
+    }
+}
+
+fn capability_names(capabilities: &[Capability]) -> String {
+    if capabilities.is_empty() {
+        return "none".to_string();
+    }
+    capabilities
+        .iter()
+        .map(Capability::as_str)
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// The outcome of [`Governance::authorize`]: either a terminal denial (the audit record is
@@ -501,6 +530,8 @@ pub struct CallAudit {
     batch_id: Option<String>,
     step: Option<u32>,
     dry_run: bool,
+    target_assurance: Option<String>,
+    outcome: Option<String>,
 }
 
 impl CallAudit {
@@ -515,7 +546,13 @@ impl CallAudit {
     /// `duration_ms: 0`, `domain: null` (a held call must never touch the extension, so no
     /// current-tab host is ever resolved for it). Terminal: consumes the scope.
     pub fn held(self) {
-        let record = self.build_record(None, "allow", None, None, 0, true);
+        let record = self.build_record(None, "allow", None, None, 0, true, false);
+        self.audit.record(&record);
+    }
+
+    /// Record a call refused by this MCP session's denial-attention circuit (ADR-0079).
+    pub fn attention_required(self) {
+        let record = self.build_record(None, "allow", None, None, 0, false, true);
         self.audit.record(&record);
     }
 
@@ -530,6 +567,7 @@ impl CallAudit {
             denial.grant_id.clone(),
             Some(denial.denial_id.clone()),
             0,
+            false,
             false,
         );
         self.audit.record(&record);
@@ -577,6 +615,30 @@ impl CallAudit {
         self.batch_id = Some(batch_id.to_string());
     }
 
+    /// Add a content-free target-selection class to the audit record.
+    pub fn set_target_assurance(&mut self, assurance: &str) {
+        if matches!(assurance, "semantic" | "ref" | "coordinate" | "none") {
+            self.target_assurance = Some(assurance.to_string());
+        }
+    }
+
+    /// Add a content-free observed outcome class to the audit record.
+    pub fn set_outcome(&mut self, outcome: &str) {
+        if matches!(
+            outcome,
+            "changed"
+                | "unchanged"
+                | "blocked"
+                | "expect_met"
+                | "expect_timeout"
+                | "tab_focused"
+                | "tab_reloaded"
+                | "tab_closed"
+        ) {
+            self.outcome = Some(outcome.to_string());
+        }
+    }
+
     /// Amend the scope's attribution after a successful navigate landing re-check (g13/g15,
     /// point 5): overwrites `grant_id`/`domain` with the landing's own resolution and clears any
     /// shadow denial captured pre-dispatch (an on-grant landing is a real allow, not a shadow).
@@ -616,6 +678,7 @@ impl CallAudit {
             Some(denial.denial_id.clone()),
             duration_ms,
             false,
+            false,
         );
         self.audit.record(&record);
     }
@@ -644,6 +707,7 @@ impl CallAudit {
             denial_id,
             duration_ms,
             false,
+            false,
         );
         self.audit.record(&record);
     }
@@ -659,6 +723,7 @@ impl CallAudit {
             denial.grant_id.clone(),
             Some(denial.denial_id.clone()),
             duration_ms,
+            false,
             false,
         );
         self.audit.record(&record);
@@ -688,6 +753,7 @@ impl CallAudit {
         denial_id: Option<String>,
         duration_ms: u64,
         held: bool,
+        attention_required: bool,
     ) -> AuditRecord {
         let capability = self
             .requires
@@ -709,10 +775,13 @@ impl CallAudit {
             duration_ms,
             manifest: None,
             held,
+            attention_required,
             orchestrator: self.orchestrator,
             batch_id: self.batch_id.clone(),
             step: self.step,
             dry_run: self.dry_run,
+            target_assurance: self.target_assurance.clone(),
+            outcome: self.outcome.clone(),
         }
     }
 }
@@ -782,6 +851,9 @@ mod tests {
         fn record_session_event(&self, _record: &SessionEventRecord) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
+        fn record_attention_event(&self, _record: &AttentionEventRecord) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     /// A sink that keeps every record, so tests can assert on the actual built fields
@@ -790,6 +862,7 @@ mod tests {
     struct CapturingAuditSink {
         records: Mutex<Vec<AuditRecord>>,
         session_events: Mutex<Vec<SessionEventRecord>>,
+        attention_events: Mutex<Vec<AttentionEventRecord>>,
     }
     impl AuditSink for CapturingAuditSink {
         fn record(&self, record: &AuditRecord) {
@@ -800,6 +873,12 @@ mod tests {
         }
         fn record_session_event(&self, record: &SessionEventRecord) {
             self.session_events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(record.clone());
+        }
+        fn record_attention_event(&self, record: &AttentionEventRecord) {
+            self.attention_events
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(record.clone());
@@ -823,6 +902,15 @@ mod tests {
                 .cloned()
                 .expect("at least one session event was captured")
         }
+
+        fn last_attention_event(&self) -> AttentionEventRecord {
+            self.attention_events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .last()
+                .cloned()
+                .expect("at least one attention event was captured")
+        }
     }
 
     /// Test 1: `begin` + `set_domain` + `complete` reproduces the pre-ADR-0024
@@ -842,8 +930,9 @@ mod tests {
         assert_eq!(rec.capability, "none");
         assert_eq!(rec.grant_id, None);
         assert!(!rec.held);
+        assert!(!rec.attention_required);
 
-        // The 18-key field order pin, transcribed from tests/audit_recorder.rs.
+        // The 19-key field order pin, transcribed from tests/audit_recorder.rs.
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&rec).unwrap()).unwrap();
         let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
@@ -864,6 +953,7 @@ mod tests {
                 "duration_ms",
                 "manifest",
                 "held",
+                "attention_required",
                 "orchestrator",
                 "batch_id",
                 "step",
@@ -1151,6 +1241,55 @@ mod tests {
         assert_eq!(rec.client.as_ref().unwrap().name, "claude-code");
         assert_eq!(rec.identity, None);
         assert_eq!(rec.manifest, None);
+    }
+
+    #[test]
+    fn attention_transition_records_only_bounded_decision_facts() {
+        use crate::governance::attention::{
+            AttentionEvent, DenialCategory, DenialSignal, PauseState, ThresholdKind,
+        };
+
+        let sink = Arc::new(CapturingAuditSink::default());
+        let g = Governance::all_open(sink.clone());
+        g.set_client("cline", "3.2.1");
+        g.record_attention_event(AttentionEvent::opened(PauseState {
+            threshold: ThresholdKind::Matching,
+            count: 3,
+            signal: DenialSignal {
+                origin: Some("example.com".to_string()),
+                capabilities: vec![Capability::Action, Capability::Write],
+                category: DenialCategory::Policy,
+            },
+        }));
+
+        let rec = sink.last_attention_event();
+        assert_eq!(rec.event, "attention_opened");
+        assert_eq!(rec.client.as_ref().unwrap().name, "cline");
+        assert_eq!(rec.category, "policy");
+        assert_eq!(rec.capability, "action+write");
+        assert_eq!(rec.domain.as_deref(), Some("example.com"));
+        assert_eq!(rec.threshold, Some("matching"));
+        assert_eq!(rec.count, Some(3));
+        assert_eq!(rec.window_ms, Some(60_000));
+        assert_eq!(rec.disposition, None);
+
+        let value = serde_json::to_value(&rec).unwrap();
+        for forbidden in [
+            "identity",
+            "session_guid",
+            "tool",
+            "action",
+            "description",
+            "url",
+            "query",
+            "value",
+            "screenshot",
+        ] {
+            assert!(
+                value.get(forbidden).is_none(),
+                "{forbidden} must not appear in an attention event"
+            );
+        }
     }
 
     /// ADR-0025 Decision 5: both new producers emit the frozen `SessionEventRecord` shape (same

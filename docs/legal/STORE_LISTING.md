@@ -47,8 +47,8 @@ the web apps you already use, through any Model Context Protocol (MCP) client su
 Cursor, or VS Code.
 
 IMPORTANT: This extension does nothing on its own. It is the browser-side half of a two-part
-system. The other half is a local native application (a single Rust binary) that you install and
-run separately -- it is not distributed through the Chrome Web Store. Without that native
+system. The other half is a local native application that you install and run separately -- it is
+not distributed through the Chrome Web Store. Without that native
 application installed and registered, the extension is inert: it cannot connect to anything,
 receive instructions, or take any action. Install instructions are in the project repository.
 
@@ -108,10 +108,10 @@ extension does serves that single purpose; it makes no access-control decisions 
 holds no policy or allowlist logic.
 ```
 
-**Permission justifications**: copy each paragraph from
+**Permission justifications**: copy each fenced block from
 [PERMISSION_JUSTIFICATIONS.md](PERMISSION_JUSTIFICATIONS.md) into the matching box (tabs, debugger,
 scripting, nativeMessaging, tabGroups, windows, storage, alarms, and the `<all_urls>` host
-permission). They are written to paste one-to-one.
+permission). Each paste-ready block is below the dashboard's 1,000-character limit.
 
 **Privacy policy URL**
 
@@ -119,19 +119,9 @@ permission). They are written to paste one-to-one.
 https://sylin.org/ghostlight/privacy/
 ```
 
-**Remote code use justification**
-
-```
-The extension's service worker, content scripts, and support libraries all ship in the submitted
-package. It does not fetch or dynamically import code that changes extension behavior. Ghostlight
-does provide an explicitly advertised javascript_tool automation capability. When the user or
-connected AI agent requests that tool, JavaScript text arrives from the separately installed local
-native application over Chrome native messaging and is evaluated through CDP Runtime.evaluate in
-the attached web page. It runs only in that page's context, not in the extension origin, and is not
-installed, imported, or retained as extension code. Chrome's Manifest V3 requirements expressly
-list the Debugger API as a permitted API for remote-source execution when used for its documented
-purpose. The capability is invoked only for a specific tool call in the visible automation session.
-```
+**Remote code use justification**: copy the fenced block under "Remote code use / page-context
+JavaScript" in [PERMISSION_JUSTIFICATIONS.md](PERMISSION_JUSTIFICATIONS.md). That file is the single
+source for dashboard justification text.
 
 Policy reference: [Chrome Web Store Manifest V3 requirements](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements).
 
@@ -174,12 +164,29 @@ Policy reference: [Chrome Web Store privacy fields](https://developer.chrome.com
   The shot list and how to capture each are below.
 - Promotional video: a YouTube URL that shows the extension's features. Required by the current
   dashboard listing guidance. The recording recipe is below.
-- Small promo tile: 440x280 PNG. Required. Confirm the existing dashboard asset before submission;
-  no source asset is currently tracked in this repository.
+- Small promo tile: 440x280 PNG. Required. Its deterministic capture source is
+  `https://sylin.org/ghostlight/store-assets/promo/`.
 - Marquee promo tile: 1400x560 PNG. Optional; only used if the item is featured.
 
 Policy references: [complete the listing](https://developer.chrome.com/docs/webstore/cws-dashboard-listing)
 and [supply images](https://developer.chrome.com/docs/webstore/images).
+
+### How to capture the promotional tiles
+
+The website route `https://sylin.org/ghostlight/store-assets/promo/` is a noindex, static capture
+surface. It uses the Card Foundry visual system but has no animation, personal data, or timing
+dependency. The same document selects the small or marquee composition from the exact viewport.
+
+1. Open the route in Chrome and open DevTools (F12).
+2. Toggle the Device Toolbar (Ctrl+Shift+M), set DPR to 1, and choose one required viewport:
+   - 440 x 280 for the required small promo tile.
+   - 1400 x 560 for the optional marquee promo tile.
+3. Choose "Capture screenshot" from the device-toolbar menu. Do not use the full-size screenshot
+   command; the viewport itself is the asset boundary.
+4. Confirm the resulting PNG has the exact pixel dimensions before uploading it.
+
+Chrome does not define a 1400x650 marquee asset. Use 1400x560 exactly; the dashboard rejects the
+wrong dimensions.
 
 ### Promotional video: the shortest honest story
 
@@ -256,8 +263,7 @@ this one is recorded from the outside:
 1. Run `target\release\ghostlight.exe doctor`; continue only when the extension is connected.
 2. Run the `ghostlight demo` command from the promotional-video recipe and record the browser window
    with OBS. The tour self-narrates through timed Agent ribbons, action effects, and the purpose-built
-   demo pages. Do this only after the staged extension package includes ADR-0072 `narrate`; the
-   current v0.5.6 draft predates it.
+   demo pages. The submitted v0.5.7 package includes ADR-0072 `narrate`.
 3. Extract the peak frame of an effect from the recording (VLC "Take Snapshot", or ffmpeg). Crop to
    1280x800 if the recorder added window chrome. Turning on "Show action captions" in the extension
    popup before recording adds the subtitle line, which reads well in a still.
@@ -287,9 +293,9 @@ audience. Capture the terminal window with the OS and crop to 1280x800.
 4. Submit for review. Expect extra scrutiny on `debugger` + `<all_urls>` + `nativeMessaging`; the
    justifications and privacy policy are written to answer exactly that.
 
-## Published extension id
+## Submitted extension id
 
-The item exists (draft). The store assigned the id
+The item was submitted for review on 2026-07-13. The store assigned the id
 **`lejccfmoeogmhemakeknjjdhkfkgncdl`** -- this is NOT the unpacked-dev id
 `cjcmhepmagomefjggkcohdbfemacojoa` (the dev id comes from the pinned manifest `key`, which is
 stripped from the store package).

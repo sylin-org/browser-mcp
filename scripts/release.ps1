@@ -156,6 +156,8 @@ function Get-ExpectedAssets {
     $ext = "ghostlight-extension-$Tag.zip"
     $names.Add($ext)
     $names.Add("$ext.sha256")
+    $names.Add("ghostlight-$Tag-sbom.cyclonedx.json")
+    $names.Add('SHA256SUMS')
     return $names
 }
 

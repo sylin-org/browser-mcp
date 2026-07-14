@@ -337,12 +337,10 @@ struct Snapshot<'a> {
     started_ms: u128,
     updated_ms: u128,
     extension_connected: bool,
-    /// The actual bound TCP port of the inbound.web listener (the Console / local web API), once
-    /// it has bound. Absent until the listener binds -- and, because the bind is deliberately
-    /// non-fatal, absent for the whole run if it never binds -- so a reader distinguishes "up on
-    /// port N" from "not up". Only the service role ever sets it.
+    /// The actual bound TCP port of the read-only manage.web listener. Absent if it never binds,
+    /// so a reader distinguishes "up on port N" from "not up". Only the service sets it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    webapi_port: Option<u16>,
+    manage_web_port: Option<u16>,
     in_flight: Vec<&'a InFlight>,
     counters: &'a Counters,
     recent: Vec<&'a Event>,
@@ -360,7 +358,7 @@ struct Inner {
     started_ms: u128,
     last_state_ms: u128,
     extension_connected: bool,
-    webapi_port: Option<u16>,
+    manage_web_port: Option<u16>,
     in_flight: BTreeMap<String, InFlight>,
     counters: Counters,
     recent: VecDeque<Event>,
@@ -411,7 +409,7 @@ impl Inner {
             started_ms: self.started_ms,
             updated_ms: now_ms(),
             extension_connected: self.extension_connected,
-            webapi_port: self.webapi_port,
+            manage_web_port: self.manage_web_port,
             in_flight: self.in_flight.values().collect(),
             counters: &self.counters,
             recent: self.recent.iter().collect(),
@@ -470,7 +468,7 @@ impl DebugSink {
             started_ms: now,
             last_state_ms: now,
             extension_connected: false,
-            webapi_port: None,
+            manage_web_port: None,
             in_flight: BTreeMap::new(),
             counters: Counters::default(),
             recent: VecDeque::new(),
@@ -631,12 +629,11 @@ impl DebugSink {
         });
     }
 
-    /// Record the inbound.web listener's actual bound port (forces a snapshot: a reader -- `status`,
-    /// `doctor`, or a test waiting for the Console to be reachable -- must see it the instant the
-    /// listener binds). Set once, right after a successful bind.
-    pub fn set_webapi_port(&self, port: u16) {
+    /// Record the manage.web listener's actual bound port. This forces a snapshot so a reader or
+    /// test sees the listener as soon as it binds.
+    pub fn set_manage_web_port(&self, port: u16) {
         self.with(|i| {
-            i.webapi_port = Some(port);
+            i.manage_web_port = Some(port);
             i.last_state_ms = now_ms();
             i.write_state();
         });

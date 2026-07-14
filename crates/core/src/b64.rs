@@ -3,8 +3,7 @@
 //!
 //! Used by the gif_creator recording path (ADR-0053): screencast frames arrive from the extension
 //! as base64 JPEG and the encoded GIF returns to MCP clients as base64. Hand-rolled per the
-//! project's dependency posture (the codebase already hand-rolls the encode half for the
-//! WebSocket accept key); both directions are oracle-tested below.
+//! project's dependency posture; both directions are oracle-tested below.
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

@@ -1,8 +1,10 @@
 # How Ghostlight compares
 
-Updated 2026-07-07 from the post-evaluation landscape sweep
+Updated 2026-07-14 from the post-evaluation landscape sweep and the current agent-browser
+one-to-one capability rebaseline
 ([docs/research/14](research/14-post-evaluation-2026-07.md); the original study is
-[docs/research/13](research/13-competitive-landscape.md)). The honest summary: "an extension
+[docs/research/13](research/13-competitive-landscape.md); detailed overlap map is
+[docs/research/17](research/17-agent-browser-overlap-2026-07.md)). The honest summary: "an extension
 that drives your real, logged-in Chrome from any MCP client" is a crowded idea, and the
 strongest version of it now ships first-party from Anthropic. The combination that stays
 uncontested is that model PLUS a fused governance layer, open and local-first. This page is a
@@ -11,8 +13,9 @@ your case better, use it.
 
 The four properties, together, are the product:
 
-1. Automates YOUR authenticated session (real cookies, real SSO, real tabs) via a thin
-   extension -- never a fresh profile, a profile copy, or a cloud browser.
+1. Automates YOUR authenticated Chromium profile (real cookies and real SSO) inside a dedicated,
+   managed tab group via a thin extension -- never a fresh profile, a profile copy, a cloud
+   browser, or arbitrary access to ordinary tabs.
 2. Client-agnostic MCP server: Claude Code, Cursor, VS Code, anything.
 3. Governance fused in: capability classification per action, identity-bound host
    grants, sacred never-touch domains, observe/enforce modes, structured audit -- with
@@ -36,8 +39,9 @@ governance enough.
 Cline, or anything MCP); your Claude access runs through Bedrock, Vertex, or Foundry (the
 first-party path requires a direct plan); you need a structured audit trail of what the agent
 did; you want policy as code (grants, capability floors, simulate/shadow/enforce, org locks)
-rather than a site list; or you need the whole thing self-hosted and inspectable. The trained
-tool schemas are preserved verbatim, so a Claude agent behaves identically on either path.
+rather than a site list; or you need the whole thing self-hosted and inspectable. The 13 trained
+tool schemas are preserved verbatim so models can reuse that learned interface, while Ghostlight's
+additive tools and governance remain its own surface.
 
 ## Against the closest neighbors
 
@@ -53,10 +57,15 @@ steadily. Node-based, no governance layer, and browser automation is a side feat
 testing tool. Ghostlight is purpose-built for the governed-agent case: a native Rust runtime with
 no Node service, policy and audit at the dispatch chokepoint.
 
-**vercel-labs/agent-browser** (~38k stars) -- a single Rust binary over CDP with domain
-allowlists and action policies (governance-lite). But it copies your Chrome profile to a
-temporary snapshot: a fresh browser, not your live session, with no extension, no identity
-layer, and no audit. Good for sandboxed tasks; not for "act as me in my real tabs, governed."
+**vercel-labs/agent-browser** (~38k stars) -- a broad Rust browser runtime and CLI with an MCP
+server, compact default tool profile, domain and action policy, isolated/restorable sessions,
+CDP auto-connect, cloud providers, testing controls, and specialist diagnostics. It can attach to
+a running browser or select a profile, but its default product model launches and owns a separate
+browser session. It does not provide Ghostlight's managed-tab boundary, declared organization
+identity, RAWX grant model, or identity-bound policy audit. It is excellent for testing and
+sandboxed tasks. Ghostlight remains the narrower choice for "use my already-open browser from any
+MCP client, make each intent visible, and govern it locally." The detailed map explains which
+agent-browser features are mutual, candidates, specialist complements, or deliberate exclusions.
 
 **browsermcp.io ("Browser MCP", ~7k stars)** -- extension-driven real session, but
 unmaintained (last push April 2025) and the extension itself is closed source; only the npm
@@ -95,10 +104,10 @@ own MCP client. Different deployment universe (and price class).
 | Claude Code + Claude in Chrome | yes | no (Claude only) | site permissions, no audit | no (closed) |
 | mcp-chrome | yes | yes | no | no (Node) |
 | Playwright MCP (ext. mode) | yes | yes | no | no (Node) |
-| agent-browser | no (profile copy) | yes | partial | yes (Rust) |
+| agent-browser | optional (CDP/profile) | yes | action policy, no equivalent audit | yes (Rust) |
 | browser-use | opt-in | yes | cloud-only | no (framework) |
 | Generic governance layers | n/a (proxy/runtime) | yes | yes (opaque calls) | varies |
 | Enterprise browsers | yes | no | yes | no (closed SaaS) |
 
-Star counts and activity are as of 2026-07-07 and will drift; the research notes carry the
+Star counts and activity are as of 2026-07-14 and will drift; the research notes carry the
 sources. Corrections welcome: hello@sylin.org.

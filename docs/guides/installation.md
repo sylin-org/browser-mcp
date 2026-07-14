@@ -4,9 +4,19 @@ Ghostlight is a native Rust service, a small relay, and a thin browser extension
 three things together: your MCP client, the local service, and the extension. This guide covers both
 install paths, what the installer actually writes, how to verify the chain, and how to undo it.
 
-If you just want the fast path, the three steps in the
+If you just want the fast path, the four stages in the
 [README](../../README.md#try-it) are the whole story for most people. Come here
 when you want a different path, a per-OS detail, or an explanation of what got registered.
+
+```text
+[1 Install service] -> [2 Add extension] -> [3 Restart MCP client] -> [4 Ask a first task]
+      automatic           visible step             once                useful proof
+```
+
+Ghostlight has no hosted account to create or sign in to. The service, relay, and extension
+connect locally as the current OS user. Website sessions remain in the Chromium profile you are
+already using. Connect only MCP clients you trust: local browser access is powerful even when a
+policy constrains it.
 
 ## Prerequisites
 
@@ -36,7 +46,17 @@ compile.
    unpacked at `chrome://extensions` (Developer mode, then Load unpacked). The walkthrough always
    presents the current path.
 
-3. **Restart your MCP clients,** then try a browser request. Verification is optional:
+   The GitHub release page is an intentional handoff from Ghostlight documentation. Choose the
+   extension ZIP attached to the newest release, extract it to a folder you will keep, open
+   `chrome://extensions`, enable Developer mode, choose `Load unpacked`, and select that extracted
+   folder. Chrome shows Ghostlight's blue mascot when the correct folder is loaded.
+
+3. **Restart your MCP clients,** then try this read-only proof before asking it to act:
+
+       In my current browser, summarize the active page and tell me which tab you used.
+       Do not click or change anything.
+
+   Verification is optional:
 
        npx -y ghostlight doctor
 
@@ -127,9 +147,9 @@ supervisor. `--dry-run` shows the plan first.
 - **Start with `doctor`.** It pinpoints the common failures by name.
 - **Extension shows disconnected?** Reload it at `chrome://extensions`. A service worker can be
   evicted; reloading re-establishes the link.
-- **Rebuilding on Windows?** Stop the MCP client first. A running client holds the relay executable
-  open, and the build cannot overwrite a locked file. This is the most common "my build failed for
-  no reason" on Windows, and it has a one-line cause.
+- **Developing on Windows?** Use the isolated engine swap in
+  [DEV-LOOP.md](../DEV-LOOP.md). It builds away from locked release executables, swaps only the
+  service holding the one endpoint, and lets the stable relays reconnect automatically.
 - **Ran `ghostlight` and got an error exit?** That is expected. A bare `ghostlight` with no
   subcommand no longer serves anything; the MCP role lives in `ghostlight-relay`, which your client
   launches. Run a real subcommand (`install`, `doctor`, `status`), or let the client drive the
@@ -142,7 +162,7 @@ For most installs you set none of these. When you need them:
 - `GHOSTLIGHT_DEBUG=1`: observability on (same as `--debug`).
 - `GHOSTLIGHT_MANIFEST=file://...`: point the server at a policy manifest (see
   [governance-configuration.md](governance-configuration.md)).
-- `GHOSTLIGHT_INSTANCE=<name>`: select a named, isolated instance (advanced; lets two independent
-  setups coexist on one machine).
 - `GHOSTLIGHT_AUDIT_DIR`, `GHOSTLIGHT_LOG_DIR`: relocate the audit and log directories.
-- `GHOSTLIGHT_ENDPOINT` / `GHOSTLIGHT_ENDPOINTS`: pin the IPC endpoint name(s).
+
+Named instances and endpoint overrides exist for the test harness only. They are deliberately not
+a user or development workflow; [DEV-LOOP.md](../DEV-LOOP.md) explains the one-stack model.

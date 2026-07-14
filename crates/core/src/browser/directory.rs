@@ -92,6 +92,19 @@ pub enum PostDispatch {
     NavigateLanding,
 }
 
+/// How page-sourced output is marked at the shared service result seam (ADR-0078 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageOutput {
+    /// The result contains no page-authored payload.
+    None,
+    /// Text content is page-sourced and receives a complete boundary.
+    Text,
+    /// A mixed interaction receipt keeps its service label outside the bounded page facts.
+    Receipt,
+    /// Only structured fields are page-sourced; service-authored text stays unchanged.
+    Structured,
+}
+
 /// One action variant of a [`ToolDescriptor`]: its bound capability requirement set and its
 /// directory-facing description (the text `explain` renders -- distinct from the advertised
 /// description the model sees in `tools/list`). A tool with no sub-actions carries exactly one
@@ -120,17 +133,18 @@ pub struct ToolDescriptor {
     pub input_schema: fn() -> serde_json::Value,
     /// The agent-facing example (ADR-0031 Decision 2). `None` only on `explain`.
     pub example: Option<ToolExample>,
-    /// `Some("action")` on `computer` only: this tool has sub-actions, keyed by this argument
-    /// name. `None` for every other tool (any action-like argument is ignored).
+    /// The argument that selects this tool's action variant. `None` means any action-like
+    /// argument is ignored for classification.
     pub action_key: Option<&'static str>,
-    /// One entry per action variant; 13 for `computer`, exactly 1 (with `action: None`) for
-    /// every other tool.
+    /// One entry per action variant; single-action tools carry one `action: None` entry.
     pub variants: &'static [ActionVariant],
     pub resource: ResourceShape,
     pub handler: Handler,
     /// Applied to the dispatch result before it is returned, when present: `read_page`'s
     /// secret redaction is the only user today.
     pub postprocess: Option<fn(&mut serde_json::Value, bool)>,
+    /// Page-output boundary and provenance mode applied after the browser result reaches service.
+    pub page_output: PageOutput,
     pub post_dispatch: PostDispatch,
     /// The declared `outputSchema` for this tool's `structuredContent` (ADR-0038 Decision 3),
     /// when this tool has a declared result vocabulary; `None` on every other row. Emitted in
@@ -147,8 +161,139 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
-/// The tool registry: 22 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
-/// `form_fill`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in
+fn actionable_element_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "ref": { "type": "string" },
+            "role": { "type": "string" },
+            "name": { "type": "string" },
+            "visible": { "type": "boolean" },
+            "enabled": { "type": "boolean" },
+            "checked": { "type": "boolean" },
+            "selected": { "type": "boolean" },
+            "value": { "type": "string" },
+            "href": { "type": "string" },
+            "box": {
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" }
+                },
+                "required": ["x", "y", "width", "height"]
+            },
+            "renderSerial": { "type": "number" },
+            "frameOrigin": { "type": "string" },
+            "mechanicalActions": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "matchRank": { "type": "number" },
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+        },
+        "required": ["ref", "role", "name", "visible", "enabled", "box", "renderSerial", "mechanicalActions"]
+    })
+}
+
+fn interaction_receipt_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": actionable_element_schema(),
+            "targetAssurance": {
+                "type": "string",
+                "enum": ["semantic", "ref", "coordinate", "none"]
+            },
+            "action": { "type": "string" },
+            "observedAfter": {
+                "type": "object",
+                "properties": {
+                    "urlChanged": { "type": "string" },
+                    "titleChanged": { "type": "string" },
+                    "mutations": { "type": "number" },
+                    "renderAdvanced": { "type": "boolean" },
+                    "changedElements": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": actionable_element_schema()
+                    },
+                    "alertOrStatus": { "type": "string" },
+                    "expectMet": { "type": "boolean" },
+                    "settled": { "type": "boolean" }
+                }
+            },
+            "blockers": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "nextStep": { "type": "string" }
+                    },
+                    "required": ["kind", "summary", "nextStep"]
+                }
+            },
+            "page": {
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "url": { "type": "string" },
+                    "origin": { "type": "string" },
+                    "title": { "type": "string" },
+                    "renderSerial": { "type": "number" }
+                },
+                "required": ["url", "origin", "title", "renderSerial"]
+            },
+            "more": { "type": "boolean" }
+        },
+        "required": ["targetAssurance", "action", "observedAfter", "blockers", "page", "more"]
+    })
+}
+
+fn receipt_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "interactionReceipt": interaction_receipt_schema()
+        }
+    })
+}
+
+fn provenance_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "pageSourced": { "type": "boolean" },
+            "untrusted": { "type": "boolean" },
+            "topOrigin": { "type": "string" },
+            "frameOrigin": { "type": "string" },
+            "sessionNonce": { "type": "string" }
+        },
+        "required": ["pageSourced", "untrusted", "topOrigin", "sessionNonce"]
+    })
+}
+
+fn output_schema_with_provenance(descriptor: &ToolDescriptor) -> Value {
+    let mut schema = descriptor
+        .output_schema
+        .map(|schema| schema())
+        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+    schema["properties"]["provenance"] = provenance_schema();
+    if descriptor.page_output == PageOutput::Receipt {
+        schema["properties"]["interactionReceipt"]["properties"]["provenance"] =
+            provenance_schema();
+    }
+    schema
+}
+
+/// The tool registry: 25 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
+/// `form_fill`, `act_on`, `dialog`, `tab_control`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and
+/// `explain`), in
 /// the order they appear in `tools/list`. `computer`'s 13 variants are in the
 /// schema's `action` enum order, byte-for-byte, as `variants`.
 pub const REGISTRY: &[ToolDescriptor] = &[
@@ -180,6 +325,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -225,6 +371,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -283,6 +430,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TargetArg,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::NavigateLanding,
         output_schema: Some(|| {
             json!({
@@ -446,9 +594,10 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         ],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "find",
@@ -480,7 +629,8 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -490,14 +640,8 @@ pub const REGISTRY: &[ToolDescriptor] = &[
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "properties": {
-                                "ref": { "type": "string" },
-                                "role": { "type": "string" },
-                                "name": { "type": "string" },
-                                "x": { "type": "number" },
-                                "y": { "type": "number" }
-                            },
-                            "required": ["ref", "role", "name", "x", "y"]
+                            "allOf": [actionable_element_schema()],
+                            "required": ["ref", "role", "name", "x", "y", "visible", "enabled", "box", "renderSerial", "mechanicalActions"]
                         }
                     },
                     "more": { "type": "boolean" }
@@ -540,9 +684,10 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "get_page_text",
@@ -575,6 +720,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -614,6 +760,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -660,6 +807,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -702,6 +850,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -753,8 +902,16 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "target": actionable_element_schema()
+                }
+            })
+        }),
     },
     ToolDescriptor {
         tool: "resize_window",
@@ -791,6 +948,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -827,6 +985,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -876,6 +1035,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -944,6 +1104,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1016,6 +1177,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::Local(crate::mcp::script::script_handler),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1088,6 +1250,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::form_fill::form_fill_handler),
         postprocess: None,
+        page_output: PageOutput::Structured,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1139,6 +1302,221 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }),
     },
     ToolDescriptor {
+        tool: "act_on",
+        advertised_description: "Resolve one visible element by ref or accessible meaning, perform one action, and return a bounded observation receipt. Use this when the target should be unique and you want to avoid a separate find, action, and wait loop. Ambiguous semantic matches are reported without acting.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID containing the target. Use tabs_context first if you do not have one."
+                },
+                "target": {
+                    "type": "object",
+                    "properties": {
+                        "ref": { "type": "string", "description": "Fresh element ref from read_page, find, or a prior actionable result." },
+                        "query": { "type": "string", "description": "Accessible meaning to match against visible elements." },
+                        "name": { "type": "string", "description": "Accessible name to match; optionally narrow with role." },
+                        "role": { "type": "string", "description": "Accessible role used only with name." }
+                    },
+                    "additionalProperties": false,
+                    "description": "Exactly one of ref, query, or name. A semantic tie is returned without acting."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["left_click", "right_click", "double_click", "hover", "scroll_to", "set_value"],
+                    "description": "One interaction to perform after unique target resolution."
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Value for set_value only."
+                },
+                "expect": {
+                    "type": "object",
+                    "properties": {
+                        "selector": { "type": "string" },
+                        "text": { "type": "string" },
+                        "state": { "type": "string", "enum": ["visible", "present", "gone"] },
+                        "timeout_ms": { "type": "number", "minimum": 0, "maximum": 30000 }
+                    },
+                    "additionalProperties": false,
+                    "description": "Optional postcondition. Provide exactly one of selector or text; the action and observation remain one governed call."
+                }
+            },
+            "required": ["tabId", "target", "action"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"target":{"name":"Save","role":"button"},"action":"left_click","expect":{"text":"Saved","state":"visible"}}"#,
+            returns: Some("Acts only on one uniquely resolved visible target, then returns a bounded receipt and whether the requested postcondition was observed."),
+        }),
+        action_key: Some("action"),
+        variants: &[
+            ActionVariant {
+                action: Some("left_click"),
+                requires: &[Capability::Action],
+                directory_description: "Resolve one target and click it once.",
+            },
+            ActionVariant {
+                action: Some("right_click"),
+                requires: &[Capability::Action],
+                directory_description: "Resolve one target and open its context menu.",
+            },
+            ActionVariant {
+                action: Some("double_click"),
+                requires: &[Capability::Action],
+                directory_description: "Resolve one target and double-click it.",
+            },
+            ActionVariant {
+                action: Some("hover"),
+                requires: &[Capability::Read],
+                directory_description: "Resolve one target and move the pointer over it.",
+            },
+            ActionVariant {
+                action: Some("scroll_to"),
+                requires: &[Capability::Read],
+                directory_description: "Resolve one target and scroll it into view.",
+            },
+            ActionVariant {
+                action: Some("set_value"),
+                requires: &[Capability::Write],
+                directory_description: "Resolve one field and set its value.",
+            },
+        ],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::Local(crate::mcp::act_on::act_on_handler),
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "interactionReceipt": interaction_receipt_schema(),
+                    "candidates": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": actionable_element_schema()
+                    },
+                    "wait": {}
+                }
+            })
+        }),
+    },
+    ToolDescriptor {
+        tool: "dialog",
+        advertised_description: "Inspect or explicitly resolve the JavaScript dialog blocking one owned tab. Use status when the dialog state is unknown. Never accept, dismiss, or respond without intent from the current task.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to inspect or resolve. The tab must belong to this Ghostlight session."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "accept", "dismiss", "respond"],
+                    "description": "Inspect the current dialog or explicitly resolve it."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Prompt response text. Required only for respond."
+                }
+            },
+            "required": ["tabId", "action"],
+            "allOf": [{
+                "if": {
+                    "properties": { "action": { "const": "respond" } },
+                    "required": ["action"]
+                },
+                "then": { "required": ["text"] },
+                "else": { "not": { "required": ["text"] } }
+            }],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"action":"status"}"#,
+            returns: Some("Reports whether a JavaScript dialog is blocking the tab and returns bounded page-sourced dialog details when one is open."),
+        }),
+        action_key: Some("action"),
+        variants: &[
+            ActionVariant {
+                action: Some("status"),
+                requires: &[Capability::Read],
+                directory_description: "Inspect whether a JavaScript dialog is blocking the tab.",
+            },
+            ActionVariant {
+                action: Some("accept"),
+                requires: &[Capability::Action],
+                directory_description: "Explicitly accept the current JavaScript dialog.",
+            },
+            ActionVariant {
+                action: Some("dismiss"),
+                requires: &[Capability::Action],
+                directory_description: "Explicitly dismiss the current JavaScript dialog.",
+            },
+            ActionVariant {
+                action: Some("respond"),
+                requires: &[Capability::Action],
+                directory_description: "Explicitly respond to the current JavaScript prompt with text.",
+            },
+        ],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::ExtensionForward,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Text,
+        post_dispatch: PostDispatch::None,
+        output_schema: None,
+    },
+    ToolDescriptor {
+        tool: "tab_control",
+        advertised_description: "Focus, reload, or close one tab owned by this Ghostlight session. Close is always explicit and never affects a user-owned tab or automatically deletes the containing tab group.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "tabId": {
+                    "type": "number",
+                    "description": "Tab ID to control. The tab must belong to this Ghostlight session."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["focus", "reload", "close"],
+                    "description": "Focus the tab, reload its page, or explicitly close that one tab."
+                }
+            },
+            "required": ["tabId", "action"],
+            "additionalProperties": false
+        }),
+        example: Some(ToolExample {
+            call: r#"{"tabId":0,"action":"focus"}"#,
+            returns: Some("Focuses only the named owned tab and returns a bounded browser-state receipt."),
+        }),
+        action_key: Some("action"),
+        variants: &[
+            ActionVariant {
+                action: Some("focus"),
+                requires: &[],
+                directory_description: "Focus one session-owned tab without changing page content.",
+            },
+            ActionVariant {
+                action: Some("reload"),
+                requires: &[Capability::Action],
+                directory_description: "Reload one session-owned tab.",
+            },
+            ActionVariant {
+                action: Some("close"),
+                requires: &[Capability::Action],
+                directory_description: "Explicitly close one session-owned tab and no containing group.",
+            },
+        ],
+        resource: ResourceShape::TabScoped,
+        handler: Handler::ExtensionForward,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::None,
+        post_dispatch: PostDispatch::None,
+        output_schema: Some(receipt_output_schema),
+    },
+    ToolDescriptor {
         tool: "file_upload",
         advertised_description: "Upload one or multiple files to a file input element on the page. Do not click on file upload buttons or file inputs -- clicking opens a native file picker dialog that you cannot see or interact with. Instead, use read_page or find to locate the file input element, then use this tool with its ref to upload files directly.",
         input_schema: || json!({
@@ -1187,9 +1565,10 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "browser_batch",
@@ -1228,6 +1607,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::Local(crate::mcp::browser_batch::browser_batch_handler),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1259,9 +1639,10 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::upload_image::upload_image_handler),
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "gif_creator",
@@ -1327,6 +1708,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         // schema above is untouched.
         handler: Handler::Local(crate::mcp::gif_creator::gif_creator_handler),
         postprocess: None,
+        page_output: PageOutput::Structured,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1372,6 +1754,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
             })
         }),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1393,7 +1776,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
 pub const AGENT_GUIDE: AgentGuide = AgentGuide {
     summary: "Ghostlight drives the user's own authenticated browser. You observe and act on the web pages they're already logged into, in an isolated Ghostlight tab group separate from their own tabs. Default (no policy) is unrestricted; a policy can scope what's allowed.",
     workflow: "BEFORE ANYTHING ELSE: GET A tabId. Every tool that touches a page requires a `tabId` (a number) -- it is required, not optional. Get one with tabs_context_mcp (pass `createIfEmpty: true` to create the group if none exists; usually your first call) or tabs_create_mcp (open a new tab). Then navigate (tabId + url) to go somewhere.",
-    flow: "tabs_context_mcp -> navigate -> read (read_page for structure, get_page_text for prose, find for one element; screenshot only to see layout) -> act (form_fill for forms, computer for clicks and keys, form_input for a single field) -> re-read to confirm. On dynamic pages, use wait_for between navigating and reading so you see the settled page, not a spinner. When a person is watching a longer workflow, use narrate at meaningful phase changes, not for routine clicks or keystrokes. When you can predict two or more steps ahead, run them in one call: script chains steps and passes results forward (e.g. `$prev.results.0.ref` after a find), and browser_batch runs a fixed sequence in one round-trip.",
+    flow: "tabs_context_mcp -> navigate -> read (read_page for structure, get_page_text for prose, find for one element; screenshot only to see layout) -> act (act_on for one unique semantic target plus receipt, form_fill for forms, computer and form_input as exact low-level escapes). Use act_on with expect when it can replace a separate find, action, and wait/read loop. If a receipt reports dialog_open, inspect and explicitly resolve it with dialog before continuing. Use tab_control only for an explicit focus, reload, or one-tab close; it never cleans up a group automatically. On dynamic pages, use wait_for between navigating and reading so you see the settled page, not a spinner. When a person is watching a longer workflow, use narrate at meaningful phase changes, not for routine clicks or keystrokes. When you can predict two or more steps ahead, run them in one call: script chains steps and passes results forward (e.g. `$prev.results.0.ref` after a find), and browser_batch runs a fixed sequence in one round-trip.",
     denials: "If a call is denied you'll see `Denied (D-xxxxxxxx): ...`. Call explain (no arguments) to see what's permitted -- you can do this any time to plan, not just after a denial -- and hand the denial id to the policy administrator.",
     cost_notes: "Cost notes: prefer read_page (structured tree) or get_page_text (plain text) over screenshots when you only need structure or text; a screenshot or zoom costs roughly 1,600 tokens, so capture one only when you need to see layout. read_page full is large on complex pages -- filter interactive is dramatically smaller, and diff true returns only what changed since your last read. get_page_text can return tens of thousands of tokens on document-heavy pages; prefer find for targeted lookups. Each script or browser_batch step is still one browser round-trip -- they save your tokens and turns, not the browser's work.",
 };
@@ -1445,8 +1828,8 @@ pub fn advertised_tools_json() -> Value {
                     json!({ "call": call })
                 };
             }
-            if let Some(schema) = d.output_schema {
-                entry["outputSchema"] = schema();
+            if d.output_schema.is_some() || d.page_output != PageOutput::None {
+                entry["outputSchema"] = output_schema_with_provenance(d);
             }
             entry
         })
@@ -1454,7 +1837,7 @@ pub fn advertised_tools_json() -> Value {
     json!({ "tools": tools })
 }
 
-/// Look up a tool's registry row by name. Linear scan over 22 rows; the validity check the
+/// Look up a tool's registry row by name. Linear scan over the small fixed registry; the validity check the
 /// pipeline uses.
 pub fn descriptor(tool: &str) -> Option<&'static ToolDescriptor> {
     REGISTRY.iter().find(|row| row.tool == tool)
@@ -1478,7 +1861,7 @@ pub fn advertised_tool_count() -> usize {
 }
 
 /// Look up the bound capability requirement set for one action. `action` is consulted only
-/// when `tool`'s descriptor carries an `action_key` (`computer` today); for every other tool it
+/// when `tool`'s descriptor carries an `action_key`; for every other tool it
 /// is ignored.
 ///
 /// Returns `None` when the (tool, action) pair has no registry entry -- a classification MISS,
@@ -1517,7 +1900,24 @@ pub fn requires_for_call(
     {
         return Some(&[Capability::Write]);
     }
-    requires(descriptor.tool, action)
+    let baseline = requires(descriptor.tool, action)?;
+    if descriptor.tool != "act_on" {
+        return Some(baseline);
+    }
+
+    let semantic_target = args
+        .get("target")
+        .and_then(Value::as_object)
+        .is_some_and(|target| target.get("query").is_some() || target.get("name").is_some());
+    let observes_postcondition = args.get("expect").is_some();
+    if !semantic_target && !observes_postcondition {
+        return Some(baseline);
+    }
+    match baseline.first() {
+        Some(Capability::Action) => Some(&[Capability::Read, Capability::Action]),
+        Some(Capability::Write) => Some(&[Capability::Read, Capability::Write]),
+        _ => Some(&[Capability::Read]),
+    }
 }
 
 /// Resolve recording-only operations without probing the current tab. Starting capture and page
@@ -1618,8 +2018,8 @@ mod tests {
             .collect();
         assert_eq!(
             with_action_key.len(),
-            3,
-            "computer, form_fill (C10), and gif_creator (ADR-0050 D5) carry an action_key"
+            6,
+            "computer, form_fill, act_on, dialog, tab_control, and gif_creator carry an action_key"
         );
         let computer = with_action_key
             .iter()
@@ -1631,6 +2031,21 @@ mod tests {
             .find(|d| d.tool == "form_fill")
             .expect("form_fill present");
         assert_eq!(form_fill.action_key, Some("submit"));
+        let act_on = with_action_key
+            .iter()
+            .find(|d| d.tool == "act_on")
+            .expect("act_on present");
+        assert_eq!(act_on.action_key, Some("action"));
+        let dialog = with_action_key
+            .iter()
+            .find(|d| d.tool == "dialog")
+            .expect("dialog present");
+        assert_eq!(dialog.action_key, Some("action"));
+        let tab_control = with_action_key
+            .iter()
+            .find(|d| d.tool == "tab_control")
+            .expect("tab_control present");
+        assert_eq!(tab_control.action_key, Some("action"));
 
         let declared_actions = declared_computer_actions_in_order();
         let computer_actions: Vec<String> = computer
@@ -1647,7 +2062,12 @@ mod tests {
         assert_eq!(computer_actions.len(), 13);
 
         for row in REGISTRY.iter().filter(|row| {
-            row.tool != "computer" && row.tool != "form_fill" && row.tool != "gif_creator"
+            row.tool != "computer"
+                && row.tool != "form_fill"
+                && row.tool != "act_on"
+                && row.tool != "dialog"
+                && row.tool != "tab_control"
+                && row.tool != "gif_creator"
         }) {
             assert_eq!(
                 row.variants.len(),
@@ -1666,9 +2086,16 @@ mod tests {
             2,
             "form_fill carries two variants"
         );
+        assert_eq!(act_on.variants.len(), 6, "act_on carries six variants");
+        assert_eq!(dialog.variants.len(), 4, "dialog carries four variants");
+        assert_eq!(
+            tab_control.variants.len(),
+            3,
+            "tab_control carries three variants"
+        );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 39);
+        assert_eq!(total_variants, 52);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1720,6 +2147,19 @@ mod tests {
                 Some("submit"),
                 &[Capability::Read, Capability::Write, Capability::Action],
             ),
+            ("act_on", Some("left_click"), &[Capability::Action]),
+            ("act_on", Some("right_click"), &[Capability::Action]),
+            ("act_on", Some("double_click"), &[Capability::Action]),
+            ("act_on", Some("hover"), &[Capability::Read]),
+            ("act_on", Some("scroll_to"), &[Capability::Read]),
+            ("act_on", Some("set_value"), &[Capability::Write]),
+            ("dialog", Some("status"), &[Capability::Read]),
+            ("dialog", Some("accept"), &[Capability::Action]),
+            ("dialog", Some("dismiss"), &[Capability::Action]),
+            ("dialog", Some("respond"), &[Capability::Action]),
+            ("tab_control", Some("focus"), &[]),
+            ("tab_control", Some("reload"), &[Capability::Action]),
+            ("tab_control", Some("close"), &[Capability::Action]),
             ("file_upload", None, &[Capability::Write]),
             ("browser_batch", None, &[]),
             ("upload_image", None, &[Capability::Write]),
@@ -1809,6 +2249,40 @@ mod tests {
     }
 
     #[test]
+    fn act_on_requirements_include_target_and_observation_reads() {
+        let descriptor = descriptor("act_on").expect("act_on present");
+        let cases = [
+            (
+                Some("left_click"),
+                json!({"target":{"ref":"ref_1"}}),
+                &[Capability::Action][..],
+            ),
+            (
+                Some("left_click"),
+                json!({"target":{"name":"Save"}}),
+                &[Capability::Read, Capability::Action][..],
+            ),
+            (
+                Some("set_value"),
+                json!({"target":{"query":"Email"}}),
+                &[Capability::Read, Capability::Write][..],
+            ),
+            (
+                Some("hover"),
+                json!({"target":{"ref":"ref_1"},"expect":{"text":"Ready"}}),
+                &[Capability::Read][..],
+            ),
+        ];
+        for (action, args, expected) in cases {
+            assert_eq!(requires_for_call(descriptor, action, &args), Some(expected));
+        }
+        assert_eq!(
+            requires_for_call(descriptor, Some("unknown"), &json!({"target":{"ref":"x"}})),
+            None
+        );
+    }
+
+    #[test]
     fn every_description_is_nonempty_ascii_and_short() {
         for row in REGISTRY {
             for variant in row.variants {
@@ -1840,6 +2314,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn page_output_markers_are_registry_data() {
+        let marked: Vec<(&str, PageOutput)> = REGISTRY
+            .iter()
+            .filter(|descriptor| descriptor.page_output != PageOutput::None)
+            .map(|descriptor| (descriptor.tool, descriptor.page_output))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("tabs_context_mcp", PageOutput::Text),
+                ("tabs_create_mcp", PageOutput::Text),
+                ("navigate", PageOutput::Text),
+                ("computer", PageOutput::Receipt),
+                ("find", PageOutput::Text),
+                ("form_input", PageOutput::Receipt),
+                ("get_page_text", PageOutput::Text),
+                ("javascript_tool", PageOutput::Text),
+                ("read_console_messages", PageOutput::Text),
+                ("read_network_requests", PageOutput::Text),
+                ("read_page", PageOutput::Text),
+                ("wait_for", PageOutput::Text),
+                ("form_fill", PageOutput::Structured),
+                ("act_on", PageOutput::Receipt),
+                ("dialog", PageOutput::Text),
+                ("file_upload", PageOutput::Receipt),
+                ("upload_image", PageOutput::Receipt),
+                ("gif_creator", PageOutput::Structured),
+            ]
+        );
     }
 
     #[test]
@@ -1875,7 +2381,7 @@ mod tests {
                 Some("action"),
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -1883,7 +2389,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -1891,7 +2397,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -1983,11 +2489,35 @@ mod tests {
                 PostDispatch::None,
             ),
             (
+                "act_on",
+                Some("action"),
+                ResourceShape::TabScoped,
+                true,
+                true,
+                PostDispatch::None,
+            ),
+            (
+                "dialog",
+                Some("action"),
+                ResourceShape::TabScoped,
+                false,
+                true,
+                PostDispatch::None,
+            ),
+            (
+                "tab_control",
+                Some("action"),
+                ResourceShape::TabScoped,
+                false,
+                true,
+                PostDispatch::None,
+            ),
+            (
                 "file_upload",
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -2003,7 +2533,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 true,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (

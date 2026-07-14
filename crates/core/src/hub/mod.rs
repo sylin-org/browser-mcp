@@ -22,7 +22,7 @@
 //! Decision 3 names: a bounded reconnect grace window (`hub::outbound::browser::Browser::attach`,
 //! `GRACE_WINDOW`, strictly less than `TOOL_TIMEOUT`), a per-peer (never global) mint quota
 //! (below, [`try_mint`]/[`PER_PEER_MINT_CAP`]), and mandatory oversize-reply chunking on the
-//! service<->adapter/web hop (`transport::mcp::server::write_chunked`,
+//! service<->adapter hop (`transport::mcp::server::write_chunked`,
 //! `SCREENSHOT_CHUNK_THRESHOLD`) so one session's large payload cannot head-of-line-block
 //! another's small one. See `docs/adr/0004-reject-second-session.md`'s amendment note for the
 //! cross-reference from the ORIGINAL single-session decision this multiplexes past.
@@ -312,24 +312,17 @@ async fn run_service_loop(
         }
     };
 
-    // The inbound transports (ADR-0034): each transport is a blackbox that owns its listener
-    // lifecycle and feeds sessions into the pipeline. The pipe transport takes the
-    // already-claimed adapter listener; the web transport binds its own TCP listener.
+    // The local inbound transport owns its listener lifecycle and feeds sessions into the
+    // pipeline. The pipe transport takes the already-claimed adapter listener.
     let pipe = inbound::pipe::PipeTransport::new(adapter_listener);
     tokio::spawn(pipe.run(ctx.clone()));
 
-    // The shared TCP listener serves TWO independently-enableable planes (ADR-0033 Decision 7):
-    // the inbound.web WS ingestion plane and the manage.web loopback Console. It binds when
-    // EITHER plane is enabled; each plane then gates its own requests (the WS path re-reads
-    // `inbound.web.enabled` per connection, the management router checks `manage.web.enabled`).
-    // With the hardened defaults (SEC pass, 2026-07) ingestion is off and the Console is on, so
-    // the listener binds loopback for the Console while no web tool session can be admitted.
-    if inbound::web::enabled(&ctx.store) || manage::web::enabled(&ctx.store) {
-        tokio::spawn(inbound::web::run(ctx.clone()));
+    // The read-only management UI owns a separate loopback HTTP listener. It is not an MCP
+    // transport and rejects WebSocket upgrades (ADR-0077).
+    if manage::web::enabled(&ctx.store) {
+        tokio::spawn(manage::web::run(ctx.clone()));
     } else {
-        tracing::info!(
-            "web listener not bound: inbound.web.enabled and manage.web.enabled are both false"
-        );
+        tracing::info!("manage.web listener not bound: manage.web.enabled is false");
     }
 
     // Idle-grace shutdown (ADR-0030 Decision 8; PINS.md SS5.4): normally the ONLY shutdown trigger
@@ -404,9 +397,9 @@ pub struct ServiceContext {
     /// zero (or absent) count is adoptable by another session. Counted, not boolean, so a
     /// reconnect's new connection can briefly overlap the old one's teardown without a liveness gap.
     pub live_guids: Arc<std::sync::Mutex<HashMap<String, usize>>>,
-    /// The service's observability sink (a clone of the one the browser holds). The inbound.web
-    /// transport publishes its actual bound port through this once its listener binds, so a reader
-    /// -- `status`, `doctor`, or a test -- learns the real port even when it was OS-assigned.
+    /// The service's observability sink (a clone of the one the browser holds). The manage.web
+    /// listener publishes its actual bound port through this once it binds, so a reader or test
+    /// learns the real port even when it was OS-assigned.
     pub debug_sink: DebugSink,
 }
 

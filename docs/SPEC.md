@@ -7,17 +7,23 @@
 **Status:** Draft  
 **License:** Open-core -- engine Apache-2.0 OR MIT; `crates/core/src/governance/` source-available (ADR-0027)
 
+> **Historical design baseline.** This document preserves the original 2026-07-01 design and its
+> deep governance rationale. It is not a current topology or tool inventory. Accepted and amended
+> [ADRs](adr/README.md), the live tree, and generated schemas are authoritative where they differ.
+> In particular, Ghostlight now runs as a persistent local service plus a thin relay executable,
+> and its additive tool surface has grown beyond the inventory below.
+
 ---
 
 ## 1. Purpose
 
-This document specifies a single-binary MCP server that gives AI coding agents (Claude Code, Cursor, etc.) governed access to the user's **own authenticated Chromium browser session**, enabling them to observe and interact with web applications the user is already logged in to.
+This document originally specified a single-binary MCP server that gives AI coding agents (Claude Code, Cursor, etc.) governed access to the user's **own authenticated Chromium browser session**, enabling them to observe and interact with web applications the user is already logged in to.
 
 The system is an **unconstrained engine with an optional governance overlay**. The engine exposes the full browser-automation capability surface with no built-in limits; governance is a *separable* layer that can gate that surface: set by enterprise policy, chosen by the user, or absent entirely. The same binary serves an unrestricted personal tool and a default-deny enterprise deployment with no code changes.
 
 ### 1.1. Core Concerns (independent lifecycles)
 
-- **Engine**: MCP↔CDP translation and the complete browser-automation capability surface (navigation, input, reads, extraction, scripting). Hosts the MCP server on stdio and the native-messaging host for the extension. **It has no built-in limits and no opinions about policy**: capability is its only job.
+- **Engine**: MCP <-> CDP translation and the complete browser-automation capability surface (navigation, input, reads, extraction, scripting). Hosts the MCP server on stdio and the native-messaging host for the extension. **It has no built-in limits and no opinions about policy**: capability is its only job.
 - **Governance overlay**: an optional, separable layer (co-hosted in the binary, never in the extension) that gates, masks, classifies (read/write), and audits engine calls per a capability manifest. **In all-open mode the overlay is a pass-through** and the engine's full surface is exposed.
 - **Identity**: resolution of "who is connecting" into "which manifest (if any) applies." Pluggable; resolved at connection time. In enterprise the *deployment channel is* the identity resolution; in personal use there is no identity step.
 
@@ -41,7 +47,7 @@ Three postures, one engine, no code changes:
 
    Governance-as-delight is real but **composite and additive (L0 + L2)**: never a substitute for L0. L0 is load-bearing for every persona, so the engine is built to be excellent for everyone, and the overlay UX must itself be delightful, not merely correct.
 5. **Separation of concerns.** Engine, overlay, identity, and audit have independent lifecycles; a change to one must not force a change to another.
-6. **Prior art is a concern-surface, not a feature catalog.** Competitor and standards research informs our design by surfacing hazards and questions (see §1.4); we do not import paradigms. Anything that moves away from the user's context (Principle 3) is rejected regardless of how common it is.
+6. **Prior art is a concern-surface, not a feature catalog.** Competitor and standards research informs our design by surfacing hazards and questions (see section 1.4); we do not import paradigms. Anything that moves away from the user's context (Principle 3) is rejected regardless of how common it is.
 
 ### 1.4. Prior Art and Positioning
 
@@ -49,14 +55,16 @@ This design is informed by, but architecturally distinct from, the following:
 
 | Project | Relationship |
 |---|---|
-| [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome) (Noemica) | Reference implementation for extension-based MCP-to-CDP pipeline and tool schemas. Fork-and-rewrite origin. |
+| Anthropic's official Claude in Chrome extension | Sole external reference for observable tool interfaces and techniques. Ghostlight is an independent clean-room Rust implementation; no proprietary source is copied ([ADR-0050](adr/0050-official-rebaseline-and-file-tools.md)). |
 | [agent-browser](https://github.com/vercel-labs/agent-browser) (Vercel) | Precedent for domain allowlists and action policies in browser automation. Different execution model (Playwright CLI, not extension-based). |
 | [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) (Google) | Precedent for headless browser MCP. Different execution model (Puppeteer, separate browser instance). |
 | [auto-browser](https://github.com/LvcidPsyche/auto-browser) | Precedent for HIPAA/SOC2 compliance templates and operator identity in browser automation. Different execution model (Playwright + noVNC). |
 | MCP Gateway ecosystem (TrueFoundry, MintMCP, Cloudflare, etc.) | Precedent for MCP-level RBAC, tool allowlisting, and audit. Not browser-specific. |
 | Okta XAA / Entra Agent Identity | Precedent for identity-governed agent access. Protocol-layer; not an implementation. |
 
-**The gap this project fills:** No existing project combines extension-based browser automation (user's authenticated session), identity-bound capability projection (enterprise directory -> per-connection manifest), tool-level r/w classification, default-deny posture, and healthcare-grade audit, in a single deployable artifact.
+**The gap identified at this design baseline:** no evaluated project combined extension-based
+browser automation in the user's authenticated session with identity-bound capability projection,
+tool-level classification, default-deny posture, and structured audit in one local deployment.
 
 ---
 
@@ -80,21 +88,21 @@ MCP Client <--stdio--> Binary <--native messaging--> Extension <--CDP--> Browser
 
 ### 2.2. Communication Protocols
 
-**Binary ↔ MCP Client:** MCP over stdio. JSON-RPC 2.0 per the MCP specification. The binary is launched as a subprocess by the MCP client.
+**Binary <-> MCP Client:** MCP over stdio. JSON-RPC 2.0 per the MCP specification. The binary is launched as a subprocess by the MCP client.
 
-**Binary ↔ Extension:** Chromium Native Messaging. 4-byte little-endian length prefix + UTF-8 JSON payload. The browser launches the binary as a native-messaging host when the extension connects, so the same executable plays both roles, native-messaging host (for the extension) and MCP server (for the client on stdio), as **two instances bridged by a local IPC** (named pipe / Unix domain socket), not a single process (Chrome always spawns its own host process). The simplification over the reference is one Rust executable and a local pipe in place of two Node processes and a localhost-TCP relay.
+**Binary <-> Extension:** Chromium Native Messaging. 4-byte little-endian length prefix + UTF-8 JSON payload. The browser launches the binary as a native-messaging host when the extension connects, so the same executable plays both roles, native-messaging host (for the extension) and MCP server (for the client on stdio), as **two instances bridged by a local IPC** (named pipe / Unix domain socket), not a single process (Chrome always spawns its own host process). The simplification over the reference is one Rust executable and a local pipe in place of two Node processes and a localhost-TCP relay.
 
-**Extension ↔ Browser:** Chrome DevTools Protocol via `chrome.debugger` API. The extension attaches to target tabs and dispatches CDP commands.
+**Extension <-> Browser:** Chrome DevTools Protocol via `chrome.debugger` API. The extension attaches to target tabs and dispatches CDP commands.
 
 ### 2.3. Startup Sequence
 
 1. MCP client (Claude Code) launches the binary as a subprocess with stdio pipes.
 2. Binary initializes MCP server on stdin/stdout.
-3. Binary loads the capability manifest (see §4) from the configured source.
+3. Binary loads the capability manifest (see section 4) from the configured source.
 4. Binary registers as a native messaging host and waits for the extension to connect.
 5. Extension service worker starts (or is woken by keepalive alarm), discovers the native messaging host, connects.
 6. Binary receives the extension connection, acknowledges.
-7. Binary computes the advertised tool set from the manifest (see §5.1) and responds to `tools/list`.
+7. Binary computes the advertised tool set from the manifest (see section 5.1) and responds to `tools/list`.
 8. MCP client sees the available tools and begins issuing calls.
 
 ### 2.4. Extension Design
@@ -126,11 +134,12 @@ The extension is **policy-free**: it holds mechanism (CDP execution, DOM reads v
 
 ### 3.1. Included Tools
 
-The following 16 browser tools are derived from the Claude in Chrome tool schemas (the 13 trained
-tools) and the composition batch (`wait_for`, `script`, `form_fill`; ADR-0035..0037). Tool names,
+At this design baseline, the following 16 browser tools were derived from the Claude in Chrome tool
+schemas (the 13 trained tools) and the composition batch (`wait_for`, `script`, `form_fill`;
+ADR-0035..0037). Tool names,
 parameter signatures, and descriptions for the trained 13 are preserved exactly to inherit the
 model's trained behavior; the additive tools extend the surface without reshaping it
-([ADR-0034](adr/0034-declarations-in-code-and-additive-growth.md) Decision 7).
+([ADR-0034](adr/0034-capability-transport-registry.md) Decision 7).
 
 #### Observe Tier
 
@@ -316,7 +325,7 @@ When a tool call arrives, the binary resolves the applicable grant:
 2. Extract the hostname.
 3. Iterate grants in order. First matching domain pattern wins.
 4. If no grant matches, apply `defaults.unlisted_domains`.
-5. Check: does the grant's tier include the requested tool (per §3)?
+5. Check: does the grant's tier include the requested tool (per section 3)?
 6. Check: is the tool excluded by `exclude_tools` or absent from `tools`?
 7. If all checks pass, dispatch. Otherwise, deny with a structured error.
 
@@ -333,7 +342,7 @@ The binary accepts a `--manifest` flag or `GHOSTLIGHT_MANIFEST` environment vari
 | `env://VARIABLE_NAME` | JSON in an environment variable | CI/CD, container deployments, Claude Code config. |
 | (no manifest) | Built-in default | Personal use. Equivalent to `unlisted_domains: "observe"`, audit to stderr. |
 
-The `http://` and `https://` sources are explicitly excluded from v1 to avoid a runtime network dependency (see §8).
+The `http://` and `https://` sources are explicitly excluded from v1 to avoid a runtime network dependency (see section 8).
 
 ---
 
@@ -350,7 +359,7 @@ At MCP connection time, after loading the manifest, the binary computes the set 
 
 The result: Claude Code (or any MCP client) only sees tools it can plausibly use. If no grant includes Mutate, the client never learns that `form_input` exists.
 
-**Note:** Tool advertisement is a visibility optimization, not a security boundary. The per-call enforcement (§5.3) is authoritative. A client that somehow sends a call for an unadvertised tool still hits per-call checks.
+**Note:** Tool advertisement is a visibility optimization, not a security boundary. The per-call enforcement (section 5.3) is authoritative. A client that somehow sends a call for an unadvertised tool still hits per-call checks.
 
 ### 5.2. Pre-Navigation Enforcement
 
@@ -369,7 +378,7 @@ For `navigate` with `"back"` or `"forward"`: the binary cannot predict the desti
 On every tool call (not just `navigate`):
 
 1. Query the extension for the current tab's URL.
-2. Resolve the applicable grant (§4.3).
+2. Resolve the applicable grant (section 4.3).
 3. Check: is the requested tool permitted by the resolved grant and tier?
 4. If denied: return a structured error. Log the denial (if `audit.log_denials`).
 5. If permitted: dispatch the command to the extension.
@@ -473,7 +482,12 @@ Audit records are generated by the binary, not the extension. The extension is u
 
 ### 7.5. Orchestration Fields (Additive)
 
-Composed tools (`script`, `form_fill`) append four keys to every audit record, after `held`. All four are always present (never omitted):
+ADR-0079 adds the always-present `attention_required` boolean after `held`. It is true when the
+session's denial circuit refuses a call before browser dispatch. It is distinct from the global
+take-the-wheel `held` state.
+
+Composed tools (`script`, `form_fill`) append four keys to every audit record, after
+`attention_required`. All four are always present (never omitted):
 
 - `orchestrator`: `"script"`, `"form_fill"`, or `null`. Present only on the internal executions an orchestrator drives on a caller's behalf; `null` on an ordinary top-level call.
 - `batch_id`: a UUID v4 (lowercase, hyphenated) correlating one orchestrator call with its internal executions. Set on both the parent record and each internal/step record it drives; `null` otherwise.
@@ -481,6 +495,15 @@ Composed tools (`script`, `form_fill`) append four keys to every audit record, a
 - `dry_run`: `true` only on a `script` dry-run parent record (no internals dispatch on a dry run); `false` on every other record.
 
 One orchestrated call is therefore fully reconstructable from the audit stream: one parent record plus its correlated internal records, sharing a `batch_id`.
+
+### 7.6. Attention Transition Records
+
+ADR-0079 adds a separate content-free record for `attention_opened`, `attention_resumed`,
+`attention_quieted`, and `attention_ended`. It carries the client, normalized host, capability,
+denial category, opening threshold/count/window, and closing disposition where applicable. It does
+not carry a session guid, tool arguments, full URL, denial description, page text, form value,
+screenshot, or semantic query. See the current
+[SIEM integration guide](guides/siem-integration.md) for the live wire shape.
 
 ---
 
@@ -599,9 +622,13 @@ The following are explicitly out of scope for v1:
 
 **Manifest signing.** For file-based manifests, a detached signature (e.g., Ed25519) verified against a pinned public key in the binary. Prevents local tampering without `chrome.storage.managed`.
 
-**Audit enrichment.** Post-v1, the audit record could include a hash of the screenshot (without the screenshot itself) for forensic correlation, or a DOM snapshot hash for change tracking.
+**Audit enrichment.** ADR-0078 permits content-free target-assurance and outcome categories but
+rejects screenshot, DOM, and other content-derived hashes for interaction receipts. Any future
+forensic artifact needs its own data inventory and decision.
 
-**Content boundary markers.** Following `agent-browser`'s precedent, wrapping tool output in delimiters so the model can distinguish tool output from untrusted page content (prompt injection mitigation).
+**Content boundary markers.** Taken by ADR-0078. Page-sourced output gains service-authored,
+nonce-bearing boundaries and structured provenance as defense in depth. It is not a content filter
+or a policy input.
 
 **Conditional human-in-the-loop.** For high-risk grants (e.g., EHR write access), the manifest could specify `"approval": "required"`, causing the binary to pause and prompt the user (via the extension's popup or a system notification) before dispatching Mutate-tier calls.
 

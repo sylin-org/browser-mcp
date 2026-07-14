@@ -1,7 +1,6 @@
 // Ghostlight Console client script. Fetches this machine's own local API (never a remote
-// control plane) and renders read-mostly views: live sessions, the provenance-aware config
-// table, and the single "enable remote connections" write action. Populated incrementally
-// (config: K3, sessions: K4, enable-remote: K5); this file is the page-load entry point only.
+// control plane) and renders read-only views: live sessions and the provenance-aware config
+// table.
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -53,38 +52,7 @@ async function loadSessions() {
   }
 }
 
-function wireEnableRemote() {
-  const button = document.getElementById("enable-remote-button");
-  const status = document.getElementById("remote-status");
-  if (!button) return;
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    status.textContent = "Enabling...";
-    try {
-      // The write action requires the consent header (CSRF hard-stop): a cross-origin page
-      // cannot attach a custom header without a CORS preflight the service never approves.
-      const res = await fetch("/api/v1/config/inbound-web-enable-remote", {
-        method: "POST",
-        headers: { "X-Ghostlight-Intent": "enable-remote" },
-      });
-      const data = await res.json();
-      if (res.ok) {
-        status.textContent = "Enabled: inbound.web.from = " + JSON.stringify(data.value) +
-          ". " + data.note;
-        loadConfig();
-      } else {
-        status.textContent = "Could not enable remote connections: " + data.error;
-      }
-    } catch (e) {
-      status.textContent = "Could not enable remote connections.";
-    } finally {
-      button.disabled = false;
-    }
-  });
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   loadConfig();
   loadSessions();
-  wireEnableRemote();
 });

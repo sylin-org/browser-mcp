@@ -88,6 +88,9 @@ fn render_outcome(id: Option<Value>, outcome: CallOutcome) -> JsonRpcResponse {
             JsonRpcResponse::success(id, text_content(with_org_contact_line(message)))
         }
         CallOutcome::Held { message } => JsonRpcResponse::success(id, text_content(message)),
+        CallOutcome::AttentionRequired { message } => {
+            JsonRpcResponse::success(id, text_content(message))
+        }
     }
 }
 
@@ -151,6 +154,81 @@ fn take_dry_run(outcome: &mut CallOutcome) -> bool {
         .unwrap_or(false)
 }
 
+/// Extract the content-free interaction vocabulary used by audit records. Private side-channel
+/// fields are removed before the client sees the result; ordinary extension receipts are read
+/// directly. No page text, accessible name, URL, value, selector, or coordinate is copied.
+fn take_audit_signals(outcome: &mut CallOutcome) -> (Option<String>, Option<String>) {
+    let CallOutcome::Success { result } = outcome else {
+        return (None, None);
+    };
+    let hidden_assurance = result
+        .as_object_mut()
+        .and_then(|object| object.remove("_target_assurance"))
+        .and_then(|value| value.as_str().map(str::to_string));
+    let hidden_outcome = result
+        .as_object_mut()
+        .and_then(|object| object.remove("_outcome_category"))
+        .and_then(|value| value.as_str().map(str::to_string));
+    let receipt = result.pointer("/structuredContent/interactionReceipt");
+    let assurance = hidden_assurance.or_else(|| {
+        receipt
+            .and_then(|value| value.get("targetAssurance"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let outcome = hidden_outcome.or_else(|| receipt.and_then(derive_receipt_outcome));
+    (assurance, outcome)
+}
+
+fn derive_receipt_outcome(receipt: &Value) -> Option<String> {
+    let blockers = receipt
+        .get("blockers")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if blockers {
+        return Some("blocked".to_string());
+    }
+    let observed = receipt.get("observedAfter")?;
+    if observed.get("expectMet").and_then(Value::as_bool) == Some(true) {
+        return Some("expect_met".to_string());
+    }
+    for (field, category) in [
+        ("tabFocused", "tab_focused"),
+        ("tabReloaded", "tab_reloaded"),
+        ("tabClosed", "tab_closed"),
+    ] {
+        if observed.get(field).and_then(Value::as_bool) == Some(true) {
+            return Some(category.to_string());
+        }
+    }
+    let changed = observed
+        .get("mutations")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        > 0
+        || observed.get("renderAdvanced").and_then(Value::as_bool) == Some(true)
+        || observed.get("urlChanged").is_some()
+        || observed.get("titleChanged").is_some()
+        || observed.get("alertOrStatus").is_some()
+        || observed
+            .get("changedElements")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty());
+    Some(if changed { "changed" } else { "unchanged" }.to_string())
+}
+
+fn stamp_audit_signals(
+    audit: &mut crate::governance::dispatch::CallAudit,
+    signals: (Option<String>, Option<String>),
+) {
+    if let Some(assurance) = signals.0 {
+        audit.set_target_assurance(&assurance);
+    }
+    if let Some(outcome) = signals.1 {
+        audit.set_outcome(&outcome);
+    }
+}
+
 /// SS2's free-action dispatch guard: true for a [`directory::Handler::Local`] tool whose
 /// `action: None` variant carries an EMPTY requirement set (today: `explain`; C7's `script`
 /// joins it). `form_fill` (C10) declares `Read + Write` on its `action: None` variant, so it is
@@ -170,7 +248,7 @@ fn is_free_local_action(descriptor: &directory::ToolDescriptor) -> bool {
 /// point 1 for a BOOLEAN-valued action key): a string value passes through unchanged (`computer`'s
 /// `action`); a boolean `true` maps to the action_key's own NAME (`form_fill`'s `submit: true` is
 /// looked up and audited as the action `"submit"`); `false`, an absent key, or any other value
-/// type yields no action. `action_key: None` (every tool but `computer` and `form_fill`) always
+/// type yields no action. `action_key: None` always
 /// yields `None`, ignoring whatever the args carry.
 fn extract_action<'a>(action_key: Option<&'a str>, args: &'a Value) -> Option<&'a str> {
     let key = action_key?;
@@ -304,6 +382,16 @@ pub(crate) async fn run_tool_call(
         };
     }
 
+    // ADR-0079: refuse new work for only the MCP session whose denial circuit opened. The two
+    // orchestrator fronts are allowed to enter so their first sub-step can report the honest
+    // `attention_required` status; `explain` is local and dispatches no browser mechanism.
+    if !dry_run && !matches!(name, "explain" | "script" | "browser_batch") {
+        if let Some(message) = browser.attention_message(guid) {
+            audit.attention_required();
+            return CallOutcome::AttentionRequired { message };
+        }
+    }
+
     // ADR-0024 Decision 4: the sacred check and the grant path below share ONE lazily resolved,
     // memoized tab-URL probe per call, keyed on this call's own `tabId` argument, instead of two
     // different mechanisms (the sacred check's former internal `tabs_context_mcp` lookup,
@@ -351,14 +439,26 @@ pub(crate) async fn run_tool_call(
             audit.sacred_deny(&denial, tab_domain.as_deref());
             let (title, description) =
                 denial_notification("on the never-touch list", &denial.domain);
-            browser.notify(
-                args.get("tabId").and_then(Value::as_i64),
-                "error",
-                Some("lock"),
-                &title,
-                Some(&description),
-                Some(&denial.denial_id),
+            let tab_id = args.get("tabId").and_then(Value::as_i64);
+            let present = browser.observe_denial(
+                guid,
+                tab_id,
+                crate::governance::attention::DenialSignal {
+                    origin: tab_domain.clone().or_else(|| Some(denial.domain.clone())),
+                    capabilities: lookup.unwrap_or(&[]).to_vec(),
+                    category: crate::governance::attention::DenialCategory::Sacred,
+                },
             );
+            if present {
+                browser.notify(
+                    tab_id,
+                    "error",
+                    Some("lock"),
+                    &title,
+                    Some(&description),
+                    Some(&denial.denial_id),
+                );
+            }
         }
         return CallOutcome::Denied {
             message: denial.message,
@@ -406,6 +506,7 @@ pub(crate) async fn run_tool_call(
         if let Some(batch_id) = take_batch_id(&mut outcome) {
             audit.set_batch_id(&batch_id);
         }
+        stamp_audit_signals(&mut audit, take_audit_signals(&mut outcome));
         if take_dry_run(&mut outcome) {
             audit.mark_dry_run();
         }
@@ -494,14 +595,26 @@ pub(crate) async fn run_tool_call(
                 audit.sacred_deny(&denial, domain_str.as_deref());
                 let (title, description) =
                     denial_notification("outside the granted policy", &denial.domain);
-                browser.notify(
-                    args.get("tabId").and_then(Value::as_i64),
-                    "warn",
-                    Some("shield"),
-                    &title,
-                    Some(&description),
-                    Some(&denial.denial_id),
+                let tab_id = args.get("tabId").and_then(Value::as_i64);
+                let present = browser.observe_denial(
+                    guid,
+                    tab_id,
+                    crate::governance::attention::DenialSignal {
+                        origin: domain_str.clone().or_else(|| Some(denial.domain.clone())),
+                        capabilities: lookup.unwrap_or(&[]).to_vec(),
+                        category: crate::governance::attention::DenialCategory::Policy,
+                    },
                 );
+                if present {
+                    browser.notify(
+                        tab_id,
+                        "warn",
+                        Some("shield"),
+                        &title,
+                        Some(&description),
+                        Some(&denial.denial_id),
+                    );
+                }
             }
             return CallOutcome::Denied {
                 message: denial.message,
@@ -514,14 +627,26 @@ pub(crate) async fn run_tool_call(
             if !dry_run {
                 let (title, description) =
                     denial_notification("outside the granted policy", &denial.domain);
-                browser.notify(
-                    args.get("tabId").and_then(Value::as_i64),
-                    "warn",
-                    Some("shield"),
-                    &title,
-                    Some(&description),
-                    Some(&denial.denial_id),
+                let tab_id = args.get("tabId").and_then(Value::as_i64);
+                let present = browser.observe_denial(
+                    guid,
+                    tab_id,
+                    crate::governance::attention::DenialSignal {
+                        origin: domain_str.clone().or_else(|| Some(denial.domain.clone())),
+                        capabilities: lookup.unwrap_or(&[]).to_vec(),
+                        category: crate::governance::attention::DenialCategory::Policy,
+                    },
                 );
+                if present {
+                    browser.notify(
+                        tab_id,
+                        "warn",
+                        Some("shield"),
+                        &title,
+                        Some(&description),
+                        Some(&denial.denial_id),
+                    );
+                }
             }
             return CallOutcome::Denied {
                 message: denial.message,
@@ -593,6 +718,7 @@ pub(crate) async fn run_tool_call(
         if let Some(batch_id) = take_batch_id(&mut outcome) {
             audit.set_batch_id(&batch_id);
         }
+        stamp_audit_signals(&mut audit, take_audit_signals(&mut outcome));
         if let CallOutcome::Success { result } = &mut outcome {
             if let Some(pp) = descriptor.postprocess {
                 pp(result, config.secrets_redact());
@@ -600,12 +726,13 @@ pub(crate) async fn run_tool_call(
             if let Some(waited) = waited {
                 append_wait_note(result, waited);
             }
+            crate::mcp::provenance::apply(result, descriptor.page_output, guid);
         }
         audit.complete();
         return outcome;
     }
 
-    let outcome = browser.call(guid, name, args).await;
+    let mut outcome = browser.call(guid, name, args).await;
     audit.dispatch_finished();
 
     // Point 5 (g13/g15): after a dispatched `navigate` succeeds, re-check the FINAL
@@ -634,14 +761,25 @@ pub(crate) async fn run_tool_call(
                     audit.landing_deny(&d, landing_domain.as_deref());
                     let (title, description) =
                         denial_notification("outside the granted policy", &d.domain);
-                    browser.notify(
+                    let present = browser.observe_denial(
+                        guid,
                         Some(tab_id),
-                        "warn",
-                        Some("shield"),
-                        &title,
-                        Some(&description),
-                        Some(&d.denial_id),
+                        crate::governance::attention::DenialSignal {
+                            origin: landing_domain.clone().or_else(|| Some(d.domain.clone())),
+                            capabilities: lookup.unwrap_or(&[]).to_vec(),
+                            category: crate::governance::attention::DenialCategory::Policy,
+                        },
                     );
+                    if present {
+                        browser.notify(
+                            Some(tab_id),
+                            "warn",
+                            Some("shield"),
+                            &title,
+                            Some(&description),
+                            Some(&d.denial_id),
+                        );
+                    }
                     return CallOutcome::Denied {
                         message: d.message,
                         source: DenialSource::Policy,
@@ -654,6 +792,15 @@ pub(crate) async fn run_tool_call(
         }
     }
 
+    if let Ok(result) = &mut outcome {
+        let mut wrapped = CallOutcome::Success {
+            result: std::mem::take(result),
+        };
+        stamp_audit_signals(&mut audit, take_audit_signals(&mut wrapped));
+        if let CallOutcome::Success { result: restored } = wrapped {
+            *result = restored;
+        }
+    }
     audit.complete();
 
     match outcome {
@@ -669,6 +816,7 @@ pub(crate) async fn run_tool_call(
             if let Some(waited) = waited {
                 append_wait_note(&mut result, waited);
             }
+            crate::mcp::provenance::apply(&mut result, descriptor.page_output, guid);
             CallOutcome::Success { result }
         }
         // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
@@ -678,6 +826,7 @@ pub(crate) async fn run_tool_call(
         // the bare `ToolError`, with no slot for a pre-rendered note. No test pins this exact
         // combination (extension connects within the handshake grace window, then the dispatched
         // call itself still errors); see LEDGER.md for the full note.
+        Err(ToolError::AttentionRequired { message }) => CallOutcome::AttentionRequired { message },
         Err(e) => CallOutcome::Failure { error: e },
     }
 }
@@ -1144,6 +1293,8 @@ mod tests {
         let cases = [
             ("read_page", json!({ "tabId": 5 })),
             ("computer", json!({ "action": "screenshot", "tabId": 5 })),
+            ("dialog", json!({ "action": "status", "tabId": 5 })),
+            ("tab_control", json!({ "action": "focus", "tabId": 5 })),
             (
                 "javascript_tool",
                 json!({ "action": "javascript_exec", "text": "1", "tabId": 5 }),
@@ -1176,16 +1327,16 @@ mod tests {
         }
 
         let lines = read_lines(&path);
-        assert_eq!(lines.len(), 4, "exactly one deny record per denied call");
+        assert_eq!(lines.len(), 6, "exactly one deny record per denied call");
         for rec in &lines {
             assert_eq!(rec["decision"], "deny");
             assert_eq!(rec["denial_id"], "D-af6633ec");
             assert_eq!(rec["domain"], "www.mybank.com");
         }
-        wait_for_seen_len(&seen, 8).await;
+        wait_for_seen_len(&seen, 12).await;
         assert_eq!(
             *seen.lock().unwrap(),
-            ["tab_url_request:5", "notification:error"].repeat(4),
+            ["tab_url_request:5", "notification:error"].repeat(6),
             "the extension must never see an actual tool_request for a denied call -- only the \
              tab_url_request pre-flight and the on-screen denial notification"
         );
@@ -1717,6 +1868,48 @@ mod tests {
         assert!(text.starts_with("Paused:"), "{text}");
         assert!(text.contains("'computer (screenshot)' call"), "{text}");
 
+        let dialog_params =
+            json!({ "name": "dialog", "arguments": { "action": "status", "tabId": 5 } });
+        let dialog_resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(4)),
+            Some(&dialog_params),
+            None,
+        )
+        .await;
+        let dialog_text = dialog_resp.result.as_ref().expect("dialog result")["content"][0]["text"]
+            .as_str()
+            .expect("dialog pause text");
+        assert!(dialog_text.starts_with("Paused:"), "{dialog_text}");
+        assert!(
+            dialog_text.contains("'dialog (status)' call"),
+            "{dialog_text}"
+        );
+
+        let tab_params =
+            json!({ "name": "tab_control", "arguments": { "action": "focus", "tabId": 5 } });
+        let tab_resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(5)),
+            Some(&tab_params),
+            None,
+        )
+        .await;
+        let tab_text = tab_resp.result.as_ref().expect("tab result")["content"][0]["text"]
+            .as_str()
+            .expect("tab pause text");
+        assert!(tab_text.starts_with("Paused:"), "{tab_text}");
+        assert!(
+            tab_text.contains("'tab_control (focus)' call"),
+            "{tab_text}"
+        );
+
         // ADR-0022 Decision 7: `explain` gets the ordinary pause text like any other tool
         // while held, even though its own directory requirement is `[]` -- the hold check
         // runs ahead of the `explain` server-side handler, same as every other pre-dispatch
@@ -2213,8 +2406,9 @@ mod tests {
         let observe_text = observe_resp.result.as_ref().expect("result")["content"][0]["text"]
             .as_str()
             .expect("text");
-        assert_eq!(
-            observe_text, "created",
+        assert_eq!(observe_text, "created");
+        assert!(
+            !observe_text.contains("Denied"),
             "shadow mode returns the ordinary tool result, no denial text: {observe_text}"
         );
         let observe_lines = read_lines(&observe_path);
@@ -2242,7 +2436,7 @@ mod tests {
     // --- ADR-0022 Decision 7: the `explain` directory tool ---
 
     /// The full pinned `explain` response text, transcribed by hand from
-    /// `browser::directory::REGISTRY` (30 variants) in fixture order. This is the ONE place the
+    /// `browser::directory::REGISTRY` in fixture order. This is the ONE place the
     /// exact output is pinned; `directory::explain_text`'s own unit tests check only its
     /// structural shape.
     fn pinned_explain_text() -> String {
@@ -2310,6 +2504,24 @@ mod tests {
              controls and fills them.",
             "form_fill (submit): requires read. Fill form fields by label and click the form's \
              own submit control.",
+            "act_on (left_click): requires action. Resolve one target and click it once.",
+            "act_on (right_click): requires action. Resolve one target and open its context \
+             menu.",
+            "act_on (double_click): requires action. Resolve one target and double-click it.",
+            "act_on (hover): requires read. Resolve one target and move the pointer over it.",
+            "act_on (scroll_to): requires read. Resolve one target and scroll it into view.",
+            "act_on (set_value): requires write. Resolve one field and set its value.",
+            "dialog (status): requires read. Inspect whether a JavaScript dialog is blocking \
+             the tab.",
+            "dialog (accept): requires action. Explicitly accept the current JavaScript dialog.",
+            "dialog (dismiss): requires action. Explicitly dismiss the current JavaScript dialog.",
+            "dialog (respond): requires action. Explicitly respond to the current JavaScript \
+             prompt with text.",
+            "tab_control (focus): requires nothing. Focus one session-owned tab without changing \
+             page content.",
+            "tab_control (reload): requires action. Reload one session-owned tab.",
+            "tab_control (close): requires action. Explicitly close one session-owned tab and no \
+             containing group.",
             "file_upload: requires write. Upload files (base64 bytes) to a file input \
              located by read_page or find, via its ref.",
             "browser_batch: requires nothing. Run a sequence of tool calls in one round trip; \
@@ -2456,10 +2668,9 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// Test 3 (t04): a fake-extension `read_page` result containing a `secret_value=` marker is
-    /// redacted (`descriptor.postprocess` fires); the identical payload via `find` (no
-    /// `postprocess` hook on its descriptor row) is untouched. Marker/expected strings
-    /// transcribed from `browser::redact`'s own fixture (`redact.rs`'s `LINE` const).
+    /// Test 3 (t04, ADR-0078 C1): fake-extension page observations carrying a
+    /// `secret_value=` marker are redacted for both `read_page` and actionable `find` output.
+    /// Marker/expected strings are transcribed from `browser::redact`'s own fixture.
     #[tokio::test]
     async fn postprocess_fires_only_where_the_registry_says() {
         let recorder = Arc::new(Recorder::disabled());
@@ -2530,10 +2741,12 @@ mod tests {
             ["text"]
             .as_str()
             .expect("text content block");
-        assert_eq!(
-            find_text, marked,
-            "find has no postprocess hook: the raw marker survives untouched"
+        assert!(
+            find_text.contains("value=\"[value redacted]\""),
+            "{find_text}"
         );
+        assert!(!find_text.contains("secret_value="), "{find_text}");
+        assert!(!find_text.contains("hunter2"), "{find_text}");
     }
 
     /// Test 4 (t04): with a governed store and a fake extension, `tabs_context_mcp`

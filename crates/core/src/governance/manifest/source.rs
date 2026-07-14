@@ -186,10 +186,21 @@ pub fn load_policy(
     user_source_string: Option<&str>,
     domain_pattern_valid: fn(&str) -> bool,
 ) -> Result<LoadedPolicy, LoadError> {
-    let org = load_org_manifest_at(
+    load_policy_at(
         &crate::governance::config::load::org_policy_path(),
+        user_source_string,
         domain_pattern_valid,
-    )?;
+    )
+}
+
+/// Resolve policy using an injected local org-policy path. This is the ADR-0056 second-composition
+/// seam used by Lightbox; the production loader above still supplies the fixed platform path.
+pub fn load_policy_at(
+    org_policy_path: &std::path::Path,
+    user_source_string: Option<&str>,
+    domain_pattern_valid: fn(&str) -> bool,
+) -> Result<LoadedPolicy, LoadError> {
+    let org = load_org_manifest_at(org_policy_path, domain_pattern_valid)?;
     let user = user_source_string
         .map(|s| load_user_manifest(s, domain_pattern_valid))
         .transpose()?;

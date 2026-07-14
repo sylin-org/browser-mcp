@@ -25,6 +25,12 @@ Collaboration and process -- this file is their canonical home:
   tags are the owner's call.
 - **Prefer the root fix over the spot fix.** If a spot fix is genuinely unavoidable, say so
   explicitly in the commit message so the debt stays visible.
+- **The browser product stays in the local user's context.** Ghostlight is for visible work in the
+  user's existing authenticated Chromium profile. Headless, isolated-profile, cloud, and remote
+  browser execution are product exclusions, not missing parity work.
+- **Repository content is practitioner-first.** Developers should see the product, installation,
+  first useful task, and exact no-account/free-core facts before organization procurement depth.
+  Product pages and the Trust Center carry the buyer-focused material.
 - **Persist before context loss.** On a "prep for compaction" / "handoff" / "save state" request,
   first update memory + durable docs (this file, STATUS, ADRs/LEDGERs) and commit, THEN emit a
   self-contained continuation prompt -- persist first, answer second.
@@ -36,7 +42,8 @@ file does not restate them -- follow AGENTS.md.
 
 ## Durable learnings (cross-cutting facts, not decisions)
 
-- **Build/test in an isolated `CARGO_TARGET_DIR`** (or use `scripts/test-e2e.ps1`). Live MCP
+- **Build/test in an isolated `CARGO_TARGET_DIR`**. Lightbox creates its own isolated process build
+  by default. Live MCP
   clients continuously respawn `ghostlight-relay.exe` and a running service holds `target/*.exe`
   against the linker, so a plain `cargo build`/`test` can relink-fail (Windows os error 5) and
   silently leave a STALE binary.

@@ -46,6 +46,11 @@ rather than opening up.
 This proves that a stale or downgraded but validly signed policy is refused, so protection
 cannot be silently weakened.
 
+    cargo run -p ghostlight-lightbox -- run license-expiry-continuity
+
+This proves that an expired license produces the same governed decision and the same audit fields
+as a valid license, with only the observational `"license":"expired"` marker added.
+
 ## If the vendor ceases to exist
 
 Your deployment keeps working, exactly as it did the day before. The automation engine is
@@ -60,4 +65,4 @@ already run continues to run.
 See [ADR-0028](../adr/0028-tripwire-licensing-and-continuity-promise.md) and the
 [licensing guide](../guides/licensing.md).
 
-Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org
+Last reviewed: 2026-07-14 against v0.5.7 | Contact: support@sylin.org

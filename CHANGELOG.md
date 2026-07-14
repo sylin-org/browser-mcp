@@ -5,6 +5,22 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Browser-control web ingress (ADR-0077).** The `inbound.web` HTTP/WebSocket transport, its
+  source policy, configuration keys, remote-enable route, and related scaffolding are removed.
+  Browser control is local-only through the same-user OS pipe. The Console remains a separate,
+  read-only loopback HTTP listener and rejects WebSocket upgrades.
+
+### Changed
+
+- **Least-privilege release publication.** A read-only assembly job now generates the pinned
+  CycloneDX SBOM, packages the extension, creates a canonical `SHA256SUMS` manifest, and uploads
+  one release bundle. The privileged publisher only downloads, verifies, attests, and releases
+  those existing files.
+
 ## [0.5.7] - 2026-07-13
 
 Reliable memory-only GIF recording, bounded large-payload delivery, agent narration, a broader
@@ -65,15 +81,10 @@ listed under 0.5.5 below, which was prepared but never published.)
   instance-aware `allowed_origins`, the installed dev instance) is retired; its structural
   simplifications survive. Named instances remain only as a test-isolation seam;
   `scripts/dev-browser.ps1` is removed.
-- **Explicit dev isolation replaces the dev auto-shadow (ADR-0064).** Running a `dev` build
-  alongside the installed release no longer relies on an unpinned client "preferring a live dev
-  instance" resolved at connect time. Instead the unpacked dev extension self-selects its own native
-  host (`org.sylin.ghostlight.dev`), a `dev` install registers that host + a dev-pinned relay copy,
-  and every client targets exactly one instance explicitly. This removes the `Selection`/`Unpinned`
-  candidate-list machinery, makes the anti-squat hub-key per-instance, and simplifies the browser
-  relay's reconnect to "wait for my one service" (correct across a dev-service restart by
-  construction). The default install and default identity are unchanged; ADR-0048's auto-shadow is
-  superseded.
+- **The pre-release two-stack development design was retired (ADR-0065).** ADR-0064's explicit dev
+  isolation replaced the earlier auto-shadow during development, but the final v0.5.6 release
+  removed the dev host, dev install, and duplicate MCP entry in favor of the one-stack engine swap
+  above. Named instances remain only as a test-isolation seam.
 - **Safe-by-default posture.** The audit flight recorder now defaults ON in every preset,
   all-open included (a session always leaves a trail), and `inbound.web.enabled` now defaults
   OFF in every preset (driving the browser over a local TCP port is opt-in; the pipe path remains
@@ -384,7 +395,7 @@ launcher, the landing/install pages, and the extension's first-run walkthrough t
   one call. Matches keys against label, placeholder, name, and aria-label with specificity-ordered
   tiering; ambiguous keys are returned unmatched with candidates instead of guessed. Optional
   `submit: true` clicks the form's own submit control after filling.
-- **`wait_for` tool** ([ADR-0037](adr/0037-page-state-awareness.md)): wait until a page condition
+- **`wait_for` tool** ([ADR-0037](docs/adr/0037-page-state-awareness.md)): wait until a page condition
   holds and the page has settled. An adaptive settle detector (mutation-rate decay, floored at 3)
   gates on the page's own pace; returns elapsed_ms, settle diagnostics, and the matched element's
   ref for direct chaining.
@@ -392,10 +403,10 @@ launcher, the landing/install pages, and the extension's first-run walkthrough t
   result vocabulary (`find`, `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `wait_for`,
   `script`, `form_fill`) carry a `structuredContent` field alongside text and advertise an
   `outputSchema`. This is the substrate `script`'s references resolve against.
-- **Consequence digests** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 2): every mutating
+- **Consequence digests** ([ADR-0037](docs/adr/0037-page-state-awareness.md) Decision 2): every mutating
   action's confirmation gains an `observation:` block reporting what changed (URL, title, DOM
   mutations, focus movement, alerts, dialogs).
-- **`read_page` diff mode** ([ADR-0037](adr/0037-page-state-awareness.md) Decision 3): the optional
+- **`read_page` diff mode** ([ADR-0037](docs/adr/0037-page-state-awareness.md) Decision 3): the optional
   `diff: true` argument returns only changes since the previous read on that tab. Stale-ref errors
   now name the re-render and the fix.
 - **`engine.script.budget_ms` config key**: total wall-clock budget for one `script` call (default

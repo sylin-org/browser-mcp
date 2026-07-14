@@ -97,6 +97,13 @@ fn pick_native_host_endpoint(
     endpoints: &[String],
     probe: impl Fn(&str) -> EndpointProbe,
 ) -> String {
+    // ADR-0064/0065: the ordinary path has exactly one pinned endpoint. Return it directly: a
+    // presence probe cannot affect the choice and creates a needless extra connection immediately
+    // before the real browser hello. Under Windows named-pipe load that probe can race the next
+    // accepted connection and make the identity frame appear on a stream whose hello was lost.
+    if let [endpoint] = endpoints {
+        return endpoint.clone();
+    }
     for ep in endpoints {
         if probe(ep) != EndpointProbe::Absent {
             return ep.clone();
@@ -1081,6 +1088,15 @@ mod tests {
         let one = vec!["only-ep".to_string()];
         assert_eq!(
             pick_native_host_endpoint(&one, |_| EndpointProbe::Absent),
+            "only-ep"
+        );
+    }
+
+    #[test]
+    fn pick_native_host_endpoint_does_not_probe_a_single_pinned_target() {
+        let one = vec!["only-ep".to_string()];
+        assert_eq!(
+            pick_native_host_endpoint(&one, |_| panic!("a single target needs no probe")),
             "only-ep"
         );
     }

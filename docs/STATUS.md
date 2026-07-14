@@ -1,6 +1,6 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-13. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-14. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
@@ -29,19 +29,62 @@ when they disagree**, and update it when you land something that changes the pic
   handoff (ADR-0070), agent narration (ADR-0072), reliable memory-only GIF recording and bounded
   browser transport (ADRs 0073/0074), the cohesive Card Foundry demo story, and the live Foundry
   companion route at `https://sylin.org/ghostlight/demo/foundry/`.
-- **CWS publish is BLOCKED on listing completion (owner action)**: the v0.5.7 package uploaded
-  successfully and is staged as a draft. The Developer Dashboard still needs the Privacy
-  practices answers, remote-code-use and host-permission justifications, the data-use compliance
-  certification, and at least one screenshot or video. Paste-ready, code-backed wording lives in
-  `docs/legal/PRIVACY.md`, `docs/legal/PERMISSION_JUSTIFICATIONS.md`, and
-  `docs/legal/STORE_LISTING.md`; its canonical public target is
-  `https://sylin.org/ghostlight/privacy/`. After completing the dashboard, publish there or re-run
-  `pwsh -File scripts/publish-extension.ps1` (the v0.5.7 package is already uploaded). Edge was
-  skipped because no `EDGE_*` credentials are configured.
+- **The Chrome Web Store listing is submitted and pending compliance review.** On 2026-07-13 the
+  owner completed the listing, Privacy practices, permission and remote-code justifications,
+  data-use certifications, screenshots, video, and promotional tiles, then submitted v0.5.7 for
+  review. Chrome warned that broad host permissions may trigger an in-depth review; that is the
+  intentional tradeoff for general-purpose automation across user-selected sites, not a rejected
+  submission. No action remains unless the reviewer asks for clarification. Edge was skipped
+  because no `EDGE_*` credentials are configured.
 - **CWS credential durability needs one owner-side change**: the Google OAuth consent screen is
   External/Testing, so its refresh token is short-lived. Move the consent configuration to
   Production or mint a fresh token before a later publish attempt. Credential locations remain in
   `local/`; no values belong in tracked documentation.
+- **The ADR-0056 Lightbox consolidation is complete.** All 27 legacy ignored spawn tests have named
+  parity scenarios, the originals and dual shell wrappers are retired, and CI runs the 34-scenario
+  Lightbox suite as the sole service-side process-boundary gate. The repaired Playwright job stays
+  as the separate real-extension/Chromium proof under ADR-0056 Decision 4.
+- **Browser control is local-only (ADR-0077).** The `inbound.web` HTTP/WebSocket transport and all
+  of its policy, configuration, remote-enable, and test scaffolding are removed. MCP clients enter
+  through the same-user OS pipe. The Console is a separate read-only loopback HTTP listener and
+  rejects WebSocket upgrades. ADR-0076 is superseded; any future remote design starts from zero.
+- **The closed-loop browser core is implemented (ADR-0078).** The additive 25-tool surface now
+  includes semantic `act_on`, explicit JavaScript dialog control, and exact owned-tab
+  focus/reload/close. Actionable observations, bounded interaction receipts, service-authored
+  untrusted-output provenance, and final response budgets reduce model roundtrips without moving
+  policy or page content into the extension. The 13 trained schemas remain byte-stable. All fast
+  gates and all 34 Lightbox scenarios pass. Visible-browser verification remains pending on the
+  Linux lifecycle host.
+- **The Linux lifecycle test recipe is ready.** `docs/testing/linux-live-lifecycle.md` pins Ubuntu
+  Desktop 24.04 LTS, visible Chrome Stable, VS Code first and Codex second, one ordinary OS user,
+  and clean install through uninstall evidence. The owner is preparing the host and SSH access.
+- **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
+  the pinned SBOM, packages the extension, creates `SHA256SUMS`, and uploads one immutable bundle.
+  The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.
+- **The public vulnerability-disclosure endpoint is live.** `https://sylin.org/.well-known/security.txt`
+  publishes the contact, expiry, canonical URL, and Ghostlight security-policy link.
+- **The four-phase public documentation freshness pass is complete in the working tree.** Trust
+  material now follows SECURITY.md's best-effort solo-maintainer targets and names only live
+  distribution channels. Present-facing guides use the v0.5.7 service/relay topology, 25-tool
+  inventory, one-stack dev loop, shipped licensing behavior, and managed-tab boundary. The original
+  SPEC is explicitly historical, recording privacy names the memory-only retention rules, and the
+  sylin.org source carries a v0.5.7 fallback plus a product-first narrow hero. Ghostlight formatting,
+  local-link and ASCII checks, the website clean build, all generated-site checks, and the rendered
+  390px overflow/navigation/order checks are green.
+- **The July non-author experience closure is implemented on `dev` (ADR-0079).** An isolated
+  denial is now a centered three-second sticker. Repeated enforced denials pause only the producing
+  MCP session at a synchronized service send boundary (3 matching/60 seconds or 5 total/120
+  seconds), then show a closed-shadow overlay and popup controls. Compact narration drops the
+  progress meter; screenshot and recording feedback are quieter and tied to real capture state.
+  Attention transitions are content-free audit records. The README and install guide now expose
+  the four-stage practitioner journey, no-account/free-core facts, pre-release extension path, and
+  a read-only first proof. The full Rust suite, strict clippy, 93 extension tests, JS syntax checks,
+  and formatting are green. Visible Linux/browser verification remains owed.
+- **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
+  the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
+  live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
+  small free-surface candidates next -- ref-linked annotated screenshots and optional owned-tab
+  labels.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -86,23 +129,47 @@ when they disagree**, and update it when you land something that changes the pic
 `scripts/release.ps1 <version>` from `main` automates: tag, watch CI, verify assets, fill
 package-manager sums, homebrew tap, npm publish + smoke, trust-footer restamp, extension publish
 (Chrome Web Store + Edge; auto when `CWS_*`/`EDGE_*` creds are set), and the website refresh. The
-v0.5.7 run proved every step end to end (only the CWS listing gate above stopped the final Chrome
-submission; Edge remained unconfigured).
+v0.5.7 run proved every automated step end to end. The owner later completed the dashboard-only
+CWS metadata and submitted the item manually; Edge remains unconfigured.
 
 CWS API creds are set up on this machine (see local/RELEASE-CREDENTIALS.md; values in
 `~/.ghostlight-release.env`, written by `local/set-credentials.ps1`). Load them before a release:
 `Get-Content "$HOME/.ghostlight-release.env" | % { if ($_ -match '^([A-Z0-9_]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1],$Matches[2]) } }`
 
-Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA). Store submission remains
-manual when its API credentials or dashboard metadata are absent.
+Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA). The repository now provides
+`scripts/prepare-winget.ps1`, which materializes the correct submission tree from release manifests
+and runs `winget validate`; v0.5.7 passed that preparation locally. Store submission remains manual
+when its API credentials or dashboard metadata are absent.
 
 ## Owed engineering work (in rough priority order)
 
+- **The first retrospective non-author review is captured and its repository-actionable response
+  is implemented.** The owner
+  reconstructed a pre-release developer review from a video call with no transcript or notes;
+  `docs/design/non-author-experience-review-2026-07.md` preserves the method limits, install and
+  messaging friction, and the strong post-install delight signals. The proposed response is split
+  into `docs/design/visual-language-next-2026-07.md`,
+  `docs/design/developer-first-entry-2026-07.md`, and prior-art research 16. ADR-0079, the ADR-0072
+  and ADR-0073 amendments, the service/extension behavior, and the developer-first repository entry
+  are now implemented. A late note naming OpenCode as a developer-friendly example is recorded and
+  reflected as fast install orientation, without copying its one-command product shape. Next: run
+  the revised journey on the Linux host and collect a consented, observed follow-up review.
+- **Public repository metadata is the next small distribution task.** Add a useful GitHub
+  description, homepage, and topics in one owner-confirmed outward-facing pass. Funding links stay
+  deferred until the owner chooses the recipient/entity, provider, and accounting/tax handling.
+- **ADR-0078 visible-browser verification is owed.** C1-C6 and the automated gates are complete.
+  Run `docs/tasks/closed-loop-core/LIVE-VERIFY.md` against the visible Linux Chrome host once SSH
+  access is available. Cross-origin frame refs remain deferred because they require a separate
+  multi-origin governance decision. Headless, isolated, cloud, and remote browser execution remain
+  out of scope.
 - **Public documentation was rebalanced around responsible delight**: the applied review lives in
   `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
-  It also corrects stale topology, audit-default, roadmap, and install-time-vs-runtime claims.
-  Remaining high-value work: CWS publication, the hero GIF, and macOS/Linux live verification.
+  A follow-up four-phase freshness pass aligns trust commitments, distribution state, topology,
+  tool count, recording privacy, roadmap, current guides, website copy, machine-readable surfaces,
+  mobile hierarchy, and public links. Remaining high-value work: macOS/Linux live verification and
+  the outcome of the pending CWS review. The optional hero GIF remains intentionally deferred until
+  a proper capture is worth publishing.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
@@ -135,15 +202,10 @@ manual when its API credentials or dashboard metadata are absent.
   - `server.json` websiteUrl was already FIXED to `https://sylin.org/ghostlight/` (applies on the
     next registry version, not 0.5.6 -- immutable).
   - README now lists the LIVE distribution channels (MCP registry + Homebrew badges, an "Other ways
-    to get it" line). CWS (blocked), Edge, winget, and scoop are omitted until each actually ships.
-  This workstream is now COMPLETE; the only distribution follow-up left is the owner-side CWS listing
-  gate below.
-- **CWS listing completion** (owner): the public privacy URL is live and the v0.5.7 extension ZIP
-  is uploaded. Paste the privacy practices plus remote-code and host-permission justifications,
-  certify data-use compliance, and add at least one screenshot or the promotional video using the
-  proven `ghostlight demo` recipe in `docs/legal/STORE_LISTING.md`; then publish the staged package.
-  v0.5.7 includes `narrate` and the Card Foundry story. The live rehearsal passed on 2026-07-13,
-  including the session-policy denial finale.
+    to get it" line). CWS remains omitted until review completes and the listing is public; Edge,
+    winget, and scoop are omitted until each actually ships.
+  This workstream is now COMPLETE. The CWS listing was submitted on 2026-07-13 and has moved from
+  an owner-side completion gate to an external review wait.
 - **Agent narration is implemented** (ADR-0072): additive `narrate` is domainless RAWX none,
   bounded and schema-validated, ordinarily audited, ownership/hold/sacred checked, and legal in
   `script`/`browser_batch`. The policy-free extension renders one timed responsive Agent ribbon per
@@ -152,7 +214,7 @@ manual when its API credentials or dashboard metadata are absent.
   away from recent touched-control, pointer, and scroll activity. The separate central governance
   ribbon now has viewport-bounded sizing and wrapped, untruncated security text. `ghostlight demo`
   narrates its six story beats after each stage loads, holds each caption for its full six-second
-  lifetime, and only then begins the visible actions. Rust and the 67-test extension suite are
+  lifetime, and only then begins the visible actions. Rust and the 72-test extension suite are
   green. Live browser
   verification passed on 2026-07-13 through the real MCP `script`
   path: `shown: true`, timed placement, replacement, active-navigation replay, and audit
@@ -160,36 +222,28 @@ manual when its API credentials or dashboard metadata are absent.
   top-area hover resolved `auto` to bottom and a bottom-area hover resolved it to top; both calls
   returned the effective edge and the user-visible wide ribbon. Existing MCP clients need one
   restart to add the new direct `narrate` schema to their callable tool list.
-- **Lightbox legacy-27 migration** (ADR-0056): the 27 `#[ignore = "e2e"]` spawn tests +
-  `scripts/test-e2e.*` migrate scenario-by-scenario into the lightbox harness against a
-  per-test parity ledger. Not started; CI runs both tiers until the ledger completes.
 - **SAPS remediation remainder** (assessment lives in gitignored `saps/`; findings already
   remediated are in git history around 2026-07-11):
-  - SEC-HIGH-03 enforce-half: a confirm-gate for irreversible actions (send/delete/
-    purchase) needing out-of-band human confirmation. Design captured in
-    `docs/design/managed-mode-network-features.md` (managed intent descriptors); build
-    pending.
-  - SEC-HIGH-02 full fix: token/auth for non-loopback sources once `enable-remote` returns
-    (the action is currently disabled as the interim fix). Same design note; build pending.
+  - SEC-HIGH-03 enforce-half: ADR-0075 proposes a signed managed descriptor, MCP form elicitation,
+    one-time in-memory pending action, and stale-sensitive final dispatch. Acceptance needs client
+    evidence, schema/privacy review, and Lightbox plus real-browser proof; build is not authorized.
+  - SEC-HIGH-02 is closed by removal: ADR-0077 deletes the browser-control web listener, remote
+    policy keys, remote-enable route, and WebSocket machinery. There is no remote browser-control
+    transport to authenticate. Future remote work requires a new threat model and ADR.
   - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
     same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
-- **tabs_create prose leaks the un-encoded native tab id** (found in the ADR-0061 live
-  verify; pre-existing, non-regression). Small fix in the tabs_create response text.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real
   browser).
-- **FAQ Q17 follow-up**: no license-expiry scenario exists in lightbox; adding one would
-  let the trust-center FAQ point at exactly what it claims.
 - Parked (deliberately): audit TCP sink (UDP syslog is the standard; revisit only on ask);
   `socket.yml` capability acknowledgments for the npm package (draft-first, owner call).
 
 ## Owner-side gates (agents cannot do these)
 
-- Chrome Web Store: complete the v0.5.7 draft listing, make OAuth credentials durable, and publish.
-  Edge Add-ons remains unsubmitted.
+- Chrome Web Store: monitor the pending v0.5.7 review and answer any reviewer questions; make the
+  OAuth credentials durable before the next release. Edge Add-ons remains unsubmitted.
 - Trust center legal: vendor entity name in the MSA (blocked on forming the LLC), the
   cyber-insurance yes/no line, counsel skim of MSA/DPA/LICENSE-GOVERNANCE before first
   EXECUTION (publication already happened by design; drafts are marked as drafts).
-- `security.txt` on sylin.org (founder-side, ~1h).
 - Key backup + a second npm publisher; one non-author human through the install flow.
 
 ## Standing context worth knowing

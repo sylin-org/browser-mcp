@@ -82,22 +82,6 @@
           ],
           "default": "enforce"
         },
-        "inbound.web.from": {
-          "description": "Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). \"localhost\" only, unless opened to \"*\" or specific hosts.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true,
-          "default": [
-            "localhost"
-          ]
-        },
-        "inbound.web.enabled": {
-          "description": "Whether the inbound.web adapter admits web (WS) tool sessions. Off by default: web ingestion is opt-in. An org-mandatory false denies the web adapter.",
-          "type": "boolean",
-          "default": false
-        },
         "inbound.pipe.enabled": {
           "description": "Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.",
           "type": "boolean",
@@ -112,17 +96,6 @@
           "description": "Whether the management-plane HTTP UI binds. An org-mandatory false takes the management UI off-line without affecting tool ingestion.",
           "type": "boolean",
           "default": true
-        },
-        "manage.web.from": {
-          "description": "Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true,
-          "default": [
-            "localhost"
-          ]
         }
       }
     }

@@ -6,29 +6,14 @@
 //! handshake window and returns an MCP tool error result (the request/response bridge itself is
 //! covered by the `browser` and `ipc` unit tests).
 //!
-//! ADR-0051 Phase 4 (P4.2): all but one migrated from spawn-a-service-plus-adapter onto the
-//! in-process `support::inproc::Harness`, which drives the SAME serve_session path with no OS
-//! process. The exception is `tools_call_waits_for_a_late_extension_and_notes_the_wait`: it needs a
-//! fake extension to connect LATE (after the call is already queued and waiting) over the real IPC,
-//! which the in-process harness's attach-then-drive shape cannot reproduce, so it stays a spawn test
-//! and belongs to the P4.3 quarantined end-to-end tier.
+//! ADR-0051 Phase 4 moved these protocol cases onto the in-process
+//! `support::inproc::Harness`. Process-boundary late-attach coverage lives in the ADR-0056
+//! Lightbox scenario library.
 
 mod support;
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
 use support::inproc::{manifest_from_value, Harness};
-
-static SEQ: AtomicU32 = AtomicU32::new(0);
-
-fn unique_endpoint() -> String {
-    format!(
-        "ghostlight-it-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    )
-}
 
 /// Drive `requests` through an all-open in-process session, returning one reply per `id`-bearing
 /// request (a notification, no `id` key at all, gets none).
@@ -312,107 +297,4 @@ async fn malformed_method_and_null_id_follow_jsonrpc_rules() {
         "a null-id request must get an id back, not an omitted field"
     );
     assert_eq!(responses[1]["id"], Value::Null);
-}
-
-/// STAYS a spawn test (ADR-0051 Phase 4, quarantined E2E tier): a fake extension connects LATE --
-/// after the tools/call is already queued and waiting -- over the real IPC to the EXTENSION
-/// endpoint the SERVICE owns, then answers the one framed tool_request. This late-connect timing
-/// (and the resulting truthful "(waited Ns ...)" note) is exactly what the in-process
-/// attach-then-drive fixture cannot reproduce, so it keeps the spawn-a-service pattern.
-#[ignore = "e2e: spawns a real ghostlight service/adapter; run via the e2e tier -- cargo test -- --ignored"]
-#[test]
-fn tools_call_waits_for_a_late_extension_and_notes_the_wait() {
-    let endpoint = unique_endpoint();
-    let mut service = support::spawn_service(&endpoint);
-    let mut adapter = support::spawn_adapter(&endpoint);
-
-    // Unlike `drive`, stdin is kept open for the whole test: the tools/call response only
-    // arrives after the fake extension below connects, several hundred ms into the test.
-    let mut stdin = adapter.stdin.take().expect("adapter stdin");
-    let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // o04: inputSchema validation now runs before dispatch; navigate needs url + tabId.
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://example.com","tabId":1}}}),
-    ];
-    for req in &requests {
-        stdin
-            .write_all(serde_json::to_string(req).unwrap().as_bytes())
-            .unwrap();
-        stdin.write_all(b"\n").unwrap();
-    }
-
-    // Fake extension: connects late (after the tools/call is already queued and waiting) over
-    // the real IPC, to the EXTENSION endpoint the SERVICE owns (the plain `endpoint`, unrelated
-    // to the `-adapter` endpoint the adapter dials), reads the one framed tool_request, and
-    // answers it. Runs on its own thread with its own runtime, mirroring the fake-extension
-    // pattern in `src/browser.rs` and `src/native/ipc.rs`, since this test file (like its other
-    // tests) drives the children synchronously.
-    let fake_endpoint = endpoint.clone();
-    let fake_ext = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
-        rt.block_on(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            let stream = ghostlight::native::ipc::connect(&fake_endpoint)
-                .await
-                .expect("fake extension connects to the real IPC endpoint");
-            let (mut read_half, mut write_half) = tokio::io::split(stream);
-            support::send_extension_attach_frames(&mut write_half).await;
-            // navigate probes the tab's URL before dispatch; the helper answers the probe(s) and
-            // hands back the tool_request itself.
-            let v = support::read_frame_answering_tab_urls(
-                &mut read_half,
-                &mut write_half,
-                "tool_request",
-            )
-            .await;
-            let reply = json!({
-                "id": v["id"],
-                "type": "tool_response",
-                "result": { "content": [ { "type": "text", "text": "navigated" } ] },
-            });
-            ghostlight::native::host::write_message(
-                &mut write_half,
-                &serde_json::to_vec(&reply).unwrap(),
-            )
-            .await
-            .unwrap();
-        });
-    });
-
-    let stdout = adapter.stdout.take().expect("adapter stdout");
-    let mut lines = BufReader::new(stdout).lines();
-
-    let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(first["id"], 1, "first response is the initialize reply");
-
-    let second: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(second["id"], 2, "second response is the tools/call reply");
-    assert_ne!(
-        second["result"]["isError"], true,
-        "the late-connected call must succeed: {second:?}"
-    );
-    let content = second["result"]["content"]
-        .as_array()
-        .expect("content array");
-    assert_eq!(
-        content[0]["text"], "navigated",
-        "first block is the tool's own result"
-    );
-    let last_text = content
-        .last()
-        .expect("at least one content block")
-        .get("text")
-        .and_then(Value::as_str)
-        .expect("last block carries text");
-    assert!(
-        last_text.starts_with("(waited ")
-            && last_text.ends_with("s for browser extension handshake)"),
-        "last block is the truthful wait note: {last_text}"
-    );
-
-    fake_ext.join().expect("fake-extension thread panicked");
-    drop(stdin);
-    let _ = adapter.wait();
-    let _ = service.kill();
-    let _ = service.wait();
 }

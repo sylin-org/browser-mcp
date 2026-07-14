@@ -175,6 +175,49 @@
     return SENSITIVE_AUTOCOMPLETE.some((s) => ac.indexOf(s) !== -1);
   }
 
+  // ADR-0078 D2: one compact element vocabulary shared by find, targeted read_page, and later
+  // semantic action resolution. These are mechanism facts only. In particular,
+  // `mechanicalActions` never means a governance grant allows the action.
+  function mechanicalActions(el) {
+    const actions = [];
+    if (visible(el)) actions.push("hover", "scroll_to");
+    const enabled = !el.disabled && el.getAttribute("aria-disabled") !== "true";
+    if (enabled && interactive(el)) {
+      actions.push("left_click", "right_click", "double_click");
+      const tag = el.tagName.toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || el.isContentEditable) {
+        actions.push("set_value");
+      }
+    }
+    return actions;
+  }
+
+  function elementSummary(el) {
+    if (!el) return null;
+    const tag = el.tagName.toLowerCase();
+    const rect = el.getBoundingClientRect();
+    const facts = {
+      ref: refFor(el),
+      role: role(el) || tag,
+      name: accessibleName(el) || el.textContent || "",
+      visible: visible(el),
+      enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
+      box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      renderSerial,
+      mechanicalActions: mechanicalActions(el),
+    };
+    if (typeof el.checked === "boolean" && ["checkbox", "radio"].includes((el.type || "").toLowerCase())) {
+      facts.checked = el.checked;
+    }
+    if (typeof el.selected === "boolean" && tag === "option") facts.selected = el.selected;
+    if (["input", "textarea", "select"].includes(tag) && el.value !== undefined && el.value !== "") {
+      facts.value = String(el.value);
+      facts.secret = sensitive(el);
+    }
+    if (tag === "a" && el.href) facts.href = el.href;
+    return (self.GhostlightActionable || GhostlightActionable).makeSummary(facts);
+  }
+
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
   // Two-pass design: pass 1 (measure) walks the DOM once and builds a render tree with
   // per-subtree measurements; pass 2 (emit) walks that render tree top-down and decides, node
@@ -452,28 +495,93 @@
     }
     return out;
   }
-  function find(query) {
-    const q = (query || "").toLowerCase();
-    const results = [];
-    let more = false;
+
+  function actionableCandidates() {
+    const candidates = [];
     for (const el of collectAll(document)) {
       if (!visible(el)) continue;
       if (el.id && el.id.indexOf("ghostlight-") === 0) continue; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) continue;
-      const hay = `${role(el) || ""} ${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.type || ""} ${tag}`.toLowerCase();
-      if (!hay.includes(q)) continue;
-      if (results.length >= 20) { more = true; break; }
-      const rect = el.getBoundingClientRect();
-      results.push({
-        ref: refFor(el),
-        role: role(el) || tag,
-        name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
-        x: Math.round(rect.x + rect.width / 2),
-        y: Math.round(rect.y + rect.height / 2),
-      });
+      const summary = elementSummary(el);
+      candidates.push(Object.assign({}, summary, {
+        searchText: `${summary.role} ${summary.name} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${typeof el.title === "string" ? el.title : ""} ${el.type || ""} ${tag}`,
+      }));
     }
+    return candidates;
+  }
+
+  function publicCandidate(candidate) {
+    const result = Object.assign({}, candidate);
+    delete result.searchText;
+    const box = result.box || { x: 0, y: 0, width: 0, height: 0 };
+    result.x = Math.round(box.x + box.width / 2);
+    result.y = Math.round(box.y + box.height / 2);
+    return result;
+  }
+
+  function find(query) {
+    const ranked = (self.GhostlightActionable || GhostlightActionable).rankCandidates(query, actionableCandidates());
+    const more = ranked.length > 20;
+    const results = ranked.slice(0, 20).map(publicCandidate);
     return { results, more };
+  }
+
+  function resolveActionable(target) {
+    const page = {
+      url: location.href,
+      origin: location.origin,
+      title: document.title || "",
+      renderSerial,
+    };
+    if (target && target.ref) {
+      const el = deref(target.ref);
+      if (!el) {
+        return { error: staleRefMessage(target.ref) || `Element ${target.ref} not found or was garbage-collected.`, page };
+      }
+      const summary = publicCandidate(elementSummary(el));
+      const top = document.elementFromPoint(summary.x, summary.y);
+      const covered = !!(top && top !== el && !el.contains(top) && !top.contains(el));
+      return { target: summary, candidates: [], ambiguous: false, covered, page };
+    }
+    const query = target && (target.query || target.name);
+    const ranked = (self.GhostlightActionable || GhostlightActionable)
+      .rankCandidates(query, actionableCandidates(), target && target.role);
+    if (!ranked.length) {
+      const frameOrigins = Array.from(document.querySelectorAll("iframe, frame"))
+        .slice(0, 5)
+        .map((frame) => {
+          try { return new URL(frame.src || "about:blank", location.href).origin; }
+          catch (_error) { return "unknown"; }
+        });
+      return {
+        target: null,
+        candidates: [],
+        ambiguous: false,
+        frameUnsupported: frameOrigins.length > 0,
+        frameOrigins,
+        page,
+      };
+    }
+    const bestRank = ranked[0].matchRank;
+    const best = ranked.filter((candidate) => candidate.matchRank === bestRank);
+    if (best.length !== 1) {
+      return { target: null, candidates: best.slice(0, 5).map(publicCandidate), ambiguous: true, more: best.length > 5, page };
+    }
+    const summary = publicCandidate(best[0]);
+    const el = deref(summary.ref);
+    const top = document.elementFromPoint(summary.x, summary.y);
+    const covered = !!(el && top && top !== el && !el.contains(top) && !top.contains(el));
+    return { target: summary, candidates: [], ambiguous: false, covered, page };
+  }
+
+  function currentPageMeta() {
+    return {
+      url: location.href,
+      origin: location.origin,
+      title: document.title || "",
+      renderSerial,
+    };
   }
 
   // --- Form input (shadow-DOM traversal + native setter so framework inputs register) ---
@@ -733,9 +841,8 @@
   // mutating action and observeSample after. observeSample waits the 300ms settle window, then
   // diffs url/title/focus and counts mutations since the snap; alert/status elements whose text
   // was NOT present at snap time are "newly appeared" (first 200 chars of textContent); a
-  // role=dialog present at sample but not at snap is reported. formatObservation (lib/observation.js,
-  // a content-script global via the manifest) renders the digest; this function returns the finished
-  // string and its structured twin so the SW appends the string verbatim. ---
+  // role=dialog present at sample but not at snap is reported. lib/receipt.js bounds and renders
+  // the facts as correlation-only evidence; it never claims the action caused the observation. ---
   function roleTexts(roles) {
     const out = {};
     for (const el of collectAll(document)) {
@@ -763,13 +870,14 @@
       title: document.title || "",
       focus: focusedName(),
       mutations: readMutations(),
+      renderSerial,
       alerts: rt.alert || [],
       statuses: rt.status || [],
       dialogPresent: !!(rt.dialog && rt.dialog.length),
     };
   }
 
-  function observeSample(before) {
+  function observeSample(before, meta) {
     return new Promise((resolve) => {
       setTimeout(() => {
         const url = location.href;
@@ -781,21 +889,30 @@
         const newStatus = (rt.status || []).find((t) => !(before.statuses || []).includes(t)) || "";
         const dialogNow = !!(rt.dialog && rt.dialog.length);
         const dialogAppeared = dialogNow && !before.dialogPresent;
-        const fmt = (self.GhostlightObservation || GhostlightObservation).formatObservation;
-        const sig = { mutations };
-        if (url !== before.url) sig.url = url;
-        if (title !== before.title) sig.title = title;
-        if (focus && focus !== before.focus) sig.focus = focus;
-        if (newAlert) sig.alert = newAlert;
-        if (newStatus) sig.status = newStatus;
-        if (dialogAppeared) sig.dialog = true;
-        const structured = { mutations };
-        if (sig.url) structured.url_changed = sig.url;
-        if (sig.title) structured.title_changed = sig.title;
-        if (sig.focus) structured.focus = sig.focus;
-        if (sig.alert) structured.alert = sig.alert;
-        if (sig.dialog) structured.dialog_appeared = true;
-        resolve({ digest: fmt(sig), structured });
+        const changedElements = [];
+        if (focus && focus !== before.focus && document.activeElement) {
+          const summary = elementSummary(document.activeElement);
+          if (summary) changedElements.push(summary);
+        }
+        const receiptLib = self.GhostlightReceipt || GhostlightReceipt;
+        const receipt = receiptLib.makeReceipt({
+          tabId: meta && meta.tabId,
+          action: meta && meta.action,
+          targetAssurance: meta && meta.targetAssurance,
+          target: meta && meta.target,
+          before,
+          after: {
+            url,
+            title,
+            mutations,
+            renderSerial,
+            alert: newAlert,
+            status: newStatus,
+            dialogOpened: dialogAppeared,
+            changedElements,
+          },
+        });
+        resolve({ digest: receiptLib.renderReceipt(receipt), receipt });
       }, 300);
     });
   }
@@ -899,8 +1016,19 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
       case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); return true;
+      case "elementSummary": {
+        const el = deref(msg.ref);
+        if (!el) {
+          sendResponse({ result: { error: staleRefMessage(msg.ref) || `Element ${msg.ref} not found or was garbage-collected.` } });
+        } else {
+          sendResponse({ result: elementSummary(el) });
+        }
+        return true;
+      }
       case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
+      case "resolveActionable": sendResponse({ result: resolveActionable(msg.target || {}) }); return true;
+      case "pageMeta": sendResponse({ result: currentPageMeta() }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
       case "setFiles": sendResponse({ result: setFiles(msg.ref, msg.files) }); return true;
       case "setImage": sendResponse({ result: setImage(msg.ref, msg.coordinate, msg.data, msg.filename, msg.mimeType) }); return true;
@@ -922,7 +1050,7 @@
       }
       case "observeSnap": sendResponse({ result: observeSnap() }); return true;
       case "observeSample": {
-        observeSample(msg.before).then((result) => sendResponse({ result }));
+        observeSample(msg.before || {}, msg.meta || {}).then((result) => sendResponse({ result }));
         return true;
       }
       case "formStructure": sendResponse({ result: formStructure() }); return true;

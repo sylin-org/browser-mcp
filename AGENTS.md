@@ -99,16 +99,16 @@ Standing technical decisions (each has an ADR or spec section; do not re-litigat
 **Load-bearing gotcha:** on a dev machine, live MCP clients continuously respawn
 `ghostlight-relay.exe` and a running service holds `target/*.exe` against the linker, so a
 plain `cargo build`/`cargo test` can fail with lock errors or leave stale binaries. Build
-and test in an isolated target dir (`CARGO_TARGET_DIR`), or use the scripts that already
-do: `scripts/test-e2e.ps1` / `scripts/test-e2e.sh`.
+and test in an isolated target dir (`CARGO_TARGET_DIR`). Lightbox manages its own isolated
+process build unless `--reuse-cache` is explicitly used on a clean CI worker.
 
 Two test tiers (ADR-0032, ADR-0051):
 
 - **Fast, in-process**: plain `cargo test --workspace`. No processes spawned; the everyday
   gate. In-process fixtures live in `tests/support/` (note: tools that orchestrate internal
   sub-calls need `#[tokio::test(flavor = "multi_thread")]` -- documented in the fixture).
-- **End-to-end (spawn)**: tests marked `#[ignore = "e2e: ..."]` launch real binaries over
-  the IPC boundary. Run via `scripts/test-e2e.ps1|.sh` (isolated target dir, closed stdin).
+- **End-to-end (spawn)**: `cargo run -p ghostlight-lightbox -- run --all` launches real binaries
+  over the IPC boundary from an isolated target dir and runs the named parity scenarios.
 
 Gate before every commit: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 fast-tier tests green. Extension JS: `node --test` under `extension/`, plus `node --check`

@@ -6,16 +6,14 @@ Continuity Promise or the trained tool surface.
 
 ## Near term
 
-- **Chrome Web Store listing.** Install the extension without developer mode.
-- **One continuous install journey.** Whichever half a user finds first -- extension or local
-  service -- leads directly to the other, with idempotent client registration and one clear restart
-  step.
+- **Complete Chrome Web Store review.** The v0.5.7 listing is submitted and pending compliance
+  review. When it is public, make the store path the default extension-installation route.
 - **Live browser verification on macOS and Linux.** Both already build and pass the full test
   suite in CI; this brings end-to-end browser coverage on par with Windows.
-- **Finish the lightbox migration.** Move the remaining process-spawn scenarios into the faster,
-  more inspectable browser and governance harness without reducing coverage.
-- **Confirm irreversible actions.** Add the designed out-of-band confirmation boundary for send,
-  delete, purchase, publish, and similar consequences.
+- **Evaluate transaction-bound managed confirmation.** Validate client-mediated MCP form
+  elicitation, stale-target refusal, and the privacy model before accepting or implementing the
+  proposed confirmation boundary for selected managed actions
+  ([ADR-0075](docs/adr/0075-transaction-bound-managed-confirmation.md)).
 
 ## Direction
 

@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js", "lib/wire-chunks.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js", "lib/attention.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -53,6 +53,10 @@ const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups, re
 // ADR-0072: pure, memory-only replacement and expiry state. The worker supplies tab routing;
 // this store contains no policy or page-content logic.
 const narrationStore = self.GhostlightNarration.createNarrationStore();
+const attentionStore = self.GhostlightAttention.createAttentionStore();
+// ADR-0078 D7: the minimum current CDP dialog state per tab. It is mechanism-only, memory-only,
+// and never resolves anything without an explicit model-facing dialog action.
+const dialogStore = self.GhostlightDialog.createDialogStore();
 
 // Native-messaging host name (ADR-0065: one stack). Every build of this extension -- the Web
 // Store release and the unpacked dev copy alike -- talks to the ONE host `org.sylin.ghostlight`,
@@ -100,6 +104,9 @@ const CLIENT_TITLE_PREFIX = "\u{1F47B} ";
 // because tool ids are binary-chosen and hold ids are extension-chosen.
 const holdPending = new Map(); // id -> { resolve }
 let holdSeq = 0;
+const attentionPending = new Map();
+let attentionSeq = 0;
+let holdBadgeState = null;
 // Panic kill switch (g11): the hot-path mirror of the chrome.storage.session "session_killed"
 // marker (the source of truth for reconnect gating). Set synchronously, before any await, at
 // the start of killSession() and by startup recovery; kept in sync on every transition so
@@ -226,13 +233,29 @@ async function connect() {
           icon: msg.icon,
           title: msg.title,
           description: msg.description,
+          durationMs: msg.durationMs,
         });
         return;
       }
-      // ADR-0072 session cleanup: the binary names only this MCP session's owned tabs. The
-      // extension clears the transient mechanism state and the matching on-page card.
+      if (msg && msg.type === "attention_required" && typeof msg.tabId === "number") {
+        const record = attentionStore.show(msg);
+        renderAttention(msg.tabId, record);
+        refreshActionBadge();
+        return;
+      }
+      if (msg && msg.type === "attention_resolved" && typeof msg.guid === "string") {
+        const prior = attentionStore.remove(msg.guid);
+        if (prior && Number.isSafeInteger(prior.tabId)) {
+          sendToTab(prior.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: msg.guid });
+        }
+        refreshActionBadge();
+        return;
+      }
+      // ADR-0072/0078 session cleanup: the binary names only this MCP session's owned tabs. The
+      // extension clears transient narration and cached dialog mechanism state for each tab.
       if (msg && msg.type === "narration_clear" && typeof msg.tabId === "number") {
         narrationStore.remove(msg.tabId);
+        dialogStore.remove(msg.tabId);
         sendToTab(msg.tabId, { type: "AGENT_NARRATION_CLEAR" });
         return;
       }
@@ -263,6 +286,17 @@ async function connect() {
         } else {
           pending.resolve(null);
         }
+        return;
+      }
+      if (msg && (msg.type === "attention_state" || msg.type === "attention_error") && msg.id) {
+        const pending = attentionPending.get(msg.id);
+        if (!pending) return;
+        attentionPending.delete(msg.id);
+        if (msg.type === "attention_state") {
+          pending.resolve(msg.result || { sessions: [] });
+        } else {
+          pending.resolve(null);
+        }
       }
     };
     nativePort.onMessage.addListener(handleNativeMessage);
@@ -286,6 +320,7 @@ async function connect() {
     // while. Check once, right after attaching, so the service's focus-chain tie-breaker has a
     // real answer from the first tool call rather than only after the user later alt-tabs.
     reportFocusIfFocused();
+    attentionRequest({ type: "get_attention" }).then(syncAttentionState);
   } catch {
     nativePort = null;
     setTimeout(connect, RECONNECT_DELAY_MS);
@@ -369,15 +404,85 @@ function holdRequest(payload) {
   });
 }
 
-// `held` is `true`/`false` from a hold_state reply, or `null` when the session state is
-// unknown (no connected port). Badge text/color only; renders state, decides nothing.
-function updateHoldBadge(held) {
-  if (held) {
+function attentionRequest(payload) {
+  return new Promise((resolve) => {
+    if (!nativePort) {
+      connect();
+      resolve(null);
+      return;
+    }
+    const id = `a${++attentionSeq}`;
+    const timer = setTimeout(() => {
+      attentionPending.delete(id);
+      resolve(null);
+    }, HOLD_REQUEST_TIMEOUT_MS);
+    attentionPending.set(id, {
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    });
+    try {
+      nativePort.postMessage(Object.assign({ id }, payload));
+    } catch {
+      clearTimeout(timer);
+      attentionPending.delete(id);
+      resolve(null);
+    }
+  });
+}
+
+function renderAttention(tabId, record) {
+  if (!record) return;
+  sendToTab(tabId, {
+    type: "AGENT_ATTENTION_REQUIRED",
+    guid: record.guid,
+    label: record.label,
+    category: record.category,
+    origin: record.origin,
+    threshold: record.threshold,
+    count: record.count,
+    title: record.title,
+    description: record.description,
+    controls: record.controls,
+  });
+}
+
+function syncAttentionState(result) {
+  if (!result) return;
+  const prior = attentionStore.clear();
+  for (const record of prior) {
+    if (Number.isSafeInteger(record.tabId)) {
+      sendToTab(record.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: record.guid });
+    }
+  }
+  for (const raw of result.sessions || []) {
+    const record = attentionStore.show(raw);
+    if (record && Number.isSafeInteger(record.tabId)) renderAttention(record.tabId, record);
+  }
+  refreshActionBadge();
+}
+
+function refreshActionBadge() {
+  if (attentionStore.list().length > 0) {
+    chrome.action.setBadgeText({ text: "!" });
+    chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+  } else if (holdBadgeState === true) {
     chrome.action.setBadgeText({ text: "II" });
     chrome.action.setBadgeBackgroundColor({ color: "#38bdf8" });
+  } else if (gifCast.size > 0) {
+    chrome.action.setBadgeText({ text: "REC" });
+    chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
   } else {
     chrome.action.setBadgeText({ text: "" });
   }
+}
+
+// `held` is `true`/`false` from a hold_state reply, or `null` when the session state is
+// unknown (no connected port). Badge text/color only; renders state, decides nothing.
+function updateHoldBadge(held) {
+  holdBadgeState = held;
+  refreshActionBadge();
 }
 
 chrome.commands.onCommand.addListener((command) => {
@@ -428,12 +533,18 @@ async function killSession() {
   for (const tabId of narrationStore.clear()) {
     sendToTab(tabId, { type: "AGENT_NARRATION_CLEAR" });
   }
+  for (const record of attentionStore.clear()) {
+    if (Number.isSafeInteger(record.tabId)) {
+      sendToTab(record.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: record.guid });
+    }
+  }
 
   attached.clear();
   attaching.clear();
   consoleBuffer.clear();
   networkBuffer.clear();
   screenshotCtx.clear();
+  dialogStore.clear();
 
   if (nativePort) {
     // Chrome does not fire our own onDisconnect for a self-initiated disconnect, and even if a
@@ -475,6 +586,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     });
     return true;
   }
+  if (msg && msg.type === "GET_ATTENTION_STATE") {
+    attentionRequest({ type: "get_attention" }).then((result) => {
+      syncAttentionState(result);
+      sendResponse(result || { sessions: [] });
+    });
+    return true;
+  }
+  if (msg && msg.type === "ATTENTION_ACTION") {
+    attentionRequest({
+      type: "attention_action",
+      guid: msg.guid,
+      disposition: msg.disposition,
+    }).then(async (result) => {
+      syncAttentionState(result);
+      if (result && result.endSession === true) await killSession();
+      sendResponse(result || { sessions: [] });
+    });
+    return true;
+  }
   if (msg && msg.type === "GET_SESSION_STATE") {
     (async () => {
       const s = await chrome.storage.session.get("session_killed");
@@ -482,6 +612,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         killed: s.session_killed === true,
         connected: nativePort !== null,
         attachedTabs: attached.size,
+        recordingTabs: gifCast.size,
       });
     })();
     return true;
@@ -601,6 +732,7 @@ function stopGifCast(tabId, cast, reason) {
   const current = gifCast.get(tabId);
   if (!current || current !== cast) return;
   gifCast.delete(tabId);
+  refreshActionBadge();
   if (cast.expiryTimer) clearTimeout(cast.expiryTimer);
   if (attached.has(tabId)) {
     chrome.debugger.sendCommand({ tabId }, "Page.stopScreencast", {}).catch(() => {});
@@ -691,7 +823,9 @@ async function enableDomain(tabId, domain) {
   await chrome.debugger.sendCommand({ tabId }, domain + ".enable", {});
   state.domains.add(domain);
 }
-chrome.tabs.onRemoved.addListener((tabId) => {
+// Remove every transient mechanism record for one tab. Idempotent so explicit `tab_control.close`
+// and Chrome's onRemoved event can both call it without widening the close to a group or window.
+function clearTabState(tabId) {
   const cast = gifCast.get(tabId);
   if (cast) stopGifCast(tabId, cast, "browser_detached");
   if (attached.has(tabId)) {
@@ -703,14 +837,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   screenshotCtx.delete(tabId);
   tabHost.delete(tabId);
   tabUrl.delete(tabId);
+  dialogStore.remove(tabId);
   managedTabs.delete(tabId); // ADR-0066 D5: a closed tab is no longer ours to reach
   narrationStore.remove(tabId);
   persistSessionState();
+}
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearTabState(tabId);
 });
 chrome.debugger.onDetach.addListener((src) => {
   const cast = gifCast.get(src.tabId);
   if (cast) stopGifCast(src.tabId, cast, "browser_detached");
   attached.delete(src.tabId);
+  dialogStore.remove(src.tabId);
 });
 
 // --- Console / network buffering (join network events by requestId, unlike the reference) ---
@@ -718,10 +857,15 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.url !== undefined) { tabHost.set(tabId, hostOf(info.url)); tabUrl.set(tabId, info.url); }
+  if (info.url !== undefined) {
+    tabHost.set(tabId, hostOf(info.url));
+    tabUrl.set(tabId, info.url);
+    dialogStore.remove(tabId);
+  }
   if (info.status === "complete") {
     const narration = narrationStore.current(tabId);
     if (narration) renderNarration(tabId, narration);
+    for (const attention of attentionStore.forTab(tabId)) renderAttention(tabId, attention);
   }
 });
 // Render an uncaught-exception CDP event as one single-line string: base message, then an
@@ -756,6 +900,14 @@ function exceptionText(details, fallbackUrl) {
 }
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
+  if (method === "Page.javascriptDialogOpening") {
+    dialogStore.opened(tabId, params);
+    return;
+  }
+  if (method === "Page.javascriptDialogClosed") {
+    dialogStore.remove(tabId);
+    return;
+  }
   if (method === "Page.screencastFrame") {
     // gif_creator capture (ADR-0052 D1): fire-and-forget; the handler acks + keeps/drops the frame.
     handleScreencastFrame(tabId, params);
@@ -1045,7 +1197,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/receipt.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1073,22 +1225,78 @@ function textImage(t, base64) {
 // twin merges into structuredContent. Best-effort: a content-script failure (e.g. the page
 // navigated away) degrades to the plain confirmation -- the observation is additive, never
 // load-bearing.
-async function withObservation(tabId, run) {
+async function appendDialogBlocker(result, tabId, meta) {
+  const open = dialogStore.current(tabId);
+  if (!open) return result;
+  if (!result.structuredContent) result.structuredContent = {};
+  let receipt = result.structuredContent.interactionReceipt;
+  if (!receipt) {
+    receipt = {
+      targetAssurance: meta.targetAssurance || "none",
+      action: meta.action || "unknown",
+      observedAfter: {},
+      blockers: [],
+      page: await pageMeta(tabId),
+      more: false,
+    };
+    result.structuredContent.interactionReceipt = receipt;
+  }
+  if (!Array.isArray(receipt.blockers)) receipt.blockers = [];
+  if (!receipt.blockers.some((blocker) => blocker.kind === "dialog_open")) {
+    receipt.blockers.push({
+      kind: "dialog_open",
+      summary: "A JavaScript dialog is blocking the tab.",
+      nextStep: "Inspect and resolve the dialog explicitly before continuing.",
+    });
+  }
+  const rendered = "blocked: dialog_open: A JavaScript dialog is blocking the tab. " +
+    "Next: Inspect and resolve the dialog explicitly before continuing.";
+  if (!result.content[0].text.includes("dialog_open")) result.content[0].text += "\n" + rendered;
+  return result;
+}
+
+async function withObservation(tabId, meta, run) {
+  if (typeof meta === "function") {
+    run = meta;
+    meta = {};
+  }
+  const receiptMeta = Object.assign({ tabId, targetAssurance: "none" }, meta || {});
+  try {
+    await ensureAttached(tabId);
+    await enableDomain(tabId, "Page");
+    await sleep(0);
+  } catch { /* dialog tracking is additive; the action's own mechanism reports hard failures */ }
+  if (dialogStore.current(tabId)) {
+    return appendDialogBlocker(
+      text("Action not dispatched because a JavaScript dialog is already blocking the tab."),
+      tabId,
+      receiptMeta
+    );
+  }
+  if (receiptMeta.ref) {
+    try {
+      const resolved = await content(tabId, { type: "elementSummary", ref: receiptMeta.ref });
+      if (resolved && resolved.result && !resolved.result.error) receiptMeta.target = resolved.result;
+    } catch { /* target detail is additive; dispatch still owns the real stale-ref decision */ }
+  }
   let before = null;
   try { before = await content(tabId, { type: "observeSnap" }); } catch { /* page may be mid-load */ }
   const result = await run();
-  if (!before || !before.result) return result;
-  try {
-    const sample = await content(tabId, { type: "observeSample", before: before.result });
-    const obs = sample && sample.result;
-    if (obs && obs.digest) {
-      result.content[0].text += "\n" + obs.digest;
-      if (obs.structured) {
-        result.structuredContent = Object.assign({}, result.structuredContent || {}, obs.structured);
+  if (before && before.result) {
+    try {
+      const sample = await content(tabId, { type: "observeSample", before: before.result, meta: receiptMeta });
+      const obs = sample && sample.result;
+      if (obs && obs.digest) {
+        result.content[0].text += "\n" + obs.digest;
+        if (obs.receipt) {
+          result.structuredContent = Object.assign({}, result.structuredContent || {}, {
+            interactionReceipt: obs.receipt,
+          });
+        }
       }
-    }
-  } catch { /* observation never masks the action's own result */ }
-  return result;
+    } catch { /* observation never masks the action's own result */ }
+  }
+  return appendDialogBlocker(result, tabId, receiptMeta);
 }
 
 // --- Screenshot pipeline: capture native, downscale to the token budget, record ScreenshotContext ---
@@ -1218,6 +1426,9 @@ function typeShimmer(tabId) { sendToTab(tabId, { type: "AGENT_TYPE_SHIMMER" }); 
 // Extended vocabulary (the visual feedback dictionary): one treatment per action, all rendered by
 // agent-visual-indicator.js and all hidden from the agent's own screenshots.
 function targetGlow(tabId, x, y) { sendToTab(tabId, { type: "AGENT_TARGET_GLOW", x, y }); }
+function semanticTargetCue(tabId, x, y, action) {
+  return sendToTab(tabId, { type: "AGENT_SEMANTIC_TARGET", x, y, action });
+}
 function keystrokeCue(tabId, text, kind) { sendToTab(tabId, { type: "AGENT_KEYSTROKE", text, kind }); }
 function scrollCue(tabId, direction) { sendToTab(tabId, { type: "AGENT_SCROLL_CUE", direction }); }
 function readScan(tabId) { sendToTab(tabId, { type: "AGENT_READ_SCAN" }); }
@@ -1414,21 +1625,29 @@ async function computer(a) {
       if (!c) return text("coordinate or ref is required.");
       await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
       if (a.action === "hover") {
-        return withObservation(tabId, async () => {
+        return withObservation(tabId, {
+          action: a.action,
+          ref: a.ref,
+          targetAssurance: a.ref ? "ref" : "coordinate",
+        }, async () => {
           await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
           return text(`Hovered at (${c[0]}, ${c[1]}).`);
         });
       }
       const button = a.action === "right_click" ? "right" : "left";
       const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, {
+        action: a.action,
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
         await click(tabId, c[0], c[1], { button, clickCount, modifiers });
         return text(`${a.action} at (${c[0]}, ${c[1]}).`);
       });
     }
     case "type": {
       if (!a.text) return text("text is required for type.");
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "type", targetAssurance: "none" }, async () => {
         await ensureAttached(tabId);
         typeShimmer(tabId);
         keystrokeCue(tabId, a.text, "type");
@@ -1457,7 +1676,7 @@ async function computer(a) {
     }
     case "key": {
       if (!a.text) return text("text is required for key.");
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "key", targetAssurance: "none" }, async () => {
         await ensureAttached(tabId);
         keystrokeCue(tabId, a.text, "key");
         const repeat = Math.min(a.repeat || 1, 100);
@@ -1515,7 +1734,11 @@ async function computer(a) {
       return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
     }
     case "scroll_to": {
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, {
+        action: "scroll_to",
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
         if (a.ref) {
           const r = await content(tabId, { type: "scrollToRef", ref: a.ref });
           // The engine is truthful: a stale ref is a failure, never a false "Scrolled to target.".
@@ -1536,7 +1759,7 @@ async function computer(a) {
       // Both endpoints are model-provided (read off the screenshot) -> rescale to CSS px.
       const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
       const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "left_click_drag", targetAssurance: "coordinate" }, async () => {
         await moveCursor(tabId, sx, sy);
         await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers, buttons: 0, force: 0 });
         await sleep(CAPTURE_SETTLE_MS);
@@ -1579,6 +1802,32 @@ async function tabsContextLegacy(a) {
   await ensureGroup(a.createIfEmpty);
   if (groupId === null) return text(`No ${GROUP_TITLE} tab group. Call with createIfEmpty: true.`);
   return tabContext(await groupTabs());
+}
+
+async function pageMeta(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  let fromPage = null;
+  // A JavaScript dialog blocks the page event loop, so do not await a content-script reply while
+  // one is open. Chrome's tab metadata still gives the origin/title needed for provenance.
+  if (!dialogStore.current(tabId)) {
+    try {
+      const response = await content(tabId, { type: "pageMeta" });
+      fromPage = response && response.result;
+    } catch (_error) {
+      // Restricted browser pages may not host the content script. Browser metadata is still useful.
+    }
+  }
+  let origin = "unknown";
+  try { origin = new URL((fromPage && fromPage.url) || tab.url || "about:blank").origin; }
+  catch (_error) { /* keep unknown */ }
+  const meta = {
+    tabId,
+    url: (fromPage && fromPage.url) || tab.url || "",
+    origin,
+    title: (fromPage && fromPage.title) || tab.title || "",
+  };
+  if (fromPage && typeof fromPage.renderSerial === "number") meta.renderSerial = fromPage.renderSerial;
+  return meta;
 }
 
 const handlers = {
@@ -1629,18 +1878,90 @@ const handlers = {
     r.structuredContent = { tabId, url: tab.url, title: tab.title || "" };
     return r;
   },
-  computer,
+  async dialog(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    await ensureAttached(tabId);
+    await enableDomain(tabId, "Page");
+    await sleep(0);
+    const open = dialogStore.current(tabId);
+    if (a.action === "status") {
+      const out = open
+        ? text(`JavaScript ${open.type} dialog is blocking the tab: ${JSON.stringify(open.message)}.`)
+        : text("No JavaScript dialog is currently blocking the tab.");
+      out.structuredContent = open
+        ? { open: true, type: open.type, message: open.message, page: await pageMeta(tabId) }
+        : { open: false, page: await pageMeta(tabId) };
+      return out;
+    }
+    if (!open) {
+      const out = text("No JavaScript dialog is currently open; nothing was resolved.");
+      out.structuredContent = { open: false, resolved: false, page: await pageMeta(tabId) };
+      return out;
+    }
+    const params = self.GhostlightDialog.resolutionCommand(a.action, a.text);
+    await cdp(tabId, "Page.handleJavaScriptDialog", params);
+    dialogStore.remove(tabId);
+    const out = text(`JavaScript dialog ${a.action} dispatched.`);
+    out.structuredContent = {
+      open: false,
+      resolved: true,
+      action: a.action,
+      type: open.type,
+      page: await pageMeta(tabId),
+    };
+    return out;
+  },
+  async tab_control(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    const page = { tabId };
+    if (a.action === "focus") {
+      const tab = await chrome.tabs.get(tabId);
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await chrome.tabs.update(tabId, { active: true });
+    } else if (a.action === "reload") {
+      await chrome.tabs.reload(tabId);
+      await waitForLoad(tabId);
+    } else if (a.action === "close") {
+      await chrome.tabs.remove(tabId);
+      clearTabState(tabId);
+    } else {
+      throw hopError("extension", `unsupported tab_control action: ${a.action}`);
+    }
+    const labels = {
+      focus: "Tab focus observed.",
+      reload: "Tab reload observed.",
+      close: "Tab close observed.",
+    };
+    const out = text(labels[a.action]);
+    out.structuredContent = {
+      interactionReceipt: self.GhostlightTabControl.makeReceipt(a.action, page),
+    };
+    return out;
+  },
+  async computer(a) {
+    const out = await computer(a);
+    if (!out.structuredContent) out.structuredContent = {};
+    return out;
+  },
   async read_page(a) {
     const tabId = await effectiveTabId(a.tabId);
     readScan(tabId);
     const r = await content(tabId, { type: "accessibilityTree", options: a });
-    return text((r && r.result) || "Could not read the page.");
+    const out = text((r && r.result) || "Could not read the page.");
+    out.structuredContent = { page: await pageMeta(tabId) };
+    if (a.ref_id) {
+      const target = await content(tabId, { type: "elementSummary", ref: a.ref_id });
+      if (target && target.result && !target.result.error) out.structuredContent.target = target.result;
+    }
+    return out;
   },
   async get_page_text(a) {
     const tabId = await effectiveTabId(a.tabId);
     readScan(tabId);
     const r = await content(tabId, { type: "pageText", max_chars: a.max_chars });
-    return text((r && r.result) || "Could not extract page text.");
+    const out = text((r && r.result) || "Could not extract page text.");
+    out.structuredContent = { page: await pageMeta(tabId) };
+    return out;
   },
   async find(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1653,16 +1974,21 @@ const handlers = {
     if (!results.length) {
       out = text(`No elements matching "${a.query}".`);
     } else {
-      let s = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
+      let s = `Found ${results.length} element(s), strongest matches first:\n` + results.map((e) => {
+        const state = [e.visible ? "visible" : "hidden", e.enabled ? "enabled" : "disabled"];
+        if (typeof e.checked === "boolean") state.push(e.checked ? "checked" : "not checked");
+        if (typeof e.selected === "boolean") state.push(e.selected ? "selected" : "not selected");
+        return `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y}); ${state.join(", ")}; actions: ${(e.mechanicalActions || []).join(", ") || "none"}`;
+      }).join("\n");
       if (more) s += "\n(more than 20 matches; refine your query for the rest)";
       out = text(s);
     }
-    out.structuredContent = { results, more };
+    out.structuredContent = { results, more, page: await pageMeta(tabId) };
     return out;
   },
   async form_input(a) {
     const tabId = await effectiveTabId(a.tabId);
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, { action: "set_value", ref: a.ref, targetAssurance: "ref" }, async () => {
       const r = await content(tabId, { type: "setFormValue", ref: a.ref, value: a.value });
       // The engine is truthful: a content-script failure is a failure, never a masqueraded success.
       if (r && r.result && r.result.error) {
@@ -1680,7 +2006,7 @@ const handlers = {
       }
       throw hopError("binary", "files parameter is required and must be a non-empty array");
     }
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, { action: "file_upload", ref: a.ref, targetAssurance: "ref" }, async () => {
       const r = await content(tabId, { type: "setFiles", ref: a.ref, files: a.files });
       if (r && r.result && r.result.error) {
         const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
@@ -1698,7 +2024,11 @@ const handlers = {
     if (!a.data) {
       throw hopError("binary", "upload_image_exec requires base64 image data");
     }
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, {
+      action: "upload_image",
+      ref: a.ref,
+      targetAssurance: a.ref ? "ref" : "coordinate",
+    }, async () => {
       const r = await content(tabId, {
         type: "setImage",
         ref: a.ref,
@@ -1765,10 +2095,12 @@ const handlers = {
         chrome.debugger.sendCommand({ tabId }, "Page.stopScreencast", {}).catch(() => {});
         throw hopError("extension", "capture lease expired during start");
       }
+      refreshActionBadge();
     } catch (e) {
       if (gifCast.get(tabId) === cast) {
         if (cast.expiryTimer) clearTimeout(cast.expiryTimer);
         gifCast.delete(tabId);
+        refreshActionBadge();
       }
       throw e;
     }
@@ -1848,6 +2180,7 @@ const handlers = {
       structured.peak_mutations = peak;
       structured.final_rate = res.finalRate;
     }
+    structured.page = await pageMeta(tabId);
     out.structuredContent = structured;
     return out;
   },
@@ -1869,12 +2202,16 @@ const handlers = {
       // "Uncaught"); the actual message lives on the exception object's own description.
       const ed = r.exceptionDetails.exception;
       const msg = (ed && ed.description) || r.exceptionDetails.text || "exception";
-      return text(`Error: ${msg}`);
+      const result = text(`Error: ${msg}`);
+      result.structuredContent = { page: await pageMeta(tabId) };
+      return result;
     }
     const v = r.result;
     let out = v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type));
     if (out.length > 50 * 1024) out = out.slice(0, 50 * 1024) + "\n[OUTPUT TRUNCATED: Exceeded 50KB limit]";
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async read_console_messages(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1908,7 +2245,9 @@ const handlers = {
       out += "\nNote: console event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
       consoleResetNotice = false;
     }
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async read_network_requests(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1937,7 +2276,9 @@ const handlers = {
       out += "\nNote: network event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
       networkResetNotice = false;
     }
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async resize_window(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1997,13 +2338,27 @@ const handlers = {
     if (reason) out.structuredContent.reason = reason;
     return out;
   },
+  // ADR-0078 C3 internal mechanisms. They are not registry tools and cannot be called by a model;
+  // the governed `act_on` local handler uses them after its one parent authorization.
+  async resolve_actionable_internal(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    const r = await content(tabId, { type: "resolveActionable", target: a.target || {} });
+    return text(JSON.stringify((r && r.result) || { target: null, candidates: [] }));
+  },
+  async target_cue_internal(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    await semanticTargetCue(tabId, a.x, a.y, a.action);
+    return text("Target cue shown.");
+  },
   // Internal read for form_fill (ADR-0036 D5, PINS.md SS12): NOT in the tool REGISTRY, so models
   // cannot call it -- only form_fill's handler dials it via browser.call. Returns the value-free
   // form identity (controls + submit candidates) as raw JSON, no prose rendering.
   async form_structure_internal(a) {
     const tabId = await effectiveTabId(a.tabId);
     const r = await content(tabId, { type: "formStructure" });
-    return text(JSON.stringify((r && r.result) || { forms: [], formless: [] }, null, 2));
+    const structure = (r && r.result) || { forms: [], formless: [] };
+    structure.page = await pageMeta(tabId);
+    return text(JSON.stringify(structure, null, 2));
   },
 };
 

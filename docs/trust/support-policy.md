@@ -8,8 +8,8 @@ Support runs by email at support@sylin.org. It is read by the maintainer. Produc
 installation and configuration help, policy authoring, and central-policy deployment all
 belong there. Suspected security vulnerabilities do not: those go through the private channel
 documented in [SECURITY.md](../../SECURITY.md), never to the support lane, so that a report is
-handled under disclosure rules, not as a support ticket. The security channel is a separate
-address, stated in SECURITY.md.
+handled under disclosure rules, not as a support ticket. The current private reporting address and
+required subject line are stated in SECURITY.md.
 
 ## Response commitment
 
@@ -40,4 +40,4 @@ security questionnaires: where the published CAIQ-shaped self-assessment does no
 portal, we complete one full questionnaire per year on request. These match the Enterprise
 commitments on the pricing page.
 
-Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org
+Last reviewed: 2026-07-14 against v0.5.7 | Contact: support@sylin.org

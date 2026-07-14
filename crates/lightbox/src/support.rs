@@ -5,15 +5,404 @@
 
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ghostlight_core::governance::crypto::admin as crypto_admin;
 use ghostlight_core::governance::manifest::bundle;
 
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
+static REUSE_PROCESS_BUILD: OnceLock<bool> = OnceLock::new();
+static PROCESS_BINARIES: OnceLock<Result<ProcessBinaries, String>> = OnceLock::new();
+const DEBUG_ROLE_SERVICE: &str = "mcp-server";
+
+struct ProcessBinaries {
+    service: PathBuf,
+    relay: PathBuf,
+}
+
+/// Configure whether process-boundary scenarios reuse the caller's Cargo target. Must be called
+/// once, before any scenario resolves its binaries (ADR-0056 Decision 3).
+pub fn configure_process_build(reuse_cache: bool) -> anyhow::Result<()> {
+    REUSE_PROCESS_BUILD
+        .set(reuse_cache)
+        .map_err(|_| anyhow::anyhow!("process build configuration was already set"))
+}
+
+/// A child process that is always killed and reaped when its scenario scope ends.
+pub struct ChildGuard(Child);
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Mint a process-isolated endpoint name for one legacy scenario.
+pub fn unique_endpoint(tag: &str) -> String {
+    let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+    format!("lightbox-{tag}-{}-{n}", std::process::id())
+}
+
+/// Spawn the production service binary against a scenario-owned log directory and wait for its
+/// first debug snapshot. The binary comes from Lightbox's isolated build target by default.
+pub fn spawn_service(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuard> {
+    spawn_service_inner(endpoint, log_dir, None, false).map(|(child, _)| child)
+}
+
+/// Spawn the production service with an ephemeral Console listener and return its bound port.
+pub fn spawn_service_with_manage_web(
+    endpoint: &str,
+    log_dir: &Path,
+    user_config_dir: Option<&Path>,
+) -> anyhow::Result<(ChildGuard, u16)> {
+    let (child, port) = spawn_service_inner(endpoint, log_dir, user_config_dir, true)?;
+    Ok((
+        child,
+        port.ok_or_else(|| anyhow::anyhow!("service did not publish a Console port"))?,
+    ))
+}
+
+/// Spawn the production agent-role relay against a running scenario service.
+pub fn spawn_adapter(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuard> {
+    let mut command = relay_command()?;
+    let child = command
+        .arg("--role")
+        .arg("agent")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("GHOSTLIGHT_LOG_DIR", log_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(ChildGuard(child))
+}
+
+/// Start a command under the child guard used by process-boundary scenarios.
+pub fn spawn_guard(command: &mut Command) -> anyhow::Result<ChildGuard> {
+    Ok(ChildGuard(command.spawn()?))
+}
+
+/// Construct a command for the isolated production service binary.
+pub fn service_command() -> anyhow::Result<Command> {
+    Ok(Command::new(&process_binaries()?.service))
+}
+
+/// Construct a command for the isolated production relay binary.
+pub fn relay_command() -> anyhow::Result<Command> {
+    Ok(Command::new(&process_binaries()?.relay))
+}
+
+/// Wait for at least `count` parseable debug-state files in a scenario log directory.
+pub fn wait_for_debug_states(log_dir: &Path, count: usize, within: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    loop {
+        let found = std::fs::read_dir(log_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        name.starts_with("debug-state-") && name.ends_with(".json")
+                    })
+                    .filter(|entry| {
+                        std::fs::read_to_string(entry.path())
+                            .ok()
+                            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                            .is_some()
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if found >= count {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "expected {count} debug states under {} within {within:?}",
+            log_dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Poll the newest debug state for `role` until `predicate` accepts it.
+pub fn wait_state_for_role(
+    log_dir: &Path,
+    role: &str,
+    within: Duration,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> anyhow::Result<serde_json::Value> {
+    let deadline = Instant::now() + within;
+    let mut last_seen = None;
+    loop {
+        let mut newest = None;
+        for entry in std::fs::read_dir(log_dir)?.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("debug-state-") || !name.ends_with(".json") {
+                continue;
+            }
+            let modified = entry.metadata()?.modified()?;
+            let value: serde_json::Value = match std::fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            {
+                Some(value) if value["role"] == role => value,
+                _ => continue,
+            };
+            if newest
+                .as_ref()
+                .map(|(time, _): &(std::time::SystemTime, serde_json::Value)| modified > *time)
+                .unwrap_or(true)
+            {
+                newest = Some((modified, value));
+            }
+        }
+        if let Some((_, value)) = newest {
+            if predicate(&value) {
+                return Ok(value);
+            }
+            last_seen = Some(value);
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "no {role} debug state satisfied the predicate within {within:?}; last state: {last_seen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Poll the service debug state until it reports an attached extension.
+pub fn wait_extension_connected(log_dir: &Path, within: Duration) -> anyhow::Result<()> {
+    wait_state_for_role(log_dir, DEBUG_ROLE_SERVICE, within, |value| {
+        value["extension_connected"] == true
+    })
+    .map(|_| ())
+}
+
+/// Send the browser-role hello and persistent extension identity used by fake-extension scenarios.
+pub async fn send_extension_attach_frames<W>(writer: &mut W) -> anyhow::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let hello = ghostlight_transport::handshake::browser_hello_bytes(
+        std::process::id(),
+        Some(ghostlight_transport::proc::ProcId {
+            pid: std::process::id(),
+            created: 0,
+        }),
+    );
+    ghostlight_transport::host::write_message(writer, &hello).await?;
+    let identity = serde_json::to_vec(&serde_json::json!({
+        "type": ghostlight_transport::handshake::EXTENSION_IDENTITY_TYPE,
+        ghostlight_transport::handshake::BROWSER_ID_FIELD: format!("lightbox-{}", std::process::id()),
+    }))?;
+    ghostlight_transport::host::write_message(writer, &identity).await?;
+    Ok(())
+}
+
+/// Answer one tab URL probe with a synthetic live HTTPS page for the requested tab.
+pub async fn answer_tab_url<W>(writer: &mut W, request: &serde_json::Value) -> anyhow::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let reply = serde_json::json!({
+        "id": request["id"],
+        "type": "tab_url_response",
+        "result": { "url": format!("https://tab-{}.example.com/", request["tabId"]) },
+    });
+    ghostlight_transport::host::write_message(writer, &serde_json::to_vec(&reply)?).await?;
+    Ok(())
+}
+
+/// Read extension frames until `expected_type` arrives, answering any intervening tab URL probes.
+pub async fn read_frame_answering_tab_urls<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    expected_type: &str,
+) -> anyhow::Result<serde_json::Value>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        let bytes = ghostlight_transport::host::read_message(reader)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("extension link closed"))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["type"] == "tab_url_request" {
+            answer_tab_url(writer, &value).await?;
+        } else if value["type"] == expected_type {
+            return Ok(value);
+        } else {
+            anyhow::bail!("unexpected extension frame: {value}");
+        }
+    }
+}
+
+fn spawn_service_inner(
+    endpoint: &str,
+    log_dir: &Path,
+    user_config_dir: Option<&Path>,
+    manage_web: bool,
+) -> anyhow::Result<(ChildGuard, Option<u16>)> {
+    let binaries = process_binaries()?;
+    std::fs::create_dir_all(log_dir)?;
+    let mut command = Command::new(&binaries.service);
+    command
+        .arg("service")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("GHOSTLIGHT_DEBUG", "1")
+        .env("GHOSTLIGHT_LOG_DIR", log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", log_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if manage_web {
+        command.env("GHOSTLIGHT_MANAGE_WEB_PORT", "0");
+    }
+    if let Some(path) = user_config_dir {
+        command.env("GHOSTLIGHT_USER_CONFIG_DIR", path);
+    }
+    let child = ChildGuard(command.spawn()?);
+    let port = if manage_web {
+        Some(wait_for_manage_web_port(log_dir, Duration::from_secs(15))?)
+    } else {
+        wait_for_debug_state(log_dir, Duration::from_secs(15))?;
+        None
+    };
+    Ok((child, port))
+}
+
+fn process_binaries() -> anyhow::Result<&'static ProcessBinaries> {
+    PROCESS_BINARIES
+        .get_or_init(|| build_or_reuse_process_binaries().map_err(|e| format!("{e:#}")))
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!(e.clone()))
+}
+
+fn build_or_reuse_process_binaries() -> anyhow::Result<ProcessBinaries> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow::anyhow!("Lightbox manifest has no workspace root"))?;
+    let reuse = *REUSE_PROCESS_BUILD.get().unwrap_or(&false);
+    let target = if reuse {
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| repo.join("target"))
+    } else {
+        repo.join("target").join("lightbox-under-test")
+    };
+    if !reuse {
+        let status = Command::new("cargo")
+            .current_dir(repo)
+            .args([
+                "build",
+                "--package",
+                "ghostlight",
+                "--bin",
+                "ghostlight",
+                "--package",
+                "ghostlight-relay",
+                "--bin",
+                "ghostlight-relay",
+                "--target-dir",
+            ])
+            .arg(&target)
+            .status()?;
+        anyhow::ensure!(status.success(), "isolated process build failed: {status}");
+    }
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let directory = target.join("debug");
+    let binaries = ProcessBinaries {
+        service: directory.join(format!("ghostlight{suffix}")),
+        relay: directory.join(format!("ghostlight-relay{suffix}")),
+    };
+    anyhow::ensure!(
+        binaries.service.is_file() && binaries.relay.is_file(),
+        "process binaries are absent under {}; omit --reuse-cache to build them",
+        directory.display()
+    );
+    Ok(binaries)
+}
+
+fn wait_for_debug_state(log_dir: &Path, within: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if newest_debug_state(log_dir).is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!(
+        "service wrote no debug state under {} within {within:?}",
+        log_dir.display()
+    )
+}
+
+fn wait_for_manage_web_port(log_dir: &Path, within: Duration) -> anyhow::Result<u16> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Some(raw) = newest_debug_state(log_dir) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(port) = value
+                    .get("manage_web_port")
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    return u16::try_from(port).map_err(Into::into);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!(
+        "service published no Console port under {} within {within:?}",
+        log_dir.display()
+    )
+}
+
+fn newest_debug_state(log_dir: &Path) -> Option<String> {
+    let mut newest = None;
+    for entry in std::fs::read_dir(log_dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("debug-state-") || !name.ends_with(".json") {
+            continue;
+        }
+        let modified = entry.metadata().ok()?.modified().ok()?;
+        if newest
+            .as_ref()
+            .map(|(time, _): &(std::time::SystemTime, PathBuf)| modified > *time)
+            .unwrap_or(true)
+        {
+            newest = Some((modified, entry.path()));
+        }
+    }
+    std::fs::read_to_string(newest?.1).ok()
+}
 
 /// A temp directory that removes itself on drop.
 pub struct TempRoot {

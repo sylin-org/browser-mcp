@@ -30,7 +30,7 @@ recorded vision, not taste of the day:
   and descriptions are preserved exactly so a trained agent behaves as expected. Additive tools
   (`wait_for`, `script`, `form_fill`) and additive optional parameters on existing tools (e.g.
   `read_page` `diff`) are sanctioned via the capability registry
-  ([ADR-0034](docs/adr/0034-declarations-in-code-and-additive-growth.md) Decision 7;
+  ([ADR-0034](docs/adr/0034-capability-transport-registry.md) Decision 7;
   [ADR-0035](docs/adr/0035-script-tool.md) -- [ADR-0038](docs/adr/0038-structured-results.md)).
   Requests to rename or reshape the trained 13 are declined; requests to add new tools or additive
   parameters are evaluated against the additive-growth criteria.
@@ -78,13 +78,9 @@ The suite has two tiers ([ADR-0032](docs/adr/0032-test-at-seams-and-inject-confi
 
 - **Fast, in-process** -- the unit tests and the in-process integration tests. Plain `cargo test`
   runs them; they need no processes and are the everyday gate.
-- **End-to-end (spawn)** -- a smaller tier that launches the real `ghostlight` binaries over the IPC
-  boundary. On a developer machine a live `ghostlight service` and Chrome's native host hold
-  `target/debug/*.exe` against the linker, and the real-stdio relay test hangs on an interactive
-  terminal's stdin. Neither happens in CI. Run these reliably -- without stopping your dev session --
-  with `scripts/test-e2e.ps1` (Windows) or `scripts/test-e2e.sh` (Unix): they build into an isolated
-  target dir the live service never locks, and close stdin so the relay tests see EOF. Pass
-  `-- --test-threads=1` for a fully serial run.
+- **End-to-end (spawn)** -- `cargo run -p ghostlight-lightbox -- run --all` launches the real
+  binaries over the IPC boundary. Lightbox builds them in an isolated target dir that a live dev
+  service never locks. Use `--reuse-cache` only on a clean worker after `cargo build --workspace`.
 
 ## What not to report publicly
 

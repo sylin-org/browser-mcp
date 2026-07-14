@@ -15,11 +15,12 @@ mechanics guides instead of repeating them, so nothing here drifts out of sync w
 
 ## Reference
 
-The authoritative sources, generated from the binary or published as specs, so a guide never has
-to go stale repeating them:
+The reference sources, generated from the binary or maintained with the implementation, so a guide
+does not need to repeat them:
 
 - `ghostlight config docs`: every configuration key and its meaning.
 - `ghostlight config schema`: JSON Schema for the user config file.
 - [open-spec/](../../open-spec/): the RAWX capability model, vendor-neutral.
 - [examples/](../../examples/): ready-to-adapt policy manifests.
-- [../SPEC.md](../SPEC.md): the authoritative design specification.
+- [../SPEC.md](../SPEC.md): the original deep design; accepted ADRs and the live tree supersede it
+  where they differ.

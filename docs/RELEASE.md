@@ -62,8 +62,10 @@ Without them, the extension step prints exact manual submission instructions ins
    (auto or printed steps), and refreshes the website fallback.
 
 3. Do the one remaining manual channel (the `report` step reminds you):
-   - **Winget**: open a PR to `microsoft/winget-pkgs` copying the filled
-     `packaging/winget/Sylin.Ghostlight.yaml` (needs the one-time CLA).
+   - **Winget**: run `scripts/prepare-winget.ps1`. It writes the three-file
+     `microsoft/winget-pkgs` submission tree under the system temp directory and runs
+     `winget validate`. Copy that version directory into a `winget-pkgs` fork and open the PR
+     (needs the one-time CLA). Use `-OutputRoot <fork-root>` to write into a chosen checkout.
 
 Useful flags: `-From <step>` resumes after a partial run; `-SkipTap`, `-SkipNpm`, `-SkipExtension`,
 `-SkipWebsite`, `-SkipRegistry` skip a channel; `-Yes` skips the interactive confirmations.

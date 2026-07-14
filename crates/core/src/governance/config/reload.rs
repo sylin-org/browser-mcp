@@ -50,6 +50,13 @@ pub enum PolicySource {
     /// The default: `load_policy`'s org-policy-file + user-supplied-source (`--manifest` /
     /// `GHOSTLIGHT_MANIFEST`) selection.
     SourceString { user_source: Option<String> },
+    /// A Lightbox/local composition over an injected org-policy path. Production never constructs
+    /// this variant; it exists so the dev-only harness can exercise real local-policy reloads
+    /// without a runtime override of the deployed trust anchor (ADR-0056 Decision 1).
+    Local {
+        paths: crate::governance::paths::GovernancePaths,
+        user_source: Option<String>,
+    },
     /// An admin `managed://` bootstrap is the org authority (ADR-0055): resolve via
     /// [`crate::governance::managed::activate`]. Any unavailability (unreachable source and no fresh
     /// bundle, or a vanished bootstrap) is keep-last-good, NEVER a fall back to unrestricted.
@@ -70,6 +77,14 @@ impl PolicySource {
         match self {
             PolicySource::SourceString { user_source } => {
                 crate::governance::manifest::source::load_policy(
+                    user_source.as_deref(),
+                    domain_pattern_valid,
+                )
+                .map_err(|e| e.to_string())
+            }
+            PolicySource::Local { paths, user_source } => {
+                crate::governance::manifest::source::load_policy_at(
+                    &paths.org_policy,
                     user_source.as_deref(),
                     domain_pattern_valid,
                 )
@@ -104,7 +119,8 @@ impl PolicySource {
     /// mode re-polls on a timer, not a file watch, so it has no path here.
     fn manifest_watch_path(&self) -> Option<PathBuf> {
         match self {
-            PolicySource::SourceString { user_source } => user_source.as_deref().and_then(|s| {
+            PolicySource::SourceString { user_source }
+            | PolicySource::Local { user_source, .. } => user_source.as_deref().and_then(|s| {
                 match crate::governance::manifest::source::parse_source_string(s) {
                     Ok(crate::governance::manifest::source::UserSource::FilePath(path)) => {
                         Some(path)
@@ -113,6 +129,15 @@ impl PolicySource {
                 }
             }),
             PolicySource::Managed { .. } => None,
+        }
+    }
+
+    fn org_policy_path(&self) -> PathBuf {
+        match self {
+            PolicySource::Local { paths, .. } | PolicySource::Managed { paths } => {
+                paths.org_policy.clone()
+            }
+            PolicySource::SourceString { .. } => load::org_policy_path(),
         }
     }
 
@@ -289,7 +314,7 @@ impl ConfigStore {
         let manifest_watch_path = policy_source.manifest_watch_path();
         let sources = WatchSources {
             user_config: load::user_config_path(),
-            org_policy: load::org_policy_path(),
+            org_policy: policy_source.org_policy_path(),
             manifest: manifest_watch_path,
         };
 

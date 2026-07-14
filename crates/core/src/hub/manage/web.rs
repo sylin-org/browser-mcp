@@ -1,36 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! The manage.web adapter -- the loopback HTTP UI for observing runtime state and administering
-//! policy. Served from the SAME loopback listener the inbound.web adapter binds (one listener,
-//! two gated routing contexts, ADR-0033 Decision 7): [`crate::hub::inbound::web::handle_connection`]
-//! classifies each accepted request and delegates the non-WS, in-scope ones here.
+//! The manage.web adapter -- a standalone loopback HTTP UI for observing runtime state.
 //!
-//! The plane runs its OWN capability decision (`manage.web.from`, permanently loopback) on every
-//! request, separate from the inbound.web adapter's `inbound.web.from` gate. The two planes are
-//! independently enableable and independently authorized.
-//!
-//! Routes (PINS.md CS1/CS2/CS3/CS4/CS5/CS10, `docs/tasks/console`):
+//! This listener is not an MCP transport. It never upgrades to WebSocket and never admits tool
+//! sessions. It exposes only read-only management routes:
 //! - `GET /` -- the embedded HTML shell.
 //! - `GET /manage.css`, `GET /manage.js` -- the shell's static assets.
-//! - `GET /api/v1/config` -- the provenance-aware config view (read of `layers::Resolution`).
+//! - `GET /api/v1/config` -- the provenance-aware config view.
 //! - `GET /api/v1/sessions` -- the live-sessions/groups view.
-//! - `POST /api/v1/config/inbound-web-enable-remote` -- the ONE write action (writes the user-layer
-//!   `inbound.web.from` key to `["*"]`; refused under an org-mandatory lock with a 409).
-//!
-//! Every response writer flushes and shuts down the write half of the stream before returning, so
-//! the full body drains cleanly to the client regardless of OS-specific socket-close timing.
 
-use crate::governance::ports::Decision;
-use crate::hub::inbound::web::{decide_inbound_web_from, header, write_http_error};
 use crate::hub::manage::assets;
 use crate::hub::ServiceContext;
 use std::net::SocketAddr;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
-/// The live `manage.web.enabled` resolution: `false` means the management plane is disabled by
-/// policy (an org can take the Console off-line without affecting tool ingestion) and the router
-/// answers every request 404. Also consulted at startup: the shared TCP listener binds when this
-/// key OR `inbound.web.enabled` resolves true (the two planes are independently enableable).
+/// The only address the management listener may bind.
+pub const DEFAULT_BIND: &str = "127.0.0.1";
+
+/// The default management listener port.
+pub const DEFAULT_PORT: u16 = 4180;
+
+const MAX_REQUEST_HEAD_BYTES: usize = 16 * 1024;
+
+/// Resolve the management listener port. Tests may request port zero for an OS-assigned port.
+fn resolve_port() -> u16 {
+    std::env::var("GHOSTLIGHT_MANAGE_WEB_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// The live `manage.web.enabled` resolution. An org can take the Console off-line without
+/// affecting local tool ingestion over the OS-authenticated pipe.
 pub fn enabled(store: &crate::governance::config::reload::ConfigStore) -> bool {
     let resolution = store.current_resolution();
     let resolved = resolution
@@ -39,47 +40,159 @@ pub fn enabled(store: &crate::governance::config::reload::ConfigStore) -> bool {
     resolved.value.as_bool().unwrap_or(true)
 }
 
-/// Whether an HTTP `Host` header names this loopback listener (`localhost`, `127.0.0.1`, or
-/// `[::1]`, with or without a port) -- the DNS-rebinding defense (SEC hardening pass, 2026-07).
-/// A page at `attacker.example` whose DNS was rebound to 127.0.0.1 reaches the socket as a
-/// loopback peer, but its requests carry `Host: attacker.example`; refusing any non-loopback
-/// Host closes that vector before routing. Case-insensitive per RFC 9110 section 4.2.3.
+/// Run the standalone loopback management listener. Bind failures are logged and do not affect
+/// local MCP sessions.
+pub async fn run(ctx: ServiceContext) {
+    let port = resolve_port();
+    let addr = format!("{DEFAULT_BIND}:{port}");
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            tracing::warn!(%error, %addr, "manage.web listener failed to bind");
+            return;
+        }
+    };
+
+    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    ctx.debug_sink.set_manage_web_port(actual_port);
+    tracing::info!(addr = %DEFAULT_BIND, port = actual_port, "manage.web listening");
+
+    loop {
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(error) => {
+                tracing::warn!(%error, "manage.web accept failed");
+                continue;
+            }
+        };
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle_connection(stream, peer_addr, &ctx).await {
+                tracing::debug!(%error, "manage.web connection ended with an error");
+            }
+        });
+    }
+}
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    peer_addr: SocketAddr,
+    ctx: &ServiceContext,
+) -> crate::Result<()> {
+    let mut buffer = Vec::with_capacity(4096);
+    loop {
+        if buffer.len() >= MAX_REQUEST_HEAD_BYTES {
+            write_http_error(&mut stream, 431, "Request Header Fields Too Large").await?;
+            return Ok(());
+        }
+
+        let mut chunk = [0_u8; 4096];
+        let count = stream.read(&mut chunk).await?;
+        if count == 0 {
+            return Ok(());
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+        if buffer.len() > MAX_REQUEST_HEAD_BYTES {
+            write_http_error(&mut stream, 431, "Request Header Fields Too Large").await?;
+            return Ok(());
+        }
+
+        let Some((request, _consumed)) = parse_http_request(&buffer) else {
+            continue;
+        };
+
+        let websocket_attempt = header(&request.headers, "Upgrade")
+            .map(|value| value.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false)
+            || header(&request.headers, "Connection")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+                })
+                .unwrap_or(false);
+        if websocket_attempt {
+            write_http_error(&mut stream, 400, "Bad Request").await?;
+            return Ok(());
+        }
+
+        let path = request
+            .path
+            .split_once('?')
+            .map_or(request.path.as_str(), |p| p.0);
+        return route(
+            &mut stream,
+            &request.method,
+            path,
+            &request.headers,
+            ctx,
+            peer_addr,
+        )
+        .await;
+    }
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+fn parse_http_request(buffer: &[u8]) -> Option<(HttpRequest, usize)> {
+    let text = std::str::from_utf8(buffer).ok()?;
+    let header_end = text.find("\r\n\r\n")?;
+    let mut lines = text[..header_end].split("\r\n");
+    let mut request_line = lines.next()?.split_whitespace();
+    let method = request_line.next()?.to_string();
+    let path = request_line.next()?.to_string();
+    request_line.next()?;
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect();
+    Some((
+        HttpRequest {
+            method,
+            path,
+            headers,
+        },
+        header_end + 4,
+    ))
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+/// Whether an HTTP `Host` header names this loopback listener.
 fn host_is_loopback(host: &str) -> bool {
-    let h = host.trim().to_ascii_lowercase();
-    // Bracketed IPv6 literal: the port separator follows the closing bracket.
-    let hostname = if let Some(rest) = h.strip_prefix('[') {
+    let normalized = host.trim().to_ascii_lowercase();
+    let hostname = if let Some(rest) = normalized.strip_prefix('[') {
         match rest.split_once(']') {
             Some((inside, _)) => format!("[{inside}]"),
             None => return false,
         }
     } else {
-        h.rsplit_once(':')
-            .map_or(h.as_str(), |(name, _)| name)
+        normalized
+            .rsplit_once(':')
+            .map_or(normalized.as_str(), |(name, _)| name)
             .to_string()
     };
     matches!(hostname.as_str(), "localhost" | "127.0.0.1" | "[::1]")
 }
 
-/// Every path this router recognizes, regardless of method -- distinguishes a 404 ("no such
-/// path") from a 405 ("wrong method on a path that exists"). Grows as new management actions
-/// land.
+/// Every path this read-only router recognizes.
 pub(crate) fn is_known_path(stripped_path: &str) -> bool {
     matches!(
         stripped_path,
-        "/" | "/manage.css"
-            | "/manage.js"
-            | "/api/v1/config"
-            | "/api/v1/sessions"
-            | "/api/v1/config/inbound-web-enable-remote"
+        "/" | "/manage.css" | "/manage.js" | "/api/v1/config" | "/api/v1/sessions"
     )
 }
 
-/// The management-plane router. Authorizes the connecting source against `inbound.web.from`
-/// (the SAME decision the WS-upgrade path uses -- the management plane rides the inbound.web
-/// listener's allowlist today), then serves a known static asset, a JSON view, the one write
-/// action, or answers 404/405. Reached only for a request the listener classified as NOT a
-/// WS-upgrade attempt AND in the management route scope.
-pub(crate) async fn route(
+async fn route(
     stream: &mut TcpStream,
     method: &str,
     stripped_path: &str,
@@ -87,40 +200,22 @@ pub(crate) async fn route(
     ctx: &ServiceContext,
     peer_addr: SocketAddr,
 ) -> crate::Result<()> {
-    // Plane gate: an org-mandatory `manage.web.enabled = false` takes the Console off-line
-    // without affecting tool ingestion. Answered as 404 so a disabled plane exposes nothing,
-    // not even its own existence.
     if !enabled(&ctx.store) {
         write_plain_error(stream, 404, "Not Found", "not found").await?;
-        stream.flush().await.ok();
-        stream.shutdown().await.ok();
+        finish_response(stream).await;
         return Ok(());
     }
 
-    // Permanent loopback hard-lock (defense-in-depth on top of the validator): even if the policy
-    // allowlist were somehow widened, the management plane refuses any non-loopback peer before
-    // routing.
     if !peer_addr.ip().is_loopback() {
         write_http_error(stream, 403, "Forbidden").await?;
         return Ok(());
     }
 
-    // DNS-rebinding defense (SEC hardening pass, 2026-07): a browser always sends Host, and for
-    // this loopback plane it must name a loopback form. A rebound hostname arrives from a
-    // loopback peer but carries the attacker's Host; it is refused before any routing.
     if !header(headers, "Host")
         .map(host_is_loopback)
         .unwrap_or(false)
     {
         tracing::info!("manage.web request refused: missing or non-loopback Host header");
-        write_http_error(stream, 403, "Forbidden").await?;
-        return Ok(());
-    }
-
-    let allowlist = live_inbound_web_from(&ctx.store);
-    let (decision, source) = decide_inbound_web_from(headers, peer_addr, &allowlist, ctx);
-    if !matches!(decision, Decision::Allow { .. }) {
-        tracing::info!(source = %source, decision = ?decision, "manage.web request refused by inbound.web.from");
         write_http_error(stream, 403, "Forbidden").await?;
         return Ok(());
     }
@@ -140,82 +235,26 @@ pub(crate) async fn route(
         }
         ("GET", "/api/v1/config") => write_config_response(stream, ctx).await,
         ("GET", "/api/v1/sessions") => write_sessions_response(stream, ctx).await,
-        ("POST", "/api/v1/config/inbound-web-enable-remote") => {
-            // CSRF hard-stop (SEC hardening pass, 2026-07): the request must carry a custom header a
-            // cross-origin page cannot attach without a CORS preflight this router never approves.
-            // Kept as defense-in-depth even though the action is now disabled below, so the gate is
-            // already in place for whatever secure remote-access action eventually replaces it.
-            if intent_header_matches(headers) {
-                write_enable_remote_response(stream).await
-            } else {
-                tracing::info!(
-                    "enable-remote refused: missing X-Ghostlight-Intent: enable-remote header"
-                );
-                write_plain_error(
-                    stream,
-                    403,
-                    "Forbidden",
-                    "missing X-Ghostlight-Intent: enable-remote header",
-                )
-                .await
-            }
-        }
         _ if is_known_path(stripped_path) => {
             write_plain_error(stream, 405, "Method Not Allowed", "method not allowed").await
         }
         _ => write_plain_error(stream, 404, "Not Found", "not found").await,
     };
     result?;
-    // Flush the response, then shut down the write half so the full body reaches the client
-    // before the socket closes.
-    stream.flush().await.ok();
-    stream.shutdown().await.ok();
+    finish_response(stream).await;
     Ok(())
 }
 
-/// Whether the request carries the write-action consent header
-/// `X-Ghostlight-Intent: enable-remote` (value match is case-insensitive; header-name lookup
-/// already is). Pure, so the CSRF gate is unit-testable without a socket.
-fn intent_header_matches(headers: &[(String, String)]) -> bool {
-    header(headers, "X-Ghostlight-Intent")
-        .map(|v| v.eq_ignore_ascii_case("enable-remote"))
-        .unwrap_or(false)
+async fn finish_response(stream: &mut TcpStream) {
+    stream.flush().await.ok();
+    stream.shutdown().await.ok();
 }
 
-/// The live `inbound.web.from` allowlist, read from the store's current resolution. Re-read on
-/// every management request so a policy edit is honored without a service restart. (The
-/// management plane rides the inbound.web allowlist today; a dedicated `manage.web.from` key
-/// exists and is permanently loopback, but the authz decision currently uses the shared allowlist
-/// for parity with the WS path.)
-fn live_inbound_web_from(store: &crate::governance::config::reload::ConfigStore) -> Vec<String> {
-    let resolution = store.current_resolution();
-    let resolved = resolution
-        .get(crate::governance::config::INBOUND_WEB_FROM)
-        .expect("registered key resolves");
-    resolved
-        .value
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_else(|| vec!["localhost".to_string()])
-}
-
-/// `GET /api/v1/config` (PINS.md CS2): the provenance-aware config view -- per registered key,
-/// its resolved value, source layer, lock state, and description, in `KEYS` registry order. A
-/// READ of `layers::Resolution` only; never a manifest document.
 async fn write_config_response(stream: &mut TcpStream, ctx: &ServiceContext) -> crate::Result<()> {
-    let resolution = ctx.store.current_resolution();
-    let payload = config_payload(&resolution).to_string();
+    let payload = config_payload(&ctx.store.current_resolution()).to_string();
     write_json(stream, 200, "OK", &payload).await
 }
 
-/// The pure `Resolution` -> JSON transform behind `GET /api/v1/config`: per registered key, its
-/// resolved value, source layer, lock state, and description, in `KEYS` registry order. Split out
-/// from the socket-writing handler so the JSON contract is unit-testable against a hand-built
-/// `Resolution` with no spawned service and no policy file.
 fn config_payload(resolution: &crate::governance::config::layers::Resolution) -> serde_json::Value {
     let keys: Vec<serde_json::Value> = resolution
         .iter()
@@ -235,9 +274,6 @@ fn config_payload(resolution: &crate::governance::config::layers::Resolution) ->
     serde_json::json!({ "keys": keys })
 }
 
-/// `GET /api/v1/sessions` (PINS.md CS3): the live-sessions/groups view -- the current
-/// live-session COUNT (every source, adapter or web) plus, for adapter sessions admitted since
-/// the service started, a TRUNCATED (never full) guid, pid, and owned tabs.
 async fn write_sessions_response(
     stream: &mut TcpStream,
     ctx: &ServiceContext,
@@ -249,21 +285,17 @@ async fn write_sessions_response(
     write_json(stream, 200, "OK", &payload).await
 }
 
-/// The pure summaries -> JSON transform behind `GET /api/v1/sessions`: the live-session count
-/// plus, per adapter binding, a TRUNCATED guid, pid, and owned tabs. Split out from the
-/// socket-writing handler so the JSON contract is unit-testable against hand-built summaries with
-/// no spawned adapter/service.
 fn sessions_payload(
     summaries: &[crate::hub::session::SessionSummary],
     live_session_count: usize,
 ) -> serde_json::Value {
     let adapter_bindings: Vec<serde_json::Value> = summaries
         .iter()
-        .map(|s| {
+        .map(|summary| {
             serde_json::json!({
-                "guid": s.guid,
-                "pid": s.pid,
-                "owned_tab_ids": s.owned_tab_ids,
+                "guid": summary.guid,
+                "pid": summary.pid,
+                "owned_tab_ids": summary.owned_tab_ids,
             })
         })
         .collect();
@@ -271,32 +303,11 @@ fn sessions_payload(
         "live_session_count": live_session_count,
         "adapter_bindings": adapter_bindings,
         "note": "adapter_bindings lists sessions admitted since the service started; a listed \
-                 binding may no longer be currently connected. Web/Console HTTP sessions are not \
-                 yet individually tracked.",
+                 binding may no longer be currently connected. Management HTTP requests are not \
+                 sessions.",
     })
 }
 
-/// `POST /api/v1/config/inbound-web-enable-remote`: TEMPORARILY DISABLED (SEC-HIGH-02, 2026-07).
-///
-/// This action used to open `inbound.web` to the LAN by writing `inbound.web.from: ["*"]`, which
-/// binds the WS/HTTP listener on `0.0.0.0` over PLAINTEXT -- the exact foot-gun the prior art is
-/// littered with (mass-exposed Ollama/Selenium/Ray with no auth -> RCE/botnet). Until a secure
-/// remote-access path exists, the action refuses and points the operator at a tunnel over the
-/// loopback service. The real design (tunnel-first for personal use; an org-opt-in, IdP-verified
-/// path for managed mode, consistent with managed:// already making network calls) is under
-/// discussion; when it lands it replaces this action rather than restoring the plaintext write.
-async fn write_enable_remote_response(stream: &mut TcpStream) -> crate::Result<()> {
-    let payload = serde_json::json!({
-        "error": "remote access is temporarily disabled pending a secure remote-authentication design; \
-                  reach the loopback service through a tunnel (SSH port-forward, Tailscale, or WireGuard) instead",
-        "disabled": true,
-    })
-    .to_string();
-    write_json(stream, 403, "Forbidden", &payload).await
-}
-
-/// Serve one embedded static asset verbatim, with a `Content-Length` computed from its actual
-/// UTF-8 byte length.
 async fn write_asset(stream: &mut TcpStream, content_type: &str, body: &str) -> crate::Result<()> {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
@@ -306,7 +317,6 @@ async fn write_asset(stream: &mut TcpStream, content_type: &str, body: &str) -> 
     Ok(())
 }
 
-/// Write a JSON response with the given status and pre-serialized payload.
 async fn write_json(
     stream: &mut TcpStream,
     status: u16,
@@ -321,7 +331,6 @@ async fn write_json(
     Ok(())
 }
 
-/// A plain-text error response: the exact literal ASCII body, no trailing newline.
 async fn write_plain_error(
     stream: &mut TcpStream,
     status: u16,
@@ -336,22 +345,48 @@ async fn write_plain_error(
     Ok(())
 }
 
+async fn write_http_error(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+) -> std::io::Result<()> {
+    let response =
+        format!("HTTP/1.1 {status} {reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    stream.write_all(response.as_bytes()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance::config::layers::{resolve, LayerInputs};
 
-    /// `config_payload` emits every registered key, in registry order, each with the five
-    /// contracted fields. A pure test over the builtin-only resolution -- no service, no file,
-    /// every platform.
+    #[test]
+    fn parses_complete_http_request_head() {
+        let raw = b"GET /api/v1/config?full=1 HTTP/1.1\r\nHost: localhost:4180\r\n\r\n";
+        let (request, consumed) = parse_http_request(raw).expect("complete request");
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/api/v1/config?full=1");
+        assert_eq!(header(&request.headers, "host"), Some("localhost:4180"));
+        assert_eq!(consumed, raw.len());
+    }
+
+    #[test]
+    fn loopback_host_check_rejects_rebound_names() {
+        assert!(host_is_loopback("localhost:4180"));
+        assert!(host_is_loopback("127.0.0.1"));
+        assert!(host_is_loopback("[::1]:4180"));
+        assert!(!host_is_loopback("attacker.example"));
+        assert!(!host_is_loopback("localhost.attacker.example"));
+    }
+
     #[test]
     fn config_payload_emits_every_registered_key_in_registry_order() {
         let resolution = resolve(&LayerInputs::default());
         let payload = config_payload(&resolution);
         let keys = payload["keys"].as_array().expect("keys array");
-
         let expected: Vec<&str> = crate::governance::config::KEYS
             .iter()
-            .map(|d| d.key)
+            .map(|definition| definition.key)
             .collect();
         assert_eq!(keys.len(), expected.len());
         for (entry, key) in keys.iter().zip(expected.iter()) {
@@ -366,29 +401,24 @@ mod tests {
         }
     }
 
-    /// An org-mandatory entry serialises as `source: "org_mandatory"`, `locked: true`.
     #[test]
     fn config_payload_reflects_an_org_mandatory_key_as_locked() {
         let mut inputs = LayerInputs::default();
         inputs
             .org_mandatory
             .insert("audit.enabled".to_string(), serde_json::json!(true));
-        let resolution = resolve(&inputs);
-
-        let payload = config_payload(&resolution);
+        let payload = config_payload(&resolve(&inputs));
         let entry = payload["keys"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|k| k["key"] == "audit.enabled")
+            .find(|key| key["key"] == "audit.enabled")
             .expect("audit.enabled is registered");
         assert_eq!(entry["source"], "org_mandatory");
         assert_eq!(entry["locked"], true);
         assert_eq!(entry["value"], true);
     }
 
-    /// `sessions_payload` serialises the live count, each binding's truncated guid/pid/owned
-    /// tabs, and the tracking-scope note -- a pure test over hand-built summaries.
     #[test]
     fn sessions_payload_serialises_count_bindings_and_note() {
         let summaries = vec![crate::hub::session::SessionSummary {
@@ -397,7 +427,6 @@ mod tests {
             owned_tab_ids: vec![7, 9],
         }];
         let payload = sessions_payload(&summaries, 3);
-
         assert_eq!(payload["live_session_count"], 3);
         let bindings = payload["adapter_bindings"].as_array().unwrap();
         assert_eq!(bindings.len(), 1);
@@ -409,6 +438,4 @@ mod tests {
             .unwrap()
             .contains("admitted since the service started"));
     }
-
-    use crate::governance::config::layers::{resolve, LayerInputs};
 }

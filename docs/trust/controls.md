@@ -21,8 +21,8 @@ where to verify it.
 | Secure development (A.8.25-A.8.28) | A disciplined SDLC behind what you deploy | Decision records for design, CI gates for correctness, signed artifacts for release | [supply-chain.md](supply-chain.md) |
 | Use of cryptography (A.8.24) | Sound cryptographic practice for integrity | Composite Ed25519 + ML-DSA-65 signatures on production key generations; signature-anchored trust; anti-rollback sequence | [security-overview.md](security-overview.md) |
 | Logging and monitoring (A.8.15-A.8.16) | Records sufficient to reconstruct actions | Identity-bound tool-call audit with `policy_seq` policy provenance | [SIEM integration guide](../guides/siem-integration.md) |
-| Technical vulnerability management (A.8.8) | A vendor channel and cadence for vulnerabilities in what you deploy | A private disclosure channel with pinned response times, a dependency-audit CI gate, and published advisories | [SECURITY.md](../../SECURITY.md), [supply-chain.md](supply-chain.md) |
-| Incident management (A.5.24-A.5.28) | A defined vendor incident and notification commitment | Advisory within 3 business days of confirming a vendor-side compromise; private disclosure channel | [security-overview.md](security-overview.md) |
+| Technical vulnerability management (A.8.8) | A vendor channel and cadence for vulnerabilities in what you deploy | A private disclosure channel with published best-effort response targets, a dependency-audit CI gate, and published advisories | [SECURITY.md](../../SECURITY.md), [supply-chain.md](supply-chain.md) |
+| Incident management (A.5.24-A.5.28) | A defined vendor incident and notification posture | Prompt advisory after confirming a vendor-side compromise, typically within a few business days as a best-effort target; private disclosure channel | [security-overview.md](security-overview.md), [SECURITY.md](../../SECURITY.md) |
 | ICT readiness for continuity (A.5.30) | Continuity that does not depend on the supplier surviving | The Continuity Promise, last-known-good cache, fail-closed cold boot | [continuity.md](continuity.md) |
 
 On supplier auditing specifically, the governance module is source-available, so source access
@@ -60,4 +60,4 @@ discharge them.
 See the [compliance team guide](../guides/compliance-team.md) and the
 [governance configuration guide](../guides/governance-configuration.md).
 
-Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org
+Last reviewed: 2026-07-14 against v0.5.7 | Contact: support@sylin.org
