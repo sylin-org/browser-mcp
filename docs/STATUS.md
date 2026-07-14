@@ -80,6 +80,14 @@ when they disagree**, and update it when you land something that changes the pic
   the four-stage practitioner journey, no-account/free-core facts, pre-release extension path, and
   a read-only first proof. The full Rust suite, strict clippy, 93 extension tests, JS syntax checks,
   and formatting are green. Visible Linux/browser verification remains owed.
+- **Resource-scoped browser command scheduling is accepted but not implemented (ADR-0080).** The
+  service will own one-at-a-time execution per concrete browser surface from governing-resource
+  resolution through audit, preserving producer order while selecting fairly across producers.
+  Different tabs remain parallel and presentation/control traffic uses separate lanes. Queued work
+  is bounded and lifecycle-aware; an MCP timeout cannot release a browser effect that may still be
+  running. Single-surface semantic flows retain a reentrant lease. The Presentation Broker and
+  document-ready delivery design remain a separate ADR before the extension-signage architecture
+  is implemented and retested.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
