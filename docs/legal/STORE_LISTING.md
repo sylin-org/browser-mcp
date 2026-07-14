@@ -108,10 +108,10 @@ extension does serves that single purpose; it makes no access-control decisions 
 holds no policy or allowlist logic.
 ```
 
-**Permission justifications**: copy each paragraph from
+**Permission justifications**: copy each fenced block from
 [PERMISSION_JUSTIFICATIONS.md](PERMISSION_JUSTIFICATIONS.md) into the matching box (tabs, debugger,
 scripting, nativeMessaging, tabGroups, windows, storage, alarms, and the `<all_urls>` host
-permission). They are written to paste one-to-one.
+permission). Each paste-ready block is below the dashboard's 1,000-character limit.
 
 **Privacy policy URL**
 
@@ -119,19 +119,9 @@ permission). They are written to paste one-to-one.
 https://sylin.org/ghostlight/privacy/
 ```
 
-**Remote code use justification**
-
-```
-The extension's service worker, content scripts, and support libraries all ship in the submitted
-package. It does not fetch or dynamically import code that changes extension behavior. Ghostlight
-does provide an explicitly advertised javascript_tool automation capability. When the user or
-connected AI agent requests that tool, JavaScript text arrives from the separately installed local
-native application over Chrome native messaging and is evaluated through CDP Runtime.evaluate in
-the attached web page. It runs only in that page's context, not in the extension origin, and is not
-installed, imported, or retained as extension code. Chrome's Manifest V3 requirements expressly
-list the Debugger API as a permitted API for remote-source execution when used for its documented
-purpose. The capability is invoked only for a specific tool call in the visible automation session.
-```
+**Remote code use justification**: copy the fenced block under "Remote code use / page-context
+JavaScript" in [PERMISSION_JUSTIFICATIONS.md](PERMISSION_JUSTIFICATIONS.md). That file is the single
+source for dashboard justification text.
 
 Policy reference: [Chrome Web Store Manifest V3 requirements](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements).
 
