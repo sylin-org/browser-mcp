@@ -13,6 +13,7 @@ mod browser;
 mod console;
 mod hub;
 mod lifecycle;
+mod policy;
 
 /// The migrated legacy scenario registry.
 pub fn registry() -> Vec<Scenario> {
@@ -24,6 +25,7 @@ pub fn registry() -> Vec<Scenario> {
     scenarios.extend(console::registry());
     scenarios.extend(hub::registry());
     scenarios.extend(lifecycle::registry());
+    scenarios.extend(policy::registry());
     scenarios
 }
 
