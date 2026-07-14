@@ -83,9 +83,12 @@ than merely pretty.
 
 ## Seams (how effects are triggered)
 
-- **Service-worker messages** (`chrome.tabs.sendMessage` -> the indicator's `onMessage` switch):
-  the normal path. The binary/service worker knows which tool ran and sends the matching
-  `AGENT_*` message, usually with viewport coordinates.
+- **Presentation Broker** (`extension/lib/presentation-broker.js`): the normal tool-level path.
+  The binary/service worker knows which tool ran and publishes the matching `AGENT_*` intent,
+  usually with viewport coordinates. The broker binds it to the current Chrome document,
+  activates the packaged renderer on demand, and requires an exact channel/revision/document
+  acknowledgement. Stateful narration, notifications, and attention replay within their
+  lifetimes. Transient action effects never cross a document change.
 - **The `GhostlightFx` same-world export** (bottom of `agent-visual-indicator.js`): for sibling
   content scripts that know the target ELEMENT (e.g. `content.js`'s form writers calling
   `fieldSplash`). Both scripts share the extension's isolated world, so this is a direct,
@@ -93,13 +96,14 @@ than merely pretty.
   this seam when the trigger's natural home is in-page and a rect would otherwise have to ride a
   wire message.
 
-Narration uses the service-worker seam but has a longer lifecycle than an action effect. Its
-memory-only worker record survives navigation only until the original deadline, then replays the
-remaining duration into the new document. It is commentary, never governance: sky accent, inset
-compact caption, optional under the effects switch, and always below the guardrail layer. Auto
-placement chooses top or bottom once from recent touched-control, pointer, and scroll signals, then
-stays put. Narration, stickers, and overlays use bounded viewport-responsive sizing. The attention
-overlay is central, visually stronger, and never truncates its security text or controls.
+Narration uses the broker's timed-state channel and has a longer lifecycle than an action effect.
+Its browser-session-only record survives navigation and a Manifest V3 worker restart only until
+the original deadline, then replays the remaining duration into the current acknowledged
+document. It is commentary, never governance: sky accent, inset compact caption, optional under
+the effects switch, and always below the guardrail layer. Auto placement chooses top or bottom
+once from recent touched-control, pointer, and scroll signals, then stays put. Narration, stickers,
+and overlays use bounded viewport-responsive sizing. The attention overlay is central, visually
+stronger, and never truncates its security text or controls.
 
 ## Adding a new effect
 
@@ -107,9 +111,9 @@ overlay is central, visually stronger, and never truncates its security text or 
    it does not join the vocabulary.
 2. Build it from the foundations: sky accent (unless it speaks with governance's authority),
    omnidirectional glow, rounded geometry, spring enter / ease-out exit, and a `-rm` variant.
-3. Wire it through the right seam (message for tool-level triggers, `GhostlightFx` for in-page
-   ones), gate it on `hiddenForTool`/`document.hidden`/`effectsEnabled`, give its element the
-   `ghostlight-` prefix, and route it through `addEphemeral` unless it is genuinely state.
+3. Wire it through the right seam (Presentation Broker for tool-level triggers, `GhostlightFx` for
+   in-page ones), gate it on `hiddenForTool`/`document.hidden`/`effectsEnabled`, give its element
+   the `ghostlight-` prefix, and route it through `addEphemeral` unless it is genuinely state.
 4. Decide its replacement, timeout, and cleanup owner explicitly.
 5. Add its row to the vocabulary table above. The table and the code move together.
 

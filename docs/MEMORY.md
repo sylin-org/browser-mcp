@@ -69,6 +69,11 @@ file does not restate them -- follow AGENTS.md.
   provides the process-generation proof used by ADR-0080 recovery. Do not clear an uncertain tab
   merely because the native host reconnected; require the exact terminal command, tab destruction,
   or a changed browser-process generation.
+- **A completed tab load is not proof that the current document can render extension UI.** An
+  extension reload can invalidate an unchanged page's content-script receiver without causing
+  navigation. Presentation delivery uses ADR-0081's content-script ready handshake plus exact
+  Chrome document/revision acknowledgement and packaged on-demand reinjection. Never restore a
+  direct fire-and-forget `tabs.sendMessage` path for Ghostlight page signage.
 
 ## Pointer index (where durable things live)
 

@@ -99,9 +99,17 @@ when they disagree**, and update it when you land something that changes the pic
   rendered in 19 ms while a 3.98-second page command remained active. One first-post-reload
   `tabs_create_mcp` call lost its terminal acknowledgement and correctly returned
   `outcome_unknown`; inspection proved no tab was created and a deliberate retry succeeded in
-  42 ms. Keep that transient in reconnect/reload reliability coverage. The Presentation Broker
-  and document-ready delivery design remain a separate ADR before the extension-signage
-  architecture is implemented and retested.
+  42 ms. Keep that transient in reconnect/reload reliability coverage.
+- **The document-aware Presentation Broker is implemented (ADR-0081).** One policy-free extension
+  domain service now owns managed-tab document readiness, exact channel/revision/document
+  acknowledgements, on-demand packaged-renderer activation, timed state replacement and replay,
+  bounded document-local effects, browser-session-only restoration, and capture barriers. An
+  extension reload on an unchanged page no longer depends on navigation to reinstall signage.
+  Ready signals and activation are gated to Ghostlight-managed tabs. The prior narration and
+  attention stores are consolidated into the broker; the renderer keeps DOM/CSS ownership and
+  governance authority remains in the Rust service. Strict clippy, the full Rust workspace, all
+  34 Lightbox scenarios, extension syntax checks, and all 100 extension tests pass. Visible Chrome
+  reload/navigation/signage verification is the remaining local gate.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two

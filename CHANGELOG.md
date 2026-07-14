@@ -20,6 +20,9 @@ resource-scoped command reliability.
   and single-surface compound operations retain a reentrant lease with a bounded yield quantum.
 - **Extension surface executor.** A bounded per-surface FIFO adds command deduplication,
   acceptance and terminal acknowledgements, payload erasure, and exact unknown-outcome recovery.
+- **Document-aware Presentation Broker (ADR-0081).** Page signage now uses explicit content-script
+  readiness, exact document/revision acknowledgements, bounded state and event channels, on-demand
+  packaged-renderer activation, navigation replay, and browser-session-only active state.
 
 ### Removed
 
@@ -47,6 +50,9 @@ resource-scoped command reliability.
 
 - Native-port and extension-worker reconnects no longer clear an uncertain tab. Recovery requires
   the exact terminal command, confirmed tab destruction, or a changed browser-process generation.
+- Extension reload on an unchanged page no longer silently disables narration, denial notices, or
+  action feedback. The broker reinjects the packaged renderer into managed tabs and verifies the
+  current document accepted the presentation.
 
 ## [0.5.7] - 2026-07-13
 

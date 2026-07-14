@@ -254,6 +254,16 @@ phones home.
 - Use a global presentation FIFO. Rejected because different tabs and channels do not share one
   visual consistency boundary, and capture barriers must not wait behind decoration.
 
+## Amendment: capture activates an unknown renderer generation
+
+Implementation review found one case D7's original wording did not cover: an extension reload can
+invalidate the old isolated world while leaving its Ghostlight-owned DOM roots in the page. A
+capture with no ready current-generation renderer therefore cannot assume there is nothing to
+hide. Before capture, the broker makes one bounded activation attempt and waits for the ready
+handshake. The new renderer removes stale roots during activation, then acknowledges the hide
+barrier. Restricted pages still degrade truthfully after the bounded attempt. No capture waits on
+an unbounded retry loop.
+
 ## Provenance
 
 On 2026-07-14, live testing proved that browser commands still worked while all page signage could

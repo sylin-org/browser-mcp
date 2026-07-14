@@ -16,8 +16,36 @@
 // together.
 
 (function () {
-  if (window.__browserMcpIndicator) return;
+  function announcePresentationReady() {
+    try {
+      chrome.runtime.sendMessage({ type: "GHOSTLIGHT_PRESENTATION_READY", protocol: 1 }, function () {
+        void chrome.runtime.lastError;
+      });
+    } catch (e) { /* extension generation is unavailable */ }
+  }
+
+  if (window.__browserMcpIndicator) {
+    announcePresentationReady();
+    return;
+  }
   window.__browserMcpIndicator = true;
+
+  // An extension reload can invalidate the old isolated world without navigating the page. Remove
+  // only Ghostlight-owned roots before the new generation installs, so stale chrome cannot remain
+  // visible or leak into a later capture.
+  for (const id of [
+    "ghostlight-cursor",
+    "ghostlight-active",
+    "ghostlight-ripples",
+    "ghostlight-narration-layer",
+    "ghostlight-notification-layer",
+    "ghostlight-attention-host",
+    "ghostlight-indicator-styles",
+    "ghostlight-caption",
+  ]) {
+    const stale = document.getElementById(id);
+    if (stale) stale.remove();
+  }
 
   const CURSOR_ID = "ghostlight-cursor";
   const GLOW_ID = "ghostlight-active";
@@ -429,6 +457,7 @@
     // sticker has its own lifetime and clearing ordinary action FX must not remove it accidentally.
     if (notifLayer) notifLayer.style.display = v ? "none" : "";
     if (narrationLayer) narrationLayer.style.display = v ? "none" : "";
+    if (attentionLayer) attentionLayer.style.display = v ? "none" : "";
   }
 
   // ----- Extended vocabulary: one visible treatment per agent action (the visual feedback
@@ -692,6 +721,7 @@
   function showNotification(cls, icon, title, description, durationMs) {
     if (document.hidden) return; // NOT gated on hiddenForTool: the timer still owns sticker expiry
     // across a screenshot's hide/show cycle; suppress creation only when the tab itself is hidden.
+    if (attentionLayer) return; // the persistent human-decision surface has visual priority
     ensureStyles();
     dismissNotification(); // replace, never stack two notifications
     const layer = ensureNotifLayer();
@@ -753,6 +783,7 @@
 
   function showAttention(msg) {
     clearAttention();
+    dismissNotification();
     attentionPriorFocus = document.activeElement;
     const host = document.createElement("div");
     host.id = "ghostlight-attention-host";
@@ -891,8 +922,11 @@
     const position = effectiveNarrationPosition(requestedPosition);
     const durationMs = Math.max(1, Number(msg.durationMs) || 5000);
     const text = String(msg.text || "");
+    const generation = msg.generation !== undefined
+      ? msg.generation
+      : (msg.presentation && msg.presentation.revision);
     const card = document.createElement("div");
-    card.id = "ghostlight-narration-" + String(msg.generation);
+    card.id = "ghostlight-narration-" + String(generation);
     card.className = "ghostlight-narration-card " + position + (text.trim().length <= 72 ? " chapter" : "");
 
     const label = document.createElement("span");
@@ -910,9 +944,9 @@
 
     ensureNarrationLayer().appendChild(card);
     activeNarrationEl = card;
-    activeNarrationGeneration = msg.generation;
+    activeNarrationGeneration = generation;
     narrationTimer = setTimeout(function () {
-      clearNarration(msg.generation);
+      clearNarration(generation);
     }, durationMs);
     return { shown: true, position };
   }
@@ -932,7 +966,21 @@
     caption("Waiting");
   }
 
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((incoming, _sender, rawSendResponse) => {
+    const metadata = incoming && incoming.presentation;
+    const wrapped = metadata && incoming.type !== "GHOSTLIGHT_PRESENTATION_READY";
+    const msg = wrapped
+      ? Object.assign({}, incoming, incoming.payload || {}, { presentation: metadata })
+      : incoming;
+    const sendResponse = wrapped
+      ? (result) => rawSendResponse(Object.assign({}, result || {}, {
+          presentationAck: {
+            channel: metadata.channel,
+            revision: metadata.revision,
+            documentId: metadata.documentId,
+          },
+        }))
+      : rawSendResponse;
     // Master switch: with effects off, swallow every render message (capture-management and the
     // caption preference still work; non-ours messages fall through to content.js below).
     // AGENT_NOTIFICATION is deliberately NOT in this list -- see the doc comment above
@@ -991,6 +1039,8 @@
         waitPulse(); sendResponse({ success: true }); return true;
       case "AGENT_NOTIFICATION":
         showNotification(msg.class, msg.icon, msg.title, msg.description, msg.durationMs); sendResponse({ success: true }); return true;
+      case "AGENT_NOTIFICATION_CLEAR":
+        dismissNotification(); sendResponse({ success: true }); return true;
       case "AGENT_ATTENTION_REQUIRED":
         showAttention(msg); sendResponse({ success: true }); return true;
       case "AGENT_ATTENTION_CLEAR":
@@ -1013,6 +1063,10 @@
         return false; // not ours -- let content.js handle it
     }
   });
+
+  // ADR-0081: this comes after listener installation. Chrome supplies the tab/document identity
+  // to the worker from MessageSender; the page never chooses its own routing identity.
+  announcePresentationReady();
 
   // Visual-feedback preferences (extension options / popup): the effects master switch (default on)
   // and the captions subtitle (default off), read on load and reacted to live, so they survive

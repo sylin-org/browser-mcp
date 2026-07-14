@@ -9,6 +9,8 @@ copied. See [../docs/adr/](../docs/adr/) for the decisions behind it.
 
 ## Files
 - `manifest.json`: MV3 manifest (permissions, native-messaging host, background SW, content script).
+- `lib/presentation-broker.js`: bounded document-aware state/effect delivery, exact acknowledgements,
+  navigation replay, and on-demand renderer activation (ADR-0081).
 - `service-worker.js`: native messaging, CDP tool execution, tab-group management, keepalive/recovery.
 - `content.js`: DOM reads (accessibility tree, `find`, `form_input` (shadow DOM), `get_page_text`).
 - `native-messaging-host.json`: host-manifest template (fill in the binary path + extension ID).
