@@ -93,9 +93,15 @@ when they disagree**, and update it when you land something that changes the pic
   terminal acknowledgements, payload erasure, and separate presentation/control bypass. Unknown
   outcomes quarantine a tab until an exact terminal acknowledgement, confirmed tab destruction,
   or a changed browser-process generation proves recovery. Strict clippy, the full Rust workspace,
-  all 34 Lightbox scenarios, and 100 extension tests pass. The Presentation Broker and
-  document-ready delivery design remain a separate ADR before the extension-signage architecture
-  is implemented and retested.
+  all 34 Lightbox scenarios, and 100 extension tests pass. A live v0.5.8 Chrome probe submitted
+  deliberately overlapping JSON-RPC calls through a raw relay: two same-tab waits completed at
+  4.41 and 8.41 seconds, two different-tab waits completed at 2.07 and 4.00 seconds, and narration
+  rendered in 19 ms while a 3.98-second page command remained active. One first-post-reload
+  `tabs_create_mcp` call lost its terminal acknowledgement and correctly returned
+  `outcome_unknown`; inspection proved no tab was created and a deliberate retry succeeded in
+  42 ms. Keep that transient in reconnect/reload reliability coverage. The Presentation Broker
+  and document-ready delivery design remain a separate ADR before the extension-signage
+  architecture is implemented and retested.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
