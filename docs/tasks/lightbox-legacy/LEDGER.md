@@ -3,9 +3,9 @@
 ## RESUME HERE
 
 T1 added isolated process orchestration and migrated the control/Console cluster. T2 migrated the
-adapter/lifecycle cluster. T3 migrated the three hub-routing scenarios. 22 of 27 rows are DONE and
-both sides pass. Resume with the five specialized policy/browser scenarios; both legacy and
-Lightbox CI paths remain required.
+adapter/lifecycle cluster. T3 migrated the three hub-routing scenarios. T4 migrated the three
+specialized browser scenarios. 25 of 27 rows are DONE and both sides pass. Resume with the two
+local-policy scenarios; both legacy and Lightbox CI paths remain required.
 
 ## Status
 
@@ -19,7 +19,7 @@ Lightbox CI paths remain required.
 | `hub_completion_criteria::two_real_adapters_multiplex_get_own_tab_groups_and_share_one_kill` | `legacy-hub-two-adapter-multiplex` | DONE | T3 |
 | `hub_multiplex::one_kill_emits_one_audit_record_per_live_session` | `legacy-hub-kill-audit-fanout` | DONE | T3 |
 | `hub_multiplex::adapter_endpoint_two_phase_wire_round_trips` | `legacy-hub-two-phase-wire` | DONE | T3 |
-| `all_open_golden::read_page_redaction_is_still_wired_at_the_chokepoint` | pending | pending | |
+| `all_open_golden::read_page_redaction_is_still_wired_at_the_chokepoint` | `legacy-read-page-redaction` | DONE | T4 |
 | `manage_web_config_api::config_api_returns_every_registered_key_in_registry_order` | `legacy-console-config-registry` | DONE | T1 |
 | `manage_web_config_api::config_api_is_refused_when_inbound_web_from_denies_the_source` | `legacy-console-config-source-denied` | DONE | T1 |
 | `hot_reload::org_policy_hot_swap_end_to_end` | pending | pending | |
@@ -35,8 +35,8 @@ Lightbox CI paths remain required.
 | `manage_web_routes::a_real_ws_upgrade_succeeds_once_web_ingestion_is_enabled` | `legacy-console-websocket-opt-in` | DONE | T1 |
 | `manage_web_sessions_api::sessions_api_reports_a_live_adapter_session_with_truncated_guid` | `legacy-console-live-sessions` | DONE | T1 |
 | `manifest_validation::org_policy_file_with_config_boots_the_server` | pending | pending | |
-| `mcp_protocol::tools_call_waits_for_a_late_extension_and_notes_the_wait` | pending | pending | |
+| `mcp_protocol::tools_call_waits_for_a_late_extension_and_notes_the_wait` | `legacy-late-extension-wait` | DONE | T4 |
 | `peer_death::native_host_rides_a_service_restart_and_exits_on_browser_eof` | `legacy-browser-relay-restart` | DONE | T2 |
-| `tool_enforcement::form_fill_without_extension_fails_with_parent_audit` | pending | pending | |
+| `tool_enforcement::form_fill_without_extension_fails_with_parent_audit` | `legacy-form-fill-parent-audit` | DONE | T4 |
 
 Status values: `pending` | `in-progress` | `DONE` | `retired` | `BLOCKED`.

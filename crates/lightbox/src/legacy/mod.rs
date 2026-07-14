@@ -9,6 +9,7 @@ use anyhow::ensure;
 use crate::scenarios::Scenario;
 use crate::support::{self, TempRoot};
 
+mod browser;
 mod console;
 mod hub;
 mod lifecycle;
@@ -19,6 +20,7 @@ pub fn registry() -> Vec<Scenario> {
         "legacy-control-status",
         control_status as fn() -> anyhow::Result<()>,
     )];
+    scenarios.extend(browser::registry());
     scenarios.extend(console::registry());
     scenarios.extend(hub::registry());
     scenarios.extend(lifecycle::registry());

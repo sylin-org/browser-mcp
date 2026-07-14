@@ -244,6 +244,31 @@ where
     Ok(())
 }
 
+/// Read extension frames until `expected_type` arrives, answering any intervening tab URL probes.
+pub async fn read_frame_answering_tab_urls<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    expected_type: &str,
+) -> anyhow::Result<serde_json::Value>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        let bytes = ghostlight_transport::host::read_message(reader)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("extension link closed"))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value["type"] == "tab_url_request" {
+            answer_tab_url(writer, &value).await?;
+        } else if value["type"] == expected_type {
+            return Ok(value);
+        } else {
+            anyhow::bail!("unexpected extension frame: {value}");
+        }
+    }
+}
+
 fn spawn_service_inner(
     endpoint: &str,
     log_dir: &Path,
