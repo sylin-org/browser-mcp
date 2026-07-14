@@ -122,6 +122,13 @@ when its API credentials or dashboard metadata are absent.
 
 ## Owed engineering work (in rough priority order)
 
+- **The closed-loop browser core is accepted and implementation-ready** (ADR-0078). The design
+  centers on one bounded interaction receipt: enrich `find` and targeted `read_page`, add a
+  fail-closed semantic `act_on`, mark page-sourced output as untrusted with service-authored
+  provenance, and add explicit dialog plus session-owned tab controls. The six-commit batch lives
+  at `docs/tasks/closed-loop-core/`; C1 is the RESUME HERE point. No production code has changed.
+  Cross-origin frame refs remain deferred because they require a separate multi-origin governance
+  decision. Headless, isolated, cloud, and remote browser execution remain out of scope.
 - **Public documentation was rebalanced around responsible delight**: the applied review lives in
   `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.

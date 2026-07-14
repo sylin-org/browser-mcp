@@ -608,9 +608,13 @@ The following are explicitly out of scope for v1:
 
 **Manifest signing.** For file-based manifests, a detached signature (e.g., Ed25519) verified against a pinned public key in the binary. Prevents local tampering without `chrome.storage.managed`.
 
-**Audit enrichment.** Post-v1, the audit record could include a hash of the screenshot (without the screenshot itself) for forensic correlation, or a DOM snapshot hash for change tracking.
+**Audit enrichment.** ADR-0078 permits content-free target-assurance and outcome categories but
+rejects screenshot, DOM, and other content-derived hashes for interaction receipts. Any future
+forensic artifact needs its own data inventory and decision.
 
-**Content boundary markers.** Following `agent-browser`'s precedent, wrapping tool output in delimiters so the model can distinguish tool output from untrusted page content (prompt injection mitigation).
+**Content boundary markers.** Taken by ADR-0078. Page-sourced output gains service-authored,
+nonce-bearing boundaries and structured provenance as defense in depth. It is not a content filter
+or a policy input.
 
 **Conditional human-in-the-loop.** For high-risk grants (e.g., EHR write access), the manifest could specify `"approval": "required"`, causing the binary to pause and prompt the user (via the extension's popup or a system notification) before dispatching Mutate-tier calls.
 
