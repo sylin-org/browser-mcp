@@ -5,15 +5,236 @@
 
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use ghostlight_core::governance::crypto::admin as crypto_admin;
 use ghostlight_core::governance::manifest::bundle;
 
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
+static REUSE_PROCESS_BUILD: OnceLock<bool> = OnceLock::new();
+static PROCESS_BINARIES: OnceLock<Result<ProcessBinaries, String>> = OnceLock::new();
+
+struct ProcessBinaries {
+    service: PathBuf,
+    relay: PathBuf,
+}
+
+/// Configure whether process-boundary scenarios reuse the caller's Cargo target. Must be called
+/// once, before any scenario resolves its binaries (ADR-0056 Decision 3).
+pub fn configure_process_build(reuse_cache: bool) -> anyhow::Result<()> {
+    REUSE_PROCESS_BUILD
+        .set(reuse_cache)
+        .map_err(|_| anyhow::anyhow!("process build configuration was already set"))
+}
+
+/// A child process that is always killed and reaped when its scenario scope ends.
+pub struct ChildGuard(Child);
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Mint a process-isolated endpoint name for one legacy scenario.
+pub fn unique_endpoint(tag: &str) -> String {
+    let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+    format!("lightbox-{tag}-{}-{n}", std::process::id())
+}
+
+/// Spawn the production service binary against a scenario-owned log directory and wait for its
+/// first debug snapshot. The binary comes from Lightbox's isolated build target by default.
+pub fn spawn_service(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuard> {
+    spawn_service_inner(endpoint, log_dir, None, false).map(|(child, _)| child)
+}
+
+/// Spawn the production service with an ephemeral Console listener and return its bound port.
+pub fn spawn_service_with_webapi(
+    endpoint: &str,
+    log_dir: &Path,
+    user_config_dir: Option<&Path>,
+) -> anyhow::Result<(ChildGuard, u16)> {
+    let (child, port) = spawn_service_inner(endpoint, log_dir, user_config_dir, true)?;
+    Ok((
+        child,
+        port.ok_or_else(|| anyhow::anyhow!("service did not publish a Console port"))?,
+    ))
+}
+
+/// Spawn the production agent-role relay against a running scenario service.
+pub fn spawn_adapter(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuard> {
+    let binaries = process_binaries()?;
+    let child = Command::new(&binaries.relay)
+        .arg("--role")
+        .arg("agent")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("GHOSTLIGHT_LOG_DIR", log_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(ChildGuard(child))
+}
+
+fn spawn_service_inner(
+    endpoint: &str,
+    log_dir: &Path,
+    user_config_dir: Option<&Path>,
+    webapi: bool,
+) -> anyhow::Result<(ChildGuard, Option<u16>)> {
+    let binaries = process_binaries()?;
+    std::fs::create_dir_all(log_dir)?;
+    let mut command = Command::new(&binaries.service);
+    command
+        .arg("service")
+        .env("GHOSTLIGHT_ENDPOINT", endpoint)
+        .env("GHOSTLIGHT_DEBUG", "1")
+        .env("GHOSTLIGHT_LOG_DIR", log_dir)
+        .env("GHOSTLIGHT_AUDIT_DIR", log_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if webapi {
+        command.env("GHOSTLIGHT_WEBAPI_PORT", "0");
+    }
+    if let Some(path) = user_config_dir {
+        command.env("GHOSTLIGHT_USER_CONFIG_DIR", path);
+    }
+    let child = ChildGuard(command.spawn()?);
+    let port = if webapi {
+        Some(wait_for_webapi_port(log_dir, Duration::from_secs(15))?)
+    } else {
+        wait_for_debug_state(log_dir, Duration::from_secs(15))?;
+        None
+    };
+    Ok((child, port))
+}
+
+fn process_binaries() -> anyhow::Result<&'static ProcessBinaries> {
+    PROCESS_BINARIES
+        .get_or_init(|| build_or_reuse_process_binaries().map_err(|e| format!("{e:#}")))
+        .as_ref()
+        .map_err(|e| anyhow::anyhow!(e.clone()))
+}
+
+fn build_or_reuse_process_binaries() -> anyhow::Result<ProcessBinaries> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow::anyhow!("Lightbox manifest has no workspace root"))?;
+    let reuse = *REUSE_PROCESS_BUILD.get().unwrap_or(&false);
+    let target = if reuse {
+        std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| repo.join("target"))
+    } else {
+        repo.join("target").join("lightbox-under-test")
+    };
+    if !reuse {
+        let status = Command::new("cargo")
+            .current_dir(repo)
+            .args([
+                "build",
+                "--package",
+                "ghostlight",
+                "--bin",
+                "ghostlight",
+                "--package",
+                "ghostlight-relay",
+                "--bin",
+                "ghostlight-relay",
+                "--target-dir",
+            ])
+            .arg(&target)
+            .status()?;
+        anyhow::ensure!(status.success(), "isolated process build failed: {status}");
+    }
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let directory = target.join("debug");
+    let binaries = ProcessBinaries {
+        service: directory.join(format!("ghostlight{suffix}")),
+        relay: directory.join(format!("ghostlight-relay{suffix}")),
+    };
+    anyhow::ensure!(
+        binaries.service.is_file() && binaries.relay.is_file(),
+        "process binaries are absent under {}; omit --reuse-cache to build them",
+        directory.display()
+    );
+    Ok(binaries)
+}
+
+fn wait_for_debug_state(log_dir: &Path, within: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if newest_debug_state(log_dir).is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!(
+        "service wrote no debug state under {} within {within:?}",
+        log_dir.display()
+    )
+}
+
+fn wait_for_webapi_port(log_dir: &Path, within: Duration) -> anyhow::Result<u16> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Some(raw) = newest_debug_state(log_dir) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(port) = value.get("webapi_port").and_then(serde_json::Value::as_u64) {
+                    return u16::try_from(port).map_err(Into::into);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!(
+        "service published no Console port under {} within {within:?}",
+        log_dir.display()
+    )
+}
+
+fn newest_debug_state(log_dir: &Path) -> Option<String> {
+    let mut newest = None;
+    for entry in std::fs::read_dir(log_dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("debug-state-") || !name.ends_with(".json") {
+            continue;
+        }
+        let modified = entry.metadata().ok()?.modified().ok()?;
+        if newest
+            .as_ref()
+            .map(|(time, _): &(std::time::SystemTime, PathBuf)| modified > *time)
+            .unwrap_or(true)
+        {
+            newest = Some((modified, entry.path()));
+        }
+    }
+    std::fs::read_to_string(newest?.1).ok()
+}
 
 /// A temp directory that removes itself on drop.
 pub struct TempRoot {

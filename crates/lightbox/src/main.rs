@@ -5,6 +5,7 @@
 //! dirs and a real localhost endpoint -- never a fixed admin location, never the deployed service.
 
 mod fake_browser;
+mod legacy;
 mod scenarios;
 mod support;
 
@@ -33,6 +34,9 @@ enum Command {
         /// Run every scenario.
         #[arg(long)]
         all: bool,
+        /// Reuse binaries from the active Cargo target directory (intended for clean CI workers).
+        #[arg(long)]
+        reuse_cache: bool,
     },
     /// ADR-0059: an interactive, offline stand-in for the real browser-role relay + Chrome
     /// extension. Dials a REAL running service exactly as the real relay does; lets you drive
@@ -61,7 +65,15 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Run { name, all } => {
+        Command::Run {
+            name,
+            all,
+            reuse_cache,
+        } => {
+            if let Err(e) = support::configure_process_build(reuse_cache) {
+                eprintln!("lightbox process build: {e:#}");
+                return ExitCode::FAILURE;
+            }
             let to_run: Vec<scenarios::Scenario> = if all {
                 registry
             } else if let Some(requested) = name {

@@ -33,7 +33,7 @@ pub type Scenario = (&'static str, fn() -> anyhow::Result<()>);
 
 /// The scenario registry: stable name -> function.
 pub fn registry() -> Vec<Scenario> {
-    vec![
+    let mut scenarios: Vec<Scenario> = vec![
         ("managed-activation-local", managed_activation_local),
         ("managed-activation-network", managed_activation_network),
         ("fail-closed-cold-boot", fail_closed_cold_boot),
@@ -47,7 +47,9 @@ pub fn registry() -> Vec<Scenario> {
         ("sidecar-propagation", sidecar_propagation),
         ("passport-freshness", passport_freshness),
         ("license-expiry-continuity", license_expiry_continuity),
-    ]
+    ];
+    scenarios.extend(crate::legacy::registry());
+    scenarios
 }
 
 /// License expiry changes only the audit marker: the same governed call remains allowed under the
