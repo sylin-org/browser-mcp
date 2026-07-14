@@ -5,6 +5,48 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-07-13
+
+Reliable memory-only GIF recording, bounded large-payload delivery, agent narration, a broader
+installer matrix, and the cohesive Sylin Card Foundry demo.
+
+### Added
+- **Agent narration (ADR-0072).** The additive `narrate` tool shows one temporary, responsive
+  workflow ribbon in the controlled tab. It is domainless RAWX none, audited through the normal
+  chokepoint, usable in scripts and batches, capture-hidden, memory-only, and visually distinct
+  from authoritative governance notifications.
+- **More first-class MCP clients.** Codex, Windsurf, Zed, OpenCode, and Crush join Claude,
+  Cursor, and VS Code. Codex TOML is merged losslessly; strict JSON is updated idempotently;
+  commented JSONC is preserved and receives copyable manual configuration.
+- **Sylin Card Foundry demo.** `ghostlight demo` now tells one simulated foil-card QA story with
+  3D card inspection, defect review, drag disposition, structured form completion, screenshot and
+  GIF evidence, and a real off-domain policy denial. The public stage is
+  `sylin.org/ghostlight/demo/foundry/`.
+- **Bidirectional install handoff.** A successful first install opens the stable browser-extension
+  walkthrough once, while dry-run, CI, failed, repeated, and `--no-open` paths stay quiet.
+
+### Changed
+- **Recording is ephemeral and lease-bound (ADR-0073).** Capture is session, surface, and
+  generation-owned; memory-only; byte-bounded; transactionally started and finalized; refreshed
+  by recordable tool activity; and capped by independent 30-second idle and 120-second hard
+  deadlines. Export auto-finalizes, and every session/policy/panic/retention failure path erases
+  captured bytes.
+- **GIF encoding is bounded.** Frames are encoded in two passes and processed one at a time rather
+  than retaining all decoded frames at once.
+- **One tab group per client (ADR-0066).** Repeated tab creation reuses the session's managed group
+  instead of producing a new group for every tab.
+- Public documentation and install URLs now consistently use `sylin.org`; Chrome Web Store privacy
+  and permission disclosures were tightened against the implemented data flows.
+
+### Fixed
+- **Large browser-bound payload delivery (ADR-0074).** Screenshot and GIF uploads use negotiated,
+  SHA-256-verified, memory-only chunks, avoiding Chromium's native-messaging size disconnect. Old
+  extensions fail fast before an oversized write, and uncertain delivery is reported as
+  `outcome_unknown` with `retry_safe: false`.
+- Debug observability no longer persists MCP or tool payload bodies that may contain captured page
+  data.
+- Restored the intended governance badge bleed after the responsive narration pass.
+
 ## [0.5.6] - 2026-07-12
 
 Session-policy governance and a scripted demo, root-fixed browser identity and reconnect
