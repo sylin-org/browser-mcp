@@ -16,16 +16,17 @@ is an honest description rather than a hidden asterisk:
 
 ## Scope
 
-The `ghostlight` binary, the bundled Chromium extension, and the install scripts in this
-repository. The reference/ directory is third-party study material and out of scope.
+The `ghostlight` service and CLI, `ghostlight-relay`, the bundled Chromium extension, and the
+install scripts in this repository. The `reference/` directory is third-party study material and
+out of scope.
 
 ## What to expect from the product
 
-Ghostlight is a local-only tool: it never phones home, carries no telemetry, and
-initiates no network traffic beyond the user's own tool calls and configured audit
-destinations (ADR-0028 Decision 9). The extension holds no policy logic; enforcement and
-audit live in the binary (docs/SPEC.md). License state never changes behavior (ADR-0028
-Decision 1).
+Ghostlight is a local-first tool: it never phones home and carries no telemetry. Network traffic is
+limited to the user's own browser activity, audit destinations they configure, and an optional
+organization-managed policy source they configure. License verification is fully offline. The
+extension holds no policy logic; enforcement and audit live in the local service
+(docs/SPEC.md). License state never changes behavior (ADR-0028 Decision 1).
 
 ## Enforcement model and residual risk
 

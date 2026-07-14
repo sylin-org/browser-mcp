@@ -14,10 +14,10 @@
   <a href="https://github.com/sylin-org/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-sylin--org%2Ftap-38BDF8" alt="Homebrew tap"></a>
 </p>
 
-Ghostlight lets an AI agent use the Chromium browser you already use -- with your logins, tabs, and
-sessions. Actions happen in front of you, in a dedicated tab group. It works wide open for personal
-use or under inspectable policy when stronger boundaries are useful. Everything runs locally, and
-nothing phones home.
+Ghostlight lets an AI agent use the Chromium profile where you are already signed in, inside a
+dedicated tab group that stays separate from your ordinary tabs. Actions happen in front of you. It
+works wide open for personal use or under inspectable policy when stronger boundaries are useful.
+Everything runs locally, and nothing phones home.
 
 Responsibility is part of the experience, not a brake on it. A good agent tool should be easy to
 start, obvious while it acts, clear when it stops, and honest about what it can and cannot control.
@@ -45,9 +45,9 @@ cloud browser, or a Claude-only setup already served by Anthropic's first-party 
 
 ## What makes it feel different
 
-- **Your session, not a clean-room.** Real cookies, real SSO, real tabs. Nothing gets relocated to
-  a cloud browser or a throwaway profile just to gain a technical property; the whole point is your
-  authenticated context.
+- **Your session, not a clean-room.** Real cookies and real SSO, used only in Ghostlight-managed
+  tabs. Nothing gets relocated to a cloud browser or a throwaway profile just to gain a technical
+  property; the whole point is your authenticated context without opening your ordinary tabs.
 - **The agent gets a tool surface shaped for models.** The trained schemas stay byte-stable;
   additive tools provide forms, files, multi-step composition, recording, and inspection. Results
   are compact, errors say how to recover, and a capable agent can begin without a Ghostlight lesson.
@@ -266,8 +266,8 @@ without making the user rebuild their browser session.
 
 **If something is off, start with `doctor`.** It pinpoints unregistered browsers or clients, a
 missing server, a stale endpoint, or an extension that never connected. Extension shows
-disconnected? Reload it at `chrome://extensions`. Rebuilding on Windows? Stop the MCP client
-first, because a running server locks the exe.
+disconnected? Reload it at `chrome://extensions`. Developing on Windows? Use the isolated engine
+swap in [docs/DEV-LOOP.md](docs/DEV-LOOP.md); live clients and the browser reconnect around it.
 
 </details>
 
@@ -284,8 +284,8 @@ first, because a running server locks the exe.
 | [SECURITY.md](SECURITY.md)                                          | Vulnerability reporting and what to expect.                              |
 | [MAINTENANCE.md](MAINTENANCE.md)                                    | Who maintains it, the Continuity Promise, and how to pick it up.         |
 | [Trust Center](docs/trust/README.md)                                | Procurement and security review, all public: FAQ, security overview, a CAIQ-shaped questionnaire, and MSA/DPA templates. |
-| [docs/SPEC.md](docs/SPEC.md)                                        | The authoritative design specification.                                  |
-| [docs/adr/](docs/adr/)                                              | Architecture Decision Records: why the design is the way it is.          |
+| [docs/SPEC.md](docs/SPEC.md)                                        | The original deep design specification; ADRs and the live tree supersede it where they differ. |
+| [docs/adr/](docs/adr/)                                              | Authoritative architecture decisions and amendments.                     |
 | [open-spec/](open-spec/)                                            | Open specs we publish for the ecosystem (starts with RAWX).              |
 
 ## Questions, requests, and contributing

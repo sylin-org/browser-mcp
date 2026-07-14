@@ -5,13 +5,14 @@ rails. Everything on this page is free, forever, with no key and no account.
 
 ## What you get
 
-Your AI agent (Claude Code, Claude Desktop, Cursor, VS Code, or any MCP client) gets a
-real browser: your cookies, your logins, your tabs. Twenty-one tools -- navigate, click,
+Your AI agent (Claude Code, Claude Desktop, Cursor, VS Code, or any MCP client) gets your signed-in
+Chromium profile inside Ghostlight-managed tabs, separate from your ordinary tabs. Twenty-two tools
+-- navigate, click,
 type, screenshot, read the page, find elements, fill forms (by ref or by label), run
 JavaScript, inspect console and network traffic, wait for dynamic pages to settle,
-compose multi-step scripts, upload files and screenshots to page inputs, batch actions,
-record a GIF of a session, and manage tabs -- at byte-parity with the schemas the model
-was trained on, plus the additive tools. The agent works inside its own tab group
+compose multi-step scripts, upload files and screenshots to page inputs, batch actions, narrate a
+watched workflow, record a GIF of a session, and manage tabs -- with the 13 trained schemas
+preserved byte-for-byte and additive tools alongside them. The agent works inside its own tab group
 (labeled with a ghost) so its activity is visually separate from yours.
 
 By default Ghostlight is all-open: no policy and no restrictions. The local flight recorder is on

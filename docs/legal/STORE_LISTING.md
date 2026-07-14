@@ -47,8 +47,8 @@ the web apps you already use, through any Model Context Protocol (MCP) client su
 Cursor, or VS Code.
 
 IMPORTANT: This extension does nothing on its own. It is the browser-side half of a two-part
-system. The other half is a local native application (a single Rust binary) that you install and
-run separately -- it is not distributed through the Chrome Web Store. Without that native
+system. The other half is a local native application that you install and run separately -- it is
+not distributed through the Chrome Web Store. Without that native
 application installed and registered, the extension is inert: it cannot connect to anything,
 receive instructions, or take any action. Install instructions are in the project repository.
 

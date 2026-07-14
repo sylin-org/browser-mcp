@@ -127,9 +127,9 @@ supervisor. `--dry-run` shows the plan first.
 - **Start with `doctor`.** It pinpoints the common failures by name.
 - **Extension shows disconnected?** Reload it at `chrome://extensions`. A service worker can be
   evicted; reloading re-establishes the link.
-- **Rebuilding on Windows?** Stop the MCP client first. A running client holds the relay executable
-  open, and the build cannot overwrite a locked file. This is the most common "my build failed for
-  no reason" on Windows, and it has a one-line cause.
+- **Developing on Windows?** Use the isolated engine swap in
+  [DEV-LOOP.md](../DEV-LOOP.md). It builds away from locked release executables, swaps only the
+  service holding the one endpoint, and lets the stable relays reconnect automatically.
 - **Ran `ghostlight` and got an error exit?** That is expected. A bare `ghostlight` with no
   subcommand no longer serves anything; the MCP role lives in `ghostlight-relay`, which your client
   launches. Run a real subcommand (`install`, `doctor`, `status`), or let the client drive the
@@ -142,7 +142,7 @@ For most installs you set none of these. When you need them:
 - `GHOSTLIGHT_DEBUG=1`: observability on (same as `--debug`).
 - `GHOSTLIGHT_MANIFEST=file://...`: point the server at a policy manifest (see
   [governance-configuration.md](governance-configuration.md)).
-- `GHOSTLIGHT_INSTANCE=<name>`: select a named, isolated instance (advanced; lets two independent
-  setups coexist on one machine).
 - `GHOSTLIGHT_AUDIT_DIR`, `GHOSTLIGHT_LOG_DIR`: relocate the audit and log directories.
-- `GHOSTLIGHT_ENDPOINT` / `GHOSTLIGHT_ENDPOINTS`: pin the IPC endpoint name(s).
+
+Named instances and endpoint overrides exist for the test harness only. They are deliberately not
+a user or development workflow; [DEV-LOOP.md](../DEV-LOOP.md) explains the one-stack model.

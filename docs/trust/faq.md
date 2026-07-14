@@ -184,9 +184,12 @@ moves the session anywhere. There is no separate browser to sanction, and becaus
 action is attributed in the audit trail, each automated click is at least as attributable as
 a manual one.
 
-See [docs/SPEC.md](../SPEC.md) and [ADR-0001](../adr/0001-single-binary-thin-extension.md).
+See [security-overview.md](security-overview.md),
+[ADR-0005](../adr/0005-policy-free-extension.md), and
+[ADR-0065](../adr/0065-one-stack-endpoint-is-the-engine.md).
 
-Evidence: docs/SPEC.md architecture (drives the user's real session, never relocates it); ADR-0001 (single binary, thin extension).
+Evidence: security-overview.md (current process and trust boundaries); ADR-0005 (thin,
+policy-free extension); ADR-0065 (current service and relay topology).
 
 ## Security posture
 
@@ -229,8 +232,8 @@ run when funding allows. We make a standing commitment that any third-party secu
 Ghostlight will be published in full, including findings, and until then the source access
 granted by the governance license functions as a standing audit right: you can read the code
 that enforces policy. Suspected vulnerabilities go through the private disclosure channel
-documented in the project's SECURITY.md, with a 48-hour acknowledgment, triage within 7
-days, and a 30-day fix target for confirmed critical issues.
+documented in the project's SECURITY.md. As a solo-maintainer project, acknowledgment, triage, and
+remediation timelines are published there as best-effort targets rather than contractual windows.
 
 See [SECURITY.md](../../SECURITY.md) and [security-overview.md](security-overview.md).
 
@@ -238,19 +241,18 @@ Evidence: SECURITY.md (disclosure channel); security-overview.md (publish-all-au
 
 ### What is your incident response and breach notification commitment?
 
-Because no customer data ever reaches the vendor, there is no customer-data breach for us to
-notify you of; the meaningful incident on our side is a compromise of what we ship, that is,
-the build, the signing keys, or the update channel. For that class of event we commit to
-publishing a security advisory within 3 business days of confirming a vendor-side compromise,
-with the affected versions and the remediation, as a GitHub Security Advisory on the
-repository, named in release notes; watching the repository's releases is the subscription
-path. Because Ghostlight never phones home, your deployment learns nothing on its own, so
-the advisory channel is deliberately a pull channel. Incidents inside your own deployment
-are yours to detect through the audit trail Ghostlight produces.
+Ghostlight operates no customer-data store, so the meaningful vendor-side incident is a compromise
+of what we ship: the source repository, build pipeline, offline signing keys, or distribution
+channel. After confirming such a compromise, we aim to publish a GitHub Security Advisory promptly,
+typically within a few business days, naming affected versions and remediation. This is a
+best-effort solo-maintainer target, not a contractual notification window. Release notes and the
+repository advisory feed are the subscription path. Incidents inside your own deployment remain
+yours to detect through the audit trail Ghostlight produces.
 
 See [security-overview.md](security-overview.md).
 
-Evidence: security-overview.md (incident response; advisory window); ADR-0057 Decision 11a.
+Evidence: SECURITY.md and security-overview.md (incident-response scope and best-effort advisory
+target).
 
 ## Continuity and viability
 
@@ -297,11 +299,12 @@ Evidence: continuity.md (last-known-good cache, fail-closed cold boot); ADR-0055
 Yes. The release pipeline generates a CycloneDX software bill of materials for every release
 and publishes it as a release asset (introduced 2026-07; earlier releases carry checksums and
 attestations but no SBOM), alongside per-file SHA-256 checksums and build-provenance
-attestations. You can verify what you downloaded against the published checksums and confirm
-its provenance with one command before deploying; the package-manager channels (npm,
-Homebrew, Scoop, winget) distribute the same tagged artifacts. The dependency tree is
-deliberately lean, the signature cryptography is pure Rust, and a build flag yields an
-air-gap binary with no HTTP or TLS stack at all.
+attestations. You can verify what you downloaded against the published checksums and confirm its
+provenance with one command before deploying. The currently live distribution channels are GitHub
+Releases, npm, the MCP Registry, and the Sylin Homebrew tap; each resolves to the same tagged
+release artifacts. Scoop and winget manifests exist in the repository but are not claimed as live
+channels until their public packages ship. The dependency tree is deliberately lean, and a build
+flag yields an air-gap binary with no HTTP or TLS stack at all.
 
 See [supply-chain.md](supply-chain.md) and the
 [release workflow](../../.github/workflows/release.yml).

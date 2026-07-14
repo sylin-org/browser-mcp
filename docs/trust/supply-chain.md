@@ -11,8 +11,10 @@ checksum so you can confirm you received exactly what was published, and each re
 includes keyless Sigstore build-provenance attestations that tie the artifacts back to the
 exact source commit and workflow run that produced them (attestation coverage spans every
 release asset from 2026-07 onward; earlier releases attest the packaged archives). Releases
-are distributed through GitHub releases, npm, Homebrew, Scoop, and winget, all built from
-the same tagged source. Fixes land on the latest tagged release; pre-1.0 there are no
+are distributed today through GitHub Releases, npm, the MCP Registry, and the Sylin Homebrew tap,
+all resolving to artifacts from the same tagged source. Scoop and winget manifests are prepared in
+the repository but are not public distribution channels until their packages ship. Fixes land on
+the latest tagged release; pre-1.0 there are no
 backport branches (see [SECURITY.md](../../SECURITY.md)). The release pipeline is defined in
 [.github/workflows/release.yml](../../.github/workflows/release.yml).
 
@@ -61,9 +63,9 @@ air-gapped machine and never enter CI or any online system, so a compromise of t
 infrastructure cannot forge a license or a policy bundle. Release binaries are protected
 differently: checksums and build-provenance attestations tie each artifact to the source
 commit and workflow run that produced it. Compromise of the release pipeline itself is the
-residual supply-chain risk for binaries; it is the scenario the 3-business-day advisory
-commitment exists for.
+residual supply-chain risk for binaries; it is the scenario covered by the best-effort advisory
+target in [SECURITY.md](../../SECURITY.md).
 
 See [security-overview.md](security-overview.md) for the vendor-side security posture.
 
-Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org
+Last reviewed: 2026-07-14 against v0.5.7 | Contact: support@sylin.org

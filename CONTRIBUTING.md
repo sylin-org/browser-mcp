@@ -30,7 +30,7 @@ recorded vision, not taste of the day:
   and descriptions are preserved exactly so a trained agent behaves as expected. Additive tools
   (`wait_for`, `script`, `form_fill`) and additive optional parameters on existing tools (e.g.
   `read_page` `diff`) are sanctioned via the capability registry
-  ([ADR-0034](docs/adr/0034-declarations-in-code-and-additive-growth.md) Decision 7;
+  ([ADR-0034](docs/adr/0034-capability-transport-registry.md) Decision 7;
   [ADR-0035](docs/adr/0035-script-tool.md) -- [ADR-0038](docs/adr/0038-structured-results.md)).
   Requests to rename or reshape the trained 13 are declined; requests to add new tools or additive
   parameters are evaluated against the additive-growth criteria.

@@ -62,9 +62,9 @@ absence of `tool`/`decision`): `event` is `session_killed` (panic kill switch),
 `manifest_reload` (hot-reload swap), or `user_manifest_ignored` (org policy displaced a
 user manifest). Route on `event` presence.
 
-A `license` field may additionally be appended to records in an upcoming release, only
-while license state is abnormal (see [PRICING.md](../../PRICING.md); it never affects
-behavior).
+A `license` field is additionally appended to tool-call records only while an organization-managed
+governance deployment has abnormal license state (see [PRICING.md](../../PRICING.md)); it never
+affects behavior.
 
 A `policy_seq` field (a number) is appended to tool-call records under managed policy
 (central signed-policy distribution, see the [governance configuration
@@ -138,5 +138,5 @@ simpler.)
   policy; expected at rollout, interesting later).
 - `shadow_deny` volume trending to zero in observe mode (the signal that the policy is
   ready to enforce; see the compliance guide, step 3).
-- Records with a `license` field, once license verification ships (compliance noise by
-  design; it means the deployment's license state needs attention).
+- Records with a `license` field (compliance noise by design; it means the deployment's license
+  state needs attention, never that execution was restricted).

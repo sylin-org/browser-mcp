@@ -103,5 +103,6 @@ under a commercial license (see [LICENSING.md](LICENSING.md)).
 signup for as long as you hold a continuous license. Founding organizations keep the 50%
 discount permanently.
 
-**Who do we talk to?** hello@sylin.org for everything: founding applications, quotes,
-procurement paperwork, and questions.
+**Who do we talk to?** Use hello@sylin.org for founding applications, quotes, and procurement
+paperwork. Licensed support requests go to support@sylin.org; suspected vulnerabilities follow the
+private channel and subject line in [SECURITY.md](SECURITY.md).

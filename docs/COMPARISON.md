@@ -11,8 +11,9 @@ your case better, use it.
 
 The four properties, together, are the product:
 
-1. Automates YOUR authenticated session (real cookies, real SSO, real tabs) via a thin
-   extension -- never a fresh profile, a profile copy, or a cloud browser.
+1. Automates YOUR authenticated Chromium profile (real cookies and real SSO) inside a dedicated,
+   managed tab group via a thin extension -- never a fresh profile, a profile copy, a cloud
+   browser, or arbitrary access to ordinary tabs.
 2. Client-agnostic MCP server: Claude Code, Cursor, VS Code, anything.
 3. Governance fused in: capability classification per action, identity-bound host
    grants, sacred never-touch domains, observe/enforce modes, structured audit -- with
@@ -36,8 +37,9 @@ governance enough.
 Cline, or anything MCP); your Claude access runs through Bedrock, Vertex, or Foundry (the
 first-party path requires a direct plan); you need a structured audit trail of what the agent
 did; you want policy as code (grants, capability floors, simulate/shadow/enforce, org locks)
-rather than a site list; or you need the whole thing self-hosted and inspectable. The trained
-tool schemas are preserved verbatim, so a Claude agent behaves identically on either path.
+rather than a site list; or you need the whole thing self-hosted and inspectable. The 13 trained
+tool schemas are preserved verbatim so models can reuse that learned interface, while Ghostlight's
+additive tools and governance remain its own surface.
 
 ## Against the closest neighbors
 
@@ -56,7 +58,8 @@ no Node service, policy and audit at the dispatch chokepoint.
 **vercel-labs/agent-browser** (~38k stars) -- a single Rust binary over CDP with domain
 allowlists and action policies (governance-lite). But it copies your Chrome profile to a
 temporary snapshot: a fresh browser, not your live session, with no extension, no identity
-layer, and no audit. Good for sandboxed tasks; not for "act as me in my real tabs, governed."
+layer, and no audit. Good for sandboxed tasks; not for "use my signed-in profile in a visible,
+governed workspace."
 
 **browsermcp.io ("Browser MCP", ~7k stars)** -- extension-driven real session, but
 unmaintained (last push April 2025) and the extension itself is closed source; only the npm

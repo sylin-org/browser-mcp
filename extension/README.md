@@ -27,10 +27,10 @@ The binary self-registers everything:
    `ghostlight doctor` verifies the setup; `ghostlight uninstall` reverses it.
 4. **Restart the browser** (native-messaging host configs are read at startup).
 
-Prefer to wire it by hand? See
-[../docs/research/11-install-detection.md](../docs/research/11-install-detection.md) for the exact
-host-manifest paths per OS/browser.
+Prefer to wire it by hand? See the public
+[installation guide](../docs/guides/installation.md) for supported paths and troubleshooting.
+Platform-specific registration details remain in the installer source and ADRs.
 
 ## Verify
-Ask the agent to *navigate to a page and take a screenshot*: the 👻Ghostlight tab group opens
+Ask the agent to *navigate to a page and take a screenshot*: the Ghostlight tab group opens
 and the screenshot returns.

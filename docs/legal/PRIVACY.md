@@ -1,6 +1,6 @@
 # Ghostlight in Browser: Privacy Policy
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 Canonical public URL: https://sylin.org/ghostlight/privacy/
 
@@ -30,7 +30,11 @@ For tabs in the visible Ghostlight automation session, the extension can use:
   fields, and element locations support page reading, element discovery, and interaction.
 - **Screenshots and screen-capture frames.** On-demand screenshots support visual browser tools.
   During an explicitly requested recording, the extension relays frames to the local application,
-  which assembles the animated GIF.
+  which assembles the animated GIF. Before explicit export, frame and GIF bytes remain only in
+  bounded volatile memory and never spill to disk. A frozen recording expires after five minutes;
+  explicit clear, session end, policy revocation, panic kill, or service exit erases it sooner.
+  Export creates a copy only at the destination the user requested, such as the MCP client or a
+  page input; the local in-memory recording still follows clear and retention rules.
 - **Console and network information.** Console messages and network request metadata support
   debugging tools. Ghostlight does not use this capability to build a browsing history.
 - **Browser state.** Tab URLs, titles, identifiers, window state, and tab-group state let

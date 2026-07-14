@@ -51,6 +51,14 @@ when they disagree**, and update it when you land something that changes the pic
   implementation-gated; the current remote-enable action stays disabled.
 - **The public vulnerability-disclosure endpoint is live.** `https://sylin.org/.well-known/security.txt`
   publishes the contact, expiry, canonical URL, and Ghostlight security-policy link.
+- **The four-phase public documentation freshness pass is complete in the working tree.** Trust
+  material now follows SECURITY.md's best-effort solo-maintainer targets and names only live
+  distribution channels. Present-facing guides use the v0.5.7 service/relay topology, 22-tool
+  inventory, one-stack dev loop, shipped licensing behavior, and managed-tab boundary. The original
+  SPEC is explicitly historical, recording privacy names the memory-only retention rules, and the
+  sylin.org source carries a v0.5.7 fallback plus a product-first narrow hero. Ghostlight formatting,
+  local-link and ASCII checks, the website clean build, all generated-site checks, and the rendered
+  390px overflow/navigation/order checks are green.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -112,9 +120,11 @@ when its API credentials or dashboard metadata are absent.
 - **Public documentation was rebalanced around responsible delight**: the applied review lives in
   `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
-  It also corrects stale topology, audit-default, roadmap, and install-time-vs-runtime claims.
-  Remaining high-value work: the hero GIF, macOS/Linux live verification, and the outcome of the
-  pending CWS review.
+  A follow-up four-phase freshness pass aligns trust commitments, distribution state, topology,
+  tool count, recording privacy, roadmap, current guides, website copy, machine-readable surfaces,
+  mobile hierarchy, and public links. Remaining high-value work: macOS/Linux live verification and
+  the outcome of the pending CWS review. The optional hero GIF remains intentionally deferred until
+  a proper capture is worth publishing.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
