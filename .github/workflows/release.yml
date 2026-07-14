@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
   # Build-only dry run: validates the full cross-build + packaging matrix WITHOUT
   # creating a GitHub Release. The `release` job is gated on a tag push, so a manual
-  # dispatch runs prepare + test + build only.
+  # dispatch runs prepare + test + build + read-only release assembly.
   workflow_dispatch:
 
 env:
@@ -141,15 +141,11 @@ jobs:
             ghostlight-relay-${{ matrix.target }}*
           if-no-files-found: error
 
-  release:
-    needs: [prepare, test, build]
-    # Only create a GitHub Release on a real tag push; workflow_dispatch stops after build.
-    if: startsWith(github.ref, 'refs/tags/')
+  assemble:
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # create the release + upload assets
-      id-token: write # keyless (Sigstore) signing for build provenance
-      attestations: write # write the attestations
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -170,61 +166,94 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          cargo install cargo-cyclonedx --locked
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
           cargo cyclonedx --format json --override-filename "ghostlight-v${VERSION}-sbom.cyclonedx"
-          # cargo-cyclonedx writes the root-package SBOM to the workspace root; stage it as a release asset.
-          find . -maxdepth 1 -name "ghostlight-v${VERSION}-sbom.cyclonedx*" -exec cp {} artifacts/ \;
-          # No `|| true`: under `set -e`, ls on a non-matching glob fails the step -- if the SBOM
-          # never landed in artifacts/, the release build fails loudly instead of shipping quietly
-          # without it (SAPS OSS-LOW-03).
-          ls -la artifacts/*.cyclonedx*
+          SBOM=$(find . -maxdepth 1 -name "ghostlight-v${VERSION}-sbom.cyclonedx*" -print -quit)
+          test -n "$SBOM"
+          cp "$SBOM" artifacts/
 
-      - name: Package extension (Chrome Web Store ready)
+      - name: Package extension
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
-          # Single source of truth for the store zip: the SAME script the local flow uses
-          # (scripts/package-extension.ps1, run here via the preinstalled pwsh). It excludes
-          # dev-only files AND strips the manifest `key` field -- the Chrome Web Store rejects a
-          # `key` on upload -- so this release asset is directly submittable, unlike the old bare
-          # `zip -r extension/` which shipped the key and dev files and would be rejected.
           pwsh -File scripts/package-extension.ps1 -Version "$VERSION"
-          EXT_ZIP="artifacts/${BIN_NAME}-extension-${TAG}.zip"
-          cp "dist/${BIN_NAME}-extension-v${VERSION}.zip" "$EXT_ZIP"
-          shasum -a 256 "$EXT_ZIP" > "${EXT_ZIP}.sha256"
-          cat "${EXT_ZIP}.sha256"
+          EXTENSION="artifacts/${BIN_NAME}-extension-${TAG}.zip"
+          cp "dist/${BIN_NAME}-extension-v${VERSION}.zip" "$EXTENSION"
+          sha256sum "$EXTENSION" > "${EXTENSION}.sha256"
 
-      # Attest EVERY release asset (archives, raw per-target binaries, checksums, the
-      # extension zip, and the SBOM), not just the packaged archives -- the npm launcher and
-      # the get.sh/get.ps1 one-liners fetch the raw binaries directly, and those deserve the
-      # same provenance story (docs/trust/supply-chain.md).
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: artifacts/*
-
-      - name: Generate release notes
+      - name: Assemble immutable release bundle
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          mkdir -p bundle/assets
+          cp -a artifacts/. bundle/assets/
+
+          # One canonical, sorted manifest covers every release asset. Individual target
+          # checksums remain assets for existing installers and package-manager tooling.
+          (
+            cd bundle/assets
+            find . -maxdepth 1 -type f -printf '%f\n' \
+              | LC_ALL=C sort \
+              | xargs sha256sum
+          ) > bundle/SHA256SUMS
+
           TEMPLATE=$(cat .github/release-template.md)
           NOTES="${TEMPLATE//\$\{VERSION\}/$VERSION}"
-
-          CHECKSUMS=""
-          for f in artifacts/*.sha256; do
-            HASH=$(cut -d' ' -f1 "$f")
-            FILE=$(basename "${f%.sha256}")
-            CHECKSUMS="${CHECKSUMS}${HASH}  ${FILE}"$'\n'
-          done
+          CHECKSUMS=$(cat bundle/SHA256SUMS)
           NOTES="${NOTES//\$\{CHECKSUMS\}/$CHECKSUMS}"
+          printf '%s\n' "$NOTES" > bundle/release-notes.md
 
-          echo "$NOTES" > release-notes.md
-          echo "--- release notes ---"
-          cat release-notes.md
+          test -s bundle/SHA256SUMS
+          test -s bundle/release-notes.md
+          (cd bundle/assets && sha256sum -c ../SHA256SUMS)
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle
+          path: bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [prepare, test, assemble]
+    # Only create a GitHub Release on a real tag push. Manual runs still validate assembly.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload assets
+      id-token: write # keyless (Sigstore) signing for build provenance
+      attestations: write # write the attestations
+    steps:
+      - name: Download immutable release bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Verify release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s bundle/SHA256SUMS
+          test -s bundle/release-notes.md
+
+          awk '{print $2}' bundle/SHA256SUMS | LC_ALL=C sort > /tmp/manifest-files
+          find bundle/assets -maxdepth 1 -type f -printf '%f\n' \
+            | LC_ALL=C sort > /tmp/actual-files
+          diff -u /tmp/manifest-files /tmp/actual-files
+          (cd bundle/assets && sha256sum -c ../SHA256SUMS)
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            bundle/assets/*
+            bundle/SHA256SUMS
 
       - name: Create GitHub Release
         env:
@@ -234,5 +263,6 @@ jobs:
           TAG="${{ needs.prepare.outputs.tag }}"
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes-file release-notes.md \
-            artifacts/*
+            --notes-file bundle/release-notes.md \
+            bundle/SHA256SUMS \
+            bundle/assets/*

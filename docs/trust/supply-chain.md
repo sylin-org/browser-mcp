@@ -6,11 +6,14 @@ release.
 
 ## Releases
 
-Every release publishes verifiable artifacts. Each downloadable carries a per-file SHA-256
-checksum so you can confirm you received exactly what was published, and each release
+Every release publishes verifiable artifacts. Each payload artifact is covered by the release's
+SHA-256 manifests so you can confirm you received exactly what was published, and each release
 includes keyless Sigstore build-provenance attestations that tie the artifacts back to the
 exact source commit and workflow run that produced them (attestation coverage spans every
 release asset from 2026-07 onward; earlier releases attest the packaged archives). Releases
+also carry a canonical `SHA256SUMS` manifest. A read-only assembly job creates the complete
+release bundle, including the SBOM; the privileged publisher can only download that bundle,
+verify its exact file list and hashes, attest it, and create the release.
 are distributed today through GitHub Releases, npm, the MCP Registry, and the Sylin Homebrew tap,
 all resolving to artifacts from the same tagged source. Scoop and winget manifests are prepared in
 the repository but are not public distribution channels until their packages ship. Fixes land on
