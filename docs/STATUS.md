@@ -49,6 +49,8 @@ when they disagree**, and update it when you land something that changes the pic
   personal remote access tunnel-first and requires a managed-only, standards-conformant, TLS and
   sender-constrained OAuth resource server before any non-loopback listener can return. Both remain
   implementation-gated; the current remote-enable action stays disabled.
+- **The public vulnerability-disclosure endpoint is live.** `https://sylin.org/.well-known/security.txt`
+  publishes the contact, expiry, canonical URL, and Ghostlight security-policy link.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -187,8 +189,6 @@ when its API credentials or dashboard metadata are absent.
 - Trust center legal: vendor entity name in the MSA (blocked on forming the LLC), the
   cyber-insurance yes/no line, counsel skim of MSA/DPA/LICENSE-GOVERNANCE before first
   EXECUTION (publication already happened by design; drafts are marked as drafts).
-- Publish the prepared `/.well-known/security.txt` website change. It is committed locally in the
-  website repository and waits for explicit owner confirmation before a direct `main` push.
 - Key backup + a second npm publisher; one non-author human through the install flow.
 
 ## Standing context worth knowing
