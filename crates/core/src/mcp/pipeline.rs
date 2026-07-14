@@ -1223,6 +1223,7 @@ mod tests {
         let cases = [
             ("read_page", json!({ "tabId": 5 })),
             ("computer", json!({ "action": "screenshot", "tabId": 5 })),
+            ("dialog", json!({ "action": "status", "tabId": 5 })),
             (
                 "javascript_tool",
                 json!({ "action": "javascript_exec", "text": "1", "tabId": 5 }),
@@ -1255,16 +1256,16 @@ mod tests {
         }
 
         let lines = read_lines(&path);
-        assert_eq!(lines.len(), 4, "exactly one deny record per denied call");
+        assert_eq!(lines.len(), 5, "exactly one deny record per denied call");
         for rec in &lines {
             assert_eq!(rec["decision"], "deny");
             assert_eq!(rec["denial_id"], "D-af6633ec");
             assert_eq!(rec["domain"], "www.mybank.com");
         }
-        wait_for_seen_len(&seen, 8).await;
+        wait_for_seen_len(&seen, 10).await;
         assert_eq!(
             *seen.lock().unwrap(),
-            ["tab_url_request:5", "notification:error"].repeat(4),
+            ["tab_url_request:5", "notification:error"].repeat(5),
             "the extension must never see an actual tool_request for a denied call -- only the \
              tab_url_request pre-flight and the on-screen denial notification"
         );
@@ -1795,6 +1796,27 @@ mod tests {
         let text = result["content"][0]["text"].as_str().expect("text block");
         assert!(text.starts_with("Paused:"), "{text}");
         assert!(text.contains("'computer (screenshot)' call"), "{text}");
+
+        let dialog_params =
+            json!({ "name": "dialog", "arguments": { "action": "status", "tabId": 5 } });
+        let dialog_resp = handle_tools_call(
+            &browser,
+            &store,
+            &governance,
+            "test-guid",
+            Some(json!(4)),
+            Some(&dialog_params),
+            None,
+        )
+        .await;
+        let dialog_text = dialog_resp.result.as_ref().expect("dialog result")["content"][0]["text"]
+            .as_str()
+            .expect("dialog pause text");
+        assert!(dialog_text.starts_with("Paused:"), "{dialog_text}");
+        assert!(
+            dialog_text.contains("'dialog (status)' call"),
+            "{dialog_text}"
+        );
 
         // ADR-0022 Decision 7: `explain` gets the ordinary pause text like any other tool
         // while held, even though its own directory requirement is `[]` -- the hold check
@@ -2397,6 +2419,12 @@ mod tests {
             "act_on (hover): requires read. Resolve one target and move the pointer over it.",
             "act_on (scroll_to): requires read. Resolve one target and scroll it into view.",
             "act_on (set_value): requires write. Resolve one field and set its value.",
+            "dialog (status): requires read. Inspect whether a JavaScript dialog is blocking \
+             the tab.",
+            "dialog (accept): requires action. Explicitly accept the current JavaScript dialog.",
+            "dialog (dismiss): requires action. Explicitly dismiss the current JavaScript dialog.",
+            "dialog (respond): requires action. Explicitly respond to the current JavaScript \
+             prompt with text.",
             "file_upload: requires write. Upload files (base64 bytes) to a file input \
              located by read_page or find, via its ref.",
             "browser_batch: requires nothing. Run a sequence of tool calls in one round trip; \

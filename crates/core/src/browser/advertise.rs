@@ -138,6 +138,7 @@ mod tests {
                 "wait_for",
                 "script",
                 "act_on",
+                "dialog",
                 "browser_batch",
                 "gif_creator",
                 "explain",

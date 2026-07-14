@@ -64,7 +64,8 @@ impl ToolSchema {
 ///      a typo'd field name is named explicitly rather than masked as a missing required field;
 ///   2. missing required field;
 ///   3. wrong type on a present field;
-///   4. enum, numeric-bound, and string-length constraints on a present field.
+///   4. enum, numeric-bound, and string-length constraints on a present field;
+///   5. simple `if`/`then`/`else` required-field conditions declared by additive tools.
 ///
 /// NOTE on the one enum exception: an `action` field (e.g. `computer.action`) is deliberately NOT
 /// enforced here. An unknown action is already handled fail-closed by the governance
@@ -194,6 +195,54 @@ pub fn validate_arguments(schema: &ToolSchema, arguments: &Value) -> Result<(), 
                     if length > maximum {
                         let msg =
                             format!("field '{field}' must contain at most {maximum} character(s)");
+                        return Err(ToolError::invalid_request(msg)
+                            .next_step(example_shape_hint(schema, field)));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check 5: the additive dialog schema uses the small conditional subset
+    // `if.properties.<field>.const`, with `then.required` and `else.not.required`. Keep the
+    // implementation data-driven so future additive schemas can reuse this shape without a
+    // tool-name special case. More general JSON-Schema composition remains out of scope.
+    if let Some(rules) = schema.input_schema.get("allOf").and_then(Value::as_array) {
+        for rule in rules {
+            let matches = rule
+                .pointer("/if/properties")
+                .and_then(Value::as_object)
+                .is_some_and(|conditions| {
+                    conditions.iter().all(|(field, condition)| {
+                        condition
+                            .get("const")
+                            .is_some_and(|expected| obj.get(field) == Some(expected))
+                    })
+                });
+            let branch = if matches {
+                rule.get("then")
+            } else {
+                rule.get("else")
+            };
+            if let Some(required) = branch
+                .and_then(|value| value.get("required"))
+                .and_then(Value::as_array)
+            {
+                for field in required.iter().filter_map(Value::as_str) {
+                    if !obj.contains_key(field) {
+                        let msg = format!("missing conditionally required field '{field}'");
+                        return Err(ToolError::invalid_request(msg)
+                            .next_step(example_shape_hint(schema, field)));
+                    }
+                }
+            }
+            if let Some(forbidden) = branch
+                .and_then(|value| value.pointer("/not/required"))
+                .and_then(Value::as_array)
+            {
+                for field in forbidden.iter().filter_map(Value::as_str) {
+                    if obj.contains_key(field) {
+                        let msg = format!("field '{field}' is not allowed for this action");
                         return Err(ToolError::invalid_request(msg)
                             .next_step(example_shape_hint(schema, field)));
                     }
@@ -430,6 +479,31 @@ mod tests {
                 "position": "auto",
                 "duration_ms": 5000
             })
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn dialog_conditional_requires_text_only_for_respond() {
+        let schema = ToolSchema::for_tool("dialog").expect("dialog schema");
+        assert!(validate_arguments(
+            &schema,
+            &serde_json::json!({"tabId": 1, "action": "respond", "text": "Ada"})
+        )
+        .is_ok());
+        assert!(validate_arguments(
+            &schema,
+            &serde_json::json!({"tabId": 1, "action": "respond"})
+        )
+        .is_err());
+        assert!(validate_arguments(
+            &schema,
+            &serde_json::json!({"tabId": 1, "action": "accept", "text": "not allowed"})
+        )
+        .is_err());
+        assert!(validate_arguments(
+            &schema,
+            &serde_json::json!({"tabId": 1, "action": "status"})
         )
         .is_ok());
     }

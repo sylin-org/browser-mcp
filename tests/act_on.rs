@@ -199,6 +199,60 @@ async fn best_rank_tie_returns_candidates_without_cue_or_action() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_javascript_dialog_is_returned_as_a_blocker() {
+    let harness = Harness::all_open();
+    harness
+        .attach_fake_extension(|request| {
+            if request["type"] == "tab_url_request" {
+                return json!({"url":"https://example.com/"});
+            }
+            if request.get("tool").is_none() {
+                return json!({});
+            }
+            match request["tool"].as_str().unwrap_or("") {
+                "resolve_actionable_internal" => text_result(json!({
+                    "target": {
+                        "ref":"ref_1", "role":"button", "name":"Open dialog",
+                        "visible":true, "enabled":true,
+                        "box":{"x":10,"y":10,"width":20,"height":20},
+                        "renderSerial":1, "mechanicalActions":["left_click"], "x":20, "y":20
+                    },
+                    "candidates":[], "ambiguous":false,
+                    "page":{"url":"https://example.com/","origin":"https://example.com","title":"Dialog","renderSerial":1}
+                }).to_string()),
+                "target_cue_internal" => text_result("Target cue shown."),
+                "computer" => json!({
+                    "content":[{"type":"text","text":"blocked: dialog_open"}],
+                    "structuredContent":{"interactionReceipt":{
+                        "targetAssurance":"coordinate", "action":"left_click",
+                        "observedAfter":{},
+                        "blockers":[{
+                            "kind":"dialog_open",
+                            "summary":"A JavaScript dialog is blocking the tab.",
+                            "nextStep":"Inspect and resolve the dialog explicitly before continuing."
+                        }],
+                        "page":{"tabId":1,"url":"https://example.com/","origin":"https://example.com","title":"Dialog","renderSerial":1},
+                        "more":false
+                    }}
+                }),
+                other => panic!("unexpected internal tool: {other}"),
+            }
+        })
+        .await;
+
+    let responses = harness
+        .drive(&call(json!({
+            "tabId":1,"target":{"name":"Open dialog","role":"button"},"action":"left_click"
+        })))
+        .await;
+    let result = &by_id(&responses, 2)["result"];
+    assert_eq!(
+        result.pointer("/structuredContent/interactionReceipt/blockers/0/kind"),
+        Some(&json!("dialog_open"))
+    );
+}
+
 #[test]
 fn closed_loop_journey_reduces_calls_and_keeps_next_decision_facts() {
     let low_level_inputs = [

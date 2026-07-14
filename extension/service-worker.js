@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js", "lib/wire-chunks.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js", "lib/dialog.js", "lib/wire-chunks.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -53,6 +53,9 @@ const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups, re
 // ADR-0072: pure, memory-only replacement and expiry state. The worker supplies tab routing;
 // this store contains no policy or page-content logic.
 const narrationStore = self.GhostlightNarration.createNarrationStore();
+// ADR-0078 D7: the minimum current CDP dialog state per tab. It is mechanism-only, memory-only,
+// and never resolves anything without an explicit model-facing dialog action.
+const dialogStore = self.GhostlightDialog.createDialogStore();
 
 // Native-messaging host name (ADR-0065: one stack). Every build of this extension -- the Web
 // Store release and the unpacked dev copy alike -- talks to the ONE host `org.sylin.ghostlight`,
@@ -229,10 +232,11 @@ async function connect() {
         });
         return;
       }
-      // ADR-0072 session cleanup: the binary names only this MCP session's owned tabs. The
-      // extension clears the transient mechanism state and the matching on-page card.
+      // ADR-0072/0078 session cleanup: the binary names only this MCP session's owned tabs. The
+      // extension clears transient narration and cached dialog mechanism state for each tab.
       if (msg && msg.type === "narration_clear" && typeof msg.tabId === "number") {
         narrationStore.remove(msg.tabId);
+        dialogStore.remove(msg.tabId);
         sendToTab(msg.tabId, { type: "AGENT_NARRATION_CLEAR" });
         return;
       }
@@ -434,6 +438,7 @@ async function killSession() {
   consoleBuffer.clear();
   networkBuffer.clear();
   screenshotCtx.clear();
+  dialogStore.clear();
 
   if (nativePort) {
     // Chrome does not fire our own onDisconnect for a self-initiated disconnect, and even if a
@@ -703,6 +708,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   screenshotCtx.delete(tabId);
   tabHost.delete(tabId);
   tabUrl.delete(tabId);
+  dialogStore.remove(tabId);
   managedTabs.delete(tabId); // ADR-0066 D5: a closed tab is no longer ours to reach
   narrationStore.remove(tabId);
   persistSessionState();
@@ -711,6 +717,7 @@ chrome.debugger.onDetach.addListener((src) => {
   const cast = gifCast.get(src.tabId);
   if (cast) stopGifCast(src.tabId, cast, "browser_detached");
   attached.delete(src.tabId);
+  dialogStore.remove(src.tabId);
 });
 
 // --- Console / network buffering (join network events by requestId, unlike the reference) ---
@@ -718,7 +725,11 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.url !== undefined) { tabHost.set(tabId, hostOf(info.url)); tabUrl.set(tabId, info.url); }
+  if (info.url !== undefined) {
+    tabHost.set(tabId, hostOf(info.url));
+    tabUrl.set(tabId, info.url);
+    dialogStore.remove(tabId);
+  }
   if (info.status === "complete") {
     const narration = narrationStore.current(tabId);
     if (narration) renderNarration(tabId, narration);
@@ -756,6 +767,14 @@ function exceptionText(details, fallbackUrl) {
 }
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const tabId = src.tabId;
+  if (method === "Page.javascriptDialogOpening") {
+    dialogStore.opened(tabId, params);
+    return;
+  }
+  if (method === "Page.javascriptDialogClosed") {
+    dialogStore.remove(tabId);
+    return;
+  }
   if (method === "Page.screencastFrame") {
     // gif_creator capture (ADR-0052 D1): fire-and-forget; the handler acks + keeps/drops the frame.
     handleScreencastFrame(tabId, params);
@@ -1073,12 +1092,54 @@ function textImage(t, base64) {
 // twin merges into structuredContent. Best-effort: a content-script failure (e.g. the page
 // navigated away) degrades to the plain confirmation -- the observation is additive, never
 // load-bearing.
+async function appendDialogBlocker(result, tabId, meta) {
+  const open = dialogStore.current(tabId);
+  if (!open) return result;
+  if (!result.structuredContent) result.structuredContent = {};
+  let receipt = result.structuredContent.interactionReceipt;
+  if (!receipt) {
+    receipt = {
+      targetAssurance: meta.targetAssurance || "none",
+      action: meta.action || "unknown",
+      observedAfter: {},
+      blockers: [],
+      page: await pageMeta(tabId),
+      more: false,
+    };
+    result.structuredContent.interactionReceipt = receipt;
+  }
+  if (!Array.isArray(receipt.blockers)) receipt.blockers = [];
+  if (!receipt.blockers.some((blocker) => blocker.kind === "dialog_open")) {
+    receipt.blockers.push({
+      kind: "dialog_open",
+      summary: "A JavaScript dialog is blocking the tab.",
+      nextStep: "Inspect and resolve the dialog explicitly before continuing.",
+    });
+  }
+  const rendered = "blocked: dialog_open: A JavaScript dialog is blocking the tab. " +
+    "Next: Inspect and resolve the dialog explicitly before continuing.";
+  if (!result.content[0].text.includes("dialog_open")) result.content[0].text += "\n" + rendered;
+  return result;
+}
+
 async function withObservation(tabId, meta, run) {
   if (typeof meta === "function") {
     run = meta;
     meta = {};
   }
   const receiptMeta = Object.assign({ tabId, targetAssurance: "none" }, meta || {});
+  try {
+    await ensureAttached(tabId);
+    await enableDomain(tabId, "Page");
+    await sleep(0);
+  } catch { /* dialog tracking is additive; the action's own mechanism reports hard failures */ }
+  if (dialogStore.current(tabId)) {
+    return appendDialogBlocker(
+      text("Action not dispatched because a JavaScript dialog is already blocking the tab."),
+      tabId,
+      receiptMeta
+    );
+  }
   if (receiptMeta.ref) {
     try {
       const resolved = await content(tabId, { type: "elementSummary", ref: receiptMeta.ref });
@@ -1088,20 +1149,21 @@ async function withObservation(tabId, meta, run) {
   let before = null;
   try { before = await content(tabId, { type: "observeSnap" }); } catch { /* page may be mid-load */ }
   const result = await run();
-  if (!before || !before.result) return result;
-  try {
-    const sample = await content(tabId, { type: "observeSample", before: before.result, meta: receiptMeta });
-    const obs = sample && sample.result;
-    if (obs && obs.digest) {
-      result.content[0].text += "\n" + obs.digest;
-      if (obs.receipt) {
-        result.structuredContent = Object.assign({}, result.structuredContent || {}, {
-          interactionReceipt: obs.receipt,
-        });
+  if (before && before.result) {
+    try {
+      const sample = await content(tabId, { type: "observeSample", before: before.result, meta: receiptMeta });
+      const obs = sample && sample.result;
+      if (obs && obs.digest) {
+        result.content[0].text += "\n" + obs.digest;
+        if (obs.receipt) {
+          result.structuredContent = Object.assign({}, result.structuredContent || {}, {
+            interactionReceipt: obs.receipt,
+          });
+        }
       }
-    }
-  } catch { /* observation never masks the action's own result */ }
-  return result;
+    } catch { /* observation never masks the action's own result */ }
+  }
+  return appendDialogBlocker(result, tabId, receiptMeta);
 }
 
 // --- Screenshot pipeline: capture native, downscale to the token budget, record ScreenshotContext ---
@@ -1612,11 +1674,15 @@ async function tabsContextLegacy(a) {
 async function pageMeta(tabId) {
   const tab = await chrome.tabs.get(tabId);
   let fromPage = null;
-  try {
-    const response = await content(tabId, { type: "pageMeta" });
-    fromPage = response && response.result;
-  } catch (_error) {
-    // Restricted browser pages may not host the content script. Browser metadata is still useful.
+  // A JavaScript dialog blocks the page event loop, so do not await a content-script reply while
+  // one is open. Chrome's tab metadata still gives the origin/title needed for provenance.
+  if (!dialogStore.current(tabId)) {
+    try {
+      const response = await content(tabId, { type: "pageMeta" });
+      fromPage = response && response.result;
+    } catch (_error) {
+      // Restricted browser pages may not host the content script. Browser metadata is still useful.
+    }
   }
   let origin = "unknown";
   try { origin = new URL((fromPage && fromPage.url) || tab.url || "about:blank").origin; }
@@ -1678,6 +1744,39 @@ const handlers = {
     const r = text(`Navigated to ${tab.url}${tab.status !== "complete" ? " (still loading)" : ""}.`);
     r.structuredContent = { tabId, url: tab.url, title: tab.title || "" };
     return r;
+  },
+  async dialog(a) {
+    const tabId = await effectiveTabId(a.tabId);
+    await ensureAttached(tabId);
+    await enableDomain(tabId, "Page");
+    await sleep(0);
+    const open = dialogStore.current(tabId);
+    if (a.action === "status") {
+      const out = open
+        ? text(`JavaScript ${open.type} dialog is blocking the tab: ${JSON.stringify(open.message)}.`)
+        : text("No JavaScript dialog is currently blocking the tab.");
+      out.structuredContent = open
+        ? { open: true, type: open.type, message: open.message, page: await pageMeta(tabId) }
+        : { open: false, page: await pageMeta(tabId) };
+      return out;
+    }
+    if (!open) {
+      const out = text("No JavaScript dialog is currently open; nothing was resolved.");
+      out.structuredContent = { open: false, resolved: false, page: await pageMeta(tabId) };
+      return out;
+    }
+    const params = self.GhostlightDialog.resolutionCommand(a.action, a.text);
+    await cdp(tabId, "Page.handleJavaScriptDialog", params);
+    dialogStore.remove(tabId);
+    const out = text(`JavaScript dialog ${a.action} dispatched.`);
+    out.structuredContent = {
+      open: false,
+      resolved: true,
+      action: a.action,
+      type: open.type,
+      page: await pageMeta(tabId),
+    };
+    return out;
   },
   async computer(a) {
     const out = await computer(a);
