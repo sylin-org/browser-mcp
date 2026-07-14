@@ -279,7 +279,9 @@ pub(crate) async fn run_tool_call(
     // miss is `None`, never coerced to an empty slice here): `governance.begin` and
     // `governance.authorize` both consume this SAME value, so there is exactly one lookup for
     // the whole call, feeding both the decision and the audit `capability` field.
-    let lookup: Option<&'static [Capability]> = directory::requires(name, action);
+    let lookup: Option<&'static [Capability]> =
+        directory::requires_for_call(descriptor, action, args);
+    let resource_shape = directory::resource_for_call(descriptor, action, args);
     let mut audit = governance.begin(name, action, lookup);
     // C1's orchestration stamping (PINS.md SS7): applied right after `begin`, so every audit
     // path below (held, sacred, free-action, denied, complete) carries it.
@@ -342,7 +344,7 @@ pub(crate) async fn run_tool_call(
             denial: None,
         }
     } else {
-        sacred_check(&mut tab_url, sacred_domains, descriptor.resource, args).await
+        sacred_check(&mut tab_url, sacred_domains, resource_shape, args).await
     };
     if let Some(denial) = denial {
         if !dry_run {
@@ -429,7 +431,7 @@ pub(crate) async fn run_tool_call(
     let resolved = if (governance.is_governed() || overlay.is_some())
         && matches!(lookup, Some(r) if !r.is_empty())
     {
-        resolve_governing_resource(&mut tab_url, descriptor, args).await
+        resolve_governing_resource(&mut tab_url, resource_shape, args).await
     } else {
         None
     };
@@ -555,7 +557,7 @@ pub(crate) async fn run_tool_call(
     // control falls through to dispatch below, which fails fast with the canonical
     // "extension not connected" `ToolError` -- one hop-attributed message, not two to keep in sync.
     let mut waited: Option<Duration> = None;
-    if !browser.is_connected() {
+    if resource_shape != directory::ResourceShape::RecordingScoped && !browser.is_connected() {
         let started = Instant::now();
         if browser
             .wait_connected(Duration::from_millis(config.first_call_wait_ms()))
@@ -730,7 +732,11 @@ async fn sacred_check(
     resource_shape: directory::ResourceShape,
     args: &Value,
 ) -> SacredCheck {
-    let tab_host = match args.get("tabId").and_then(Value::as_i64) {
+    let tab_host = match args
+        .get("tabId")
+        .and_then(Value::as_i64)
+        .filter(|_| resource_shape != directory::ResourceShape::RecordingScoped)
+    {
         Some(_) => tab_url
             .get()
             .await
@@ -783,11 +789,13 @@ async fn sacred_check(
 /// Decision 4), the SAME probe the sacred check above may already have resolved for this call.
 async fn resolve_governing_resource(
     tab_url: &mut LazyTabUrl<'_>,
-    descriptor: &directory::ToolDescriptor,
+    resource_shape: directory::ResourceShape,
     args: &Value,
 ) -> Option<(GoverningResource, Option<String>)> {
-    match descriptor.resource {
-        directory::ResourceShape::DomainLess => Some((GoverningResource::None, None)),
+    match resource_shape {
+        directory::ResourceShape::DomainLess | directory::ResourceShape::RecordingScoped => {
+            Some((GoverningResource::None, None))
+        }
         directory::ResourceShape::TargetArg => match args.get("url").and_then(Value::as_str) {
             // "back"/"forward" and a missing/non-string url argument have no target to check
             // pre-dispatch (point 5 covers the landing for "back"/"forward"; the extension's own
@@ -2312,9 +2320,11 @@ mod tests {
              the tab's group as GIF frames.",
             "gif_creator (stop_recording): requires nothing. Stop recording; keep the captured \
              frames for export.",
+            "gif_creator (status): requires nothing. Report recording state and deadlines \
+             without reading the live page.",
             "gif_creator (clear): requires nothing. Discard the captured recording frames.",
-            "gif_creator (export): requires write. Encode the frames to a GIF and export it \
-             (download, or drag-drop at a coordinate).",
+            "gif_creator (export): requires read. Encode the frames to a GIF. Client export \
+             requires read; page placement by ref or coordinate requires write.",
             "explain: requires nothing. Show every action available here and the capability \
              each one requires.",
         ]

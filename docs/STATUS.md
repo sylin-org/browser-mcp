@@ -43,6 +43,29 @@ when they disagree**, and update it when you land something that changes the pic
   Production or mint a fresh token before a later publish attempt. Credential locations remain in
   `local/`; no values belong in tracked documentation.
 
+## Active work: reliable ephemeral GIF recording
+
+- **The demo tour is deliberately paused.** The owner chose to solve recording architecture before
+  returning to presentation work. The Capture Studio website block remains complete and live at
+  `/ghostlight/demo/studio/`; no browser-side capability-tour implementation has started.
+- **The failed export was a transport defect, not an encoder stall.** The preserved 12-frame
+  fixture encoded in under one second. The seven-frame coordinate export exceeded Chrome's 1 MiB
+  host-to-extension message limit, disconnected the native host, and then waited for the generic
+  60-second timeout. Four ordinary frames were already enough to cross that boundary.
+- **ADRs 0073 and 0074 are implemented on `dev`.** Recording is session/surface/
+  generation-owned, memory-only, byte-bounded, transactionally started and finalized, protected by
+  idle/hard deadlines plus an extension health lease, and erased on session/policy/panic/retention
+  cleanup. GIF encoding is two-pass and one-frame-at-a-time. Large browser-bound tool requests use
+  negotiated, SHA-256-verified, memory-only chunks; old extensions fail fast before an oversized
+  write. Debug MCP/tool payload persistence has been removed.
+- **The model flow is smaller.** Use `start_recording`, ordinary browser tools, then `export`.
+  Export auto-finalizes. `status`, explicit stop, and clear are supporting actions. Download export
+  requires Read; page placement by ref or coordinate requires Write. A timeout or disconnect after
+  enqueue reports `outcome_unknown` and `retry_safe: false` instead of inviting a duplicate page
+  effect. Formatting, strict clippy, all 72 extension tests, and the full Rust workspace suite are
+  green. The rebuilt service is live and healthy; the changed unpacked extension still needs a
+  user reload and live large-export verification.
+
 ## Release pipeline (canonical map: `docs/RELEASE.md`)
 
 `scripts/release.ps1 <version>` from `main` automates: tag, watch CI, verify assets, fill

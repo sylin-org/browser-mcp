@@ -59,6 +59,9 @@ pub enum ResourceShape {
     TabScoped,
     /// Governed by the `url` argument: `navigate` only (extension-mirrored normalization).
     TargetArg,
+    /// Existing in-memory recording authority, with no live page lookup. Used for status, stop,
+    /// clear, and client-side export after capture authority has already been established.
+    RecordingScoped,
 }
 
 /// How a call is dispatched once authorized (ADR-0024 Decision 1, grown async by ADR-0035
@@ -1262,24 +1265,21 @@ pub const REGISTRY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         tool: "gif_creator",
-        // The description + parameter text below are TRANSCRIBED VERBATIM from the installed official
-        // Claude-in-Chrome v1.0.80 (assets/mcpPermissions-*.js `name:"gif_creator"`), the sole
-        // reference (ADR-0050 D1). gif_creator is a NEW additive tool (never trained), so this is not
-        // a sacred-surface pin, but it is the real schema, not an approximation. `enum` +
-        // `required` + `additionalProperties` follow our house JSON-Schema style (the official uses
-        // Anthropic's `parameters` format). Phase 1 produces a plain-frame GIF; the description's
-        // visual overlays are a DEFERRED extension feature (see the T4 LEDGER entry).
-        advertised_description: "Manage GIF recording and export for browser automation sessions. Control when to start/stop recording browser actions (clicks, scrolls, navigation), then export as an animated GIF with visual overlays (click indicators, action labels, progress bar, watermark). All operations are scoped to the tab's group. When starting recording, take a screenshot immediately after to capture the initial state as the first frame. When stopping recording, take a screenshot immediately before to capture the final state as the last frame. For export, either provide 'coordinate' to drag/drop upload to a page element, or set 'download: true' to download the GIF.",
+        // gif_creator is additive and not part of the 13 trained schemas. ADR-0073 simplifies the
+        // happy path to start -> ordinary browser work -> export; stop remains an optional explicit
+        // boundary, and status exposes the reliable lifecycle without touching the live page.
+        advertised_description: "Create a short, memory-only GIF of browser work. Call start_recording, use browser tools normally, then call export; export stops capture automatically. Recording also auto-stops after 30 seconds idle or 120 seconds total. Use status to inspect state, stop_recording for an optional explicit boundary, or clear to erase immediately. Export can return the GIF to the client (download:true) or place it on the page with ref or coordinate.",
         input_schema: || json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start_recording", "stop_recording", "clear", "export"],
-                    "description": "Action to perform: 'start_recording' (begin capturing), 'stop_recording' (stop capturing but keep frames), 'export' (generate and export GIF), 'clear' (discard frames)"
+                    "enum": ["start_recording", "stop_recording", "status", "clear", "export"],
+                    "description": "Action to perform. The usual flow is start_recording, normal browser work, then export."
                 },
                 "tabId": { "type": "number", "description": "Tab ID to identify which tab group this operation applies to" },
                 "coordinate": { "type": "array", "description": "Viewport coordinates [x, y] for drag & drop upload. Required for 'export' action unless 'download' is true." },
+                "ref": { "type": "string", "description": "Element reference for upload to a file input. For 'export' action only; mutually exclusive with coordinate." },
                 "download": { "type": "boolean", "description": "If true, download the GIF instead of drag/drop upload. For 'export' action only." },
                 "filename": { "type": "string", "description": "Optional filename for exported GIF (default: 'recording-[timestamp].gif'). For 'export' action only." },
                 "options": { "type": "object", "description": "Optional GIF enhancement options for 'export' action. All default to true." }
@@ -1305,15 +1305,20 @@ pub const REGISTRY: &[ToolDescriptor] = &[
                 directory_description: "Stop recording; keep the captured frames for export.",
             },
             ActionVariant {
+                action: Some("status"),
+                requires: &[],
+                directory_description: "Report recording state and deadlines without reading the live page.",
+            },
+            ActionVariant {
                 action: Some("clear"),
                 requires: &[],
                 directory_description: "Discard the captured recording frames.",
             },
             ActionVariant {
                 action: Some("export"),
-                requires: &[Capability::Write],
+                requires: &[Capability::Read],
                 directory_description:
-                    "Encode the frames to a GIF and export it (download, or drag-drop at a coordinate).",
+                    "Encode the frames to a GIF. Client export requires read; page placement by ref or coordinate requires write.",
             },
         ],
         resource: ResourceShape::TabScoped,
@@ -1499,6 +1504,46 @@ pub fn requires(tool: &str, action: Option<&str>) -> Option<&'static [Capability
     }
 }
 
+/// Per-call capability refinement for additive tools whose delivery mode changes the effect.
+/// The descriptor remains the source of the baseline used by advertisement and explain.
+pub fn requires_for_call(
+    descriptor: &ToolDescriptor,
+    action: Option<&str>,
+    args: &Value,
+) -> Option<&'static [Capability]> {
+    if descriptor.tool == "gif_creator"
+        && action == Some(crate::recording::action::EXPORT)
+        && gif_page_target(args)
+    {
+        return Some(&[Capability::Write]);
+    }
+    requires(descriptor.tool, action)
+}
+
+/// Resolve recording-only operations without probing the current tab. Starting capture and page
+/// placement still use the descriptor's ordinary tab-scoped authority.
+pub fn resource_for_call(
+    descriptor: &ToolDescriptor,
+    action: Option<&str>,
+    args: &Value,
+) -> ResourceShape {
+    if descriptor.tool != "gif_creator" {
+        return descriptor.resource;
+    }
+    if action == Some(crate::recording::action::START)
+        || (action == Some(crate::recording::action::EXPORT) && gif_page_target(args))
+    {
+        ResourceShape::TabScoped
+    } else {
+        ResourceShape::RecordingScoped
+    }
+}
+
+fn gif_page_target(args: &Value) -> bool {
+    args.get("coordinate").is_some_and(|value| !value.is_null())
+        || args.get("ref").is_some_and(|value| !value.is_null())
+}
+
 /// The `explain` tool's deterministic response text (ADR-0022 Decision 7): the capability
 /// vocabulary paragraph, one blank line, then every [`REGISTRY`] row's variants in order
 /// (`computer`'s 13 actions in enum order), one line per variant -- `{tool}: requires
@@ -1623,7 +1668,7 @@ mod tests {
         );
 
         let total_variants: usize = REGISTRY.iter().map(|row| row.variants.len()).sum();
-        assert_eq!(total_variants, 38);
+        assert_eq!(total_variants, 39);
 
         let mut seen = HashSet::new();
         for row in REGISTRY {
@@ -1680,8 +1725,9 @@ mod tests {
             ("upload_image", None, &[Capability::Write]),
             ("gif_creator", Some("start_recording"), &[Capability::Read]),
             ("gif_creator", Some("stop_recording"), &[]),
+            ("gif_creator", Some("status"), &[]),
             ("gif_creator", Some("clear"), &[]),
-            ("gif_creator", Some("export"), &[Capability::Write]),
+            ("gif_creator", Some("export"), &[Capability::Read]),
             ("explain", None, &[]),
         ];
 
@@ -1738,6 +1784,27 @@ mod tests {
         assert_eq!(
             requires("form_fill", Some("submit")),
             Some(&[Capability::Read, Capability::Write, Capability::Action][..])
+        );
+    }
+
+    #[test]
+    fn gif_export_classification_follows_its_delivery_boundary() {
+        let gif = descriptor("gif_creator").unwrap();
+        assert_eq!(
+            requires_for_call(gif, Some("export"), &json!({"download": true})),
+            Some(&[Capability::Read][..])
+        );
+        assert_eq!(
+            requires_for_call(gif, Some("export"), &json!({"ref": "ref_1"})),
+            Some(&[Capability::Write][..])
+        );
+        assert_eq!(
+            resource_for_call(gif, Some("status"), &json!({"tabId": 1})),
+            ResourceShape::RecordingScoped
+        );
+        assert_eq!(
+            resource_for_call(gif, Some("export"), &json!({"coordinate": [1, 2]})),
+            ResourceShape::TabScoped
         );
     }
 
