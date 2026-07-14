@@ -63,8 +63,10 @@ when they disagree**, and update it when you land something that changes the pic
   requires Read; page placement by ref or coordinate requires Write. A timeout or disconnect after
   enqueue reports `outcome_unknown` and `retry_safe: false` instead of inviting a duplicate page
   effect. Formatting, strict clippy, all 72 extension tests, and the full Rust workspace suite are
-  green. The rebuilt service is live and healthy; the changed unpacked extension still needs a
-  user reload and live large-export verification.
+  green. The rebuilt service and reloaded unpacked extension passed a real MCP browser verification:
+  20 accepted frames (2,707,795 compressed bytes) encoded to a 7,046,417-byte GIF, crossed the
+  bounded chunk transport, and returned `dispatched` with `unverified` acceptance and
+  `retry_safe: false`. The test recording was cleared and its synthetic page overlay removed.
 
 ## Release pipeline (canonical map: `docs/RELEASE.md`)
 
