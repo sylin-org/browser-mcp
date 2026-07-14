@@ -1,8 +1,8 @@
 # Design note: managed-mode network + identity features
 
-Status: **discussion in progress** (not decided; not an ADR yet). Captures the design space for two
-findings from the SAPS assessment -- SEC-HIGH-03 (in-domain injection / confirm-gate) and
-SEC-HIGH-02 (remote access authentication) -- and the unifying frame that connects them.
+Status: **resolved into Proposed ADRs** (2026-07-14). This note preserves the design exploration for
+two SAPS findings. ADR-0075 now owns SEC-HIGH-03 (transaction-bound confirmation), and ADR-0076 owns
+SEC-HIGH-02 (managed native remote authentication). Neither ADR authorizes production work yet.
 
 ## The unifying frame
 
@@ -114,6 +114,8 @@ a tunnel over the loopback service.
 
 ## Cross-links
 
+- Transaction-bound managed confirmation: ADR-0075.
+- Managed native remote authentication: ADR-0076.
 - Continuity Promise / no-phone-home: ADR-0028.
 - Signed policy distribution: ADR-0055 (`managed://`), docs/design or the managed-scheme notes.
 - Capability classification: the read/action/write/execute model (ADR-0022).

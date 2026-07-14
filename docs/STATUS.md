@@ -44,6 +44,11 @@ when they disagree**, and update it when you land something that changes the pic
   parity scenarios, the originals and dual shell wrappers are retired, and CI runs the 37-scenario
   Lightbox suite as the sole service-side process-boundary gate. The repaired Playwright job stays
   as the separate real-extension/Chromium proof under ADR-0056 Decision 4.
+- **The remaining SAPS high findings now have evidence-grounded Proposed designs.** ADR-0075 pins
+  one-time, stale-sensitive confirmation for signed managed action descriptors. ADR-0076 keeps
+  personal remote access tunnel-first and requires a managed-only, standards-conformant, TLS and
+  sender-constrained OAuth resource server before any non-loopback listener can return. Both remain
+  implementation-gated; the current remote-enable action stays disabled.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -95,8 +100,10 @@ CWS API creds are set up on this machine (see local/RELEASE-CREDENTIALS.md; valu
 `~/.ghostlight-release.env`, written by `local/set-credentials.ps1`). Load them before a release:
 `Get-Content "$HOME/.ghostlight-release.env" | % { if ($_ -match '^([A-Z0-9_]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1],$Matches[2]) } }`
 
-Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA). Store submission remains
-manual when its API credentials or dashboard metadata are absent.
+Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA). The repository now provides
+`scripts/prepare-winget.ps1`, which materializes the correct submission tree from release manifests
+and runs `winget validate`; v0.5.7 passed that preparation locally. Store submission remains manual
+when its API credentials or dashboard metadata are absent.
 
 ## Owed engineering work (in rough priority order)
 
@@ -160,12 +167,12 @@ manual when its API credentials or dashboard metadata are absent.
   restart to add the new direct `narrate` schema to their callable tool list.
 - **SAPS remediation remainder** (assessment lives in gitignored `saps/`; findings already
   remediated are in git history around 2026-07-11):
-  - SEC-HIGH-03 enforce-half: a confirm-gate for irreversible actions (send/delete/
-    purchase) needing out-of-band human confirmation. Design captured in
-    `docs/design/managed-mode-network-features.md` (managed intent descriptors); build
-    pending.
-  - SEC-HIGH-02 full fix: token/auth for non-loopback sources once `enable-remote` returns
-    (the action is currently disabled as the interim fix). Same design note; build pending.
+  - SEC-HIGH-03 enforce-half: ADR-0075 proposes a signed managed descriptor, MCP form elicitation,
+    one-time in-memory pending action, and stale-sensitive final dispatch. Acceptance needs client
+    evidence, schema/privacy review, and Lightbox plus real-browser proof; build is not authorized.
+  - SEC-HIGH-02 full fix: ADR-0076 proposes tunnel-first personal access and managed-only native
+    remote via Streamable HTTP, MCP OAuth, TLS, and sender-constrained tokens. Acceptance needs
+    client/IdP evidence and a transport/threat review; `enable-remote` remains disabled.
   - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
     same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real
@@ -180,7 +187,8 @@ manual when its API credentials or dashboard metadata are absent.
 - Trust center legal: vendor entity name in the MSA (blocked on forming the LLC), the
   cyber-insurance yes/no line, counsel skim of MSA/DPA/LICENSE-GOVERNANCE before first
   EXECUTION (publication already happened by design; drafts are marked as drafts).
-- `security.txt` on sylin.org (founder-side, ~1h).
+- Publish the prepared `/.well-known/security.txt` website change. It is committed locally in the
+  website repository and waits for explicit owner confirmation before a direct `main` push.
 - Key backup + a second npm publisher; one non-author human through the install flow.
 
 ## Standing context worth knowing
