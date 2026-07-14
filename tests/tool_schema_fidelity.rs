@@ -381,6 +381,7 @@ fn output_schemas_present_exactly_where_declared() {
             "tabs_create_mcp",
             "navigate",
             "find",
+            "read_page",
             "narrate",
             "wait_for",
             "script",

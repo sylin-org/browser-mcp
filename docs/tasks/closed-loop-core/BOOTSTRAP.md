@@ -51,9 +51,7 @@ $env:CARGO_TARGET_DIR = "target-check-closed-loop"
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-Push-Location extension
-node --test
-Pop-Location
+node --test tests/extension/*.test.js
 ```
 
 Also run `node --check` for every changed JavaScript file. At batch completion run:

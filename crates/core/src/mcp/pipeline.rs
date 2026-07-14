@@ -2456,10 +2456,9 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// Test 3 (t04): a fake-extension `read_page` result containing a `secret_value=` marker is
-    /// redacted (`descriptor.postprocess` fires); the identical payload via `find` (no
-    /// `postprocess` hook on its descriptor row) is untouched. Marker/expected strings
-    /// transcribed from `browser::redact`'s own fixture (`redact.rs`'s `LINE` const).
+    /// Test 3 (t04, ADR-0078 C1): fake-extension page observations carrying a
+    /// `secret_value=` marker are redacted for both `read_page` and actionable `find` output.
+    /// Marker/expected strings are transcribed from `browser::redact`'s own fixture.
     #[tokio::test]
     async fn postprocess_fires_only_where_the_registry_says() {
         let recorder = Arc::new(Recorder::disabled());
@@ -2530,10 +2529,12 @@ mod tests {
             ["text"]
             .as_str()
             .expect("text content block");
-        assert_eq!(
-            find_text, marked,
-            "find has no postprocess hook: the raw marker survives untouched"
+        assert!(
+            find_text.contains("value=\"[value redacted]\""),
+            "{find_text}"
         );
+        assert!(!find_text.contains("secret_value="), "{find_text}");
+        assert!(!find_text.contains("hunter2"), "{find_text}");
     }
 
     /// Test 4 (t04): with a governed store and a fake extension, `tabs_context_mcp`

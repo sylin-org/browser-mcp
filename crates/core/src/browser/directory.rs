@@ -147,6 +147,43 @@ pub struct ToolExample {
     pub returns: Option<&'static str>,
 }
 
+fn actionable_element_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "ref": { "type": "string" },
+            "role": { "type": "string" },
+            "name": { "type": "string" },
+            "visible": { "type": "boolean" },
+            "enabled": { "type": "boolean" },
+            "checked": { "type": "boolean" },
+            "selected": { "type": "boolean" },
+            "value": { "type": "string" },
+            "href": { "type": "string" },
+            "box": {
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "width": { "type": "number" },
+                    "height": { "type": "number" }
+                },
+                "required": ["x", "y", "width", "height"]
+            },
+            "renderSerial": { "type": "number" },
+            "frameOrigin": { "type": "string" },
+            "mechanicalActions": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "matchRank": { "type": "number" },
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+        },
+        "required": ["ref", "role", "name", "visible", "enabled", "box", "renderSerial", "mechanicalActions"]
+    })
+}
+
 /// The tool registry: 22 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
 /// `form_fill`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in
 /// the order they appear in `tools/list`. `computer`'s 13 variants are in the
@@ -480,7 +517,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -490,14 +527,8 @@ pub const REGISTRY: &[ToolDescriptor] = &[
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "properties": {
-                                "ref": { "type": "string" },
-                                "role": { "type": "string" },
-                                "name": { "type": "string" },
-                                "x": { "type": "number" },
-                                "y": { "type": "number" }
-                            },
-                            "required": ["ref", "role", "name", "x", "y"]
+                            "allOf": [actionable_element_schema()],
+                            "required": ["ref", "role", "name", "x", "y", "visible", "enabled", "box", "renderSerial", "mechanicalActions"]
                         }
                     },
                     "more": { "type": "boolean" }
@@ -754,7 +785,14 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "target": actionable_element_schema()
+                }
+            })
+        }),
     },
     ToolDescriptor {
         tool: "resize_window",
@@ -1883,7 +1921,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (

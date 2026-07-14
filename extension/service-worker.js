@@ -1045,7 +1045,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1634,7 +1634,13 @@ const handlers = {
     const tabId = await effectiveTabId(a.tabId);
     readScan(tabId);
     const r = await content(tabId, { type: "accessibilityTree", options: a });
-    return text((r && r.result) || "Could not read the page.");
+    const out = text((r && r.result) || "Could not read the page.");
+    out.structuredContent = {};
+    if (a.ref_id) {
+      const target = await content(tabId, { type: "elementSummary", ref: a.ref_id });
+      if (target && target.result && !target.result.error) out.structuredContent.target = target.result;
+    }
+    return out;
   },
   async get_page_text(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1653,7 +1659,12 @@ const handlers = {
     if (!results.length) {
       out = text(`No elements matching "${a.query}".`);
     } else {
-      let s = `Found ${results.length} element(s):\n` + results.map((e) => `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y})`).join("\n");
+      let s = `Found ${results.length} element(s), strongest matches first:\n` + results.map((e) => {
+        const state = [e.visible ? "visible" : "hidden", e.enabled ? "enabled" : "disabled"];
+        if (typeof e.checked === "boolean") state.push(e.checked ? "checked" : "not checked");
+        if (typeof e.selected === "boolean") state.push(e.selected ? "selected" : "not selected");
+        return `[${e.ref}] ${e.role} "${e.name}" at (${e.x}, ${e.y}); ${state.join(", ")}; actions: ${(e.mechanicalActions || []).join(", ") || "none"}`;
+      }).join("\n");
       if (more) s += "\n(more than 20 matches; refine your query for the rest)";
       out = text(s);
     }

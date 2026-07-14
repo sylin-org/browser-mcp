@@ -175,6 +175,49 @@
     return SENSITIVE_AUTOCOMPLETE.some((s) => ac.indexOf(s) !== -1);
   }
 
+  // ADR-0078 D2: one compact element vocabulary shared by find, targeted read_page, and later
+  // semantic action resolution. These are mechanism facts only. In particular,
+  // `mechanicalActions` never means a governance grant allows the action.
+  function mechanicalActions(el) {
+    const actions = [];
+    if (visible(el)) actions.push("hover", "scroll_to");
+    const enabled = !el.disabled && el.getAttribute("aria-disabled") !== "true";
+    if (enabled && interactive(el)) {
+      actions.push("left_click", "right_click", "double_click");
+      const tag = el.tagName.toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || el.isContentEditable) {
+        actions.push("set_value");
+      }
+    }
+    return actions;
+  }
+
+  function elementSummary(el) {
+    if (!el) return null;
+    const tag = el.tagName.toLowerCase();
+    const rect = el.getBoundingClientRect();
+    const facts = {
+      ref: refFor(el),
+      role: role(el) || tag,
+      name: accessibleName(el) || el.textContent || "",
+      visible: visible(el),
+      enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
+      box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      renderSerial,
+      mechanicalActions: mechanicalActions(el),
+    };
+    if (typeof el.checked === "boolean" && ["checkbox", "radio"].includes((el.type || "").toLowerCase())) {
+      facts.checked = el.checked;
+    }
+    if (typeof el.selected === "boolean" && tag === "option") facts.selected = el.selected;
+    if (["input", "textarea", "select"].includes(tag) && el.value !== undefined && el.value !== "") {
+      facts.value = String(el.value);
+      facts.secret = sensitive(el);
+    }
+    if (tag === "a" && el.href) facts.href = el.href;
+    return (self.GhostlightActionable || GhostlightActionable).makeSummary(facts);
+  }
+
   // --- Accessibility tree (custom walk incl. shadow DOM) ---
   // Two-pass design: pass 1 (measure) walks the DOM once and builds a render tree with
   // per-subtree measurements; pass 2 (emit) walks that render tree top-down and decides, node
@@ -453,26 +496,27 @@
     return out;
   }
   function find(query) {
-    const q = (query || "").toLowerCase();
-    const results = [];
-    let more = false;
+    const candidates = [];
     for (const el of collectAll(document)) {
       if (!visible(el)) continue;
       if (el.id && el.id.indexOf("ghostlight-") === 0) continue; // our own visual-indicator overlay
       const tag = el.tagName.toLowerCase();
       if (["script", "style", "noscript", "template"].includes(tag)) continue;
-      const hay = `${role(el) || ""} ${accessibleName(el) || ""} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.type || ""} ${tag}`.toLowerCase();
-      if (!hay.includes(q)) continue;
-      if (results.length >= 20) { more = true; break; }
-      const rect = el.getBoundingClientRect();
-      results.push({
-        ref: refFor(el),
-        role: role(el) || tag,
-        name: (accessibleName(el) || el.textContent || "").trim().slice(0, 80),
-        x: Math.round(rect.x + rect.width / 2),
-        y: Math.round(rect.y + rect.height / 2),
-      });
+      const summary = elementSummary(el);
+      candidates.push(Object.assign({}, summary, {
+        searchText: `${summary.role} ${summary.name} ${(el.textContent || "").slice(0, 200)} ${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${typeof el.title === "string" ? el.title : ""} ${el.type || ""} ${tag}`,
+      }));
     }
+    const ranked = (self.GhostlightActionable || GhostlightActionable).rankCandidates(query, candidates);
+    const more = ranked.length > 20;
+    const results = ranked.slice(0, 20).map((candidate) => {
+      const result = Object.assign({}, candidate);
+      delete result.searchText;
+      const box = result.box || { x: 0, y: 0, width: 0, height: 0 };
+      result.x = Math.round(box.x + box.width / 2);
+      result.y = Math.round(box.y + box.height / 2);
+      return result;
+    });
     return { results, more };
   }
 
@@ -899,6 +943,15 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
       case "accessibilityTree": sendResponse({ result: accessibilityTree(msg.options) }); return true;
+      case "elementSummary": {
+        const el = deref(msg.ref);
+        if (!el) {
+          sendResponse({ result: { error: staleRefMessage(msg.ref) || `Element ${msg.ref} not found or was garbage-collected.` } });
+        } else {
+          sendResponse({ result: elementSummary(el) });
+        }
+        return true;
+      }
       case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;

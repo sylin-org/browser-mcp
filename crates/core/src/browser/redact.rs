@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Secret-value redaction for `read_page` output (`content.security.secrets.redact`).
+//! Secret-value redaction for page observation output (`content.security.secrets.redact`).
 //!
 //! The engine is truthful: the extension emits a secret field's real value using the marker
 //! attribute `secret_value="..."` -- a neutral fact ("the page marks this field secret"), not a
@@ -20,20 +20,47 @@ const MARKER: &str = "secret_value=\"";
 /// What a redacted value is replaced with (matches the official extension's wording).
 const REDACTED: &str = "value=\"[value redacted]\"";
 
-/// Apply secret redaction in place to an MCP tool result's text content. Every `{type:"text"}` item
-/// in `result.content` has its `secret_value="..."` markers rewritten (redacted when `redact`).
+/// Apply secret redaction in place to an MCP tool result. Text markers are rewritten and actionable
+/// structured values carrying the extension's neutral `secret:true` marker are redacted when the
+/// policy key is enabled. The marker itself never leaves the binary.
 pub fn apply_to_result(result: &mut Value, redact: bool) {
-    let Some(items) = result.get_mut("content").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for item in items {
-        if item.get("type").and_then(Value::as_str) != Some("text") {
-            continue;
+    if let Some(items) = result.get_mut("content").and_then(Value::as_array_mut) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                let rewritten = apply_to_tree(text, redact);
+                item["text"] = Value::String(rewritten);
+            }
         }
-        if let Some(text) = item.get("text").and_then(Value::as_str) {
-            let rewritten = apply_to_tree(text, redact);
-            item["text"] = Value::String(rewritten);
+    }
+    if let Some(structured) = result.get_mut("structuredContent") {
+        redact_structured(structured, redact);
+    }
+}
+
+fn redact_structured(value: &mut Value, redact: bool) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_structured(item, redact);
+            }
         }
+        Value::Object(object) => {
+            let secret = object.get("secret").and_then(Value::as_bool) == Some(true);
+            if secret && redact && object.get("value").is_some_and(Value::is_string) {
+                object.insert(
+                    "value".to_string(),
+                    Value::String("[value redacted]".to_string()),
+                );
+            }
+            object.remove("secret");
+            for child in object.values_mut() {
+                redact_structured(child, redact);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -137,5 +164,38 @@ mod tests {
         );
         // Non-text items are left untouched (the marker only ever appears in read_page text).
         assert_eq!(result["content"][1]["data"], "secret_value=\"not-text\"");
+    }
+
+    #[test]
+    fn apply_to_result_redacts_structured_secret_values_and_removes_marker() {
+        let mut result = json!({
+            "structuredContent": {
+                "results": [
+                    { "ref": "ref_1", "value": "hunter2", "secret": true },
+                    { "ref": "ref_2", "value": "alice" }
+                ]
+            }
+        });
+        apply_to_result(&mut result, true);
+        assert_eq!(
+            result["structuredContent"]["results"][0]["value"],
+            "[value redacted]"
+        );
+        assert!(result["structuredContent"]["results"][0]
+            .get("secret")
+            .is_none());
+        assert_eq!(result["structuredContent"]["results"][1]["value"], "alice");
+    }
+
+    #[test]
+    fn disabled_structured_redaction_keeps_truth_but_removes_marker() {
+        let mut result = json!({ "structuredContent": { "target": {
+            "ref": "ref_1", "value": "hunter2", "secret": true
+        }}});
+        apply_to_result(&mut result, false);
+        assert_eq!(result["structuredContent"]["target"]["value"], "hunter2");
+        assert!(result["structuredContent"]["target"]
+            .get("secret")
+            .is_none());
     }
 }
