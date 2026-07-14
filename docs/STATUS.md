@@ -9,43 +9,43 @@ when they disagree**, and update it when you land something that changes the pic
 
 - **Branches**: `main` = releases, `dev` = trunk. Work lands on `dev`; the owner reviews
   `dev -> main` PRs and cuts releases.
-- **Latest published release: v0.5.6** (2026-07-12), cut with `scripts/release.ps1 0.5.6`.
-  Shipped and LIVE: GitHub Release (27 assets + attestations), npm `ghostlight@0.5.6`, homebrew
-  tap, **MCP registry (`org.sylin/ghostlight`)**, scoop/winget/homebrew manifests committed to
-  main, trust footers restamped, sylin.org website refreshed. Post-release PR #45 is merged on
-  `main` at `d22db80`; `dev` is ahead with ADR-0071's installer-target batch. v0.5.5 was prepared
-  but never published.
-- **Unreleased installer work**: Codex is a first-class lossless-TOML target (ADR-0067), and
-  Windsurf, Zed, OpenCode, and Crush now join Claude Code/Desktop, Cursor, and VS Code as explicit
-  installer targets (ADR-0071). Strict JSON is merged idempotently. Commented JSONC is left intact
-  and receives a copyable manual entry; `doctor` uses a tolerant registration check. The browser
-  extension remains a separate user-visible install step.
+- **Latest published release: v0.5.7** (2026-07-13), cut with `scripts/release.ps1 0.5.7`.
+  Shipped and LIVE: GitHub Release (27 assets including the CycloneDX SBOM + attestations), npm
+  `ghostlight@0.5.7`, homebrew tap, **MCP registry (`org.sylin/ghostlight`, 0.5.7 is latest)**,
+  scoop/winget/homebrew manifests committed to main, trust footers restamped, and the sylin.org
+  install-guide fallback refreshed. Release PR #48 merged at `96d1e02`; checksum fill is
+  `49c4c5a` and the trust restamp is `4ddb5af`. v0.5.5 was prepared but never published.
+- **v0.5.7 includes the expanded installer matrix**: Codex is a first-class lossless-TOML target
+  (ADR-0067), and Windsurf, Zed, OpenCode, and Crush join Claude Code/Desktop, Cursor, and VS Code
+  as explicit installer targets (ADR-0071). Strict JSON is merged idempotently. Commented JSONC is
+  left intact and receives a copyable manual entry; `doctor` uses a tolerant registration check.
+  The browser extension remains a separate user-visible install step.
 - **MCP registry publishing is now automated** in `release.ps1` (the `registry` step, after `npm`):
   `mcp-publisher` DNS-auth publish, gated on `MCP_DNS_PRIVATE_KEY`. The one-time DNS proof is DONE
   (apex TXT `v=MCPv1; k=ed25519; p=...` on sylin.org via Cloudflare; ed25519 key in the env file;
   see `local/AUDIT-LOG.md`). The registry is immutable per version, so metadata fixes (like the
   websiteUrl) only land on the NEXT version.
-- **v0.5.6 carries**: composable policy tiers + session overlay + `ghostlight demo` (ADR-0060),
-  extension-owned browser identity (ADR-0061), browser-relay reconnect (ADR-0062), the
-  deploy-quiesce lock (ADR-0063), explicit dev isolation then the one-stack model (ADR-0064
-  amended by ADR-0065), the on-screen governance ribbon + `notify` tool, the field-splash FX
-  pass, the SAPS security-hardening pass, and the full deploy-automation + store-publish tooling.
-- **CWS publish is BLOCKED on listing completion (owner action)**: the v0.5.6 package is uploaded
-  and staged as a draft. The Developer Dashboard still needs the Privacy practices answers,
-  remote-code-use justification, and promotional video. Paste-ready, code-backed wording lives in
+- **v0.5.7 carries**: all v0.5.6 features plus expanded installer targets, bidirectional install
+  handoff (ADR-0070), agent narration (ADR-0072), reliable memory-only GIF recording and bounded
+  browser transport (ADRs 0073/0074), the cohesive Card Foundry demo story, and the live Foundry
+  companion route at `https://sylin.org/ghostlight/demo/foundry/`.
+- **CWS publish is BLOCKED on listing completion (owner action)**: the v0.5.7 package uploaded
+  successfully and is staged as a draft. The Developer Dashboard still needs the Privacy
+  practices answers, remote-code-use and host-permission justifications, the data-use compliance
+  certification, and at least one screenshot or video. Paste-ready, code-backed wording lives in
   `docs/legal/PRIVACY.md`, `docs/legal/PERMISSION_JUSTIFICATIONS.md`, and
   `docs/legal/STORE_LISTING.md`; its canonical public target is
   `https://sylin.org/ghostlight/privacy/`. After completing the dashboard, publish there or re-run
-  `pwsh -File scripts/publish-extension.ps1` (the package is already uploaded). Edge was skipped
-  because no `EDGE_*` credentials are configured.
+  `pwsh -File scripts/publish-extension.ps1` (the v0.5.7 package is already uploaded). Edge was
+  skipped because no `EDGE_*` credentials are configured.
 - **CWS credential durability needs one owner-side change**: the Google OAuth consent screen is
   External/Testing, so its refresh token is short-lived. Move the consent configuration to
   Production or mint a fresh token before a later publish attempt. Credential locations remain in
   `local/`; no values belong in tracked documentation.
 
-## Active work: reliable ephemeral GIF recording
+## Released in v0.5.7: reliable ephemeral GIF recording
 
-- **The cohesive Card Foundry tour is implemented on `dev`.** It replaces the old
+- **The cohesive Card Foundry tour is released in v0.5.7.** It replaces the old
   capability checklist with one simulated foil-card QA story: inspect and rotate the proof, mark
   defects, request Revision B, attach screenshot evidence, fill the release packet, prove a real
   off-domain policy denial, export the GIF into the page, and clear captured bytes. The companion
@@ -55,7 +55,7 @@ when they disagree**, and update it when you land something that changes the pic
   fixture encoded in under one second. The seven-frame coordinate export exceeded Chrome's 1 MiB
   host-to-extension message limit, disconnected the native host, and then waited for the generic
   60-second timeout. Four ordinary frames were already enough to cross that boundary.
-- **ADRs 0073 and 0074 are implemented on `dev`.** Recording is session/surface/
+- **ADRs 0073 and 0074 are released in v0.5.7.** Recording is session/surface/
   generation-owned, memory-only, byte-bounded, transactionally started and finalized, protected by
   idle/hard deadlines plus an extension health lease, and erased on session/policy/panic/retention
   cleanup. GIF encoding is two-pass and one-frame-at-a-time. Large browser-bound tool requests use
@@ -86,14 +86,15 @@ when they disagree**, and update it when you land something that changes the pic
 `scripts/release.ps1 <version>` from `main` automates: tag, watch CI, verify assets, fill
 package-manager sums, homebrew tap, npm publish + smoke, trust-footer restamp, extension publish
 (Chrome Web Store + Edge; auto when `CWS_*`/`EDGE_*` creds are set), and the website refresh. The
-v0.5.6 run proved every step end to end (only the CWS listing gate above stopped the final publish).
+v0.5.7 run proved every step end to end (only the CWS listing gate above stopped the final Chrome
+submission; Edge remained unconfigured).
 
 CWS API creds are set up on this machine (see local/RELEASE-CREDENTIALS.md; values in
 `~/.ghostlight-release.env`, written by `local/set-credentials.ps1`). Load them before a release:
 `Get-Content "$HOME/.ghostlight-release.env" | % { if ($_ -match '^([A-Z0-9_]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1],$Matches[2]) } }`
 
-Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the MCP Registry
-`mcp-publisher` step (DNS auth on the sylin.org apex).
+Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA). Store submission remains
+manual when its API credentials or dashboard metadata are absent.
 
 ## Owed engineering work (in rough priority order)
 
@@ -113,7 +114,7 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
 - **Bounded delegation needs scenario validation before an ADR**: the release-candidate triage
   journey in `docs/design/bounded-delegation-scenario.md` exercises the ADR-0060 session overlay and
   identifies the unresolved approval, expiry, budget, intent, and digest questions.
-- **Bidirectional installation handoff is implemented on `dev`** (ADR-0070): an explicit first
+- **Bidirectional installation handoff is released in v0.5.7** (ADR-0070): an explicit first
   `ghostlight install` opens the stable extension walkthrough once; `--no-open`, dry-run,
   CI, failed, and idempotent paths stay quiet. The canonical service-first page is live at
   `sylin.org/ghostlight/service/post-install/`; the website publication gate is complete.
@@ -137,13 +138,12 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
     to get it" line). CWS (blocked), Edge, winget, and scoop are omitted until each actually ships.
   This workstream is now COMPLETE; the only distribution follow-up left is the owner-side CWS listing
   gate below.
-- **CWS listing completion** (owner): confirm the public privacy URL is live, paste the privacy
-  practices and remote-code justification, record and upload the promotional video using the
-  proven `ghostlight demo` recipe in `docs/legal/STORE_LISTING.md`, then publish the already-uploaded
-  package. The currently staged v0.5.6 package predates `narrate`; do not pair a narration video
-  with that package. Cut and upload the next release first (or re-run the extension publish step
-  after that release), then record. The earlier live rehearsal passed on 2026-07-13, including the
-  session-policy denial finale.
+- **CWS listing completion** (owner): the public privacy URL is live and the v0.5.7 extension ZIP
+  is uploaded. Paste the privacy practices plus remote-code and host-permission justifications,
+  certify data-use compliance, and add at least one screenshot or the promotional video using the
+  proven `ghostlight demo` recipe in `docs/legal/STORE_LISTING.md`; then publish the staged package.
+  v0.5.7 includes `narrate` and the Card Foundry story. The live rehearsal passed on 2026-07-13,
+  including the session-policy denial finale.
 - **Agent narration is implemented** (ADR-0072): additive `narrate` is domainless RAWX none,
   bounded and schema-validated, ordinarily audited, ownership/hold/sacred checked, and legal in
   `script`/`browser_batch`. The policy-free extension renders one timed responsive Agent ribbon per
@@ -184,7 +184,7 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
 
 ## Owner-side gates (agents cannot do these)
 
-- Chrome Web Store: complete the v0.5.6 draft listing, make OAuth credentials durable, and publish.
+- Chrome Web Store: complete the v0.5.7 draft listing, make OAuth credentials durable, and publish.
   Edge Add-ons remains unsubmitted.
 - Trust center legal: vendor entity name in the MSA (blocked on forming the LLC), the
   cyber-insurance yes/no line, counsel skim of MSA/DPA/LICENSE-GOVERNANCE before first
@@ -195,7 +195,7 @@ Still manual per release: a winget PR to `microsoft/winget-pkgs` (CLA), and the 
 ## Standing context worth knowing
 
 - The trust center (`docs/trust/`, 13 docs) is PUBLIC on `main` since 2026-07-11 (PR #27)
-  at `v0.5.4+dev` footers. Its claims were red-teamed against the tree; keep code and
+  with footers restamped against v0.5.7. Its claims were red-teamed against the tree; keep code and
   claims in lockstep.
 - managed:// central policy distribution (ADR-0055) is fully implemented through Phase 5.
 - The dev workflow is the one-stack model (ADR-0065): no dev install, no `-dev` host;
