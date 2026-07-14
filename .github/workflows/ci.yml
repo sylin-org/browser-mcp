@@ -29,10 +29,8 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
-  # FAST TIER (ADR-0051 Phase 4): the default `cargo test` set -- pure, in-process
-  # (support::inproc::Harness drives the real serve_session over a duplex), and quick CLI-command
-  # tests. The ~27 tests that spawn a real service/adapter are marked `#[ignore = "e2e: ..."]` and
-  # run in the separate `e2e` job below, so this job gives quick, spawn-free feedback on every push.
+  # FAST TIER (ADR-0051/0056): pure and in-process tests plus quick CLI-command tests. The
+  # process-boundary suite lives in the separate Lightbox job.
   test:
     strategy:
       fail-fast: false
@@ -49,41 +47,18 @@ jobs:
         with:
           key: ${{ matrix.os }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Build the deliverable binaries FIRST. Some tests still spawn the sibling `ghostlight`
-      # /`ghostlight-relay` by path (the CLI-command tests here, and every test in the e2e job);
+      # Build the deliverable binaries FIRST. Some CLI-command tests still spawn the sibling
+      # `ghostlight` / `ghostlight-relay` by path;
       # `cargo test` alone builds test harnesses + CARGO_BIN_EXE_ghostlight but NOT the sibling
       # relay deliverable, so those would panic at spawn (ENOENT). rust-cache had masked this until
       # a Cargo.lock change rotated the cache.
       - run: cargo build --locked --workspace
-      # Default filter SKIPS the `#[ignore]`d spawn tests -- those run in the e2e job.
       # --no-fail-fast: report EVERY failing test binary, not just the first (ADR-0032).
       - run: cargo test --locked --no-fail-fast --workspace
 
-  # E2E TIER (ADR-0051 Phase 4): the ~27 `#[ignore = "e2e: ..."]` tests that spawn a real
-  # `ghostlight` service + thin adapter (or the CLI) end to end. Separated from the fast `test` job
-  # so their spawn/stdio/exe-lock slowness never delays every-push feedback, but STILL REQUIRED --
-  # this job must pass. `-- --ignored` runs ONLY the ignored set.
-  e2e:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
-        with:
-          toolchain: "1.95.0"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.os }}-e2e
-      - run: cargo build --locked --workspace
-      - run: cargo test --locked --no-fail-fast --workspace -- --ignored
-
-  # ADR-0056: the lightbox scenario runner is the executable governance spec (managed-policy
-  # activation, last-known-good continuity, fail-closed cold boot, anti-rollback). Blocking:
-  # a regression in governance behavior fails this job. One OS suffices -- the scenarios are
-  # platform-independent library logic over a temp root and a localhost bundle server.
+  # ADR-0056: the Lightbox scenario runner is the executable governance and process-boundary spec.
+  # The 27 legacy spawn tests migrated here against a parity ledger. One OS suffices for CI; the
+  # completion gate also runs the replacement job locally on Windows.
   lightbox:
     runs-on: ubuntu-latest
     steps:
@@ -94,7 +69,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: lightbox
-      - run: cargo run --locked -p ghostlight-lightbox -- run --all
+      - run: cargo build --locked --workspace
+      - run: cargo run --locked -p ghostlight-lightbox -- run --all --reuse-cache
 
   extension-unit:
     strategy:
@@ -109,7 +85,9 @@ jobs:
           node-version: "22"
       - run: node --test tests/extension/constants.test.js tests/extension/geometry.test.js tests/extension/grouping.test.js tests/extension/keys.test.js tests/extension/settle.test.js tests/extension/observation.test.js tests/extension/treediff.test.js tests/extension/fileset.test.js tests/extension/debug.test.js
 
-  # Real extension + real binary over native messaging, driven as an MCP server over stdio
+  # Real extension + real binary over native messaging, driven as an MCP server over stdio.
+  # Retained under ADR-0056 Decision 4: Lightbox replaces service-side process coverage, while
+  # this gate proves the actual extension + Chromium boundary.
   # (ADR-0026 Decision 6). Retired 2026-07 (it hung to the 6-hour runner ceiling under
   # `continue-on-error`, verifying nothing while costing runner minutes) then re-wired here:
   # the hang's root causes -- a stale `ghostlight-adapter-*` binary name left over from the

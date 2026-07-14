@@ -40,6 +40,10 @@ when they disagree**, and update it when you land something that changes the pic
   External/Testing, so its refresh token is short-lived. Move the consent configuration to
   Production or mint a fresh token before a later publish attempt. Credential locations remain in
   `local/`; no values belong in tracked documentation.
+- **The ADR-0056 Lightbox consolidation is complete.** All 27 legacy ignored spawn tests have named
+  parity scenarios, the originals and dual shell wrappers are retired, and CI runs the 37-scenario
+  Lightbox suite as the sole service-side process-boundary gate. The repaired Playwright job stays
+  as the separate real-extension/Chromium proof under ADR-0056 Decision 4.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -154,9 +158,6 @@ manual when its API credentials or dashboard metadata are absent.
   top-area hover resolved `auto` to bottom and a bottom-area hover resolved it to top; both calls
   returned the effective edge and the user-visible wide ribbon. Existing MCP clients need one
   restart to add the new direct `narrate` schema to their callable tool list.
-- **Lightbox legacy-27 migration** (ADR-0056): the 27 `#[ignore = "e2e"]` spawn tests +
-  `scripts/test-e2e.*` migrate scenario-by-scenario into the lightbox harness against a
-  per-test parity ledger. Not started; CI runs both tiers until the ledger completes.
 - **SAPS remediation remainder** (assessment lives in gitignored `saps/`; findings already
   remediated are in git history around 2026-07-11):
   - SEC-HIGH-03 enforce-half: a confirm-gate for irreversible actions (send/delete/

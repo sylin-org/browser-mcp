@@ -36,7 +36,8 @@ file does not restate them -- follow AGENTS.md.
 
 ## Durable learnings (cross-cutting facts, not decisions)
 
-- **Build/test in an isolated `CARGO_TARGET_DIR`** (or use `scripts/test-e2e.ps1`). Live MCP
+- **Build/test in an isolated `CARGO_TARGET_DIR`**. Lightbox creates its own isolated process build
+  by default. Live MCP
   clients continuously respawn `ghostlight-relay.exe` and a running service holds `target/*.exe`
   against the linker, so a plain `cargo build`/`test` can relink-fail (Windows os error 5) and
   silently leave a STALE binary.

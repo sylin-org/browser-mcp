@@ -94,6 +94,15 @@ The pattern is reusable for future family products.
 - A new permanent dev crate to maintain; mitigated by it replacing two shell scripts, a quarantined
   smoke harness, and the owner-supervised e2e checklist.
 
+## 2026-07-14 amendment: retain the rehabilitated real-browser smoke gate
+
+The `e2e-smoke` job was quarantined when this ADR was accepted. It was later repaired into a
+bounded, blocking Playwright job that runs the actual extension in Chromium. It therefore belongs
+to Decision 4's real-browser tier and remains in CI. Lightbox replaces the 27 service-side ignored
+spawn tests and the two shell wrappers. It does not claim parity for Chrome, Manifest V3 service
+workers, or native messaging registration. This amendment narrows the obsolete "replace the
+quarantined smoke harness" consequence; no service-side coverage remains duplicated.
+
 ## Provenance
 
 Grew directly out of the ADR-0055 Phase-4a gap ("live e2e owed: cannot pollute %ProgramData% or

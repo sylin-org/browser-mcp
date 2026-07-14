@@ -8,6 +8,15 @@ specialized browser scenarios. T5 migrated the two injected local-policy scenari
 are DONE and both sides pass. Resume by retiring the replaced ignored tests and legacy CI path,
 then make Lightbox the sole process-boundary gate.
 
+The 27 originals, two shell wrappers, and old `-- --ignored` CI job were retired after the parity
+gate. The repaired Playwright `e2e-smoke` job remains as the real-extension/browser gate under
+ADR-0056 Decision 4 and its 2026-07-14 amendment.
+
+The Windows completion run exposed and fixed a redundant single-endpoint native-host probe that
+could race the real named-pipe connection under load. Two consecutive 37-scenario runs passed
+after the root fix.
+The same 37-scenario replacement job passed in a clean Rust 1.95 Linux container.
+
 ## Status
 
 | Legacy test | Lightbox scenario | Status | Commit / reason |

@@ -19,6 +19,7 @@ use ghostlight_core::governance::manifest::bundle;
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
 static REUSE_PROCESS_BUILD: OnceLock<bool> = OnceLock::new();
 static PROCESS_BINARIES: OnceLock<Result<ProcessBinaries, String>> = OnceLock::new();
+const DEBUG_ROLE_SERVICE: &str = "mcp-server";
 
 struct ProcessBinaries {
     service: PathBuf,
@@ -154,6 +155,7 @@ pub fn wait_state_for_role(
     predicate: impl Fn(&serde_json::Value) -> bool,
 ) -> anyhow::Result<serde_json::Value> {
     let deadline = Instant::now() + within;
+    let mut last_seen = None;
     loop {
         let mut newest = None;
         for entry in std::fs::read_dir(log_dir)?.flatten() {
@@ -182,10 +184,11 @@ pub fn wait_state_for_role(
             if predicate(&value) {
                 return Ok(value);
             }
+            last_seen = Some(value);
         }
         anyhow::ensure!(
             Instant::now() < deadline,
-            "no {role} debug state satisfied the predicate within {within:?}"
+            "no {role} debug state satisfied the predicate within {within:?}; last state: {last_seen:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -193,20 +196,10 @@ pub fn wait_state_for_role(
 
 /// Poll the service debug state until it reports an attached extension.
 pub fn wait_extension_connected(log_dir: &Path, within: Duration) -> anyhow::Result<()> {
-    let deadline = Instant::now() + within;
-    loop {
-        if newest_debug_state(log_dir)
-            .as_deref()
-            .is_some_and(|raw| raw.contains("\"extension_connected\": true"))
-        {
-            return Ok(());
-        }
-        anyhow::ensure!(
-            Instant::now() < deadline,
-            "extension did not connect within {within:?}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_state_for_role(log_dir, DEBUG_ROLE_SERVICE, within, |value| {
+        value["extension_connected"] == true
+    })
+    .map(|_| ())
 }
 
 /// Send the browser-role hello and persistent extension identity used by fake-extension scenarios.
