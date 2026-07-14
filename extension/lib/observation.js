@@ -2,8 +2,8 @@
 // Ghostlight -- consequence digests (ADR-0037 Decision 2): after a mutating action the page is
 // sampled for cheap, observable signals (URL change, title change, DOM mutation count, focus
 // movement, newly appeared role=alert/status text, role=dialog presence). This module formats
-// those signals into a single compact `observation:` block so the model learns what its action
-// CAUSED without a separate verify read. Pure: no DOM, no chrome.*, no timers -- the caller
+// those signals into a single compact legacy `observation:` block. It reports correlation only,
+// never causation. Pure: no DOM, no chrome.*, no timers -- the caller
 // (content.js) collects the raw signals and hands them here as a plain object.
 //
 // IIFE-wrapped and exposed as a single namespace per lib/constants.js's pattern (idempotent under

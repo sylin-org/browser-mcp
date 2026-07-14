@@ -365,8 +365,8 @@ fn every_trained_tools_example_call_validates_against_its_own_input_schema() {
 
 /// C3 (ADR-0038 Decision 3, PINS.md SS5): `outputSchema` is advertised for exactly the v1
 /// structured-result vocabulary tools declared so far, in advertised order, and nowhere else;
-/// each is a JSON-Schema object. ADR-0072 adds `narrate`; C4 adds `wait_for`; C7 adds `script`;
-/// C10 adds `form_fill`.
+/// each is a JSON-Schema object. ADR-0078 C1 adds targeted `read_page`; C2 adds interaction
+/// receipts to the low-level mutating tools.
 #[test]
 fn output_schemas_present_exactly_where_declared() {
     let with_schema: Vec<String> = tools()
@@ -380,12 +380,16 @@ fn output_schemas_present_exactly_where_declared() {
             "tabs_context_mcp",
             "tabs_create_mcp",
             "navigate",
+            "computer",
             "find",
+            "form_input",
             "read_page",
             "narrate",
             "wait_for",
             "script",
-            "form_fill"
+            "form_fill",
+            "file_upload",
+            "upload_image"
         ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );

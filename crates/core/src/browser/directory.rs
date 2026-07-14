@@ -184,6 +184,70 @@ fn actionable_element_schema() -> Value {
     })
 }
 
+fn interaction_receipt_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": actionable_element_schema(),
+            "targetAssurance": {
+                "type": "string",
+                "enum": ["semantic", "ref", "coordinate", "none"]
+            },
+            "action": { "type": "string" },
+            "observedAfter": {
+                "type": "object",
+                "properties": {
+                    "urlChanged": { "type": "string" },
+                    "titleChanged": { "type": "string" },
+                    "mutations": { "type": "number" },
+                    "renderAdvanced": { "type": "boolean" },
+                    "changedElements": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": actionable_element_schema()
+                    },
+                    "alertOrStatus": { "type": "string" }
+                }
+            },
+            "blockers": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "nextStep": { "type": "string" }
+                    },
+                    "required": ["kind", "summary", "nextStep"]
+                }
+            },
+            "page": {
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "url": { "type": "string" },
+                    "origin": { "type": "string" },
+                    "title": { "type": "string" },
+                    "renderSerial": { "type": "number" }
+                },
+                "required": ["url", "origin", "title", "renderSerial"]
+            },
+            "more": { "type": "boolean" }
+        },
+        "required": ["targetAssurance", "action", "observedAfter", "blockers", "page", "more"]
+    })
+}
+
+fn receipt_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "interactionReceipt": interaction_receipt_schema()
+        }
+    })
+}
+
 /// The tool registry: 22 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
 /// `form_fill`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and `explain`), in
 /// the order they appear in `tools/list`. `computer`'s 13 variants are in the
@@ -483,9 +547,9 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         ],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "find",
@@ -571,9 +635,9 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "get_page_text",
@@ -1225,9 +1289,9 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "browser_batch",
@@ -1297,9 +1361,9 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         }],
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::upload_image::upload_image_handler),
-        postprocess: None,
+        postprocess: Some(crate::browser::redact::apply_to_result),
         post_dispatch: PostDispatch::None,
-        output_schema: None,
+        output_schema: Some(receipt_output_schema),
     },
     ToolDescriptor {
         tool: "gif_creator",
@@ -1913,7 +1977,7 @@ mod tests {
                 Some("action"),
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -1929,7 +1993,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -2025,7 +2089,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 false,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (
@@ -2041,7 +2105,7 @@ mod tests {
                 None,
                 ResourceShape::TabScoped,
                 true,
-                false,
+                true,
                 PostDispatch::None,
             ),
             (

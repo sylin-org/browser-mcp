@@ -1045,7 +1045,7 @@ async function content(tabId, message) {
     return await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["lib/settle.js", "lib/observation.js", "lib/receipt.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "content.js"] });
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (e) {
       throw hopError(
@@ -1073,18 +1073,31 @@ function textImage(t, base64) {
 // twin merges into structuredContent. Best-effort: a content-script failure (e.g. the page
 // navigated away) degrades to the plain confirmation -- the observation is additive, never
 // load-bearing.
-async function withObservation(tabId, run) {
+async function withObservation(tabId, meta, run) {
+  if (typeof meta === "function") {
+    run = meta;
+    meta = {};
+  }
+  const receiptMeta = Object.assign({ tabId, targetAssurance: "none" }, meta || {});
+  if (receiptMeta.ref) {
+    try {
+      const resolved = await content(tabId, { type: "elementSummary", ref: receiptMeta.ref });
+      if (resolved && resolved.result && !resolved.result.error) receiptMeta.target = resolved.result;
+    } catch { /* target detail is additive; dispatch still owns the real stale-ref decision */ }
+  }
   let before = null;
   try { before = await content(tabId, { type: "observeSnap" }); } catch { /* page may be mid-load */ }
   const result = await run();
   if (!before || !before.result) return result;
   try {
-    const sample = await content(tabId, { type: "observeSample", before: before.result });
+    const sample = await content(tabId, { type: "observeSample", before: before.result, meta: receiptMeta });
     const obs = sample && sample.result;
     if (obs && obs.digest) {
       result.content[0].text += "\n" + obs.digest;
-      if (obs.structured) {
-        result.structuredContent = Object.assign({}, result.structuredContent || {}, obs.structured);
+      if (obs.receipt) {
+        result.structuredContent = Object.assign({}, result.structuredContent || {}, {
+          interactionReceipt: obs.receipt,
+        });
       }
     }
   } catch { /* observation never masks the action's own result */ }
@@ -1414,21 +1427,29 @@ async function computer(a) {
       if (!c) return text("coordinate or ref is required.");
       await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
       if (a.action === "hover") {
-        return withObservation(tabId, async () => {
+        return withObservation(tabId, {
+          action: a.action,
+          ref: a.ref,
+          targetAssurance: a.ref ? "ref" : "coordinate",
+        }, async () => {
           await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
           return text(`Hovered at (${c[0]}, ${c[1]}).`);
         });
       }
       const button = a.action === "right_click" ? "right" : "left";
       const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, {
+        action: a.action,
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
         await click(tabId, c[0], c[1], { button, clickCount, modifiers });
         return text(`${a.action} at (${c[0]}, ${c[1]}).`);
       });
     }
     case "type": {
       if (!a.text) return text("text is required for type.");
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "type", targetAssurance: "none" }, async () => {
         await ensureAttached(tabId);
         typeShimmer(tabId);
         keystrokeCue(tabId, a.text, "type");
@@ -1457,7 +1478,7 @@ async function computer(a) {
     }
     case "key": {
       if (!a.text) return text("text is required for key.");
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "key", targetAssurance: "none" }, async () => {
         await ensureAttached(tabId);
         keystrokeCue(tabId, a.text, "key");
         const repeat = Math.min(a.repeat || 1, 100);
@@ -1515,7 +1536,11 @@ async function computer(a) {
       return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
     }
     case "scroll_to": {
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, {
+        action: "scroll_to",
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
         if (a.ref) {
           const r = await content(tabId, { type: "scrollToRef", ref: a.ref });
           // The engine is truthful: a stale ref is a failure, never a false "Scrolled to target.".
@@ -1536,7 +1561,7 @@ async function computer(a) {
       // Both endpoints are model-provided (read off the screenshot) -> rescale to CSS px.
       const [sx, sy] = rescaleCoord(tabId, a.start_coordinate[0], a.start_coordinate[1]);
       const [ex, ey] = rescaleCoord(tabId, a.coordinate[0], a.coordinate[1]);
-      return withObservation(tabId, async () => {
+      return withObservation(tabId, { action: "left_click_drag", targetAssurance: "coordinate" }, async () => {
         await moveCursor(tabId, sx, sy);
         await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: sx, y: sy, modifiers, buttons: 0, force: 0 });
         await sleep(CAPTURE_SETTLE_MS);
@@ -1629,7 +1654,11 @@ const handlers = {
     r.structuredContent = { tabId, url: tab.url, title: tab.title || "" };
     return r;
   },
-  computer,
+  async computer(a) {
+    const out = await computer(a);
+    if (!out.structuredContent) out.structuredContent = {};
+    return out;
+  },
   async read_page(a) {
     const tabId = await effectiveTabId(a.tabId);
     readScan(tabId);
@@ -1673,7 +1702,7 @@ const handlers = {
   },
   async form_input(a) {
     const tabId = await effectiveTabId(a.tabId);
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, { action: "set_value", ref: a.ref, targetAssurance: "ref" }, async () => {
       const r = await content(tabId, { type: "setFormValue", ref: a.ref, value: a.value });
       // The engine is truthful: a content-script failure is a failure, never a masqueraded success.
       if (r && r.result && r.result.error) {
@@ -1691,7 +1720,7 @@ const handlers = {
       }
       throw hopError("binary", "files parameter is required and must be a non-empty array");
     }
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, { action: "file_upload", ref: a.ref, targetAssurance: "ref" }, async () => {
       const r = await content(tabId, { type: "setFiles", ref: a.ref, files: a.files });
       if (r && r.result && r.result.error) {
         const msg = r.result.error.endsWith(".") ? r.result.error.slice(0, -1) : r.result.error;
@@ -1709,7 +1738,11 @@ const handlers = {
     if (!a.data) {
       throw hopError("binary", "upload_image_exec requires base64 image data");
     }
-    return withObservation(tabId, async () => {
+    return withObservation(tabId, {
+      action: "upload_image",
+      ref: a.ref,
+      targetAssurance: a.ref ? "ref" : "coordinate",
+    }, async () => {
       const r = await content(tabId, {
         type: "setImage",
         ref: a.ref,

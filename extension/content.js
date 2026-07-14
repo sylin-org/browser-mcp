@@ -777,9 +777,8 @@
   // mutating action and observeSample after. observeSample waits the 300ms settle window, then
   // diffs url/title/focus and counts mutations since the snap; alert/status elements whose text
   // was NOT present at snap time are "newly appeared" (first 200 chars of textContent); a
-  // role=dialog present at sample but not at snap is reported. formatObservation (lib/observation.js,
-  // a content-script global via the manifest) renders the digest; this function returns the finished
-  // string and its structured twin so the SW appends the string verbatim. ---
+  // role=dialog present at sample but not at snap is reported. lib/receipt.js bounds and renders
+  // the facts as correlation-only evidence; it never claims the action caused the observation. ---
   function roleTexts(roles) {
     const out = {};
     for (const el of collectAll(document)) {
@@ -807,13 +806,14 @@
       title: document.title || "",
       focus: focusedName(),
       mutations: readMutations(),
+      renderSerial,
       alerts: rt.alert || [],
       statuses: rt.status || [],
       dialogPresent: !!(rt.dialog && rt.dialog.length),
     };
   }
 
-  function observeSample(before) {
+  function observeSample(before, meta) {
     return new Promise((resolve) => {
       setTimeout(() => {
         const url = location.href;
@@ -825,21 +825,30 @@
         const newStatus = (rt.status || []).find((t) => !(before.statuses || []).includes(t)) || "";
         const dialogNow = !!(rt.dialog && rt.dialog.length);
         const dialogAppeared = dialogNow && !before.dialogPresent;
-        const fmt = (self.GhostlightObservation || GhostlightObservation).formatObservation;
-        const sig = { mutations };
-        if (url !== before.url) sig.url = url;
-        if (title !== before.title) sig.title = title;
-        if (focus && focus !== before.focus) sig.focus = focus;
-        if (newAlert) sig.alert = newAlert;
-        if (newStatus) sig.status = newStatus;
-        if (dialogAppeared) sig.dialog = true;
-        const structured = { mutations };
-        if (sig.url) structured.url_changed = sig.url;
-        if (sig.title) structured.title_changed = sig.title;
-        if (sig.focus) structured.focus = sig.focus;
-        if (sig.alert) structured.alert = sig.alert;
-        if (sig.dialog) structured.dialog_appeared = true;
-        resolve({ digest: fmt(sig), structured });
+        const changedElements = [];
+        if (focus && focus !== before.focus && document.activeElement) {
+          const summary = elementSummary(document.activeElement);
+          if (summary) changedElements.push(summary);
+        }
+        const receiptLib = self.GhostlightReceipt || GhostlightReceipt;
+        const receipt = receiptLib.makeReceipt({
+          tabId: meta && meta.tabId,
+          action: meta && meta.action,
+          targetAssurance: meta && meta.targetAssurance,
+          target: meta && meta.target,
+          before,
+          after: {
+            url,
+            title,
+            mutations,
+            renderSerial,
+            alert: newAlert,
+            status: newStatus,
+            dialogOpened: dialogAppeared,
+            changedElements,
+          },
+        });
+        resolve({ digest: receiptLib.renderReceipt(receipt), receipt });
       }, 300);
     });
   }
@@ -975,7 +984,7 @@
       }
       case "observeSnap": sendResponse({ result: observeSnap() }); return true;
       case "observeSample": {
-        observeSample(msg.before).then((result) => sendResponse({ result }));
+        observeSample(msg.before || {}, msg.meta || {}).then((result) => sendResponse({ result }));
         return true;
       }
       case "formStructure": sendResponse({ result: formStructure() }); return true;

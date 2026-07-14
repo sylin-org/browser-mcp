@@ -40,10 +40,8 @@ fn error_outcome(msg: impl Into<String>, batch_id: &str) -> CallOutcome {
     CallOutcome::Success { result }
 }
 
-/// Pull the trailing `observation: ...` digest line (C5) off a dispatched action's rendered text,
-/// stripping the prefix so `form_fill`'s own `observation` field matches ADR-0036 Decision 3's
-/// shape (no prefix). `None` when no digest line is present, or the digest itself reports no
-/// observable change (nothing worth surfacing).
+/// Pull the trailing ADR-0078 interaction receipt or legacy `observation: ...` digest line off a
+/// dispatched action's rendered text. `None` when no digest is present or it reports no change.
 fn extract_observation(result: &Value) -> Option<String> {
     let text = result
         .get("content")?
@@ -52,8 +50,14 @@ fn extract_observation(result: &Value) -> Option<String> {
         .get("text")?
         .as_str()?;
     text.lines()
-        .find_map(|l| l.strip_prefix("observation: ").map(str::to_string))
-        .filter(|s| s.as_str() != "no observable change")
+        .find_map(|line| {
+            line.strip_prefix("interaction receipt: ")
+                .or_else(|| line.strip_prefix("observation: "))
+                .map(str::to_string)
+        })
+        .filter(|s| {
+            s.as_str() != "no observable change" && !s.ends_with(": no meaningful page change")
+        })
 }
 
 /// The first text content block of an MCP result object, if any (used to parse the

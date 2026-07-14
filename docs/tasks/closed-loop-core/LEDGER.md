@@ -5,7 +5,7 @@ Durable progress. One task equals one commit. Update this file before and after 
 ## RESUME HERE
 
 - ADR-0078 is accepted. The implementation batch is authored but no production code has changed.
-- C1 is complete. Start with C2, `C2-interaction-receipts.md`.
+- C1-C2 are complete. Start with C3, `C3-act-on.md`.
 - Re-read the live registry, pipeline, result, audit, and extension observation seams before editing.
 - Cross-origin frame refs are out of scope and require a separate ADR.
 
@@ -13,8 +13,8 @@ Durable progress. One task equals one commit. Update this file before and after 
 
 | Task | Commit | Status | Notes |
 |------|--------|--------|-------|
-| C1 actionable observations | this commit | DONE | Shared summary, ranked matcher, structured secret redaction; all gates green |
-| C2 interaction receipts | -- | READY | Bounded observation and recovery vocabulary |
+| C1 actionable observations | a5a2391 | DONE | Shared summary, ranked matcher, structured secret redaction; all gates green |
+| C2 interaction receipts | this commit | DONE | Bounded observed-after receipt, target assurance, dialog blocker; all gates green |
 | C3 act_on | -- | READY | Additive semantic interaction |
 | C4 output provenance | -- | READY | Session nonce and page-text boundaries |
 | C5 dialog control | -- | READY | Explicit dialog status and resolution |
@@ -24,8 +24,8 @@ Durable progress. One task equals one commit. Update this file before and after 
 
 | Check | Status | Evidence |
 |-------|--------|----------|
-| Rust format, clippy, workspace tests | PASS (C1) | 646 core unit tests plus workspace integration/doc tests |
-| Extension syntax and tests | PASS (C1) | 75 Node tests; changed JS passes `node --check` |
+| Rust format, clippy, workspace tests | PASS (C1-C2) | 646 core unit tests plus workspace integration/doc tests |
+| Extension syntax and tests | PASS (C1-C2) | 78 Node tests; changed JS passes `node --check` |
 | Lightbox all scenarios | NOT RUN | -- |
 | Visible-browser verification | NOT RUN | See `LIVE-VERIFY.md` |
 | Tool count and public docs synchronized | NOT RUN | -- |
