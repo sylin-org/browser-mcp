@@ -129,6 +129,15 @@ when its API credentials or dashboard metadata are absent.
 
 ## Owed engineering work (in rough priority order)
 
+- **The first retrospective non-author review is captured as directional evidence.** The owner
+  reconstructed a pre-release developer review from a video call with no transcript or notes;
+  `docs/design/non-author-experience-review-2026-07.md` preserves the method limits, install and
+  messaging friction, and the strong post-install delight signals. The proposed response is split
+  into `docs/design/visual-language-next-2026-07.md`,
+  `docs/design/developer-first-entry-2026-07.md`, and prior-art research 16. No production behavior
+  changed. Next: owner review, then an ADR-0072 amendment for narration, a new denial-pause ADR,
+  and an ADR-0073 recording-indicator amendment before implementation. The Linux host should run
+  the current baseline installation first, then the revised journey when available.
 - **ADR-0078 visible-browser verification is owed.** C1-C6 and the automated gates are complete.
   Run `docs/tasks/closed-loop-core/LIVE-VERIFY.md` against the visible Linux Chrome host once SSH
   access is available. Cross-origin frame refs remain deferred because they require a separate
