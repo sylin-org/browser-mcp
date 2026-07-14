@@ -384,6 +384,10 @@ fn output_schemas_present_exactly_where_declared() {
             "computer",
             "find",
             "form_input",
+            "get_page_text",
+            "javascript_tool",
+            "read_console_messages",
+            "read_network_requests",
             "read_page",
             "narrate",
             "wait_for",
@@ -391,7 +395,8 @@ fn output_schemas_present_exactly_where_declared() {
             "form_fill",
             "act_on",
             "file_upload",
-            "upload_image"
+            "upload_image",
+            "gif_creator"
         ],
         "outputSchema must be advertised for exactly these tools, in this order"
     );
@@ -401,6 +406,32 @@ fn output_schemas_present_exactly_where_declared() {
             schema["type"].as_str(),
             Some("object"),
             "{name}: outputSchema.type must be \"object\""
+        );
+    }
+    for name in [
+        "tabs_context_mcp",
+        "tabs_create_mcp",
+        "navigate",
+        "computer",
+        "find",
+        "form_input",
+        "get_page_text",
+        "javascript_tool",
+        "read_console_messages",
+        "read_network_requests",
+        "read_page",
+        "wait_for",
+        "form_fill",
+        "act_on",
+        "file_upload",
+        "upload_image",
+        "gif_creator",
+    ] {
+        assert!(
+            tool(name)["outputSchema"]["properties"]
+                .get("provenance")
+                .is_some(),
+            "{name}: page-sourced output declares provenance"
         );
     }
 }

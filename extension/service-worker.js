@@ -1609,6 +1609,28 @@ async function tabsContextLegacy(a) {
   return tabContext(await groupTabs());
 }
 
+async function pageMeta(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  let fromPage = null;
+  try {
+    const response = await content(tabId, { type: "pageMeta" });
+    fromPage = response && response.result;
+  } catch (_error) {
+    // Restricted browser pages may not host the content script. Browser metadata is still useful.
+  }
+  let origin = "unknown";
+  try { origin = new URL((fromPage && fromPage.url) || tab.url || "about:blank").origin; }
+  catch (_error) { /* keep unknown */ }
+  const meta = {
+    tabId,
+    url: (fromPage && fromPage.url) || tab.url || "",
+    origin,
+    title: (fromPage && fromPage.title) || tab.title || "",
+  };
+  if (fromPage && typeof fromPage.renderSerial === "number") meta.renderSerial = fromPage.renderSerial;
+  return meta;
+}
+
 const handlers = {
   // `key` is the client's stable clientKey (ADR-0066), falling back to the guid, or absent for a
   // legacy/hand-rolled native caller (the global-group path).
@@ -1667,7 +1689,7 @@ const handlers = {
     readScan(tabId);
     const r = await content(tabId, { type: "accessibilityTree", options: a });
     const out = text((r && r.result) || "Could not read the page.");
-    out.structuredContent = {};
+    out.structuredContent = { page: await pageMeta(tabId) };
     if (a.ref_id) {
       const target = await content(tabId, { type: "elementSummary", ref: a.ref_id });
       if (target && target.result && !target.result.error) out.structuredContent.target = target.result;
@@ -1678,7 +1700,9 @@ const handlers = {
     const tabId = await effectiveTabId(a.tabId);
     readScan(tabId);
     const r = await content(tabId, { type: "pageText", max_chars: a.max_chars });
-    return text((r && r.result) || "Could not extract page text.");
+    const out = text((r && r.result) || "Could not extract page text.");
+    out.structuredContent = { page: await pageMeta(tabId) };
+    return out;
   },
   async find(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1700,7 +1724,7 @@ const handlers = {
       if (more) s += "\n(more than 20 matches; refine your query for the rest)";
       out = text(s);
     }
-    out.structuredContent = { results, more };
+    out.structuredContent = { results, more, page: await pageMeta(tabId) };
     return out;
   },
   async form_input(a) {
@@ -1895,6 +1919,7 @@ const handlers = {
       structured.peak_mutations = peak;
       structured.final_rate = res.finalRate;
     }
+    structured.page = await pageMeta(tabId);
     out.structuredContent = structured;
     return out;
   },
@@ -1916,12 +1941,16 @@ const handlers = {
       // "Uncaught"); the actual message lives on the exception object's own description.
       const ed = r.exceptionDetails.exception;
       const msg = (ed && ed.description) || r.exceptionDetails.text || "exception";
-      return text(`Error: ${msg}`);
+      const result = text(`Error: ${msg}`);
+      result.structuredContent = { page: await pageMeta(tabId) };
+      return result;
     }
     const v = r.result;
     let out = v.value !== undefined ? JSON.stringify(v.value) : (v.description || String(v.type));
     if (out.length > 50 * 1024) out = out.slice(0, 50 * 1024) + "\n[OUTPUT TRUNCATED: Exceeded 50KB limit]";
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async read_console_messages(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1955,7 +1984,9 @@ const handlers = {
       out += "\nNote: console event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
       consoleResetNotice = false;
     }
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async read_network_requests(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -1984,7 +2015,9 @@ const handlers = {
       out += "\nNote: network event buffer was reset by a browser service-worker restart; tracking resumed from that point.";
       networkResetNotice = false;
     }
-    return text(out);
+    const result = text(out);
+    result.structuredContent = { page: await pageMeta(tabId) };
+    return result;
   },
   async resize_window(a) {
     const tabId = await effectiveTabId(a.tabId);
@@ -2062,7 +2095,9 @@ const handlers = {
   async form_structure_internal(a) {
     const tabId = await effectiveTabId(a.tabId);
     const r = await content(tabId, { type: "formStructure" });
-    return text(JSON.stringify((r && r.result) || { forms: [], formless: [] }, null, 2));
+    const structure = (r && r.result) || { forms: [], formless: [] };
+    structure.page = await pageMeta(tabId);
+    return text(JSON.stringify(structure, null, 2));
   },
 };
 

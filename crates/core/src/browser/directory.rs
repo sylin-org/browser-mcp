@@ -92,6 +92,19 @@ pub enum PostDispatch {
     NavigateLanding,
 }
 
+/// How page-sourced output is marked at the shared service result seam (ADR-0078 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageOutput {
+    /// The result contains no page-authored payload.
+    None,
+    /// Text content is page-sourced and receives a complete boundary.
+    Text,
+    /// A mixed interaction receipt keeps its service label outside the bounded page facts.
+    Receipt,
+    /// Only structured fields are page-sourced; service-authored text stays unchanged.
+    Structured,
+}
+
 /// One action variant of a [`ToolDescriptor`]: its bound capability requirement set and its
 /// directory-facing description (the text `explain` renders -- distinct from the advertised
 /// description the model sees in `tools/list`). A tool with no sub-actions carries exactly one
@@ -130,6 +143,8 @@ pub struct ToolDescriptor {
     /// Applied to the dispatch result before it is returned, when present: `read_page`'s
     /// secret redaction is the only user today.
     pub postprocess: Option<fn(&mut serde_json::Value, bool)>,
+    /// Page-output boundary and provenance mode applied after the browser result reaches service.
+    pub page_output: PageOutput,
     pub post_dispatch: PostDispatch,
     /// The declared `outputSchema` for this tool's `structuredContent` (ADR-0038 Decision 3),
     /// when this tool has a declared result vocabulary; `None` on every other row. Emitted in
@@ -249,6 +264,33 @@ fn receipt_output_schema() -> Value {
     })
 }
 
+fn provenance_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "pageSourced": { "type": "boolean" },
+            "untrusted": { "type": "boolean" },
+            "topOrigin": { "type": "string" },
+            "frameOrigin": { "type": "string" },
+            "sessionNonce": { "type": "string" }
+        },
+        "required": ["pageSourced", "untrusted", "topOrigin", "sessionNonce"]
+    })
+}
+
+fn output_schema_with_provenance(descriptor: &ToolDescriptor) -> Value {
+    let mut schema = descriptor
+        .output_schema
+        .map(|schema| schema())
+        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+    schema["properties"]["provenance"] = provenance_schema();
+    if descriptor.page_output == PageOutput::Receipt {
+        schema["properties"]["interactionReceipt"]["properties"]["provenance"] =
+            provenance_schema();
+    }
+    schema
+}
+
 /// The tool registry: 23 descriptors (the 13 browser tools plus `narrate`, `wait_for`, `script`,
 /// `form_fill`, `act_on`, `file_upload`, `browser_batch`, `upload_image`, `gif_creator`, and
 /// `explain`), in
@@ -283,6 +325,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -328,6 +371,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -386,6 +430,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TargetArg,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::NavigateLanding,
         output_schema: Some(|| {
             json!({
@@ -550,6 +595,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
         output_schema: Some(receipt_output_schema),
     },
@@ -584,6 +630,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -638,6 +685,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
         output_schema: Some(receipt_output_schema),
     },
@@ -672,6 +720,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -711,6 +760,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -757,6 +807,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -799,6 +850,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -850,6 +902,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -895,6 +948,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -931,6 +985,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -980,6 +1035,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1048,6 +1104,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: None,
+        page_output: PageOutput::Text,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1120,6 +1177,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::Local(crate::mcp::script::script_handler),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1192,6 +1250,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::form_fill::form_fill_handler),
         postprocess: None,
+        page_output: PageOutput::Structured,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1327,6 +1386,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::act_on::act_on_handler),
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
         output_schema: Some(|| {
             json!({
@@ -1393,6 +1453,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::ExtensionForward,
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
         output_schema: Some(receipt_output_schema),
     },
@@ -1433,6 +1494,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::DomainLess,
         handler: Handler::Local(crate::mcp::browser_batch::browser_batch_handler),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1465,6 +1527,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         resource: ResourceShape::TabScoped,
         handler: Handler::Local(crate::mcp::upload_image::upload_image_handler),
         postprocess: Some(crate::browser::redact::apply_to_result),
+        page_output: PageOutput::Receipt,
         post_dispatch: PostDispatch::None,
         output_schema: Some(receipt_output_schema),
     },
@@ -1532,6 +1595,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
         // schema above is untouched.
         handler: Handler::Local(crate::mcp::gif_creator::gif_creator_handler),
         postprocess: None,
+        page_output: PageOutput::Structured,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1577,6 +1641,7 @@ pub const REGISTRY: &[ToolDescriptor] = &[
             })
         }),
         postprocess: None,
+        page_output: PageOutput::None,
         post_dispatch: PostDispatch::None,
         output_schema: None,
     },
@@ -1650,8 +1715,8 @@ pub fn advertised_tools_json() -> Value {
                     json!({ "call": call })
                 };
             }
-            if let Some(schema) = d.output_schema {
-                entry["outputSchema"] = schema();
+            if d.output_schema.is_some() || d.page_output != PageOutput::None {
+                entry["outputSchema"] = output_schema_with_provenance(d);
             }
             entry
         })
@@ -2111,6 +2176,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn page_output_markers_are_registry_data() {
+        let marked: Vec<(&str, PageOutput)> = REGISTRY
+            .iter()
+            .filter(|descriptor| descriptor.page_output != PageOutput::None)
+            .map(|descriptor| (descriptor.tool, descriptor.page_output))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("tabs_context_mcp", PageOutput::Text),
+                ("tabs_create_mcp", PageOutput::Text),
+                ("navigate", PageOutput::Text),
+                ("computer", PageOutput::Receipt),
+                ("find", PageOutput::Text),
+                ("form_input", PageOutput::Receipt),
+                ("get_page_text", PageOutput::Text),
+                ("javascript_tool", PageOutput::Text),
+                ("read_console_messages", PageOutput::Text),
+                ("read_network_requests", PageOutput::Text),
+                ("read_page", PageOutput::Text),
+                ("wait_for", PageOutput::Text),
+                ("form_fill", PageOutput::Structured),
+                ("act_on", PageOutput::Receipt),
+                ("file_upload", PageOutput::Receipt),
+                ("upload_image", PageOutput::Receipt),
+                ("gif_creator", PageOutput::Structured),
+            ]
+        );
     }
 
     #[test]

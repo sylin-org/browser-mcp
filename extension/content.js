@@ -575,6 +575,15 @@
     return { target: summary, candidates: [], ambiguous: false, covered, page };
   }
 
+  function currentPageMeta() {
+    return {
+      url: location.href,
+      origin: location.origin,
+      title: document.title || "",
+      renderSerial,
+    };
+  }
+
   // --- Form input (shadow-DOM traversal + native setter so framework inputs register) ---
   function innerInput(el) {
     const tag = el.tagName.toLowerCase();
@@ -1019,6 +1028,7 @@
       case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
       case "find": sendResponse({ result: find(msg.query) }); return true;
       case "resolveActionable": sendResponse({ result: resolveActionable(msg.target || {}) }); return true;
+      case "pageMeta": sendResponse({ result: currentPageMeta() }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;
       case "setFiles": sendResponse({ result: setFiles(msg.ref, msg.files) }); return true;
       case "setImage": sendResponse({ result: setImage(msg.ref, msg.coordinate, msg.data, msg.filename, msg.mimeType) }); return true;

@@ -668,6 +668,7 @@ pub(crate) async fn run_tool_call(
             if let Some(waited) = waited {
                 append_wait_note(result, waited);
             }
+            crate::mcp::provenance::apply(result, descriptor.page_output, guid);
         }
         audit.complete();
         return outcome;
@@ -746,6 +747,7 @@ pub(crate) async fn run_tool_call(
             if let Some(waited) = waited {
                 append_wait_note(&mut result, waited);
             }
+            crate::mcp::provenance::apply(&mut result, descriptor.page_output, guid);
             CallOutcome::Success { result }
         }
         // A tool execution failure is an MCP tool error result (isError), not a JSON-RPC error.
@@ -2290,8 +2292,9 @@ mod tests {
         let observe_text = observe_resp.result.as_ref().expect("result")["content"][0]["text"]
             .as_str()
             .expect("text");
-        assert_eq!(
-            observe_text, "created",
+        assert_eq!(observe_text, "created");
+        assert!(
+            !observe_text.contains("Denied"),
             "shadow mode returns the ordinary tool result, no denial text: {observe_text}"
         );
         let observe_lines = read_lines(&observe_path);

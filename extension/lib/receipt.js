@@ -4,8 +4,10 @@
 // Pure result vocabulary: callers collect browser facts and this module bounds and renders them.
 // It deliberately says "observed after" and never assigns causality or transaction success.
 (function () {
-const SUCCESS_LIMIT = 800;
-const FAILURE_LIMIT = 1200;
+// Leave room for the service-authored nonce/origin boundary while keeping the final text under
+// ADR-0078's 800/1200-character budgets. StructuredContent retains the bounded detail.
+const SUCCESS_LIMIT = 420;
+const FAILURE_LIMIT = 820;
 
 function clip(value, max) {
   const text = String(value || "").replace(/\s+/g, " ").trim();

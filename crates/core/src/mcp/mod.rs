@@ -11,6 +11,7 @@ pub mod form_fill;
 pub mod gif_creator;
 pub mod outcome;
 pub mod pipeline;
+pub mod provenance;
 pub mod refs;
 pub mod script;
 pub mod server;

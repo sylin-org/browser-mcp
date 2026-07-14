@@ -106,9 +106,11 @@ async fn run(browser: &Browser, governance: &Governance, guid: &str, args: &Valu
         Ok(v) => v,
         Err(e) => return error_outcome(format!("form_fill failed: {e}"), &batch_id),
     };
-    let structure: FormStructure = first_text(&structure_value)
-        .and_then(|t| serde_json::from_str(t).ok())
-        .unwrap_or_default();
+    let structure_json: Value = first_text(&structure_value)
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_else(|| json!({}));
+    let page = structure_json.get("page").cloned();
+    let structure: FormStructure = serde_json::from_value(structure_json).unwrap_or_default();
 
     let keys: Vec<String> = fields_obj.keys().cloned().collect();
     let outcome = form_match::match_fields(&keys, &structure);
@@ -243,6 +245,11 @@ async fn run(browser: &Browser, governance: &Governance, guid: &str, args: &Valu
     if let Some(obs) = observation {
         if let Some(obj) = structured.as_object_mut() {
             obj.insert("observation".to_string(), json!(obs));
+        }
+    }
+    if let Some(page) = page {
+        if let Some(obj) = structured.as_object_mut() {
+            obj.insert("page".to_string(), page);
         }
     }
 
