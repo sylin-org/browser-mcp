@@ -16,4 +16,4 @@ it, the feature that delivers it, and the evidence behind it.
 Seat and licensee counts are contractual terms, never enforced at runtime: Ghostlight never
 phones home, never counts seats, and license state never changes behavior (ADR-0028).
 
-Last reviewed: 2026-07-10 against v0.5.6 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org

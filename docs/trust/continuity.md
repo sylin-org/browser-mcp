@@ -60,4 +60,4 @@ already run continues to run.
 See [ADR-0028](../adr/0028-tripwire-licensing-and-continuity-promise.md) and the
 [licensing guide](../guides/licensing.md).
 
-Last reviewed: 2026-07-10 against v0.5.6 | Contact: support@sylin.org
+Last reviewed: 2026-07-10 against v0.5.7 | Contact: support@sylin.org
