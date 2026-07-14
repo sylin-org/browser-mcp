@@ -12,9 +12,9 @@
   "grants": [
     {
       "id": "demo-stage",
-      "hosts": { "allow": ["sylin.org", "*.sylin.org"] },
+      "hosts": { "allow": ["sylin.org", "*.sylin.org", "localhost", "127.0.0.1"] },
       "allowed": ["read", "action", "write", "execute"],
-      "description": "The Ghostlight demo stage (sylin.org/ghostlight/demo). Every capability is granted here so the whole tour works; everything off this domain is refused, which is what the guardrail finale demonstrates."
+      "description": "The public Ghostlight demo stage and its local loopback preview. Every capability is granted here so the whole tour works; other destinations are refused, which is what the guardrail finale demonstrates."
     }
   ],
   "config": [

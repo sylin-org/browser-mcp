@@ -71,7 +71,7 @@ enum Command {
     Policy(PolicyArgs),
     /// Run the persistent Ghostlight Hub service (owns the browser link; multiplexes clients).
     Service,
-    /// Drive a scripted tour of the public demo stage (sylin.org/ghostlight/demo).
+    /// Drive the scripted Sylin Card Foundry story (sylin.org/ghostlight/demo/foundry).
     Demo(DemoArgs),
     /// Show or install a Ghostlight license (state never affects behavior; ADR-0028).
     License(LicenseArgs),
@@ -90,7 +90,7 @@ struct DemoArgs {
     /// browser window before the tour starts. Default 10.
     #[arg(long, default_value_t = 10.0)]
     setup_pause: f64,
-    /// Seconds to breathe between the tour's sections (Desk, Form, Signals, ...). Default 5.
+    /// Seconds to breathe between the Foundry's inspection, revision, and release phases. Default 5.
     #[arg(long, default_value_t = 5.0)]
     section_pause: f64,
 }
