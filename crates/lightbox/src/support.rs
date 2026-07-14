@@ -84,8 +84,8 @@ pub fn spawn_service_with_webapi(
 
 /// Spawn the production agent-role relay against a running scenario service.
 pub fn spawn_adapter(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuard> {
-    let binaries = process_binaries()?;
-    let child = Command::new(&binaries.relay)
+    let mut command = relay_command()?;
+    let child = command
         .arg("--role")
         .arg("agent")
         .env("GHOSTLIGHT_ENDPOINT", endpoint)
@@ -95,6 +95,118 @@ pub fn spawn_adapter(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuar
         .stderr(Stdio::null())
         .spawn()?;
     Ok(ChildGuard(child))
+}
+
+/// Start a command under the child guard used by process-boundary scenarios.
+pub fn spawn_guard(command: &mut Command) -> anyhow::Result<ChildGuard> {
+    Ok(ChildGuard(command.spawn()?))
+}
+
+/// Construct a command for the isolated production service binary.
+pub fn service_command() -> anyhow::Result<Command> {
+    Ok(Command::new(&process_binaries()?.service))
+}
+
+/// Construct a command for the isolated production relay binary.
+pub fn relay_command() -> anyhow::Result<Command> {
+    Ok(Command::new(&process_binaries()?.relay))
+}
+
+/// Wait for at least `count` parseable debug-state files in a scenario log directory.
+pub fn wait_for_debug_states(log_dir: &Path, count: usize, within: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    loop {
+        let found = std::fs::read_dir(log_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        name.starts_with("debug-state-") && name.ends_with(".json")
+                    })
+                    .filter(|entry| {
+                        std::fs::read_to_string(entry.path())
+                            .ok()
+                            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                            .is_some()
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if found >= count {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "expected {count} debug states under {} within {within:?}",
+            log_dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Poll the newest debug state for `role` until `predicate` accepts it.
+pub fn wait_state_for_role(
+    log_dir: &Path,
+    role: &str,
+    within: Duration,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> anyhow::Result<serde_json::Value> {
+    let deadline = Instant::now() + within;
+    loop {
+        let mut newest = None;
+        for entry in std::fs::read_dir(log_dir)?.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("debug-state-") || !name.ends_with(".json") {
+                continue;
+            }
+            let modified = entry.metadata()?.modified()?;
+            let value: serde_json::Value = match std::fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            {
+                Some(value) if value["role"] == role => value,
+                _ => continue,
+            };
+            if newest
+                .as_ref()
+                .map(|(time, _): &(std::time::SystemTime, serde_json::Value)| modified > *time)
+                .unwrap_or(true)
+            {
+                newest = Some((modified, value));
+            }
+        }
+        if let Some((_, value)) = newest {
+            if predicate(&value) {
+                return Ok(value);
+            }
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "no {role} debug state satisfied the predicate within {within:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Poll the service debug state until it reports an attached extension.
+pub fn wait_extension_connected(log_dir: &Path, within: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    loop {
+        if newest_debug_state(log_dir)
+            .as_deref()
+            .is_some_and(|raw| raw.contains("\"extension_connected\": true"))
+        {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "extension did not connect within {within:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn spawn_service_inner(
