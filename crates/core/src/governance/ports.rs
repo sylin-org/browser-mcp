@@ -332,15 +332,6 @@ pub struct DecisionRequest {
     /// from the request alone -- g17 (simulate) replays a recorded request through the same
     /// decision function and must get the same `D-...` id back.
     pub manifest_hash: String,
-    /// The resolved connecting SOURCE for an `inbound.web.from` decision (ADR-0030 Decision
-    /// 5/9, H8), stamped by the inbound.web enforcement point BEFORE the pure decision runs,
-    /// EXACTLY as `resource` is stamped above. `None` for every non-web session (a local MCP
-    /// pipe adapter, or any all-open session) -- byte-identical to today, since no inbound
-    /// decision is even consulted for those paths. The resolved `inbound.web.from` ALLOWLIST
-    /// itself is not carried here; it is held by the deciding
-    /// [`crate::governance::inbound::InboundPdp`] instance, exactly as `LocalPdp` holds its own
-    /// `evaluate_host` fn rather than the request.
-    pub inbound_source: Option<String>,
 }
 
 /// The outcome of a policy decision. `Allow` optionally names the grant that permitted the
@@ -435,7 +426,6 @@ mod tests {
             manifest_mode: None,
             config_mode,
             manifest_hash: String::new(),
-            inbound_source: None,
         }
     }
 
@@ -462,7 +452,6 @@ mod tests {
                 manifest_mode: None,
                 config_mode: EffectiveMode::Enforce,
                 manifest_hash: String::new(),
-                inbound_source: None,
             },
         ];
         for req in &requests {
@@ -646,7 +635,6 @@ mod tests {
             manifest_mode: Some(EffectiveMode::Observe),
             config_mode: EffectiveMode::Enforce,
             manifest_hash: "abc123".to_string(),
-            inbound_source: None,
         };
         let json = serde_json::to_string(&req).expect("serializes");
         let round_tripped: DecisionRequest = serde_json::from_str(&json).expect("deserializes");

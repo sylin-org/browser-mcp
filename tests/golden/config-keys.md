@@ -96,26 +96,6 @@ Default enforcement mode when the active manifest does not set one: observe reco
 - Default (safe, = built-in Minimal): "enforce"
 - Default (restricted): "enforce"
 
-## `inbound.web.from`
-
-Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). "localhost" only, unless opened to "*" or specific hosts.
-
-- Type: string list
-- Constraints: unique string elements
-- Default (fully_open): ["localhost"]
-- Default (safe, = built-in Minimal): ["localhost"]
-- Default (restricted): ["localhost"]
-
-## `inbound.web.enabled`
-
-Whether the inbound.web adapter admits web (WS) tool sessions. Off by default: web ingestion is opt-in. An org-mandatory false denies the web adapter.
-
-- Type: bool
-- Constraints: none
-- Default (fully_open): false
-- Default (safe, = built-in Minimal): false
-- Default (restricted): false
-
 ## `inbound.pipe.enabled`
 
 Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.
@@ -145,13 +125,3 @@ Whether the management-plane HTTP UI binds. An org-mandatory false takes the man
 - Default (fully_open): true
 - Default (safe, = built-in Minimal): true
 - Default (restricted): true
-
-## `manage.web.from`
-
-Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.
-
-- Type: string list
-- Constraints: unique string elements
-- Default (fully_open): ["localhost"]
-- Default (safe, = built-in Minimal): ["localhost"]
-- Default (restricted): ["localhost"]

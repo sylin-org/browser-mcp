@@ -71,7 +71,7 @@ pub fn spawn_service(endpoint: &str, log_dir: &Path) -> anyhow::Result<ChildGuar
 }
 
 /// Spawn the production service with an ephemeral Console listener and return its bound port.
-pub fn spawn_service_with_webapi(
+pub fn spawn_service_with_manage_web(
     endpoint: &str,
     log_dir: &Path,
     user_config_dir: Option<&Path>,
@@ -266,7 +266,7 @@ fn spawn_service_inner(
     endpoint: &str,
     log_dir: &Path,
     user_config_dir: Option<&Path>,
-    webapi: bool,
+    manage_web: bool,
 ) -> anyhow::Result<(ChildGuard, Option<u16>)> {
     let binaries = process_binaries()?;
     std::fs::create_dir_all(log_dir)?;
@@ -280,15 +280,15 @@ fn spawn_service_inner(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if webapi {
-        command.env("GHOSTLIGHT_WEBAPI_PORT", "0");
+    if manage_web {
+        command.env("GHOSTLIGHT_MANAGE_WEB_PORT", "0");
     }
     if let Some(path) = user_config_dir {
         command.env("GHOSTLIGHT_USER_CONFIG_DIR", path);
     }
     let child = ChildGuard(command.spawn()?);
-    let port = if webapi {
-        Some(wait_for_webapi_port(log_dir, Duration::from_secs(15))?)
+    let port = if manage_web {
+        Some(wait_for_manage_web_port(log_dir, Duration::from_secs(15))?)
     } else {
         wait_for_debug_state(log_dir, Duration::from_secs(15))?;
         None
@@ -363,12 +363,15 @@ fn wait_for_debug_state(log_dir: &Path, within: Duration) -> anyhow::Result<()> 
     )
 }
 
-fn wait_for_webapi_port(log_dir: &Path, within: Duration) -> anyhow::Result<u16> {
+fn wait_for_manage_web_port(log_dir: &Path, within: Duration) -> anyhow::Result<u16> {
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
         if let Some(raw) = newest_debug_state(log_dir) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(port) = value.get("webapi_port").and_then(serde_json::Value::as_u64) {
+                if let Some(port) = value
+                    .get("manage_web_port")
+                    .and_then(serde_json::Value::as_u64)
+                {
                     return u16::try_from(port).map_err(Into::into);
                 }
             }

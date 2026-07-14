@@ -1,7 +1,7 @@
 # ADR-0076: Managed native remote authentication
 
 Date: 2026-07-14
-Status: Proposed
+Status: Superseded by ADR-0077
 Builds on: ADR-0028, ADR-0033, ADR-0034, ADR-0055
 
 ## Context

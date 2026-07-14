@@ -1,8 +1,8 @@
 # Design note: managed-mode network + identity features
 
-Status: **resolved into Proposed ADRs** (2026-07-14). This note preserves the design exploration for
-two SAPS findings. ADR-0075 now owns SEC-HIGH-03 (transaction-bound confirmation), and ADR-0076 owns
-SEC-HIGH-02 (managed native remote authentication). Neither ADR authorizes production work yet.
+Status: **partly superseded** (2026-07-14). This note preserves the design exploration for two SAPS
+findings. ADR-0075 still owns SEC-HIGH-03. ADR-0077 closes SEC-HIGH-02 by removing browser-control
+web ingress entirely and supersedes the proposed remote design in ADR-0076.
 
 ## The unifying frame
 
@@ -79,14 +79,14 @@ the intent lives. Opt-in, managed-mode only; all-open / personal stays untouched
 - Relationship to `enforce` mode and the existing capability classification -- is `require: confirm`
   just a third outcome alongside allow/deny at the chokepoint?
 
-## SEC-HIGH-02 -- remote access authentication
+## SEC-HIGH-02 -- remote access authentication (superseded)
 
-### Interim (shipped)
+### Final current decision
 
-The management-plane `enable-remote` action is **disabled** (returns 403, writes nothing): it used
-to bind `inbound.web` on `0.0.0.0` over plaintext with no auth -- the mass-exposure foot-gun in the
-prior art (Ollama ~175k, Selenium/SeleniumGreed ~30k, Ray/ShadowRay). The documented remote story is
-a tunnel over the loopback service.
+ADR-0077 removes `inbound.web`, its `enable-remote` action, and its supporting configuration and
+policy surface. Ghostlight has no remote browser-control listener. The read-only Console remains
+loopback-only and does not accept WebSocket upgrades. Any future remote capability starts from a
+new threat model and ADR rather than reviving this design.
 
 ### Direction (under discussion)
 
@@ -115,7 +115,7 @@ a tunnel over the loopback service.
 ## Cross-links
 
 - Transaction-bound managed confirmation: ADR-0075.
-- Managed native remote authentication: ADR-0076.
+- Local-only ingress and removal of the remote proposal: ADR-0077 (supersedes ADR-0076).
 - Continuity Promise / no-phone-home: ADR-0028.
 - Signed policy distribution: ADR-0055 (`managed://`), docs/design or the managed-scheme notes.
 - Capability classification: the read/action/write/execute model (ADR-0022).

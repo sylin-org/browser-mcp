@@ -22,11 +22,11 @@ docs/research/14 for the discovery context.
 
 ## Audit of the tree against it
 
-- **Transport exposure.** Ghostlight's MCP is hand-rolled JSON-RPC 2.0 over stdio
-  (`src/transport/mcp/server.rs`); the hub's local web API tunnels the same byte stream over a
-  hand-rolled WebSocket into the same `serve_session` chokepoint. Neither uses Streamable
-  HTTP, protocol-level sessions, or `Mcp-Session-Id` (verified: no occurrence in `src/`).
-  The stateless-core change therefore costs nothing today, and the web adapter's session
+- **Transport exposure.** Ghostlight's MCP is hand-rolled JSON-RPC 2.0 over stdio through the
+  relay and the owner-only local OS pipe into the same `serve_session` chokepoint. It has no HTTP
+  or WebSocket browser-control transport and does not use Streamable HTTP, protocol-level
+  sessions, or `Mcp-Session-Id` (verified: no occurrence in production source). The
+  stateless-core change therefore costs nothing today, and the local adapter's session
   model (per-connection `SessionGuid`, an internal concept) is unaffected because it was never
   a protocol session.
 - **Server-initiated calls.** Ghostlight issues none (no sampling, no elicitation), so the

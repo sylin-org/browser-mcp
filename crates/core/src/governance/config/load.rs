@@ -23,7 +23,7 @@ use crate::{Error, Result};
 /// found that `dirs::config_dir()` does NOT honor a platform env var override -- e.g. `APPDATA`
 /// on Windows -- for the CURRENT process the way `org_policy_path`'s own `ProgramData` read
 /// does) lets tests and advanced deployments relocate this file, mirroring the
-/// `GHOSTLIGHT_LOG_DIR`/`GHOSTLIGHT_ENDPOINT`/`GHOSTLIGHT_WEBAPI_PORT` convention. This has NO
+/// `GHOSTLIGHT_LOG_DIR`/`GHOSTLIGHT_ENDPOINT`/`GHOSTLIGHT_MANAGE_WEB_PORT` convention. This has NO
 /// security implication: the org-mandatory/org-recommended layers (`org_policy_path`, never
 /// overridable) always outrank whatever this file holds, regardless of where it lives.
 pub fn user_config_path() -> Option<std::path::PathBuf> {

@@ -194,10 +194,6 @@ pub enum KeyConstraint {
     /// [`KeyDef::parse_value`]. The concrete grammar lives in the browser plugin, kept out of
     /// this core module per the a7 arch-test boundary (RECONCILIATION.md section 2).
     DomainPatternList,
-    /// StrList keys constrained to the single literal `["localhost"]`: the management plane is
-    /// permanently loopback. Any other member (including `"*"`) is rejected at load time, so an
-    /// org layer can disable the plane (via the paired `*.enabled = false`) but cannot widen it.
-    LocalhostOnly,
 }
 
 /// A value failed validation against a [`KeyDef`]. Display strings are user-facing: they
@@ -220,8 +216,6 @@ pub enum ConfigValueError {
     DuplicateEntry(String),
     #[error("invalid domain pattern: {0}")]
     InvalidDomainPattern(String),
-    #[error("only \"localhost\" is permitted on this key; got {0}")]
-    NotLocalhost(String),
 }
 
 /// A governance configuration key: a stable dotted name, a human description, its validation
@@ -331,9 +325,6 @@ impl KeyDef {
                     {
                         return Err(ConfigValueError::InvalidDomainPattern(s.to_string()));
                     }
-                    if matches!(self.constraint, KeyConstraint::LocalhostOnly) && s != "localhost" {
-                        return Err(ConfigValueError::NotLocalhost(s.to_string()));
-                    }
                     items.push(s.to_string());
                 }
                 Ok(ConfigValue::StrList(items))
@@ -388,23 +379,6 @@ pub const AUDIT_SYSLOG_ADDRESS: &str = "audit.syslog.address";
 /// manifest `mode` > this resolved value.
 pub const GOVERNANCE_MODE: &str = "governance.mode";
 
-/// `inbound.web.from` -- sources allowed to connect to the local inbound.web adapter (the
-/// HTTP/WS ingestion listener, ADR-0030 Decision 5/9; PINS.md CS8, `docs/tasks/console`).
-/// `["localhost"]` (loopback only) unless the machine owner explicitly opens it via the
-/// management UI's "Enable remote connections" action or an org override. Governs WHO may
-/// connect, never which tools exist (ADR-0030 Decision 6 is preserved: this key has no bearing
-/// on the tool/resource axes).
-pub const INBOUND_WEB_FROM: &str = "inbound.web.from";
-
-/// `inbound.web.enabled` -- whether the inbound.web adapter admits web (WS) tool sessions.
-/// Default FALSE in every preset (SEC hardening pass, 2026-07): driving the browser over a TCP
-/// socket is opt-in (`ghostlight config set inbound.web.enabled true`), so no local process can
-/// open a tool session out of the box. An org-mandatory `false` is the "deny the web adapter"
-/// decision (ADR-0030 Decision 5). The shared TCP listener binds at startup when this key OR
-/// `manage.web.enabled` resolves true (the two planes are independently enableable); the
-/// ingestion gate itself is re-read per connection.
-pub const INBOUND_WEB_ENABLED: &str = "inbound.web.enabled";
-
 /// `inbound.pipe.enabled` -- whether the inbound.pipe adapter (the named-pipe/UDS listener
 /// thin MCP adapters dial into) binds. Pipe admission is OS same-user by construction; this key
 /// exists for a deployment that wants the pipe path closed too.
@@ -417,12 +391,6 @@ pub const OUTBOUND_BROWSER_ENABLED: &str = "outbound.browser.enabled";
 /// `manage.web.enabled` -- whether the management-plane HTTP UI binds. An org-mandatory `false`
 /// takes the management UI off-line without affecting tool ingestion.
 pub const MANAGE_WEB_ENABLED: &str = "manage.web.enabled";
-
-/// `manage.web.from` -- sources allowed to reach the management-plane HTTP UI. The management
-/// plane is PERMANENTLY loopback: the validator rejects any member other than `"localhost"`,
-/// and the router additionally hard-codes a loopback check. There is no remote posture for
-/// administering the service.
-pub const MANAGE_WEB_FROM: &str = "manage.web.from";
 
 /// The static registry of every governance key: the single source of truth for names,
 /// descriptions, constraints, and per-preset defaults (shared format doc section 3.4). The
@@ -512,25 +480,6 @@ pub const KEYS: &[KeyDef] = &[
         default_restricted: KeyValue::Enum("enforce"),
     },
     KeyDef {
-        key: INBOUND_WEB_FROM,
-        description: "Sources allowed to connect to the local inbound.web adapter (the HTTP/WS ingestion listener). \"localhost\" only, unless opened to \"*\" or specific hosts.",
-        constraint: KeyConstraint::None,
-        default_fully_open: KeyValue::StrList(&["localhost"]),
-        default_safe: KeyValue::StrList(&["localhost"]),
-        default_restricted: KeyValue::StrList(&["localhost"]),
-    },
-    KeyDef {
-        key: INBOUND_WEB_ENABLED,
-        description: "Whether the inbound.web adapter admits web (WS) tool sessions. Off by default: web ingestion is opt-in. An org-mandatory false denies the web adapter.",
-        constraint: KeyConstraint::None,
-        // Off in EVERY preset (SEC hardening pass, 2026-07): a TCP surface any local process
-        // can reach must not drive the user's authenticated browser without an explicit
-        // opt-in. The pipe transport (OS same-user admission) remains the default path.
-        default_fully_open: KeyValue::Bool(false),
-        default_safe: KeyValue::Bool(false),
-        default_restricted: KeyValue::Bool(false),
-    },
-    KeyDef {
         key: INBOUND_PIPE_ENABLED,
         description: "Whether the inbound.pipe adapter (the named-pipe/UDS listener thin MCP adapters dial into) binds.",
         constraint: KeyConstraint::None,
@@ -553,14 +502,6 @@ pub const KEYS: &[KeyDef] = &[
         default_fully_open: KeyValue::Bool(true),
         default_safe: KeyValue::Bool(true),
         default_restricted: KeyValue::Bool(true),
-    },
-    KeyDef {
-        key: MANAGE_WEB_FROM,
-        description: "Sources allowed to reach the management-plane HTTP UI. Permanently loopback; cannot be widened.",
-        constraint: KeyConstraint::LocalhostOnly,
-        default_fully_open: KeyValue::StrList(&["localhost"]),
-        default_safe: KeyValue::StrList(&["localhost"]),
-        default_restricted: KeyValue::StrList(&["localhost"]),
     },
 ];
 
@@ -1150,46 +1091,11 @@ mod tests {
     }
 
     #[test]
-    fn localhost_only_key_accepts_only_localhost() {
-        // The management plane is permanently loopback: the validator rejects any member other
-        // than "localhost" -- including "*", specific hosts, and IP literals -- so an org layer
-        // can disable the plane (via manage.web.enabled = false) but cannot widen it.
-        let k = key_def(MANAGE_WEB_FROM).unwrap();
-        assert_eq!(
-            k.parse_value(&json!(["localhost"]), unused_pattern_valid),
-            Ok(ConfigValue::StrList(vec!["localhost".into()]))
-        );
-        assert_eq!(
-            k.parse_value(&json!(["*"]), unused_pattern_valid),
-            Err(ConfigValueError::NotLocalhost("*".into()))
-        );
-        assert_eq!(
-            k.parse_value(&json!(["example.com"]), unused_pattern_valid),
-            Err(ConfigValueError::NotLocalhost("example.com".into()))
-        );
-        assert_eq!(
-            k.parse_value(&json!(["127.0.0.1"]), unused_pattern_valid),
-            Err(ConfigValueError::NotLocalhost("127.0.0.1".into()))
-        );
-        assert_eq!(
-            k.parse_value(&json!(["localhost", "localhost"]), unused_pattern_valid),
-            Err(ConfigValueError::DuplicateEntry("localhost".into()))
-        );
-        assert_eq!(
-            ConfigValueError::NotLocalhost("*".into()).to_string(),
-            "only \"localhost\" is permitted on this key; got *"
-        );
-    }
-
-    #[test]
     fn adapter_enable_keys_default_true_in_every_preset() {
         // ADR-0030 Decision 5: "OPEN MEANS OPEN" -- the channel axis resolves to the adapter's
         // builtin default, never to a code gate. The OS-same-user adapters are enabled by default
         // in every preset; an org-mandatory layer is what denies one.
         //
-        // NOTE: `inbound.web.enabled` is the deliberate exception (SEC hardening pass, 2026-07):
-        // a TCP surface any local process can reach is opt-in, so it defaults false in every
-        // preset -- see `inbound_web_enabled_defaults_false_in_every_preset`.
         for key in [
             INBOUND_PIPE_ENABLED,
             OUTBOUND_BROWSER_ENABLED,
@@ -1205,21 +1111,6 @@ mod tests {
                     ),
                 }
             }
-        }
-    }
-
-    #[test]
-    fn inbound_web_enabled_defaults_false_in_every_preset() {
-        // SEC hardening pass (2026-07): web (WS/TCP) ingestion is opt-in. Driving the user's
-        // authenticated browser over a local TCP port any process can reach must not be a
-        // default; the pipe path (OS same-user admission) remains the default entry point.
-        let k = key_def(INBOUND_WEB_ENABLED).expect("registered key");
-        for preset in [Preset::FullyOpen, Preset::Safe, Preset::Restricted] {
-            assert_eq!(
-                k.default_for(preset),
-                KeyValue::Bool(false),
-                "inbound.web.enabled ({preset:?}) must default false (opt-in ingestion)"
-            );
         }
     }
 

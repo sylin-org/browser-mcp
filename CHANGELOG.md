@@ -5,6 +5,22 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Browser-control web ingress (ADR-0077).** The `inbound.web` HTTP/WebSocket transport, its
+  source policy, configuration keys, remote-enable route, and related scaffolding are removed.
+  Browser control is local-only through the same-user OS pipe. The Console remains a separate,
+  read-only loopback HTTP listener and rejects WebSocket upgrades.
+
+### Changed
+
+- **Least-privilege release publication.** A read-only assembly job now generates the pinned
+  CycloneDX SBOM, packages the extension, creates a canonical `SHA256SUMS` manifest, and uploads
+  one release bundle. The privileged publisher only downloads, verifies, attests, and releases
+  those existing files.
+
 ## [0.5.7] - 2026-07-13
 
 Reliable memory-only GIF recording, bounded large-payload delivery, agent narration, a broader

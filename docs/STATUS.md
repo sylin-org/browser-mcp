@@ -41,14 +41,19 @@ when they disagree**, and update it when you land something that changes the pic
   Production or mint a fresh token before a later publish attempt. Credential locations remain in
   `local/`; no values belong in tracked documentation.
 - **The ADR-0056 Lightbox consolidation is complete.** All 27 legacy ignored spawn tests have named
-  parity scenarios, the originals and dual shell wrappers are retired, and CI runs the 37-scenario
+  parity scenarios, the originals and dual shell wrappers are retired, and CI runs the 34-scenario
   Lightbox suite as the sole service-side process-boundary gate. The repaired Playwright job stays
   as the separate real-extension/Chromium proof under ADR-0056 Decision 4.
-- **The remaining SAPS high findings now have evidence-grounded Proposed designs.** ADR-0075 pins
-  one-time, stale-sensitive confirmation for signed managed action descriptors. ADR-0076 keeps
-  personal remote access tunnel-first and requires a managed-only, standards-conformant, TLS and
-  sender-constrained OAuth resource server before any non-loopback listener can return. Both remain
-  implementation-gated; the current remote-enable action stays disabled.
+- **Browser control is local-only (ADR-0077).** The `inbound.web` HTTP/WebSocket transport and all
+  of its policy, configuration, remote-enable, and test scaffolding are removed. MCP clients enter
+  through the same-user OS pipe. The Console is a separate read-only loopback HTTP listener and
+  rejects WebSocket upgrades. ADR-0076 is superseded; any future remote design starts from zero.
+- **The Linux lifecycle test recipe is ready.** `docs/testing/linux-live-lifecycle.md` pins Ubuntu
+  Desktop 24.04 LTS, visible Chrome Stable, VS Code first and Codex second, one ordinary OS user,
+  and clean install through uninstall evidence. The owner is preparing the host and SSH access.
+- **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
+  the pinned SBOM, packages the extension, creates `SHA256SUMS`, and uploads one immutable bundle.
+  The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.
 - **The public vulnerability-disclosure endpoint is live.** `https://sylin.org/.well-known/security.txt`
   publishes the contact, expiry, canonical URL, and Ghostlight security-policy link.
 - **The four-phase public documentation freshness pass is complete in the working tree.** Trust
@@ -169,7 +174,7 @@ when its API credentials or dashboard metadata are absent.
   away from recent touched-control, pointer, and scroll activity. The separate central governance
   ribbon now has viewport-bounded sizing and wrapped, untruncated security text. `ghostlight demo`
   narrates its six story beats after each stage loads, holds each caption for its full six-second
-  lifetime, and only then begins the visible actions. Rust and the 67-test extension suite are
+  lifetime, and only then begins the visible actions. Rust and the 72-test extension suite are
   green. Live browser
   verification passed on 2026-07-13 through the real MCP `script`
   path: `shown: true`, timed placement, replacement, active-navigation replay, and audit
@@ -182,9 +187,9 @@ when its API credentials or dashboard metadata are absent.
   - SEC-HIGH-03 enforce-half: ADR-0075 proposes a signed managed descriptor, MCP form elicitation,
     one-time in-memory pending action, and stale-sensitive final dispatch. Acceptance needs client
     evidence, schema/privacy review, and Lightbox plus real-browser proof; build is not authorized.
-  - SEC-HIGH-02 full fix: ADR-0076 proposes tunnel-first personal access and managed-only native
-    remote via Streamable HTTP, MCP OAuth, TLS, and sender-constrained tokens. Acceptance needs
-    client/IdP evidence and a transport/threat review; `enable-remote` remains disabled.
+  - SEC-HIGH-02 is closed by removal: ADR-0077 deletes the browser-control web listener, remote
+    policy keys, remote-enable route, and WebSocket machinery. There is no remote browser-control
+    transport to authenticate. Future remote work requires a new threat model and ADR.
   - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
     same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real

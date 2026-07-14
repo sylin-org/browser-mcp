@@ -193,7 +193,7 @@ fn form_fill_parent_audit() -> anyhow::Result<()> {
         }}))?,
     )?;
     let (_service, _port) =
-        support::spawn_service_with_webapi(&endpoint, tmp.path(), Some(&config_root))?;
+        support::spawn_service_with_manage_web(&endpoint, tmp.path(), Some(&config_root))?;
     let mut adapter = support::spawn_adapter(&endpoint, tmp.path())?;
     let mut stdin = adapter
         .stdin
