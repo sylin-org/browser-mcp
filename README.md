@@ -19,11 +19,19 @@ dedicated tab group that stays separate from your ordinary tabs. Actions happen 
 works wide open for personal use or under inspectable policy when stronger boundaries are useful.
 Everything runs locally, and nothing phones home.
 
+**No account and no subscription trap.** The local browser automation core is Apache-2.0 OR MIT
+and runs without a Ghostlight login, activation server, telemetry, or subscription. Organizational
+governance is a separately licensed source-available layer. Personal use, evaluation, development,
+small teams, and unrestricted all-open operation remain free under the exact terms linked in
+[License](#license).
+
 Responsibility is part of the experience, not a brake on it. A good agent tool should be easy to
 start, obvious while it acts, clear when it stops, and honest about what it can and cannot control.
 
+<p align="center"><a href="#try-it"><strong>Install and try it</strong></a> | <a href="docs/guides/installation.md">Every install path</a> | <a href="docs/COMPARISON.md">Compare alternatives</a></p>
+
 <!-- HERO DEMO SLOT: an annotated session GIF captured from Ghostlight's built-in live tour
-     (sky-blue click rings, action labels, progress bar, watermark). Record `ghostlight demo`,
+     (sky-blue click rings, action labels, compact narration, watermark). Record `ghostlight demo`,
      export a GIF under ~5 MB, then uncomment:
 <p align="center"><img src="docs/assets/demo.gif" alt="Ghostlight driving a real browser: sky-blue click ripples, action captions, and a governed session in its own tab group"></p>
 <p align="center"><sub>Ghostlight driving its own live demo stage, including a visible policy guardrail.</sub></p>
@@ -67,6 +75,11 @@ cloud browser, or a Claude-only setup already served by Anthropic's first-party 
 Needs a Chromium browser (116+), an MCP client, and Node for the `npx` install path. The running
 service is native Rust; there is no Node service to keep alive and nothing to compile.
 
+```text
+[1 Install service] -> [2 Add extension] -> [3 Restart MCP client] -> [4 Ask a first task]
+      automatic           visible step             once                useful proof
+```
+
 1. **Install the local service and register detected MCP clients:**
 
    ```sh
@@ -84,7 +97,8 @@ service is native Rust; there is no Node service to keep alive and nothing to co
 
 3. **Restart your MCP clients.** The browser tools appear. Try:
 
-   > Open a new browser tab, go to example.com, and tell me what the page says.
+   > In my current browser, summarize the active page and tell me which tab you used. Do not click
+   > or change anything.
 
 If anything looks off, `npx ghostlight doctor` tells you exactly what. Prebuilt archives, building
 from source, and every other path live in the
@@ -147,8 +161,8 @@ Rust implementation.)
 - **Compose.** Multi-step scripts with inter-step data flow and `dry_run` pre-flight; one-call
   action batches; wait-for-condition with page settlement; timed narration at meaningful workflow
   phases for the person watching.
-- **Record.** Animated-GIF session recording with click cues, action labels, a progress bar, and
-  real per-frame timing.
+- **Record.** Animated-GIF session recording with click cues, action labels, a truthful REC badge,
+  and real per-frame timing.
 - **Inspect.** Accessibility tree (with diff mode), page text, actionable element search, console
   and network activity, JavaScript dialogs, and explicit owned-tab lifecycle controls.
 

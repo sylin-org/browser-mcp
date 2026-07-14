@@ -146,6 +146,21 @@ repository-native option; Ko-fi could be a secondary link. Neither should unlock
 published before the recipient, entity, accounting, and tax handling are decided. Public wording
 should say "support" or "sponsorship," not imply a charitable donation.
 
+### OpenCode was named as a developer-friendly reference
+
+The participant later named anomalyco/opencode as an example of repository content that feels
+developer-friendly. Its current README, checked on 2026-07-14, uses a terse product sentence and
+visual proof, then puts installation immediately in the main flow. It explains working modes,
+documentation, and contribution after the reader can already see how to start. Source:
+https://github.com/anomalyco/opencode
+
+The useful pattern is fast repository orientation, not its exact layout or tone. Ghostlight has a
+two-part install and a more important local trust boundary, so hiding those details to match a
+one-command product would be misleading. The actionable adaptation is an immediate install anchor,
+the visible four-stage journey, one read-only proof task, and practitioner capabilities before
+organization governance. Procurement and licensing depth stay available later rather than
+disappearing.
+
 ## Product conclusions
 
 1. Protect the post-install strength. Recognition, connection speed, and visible action feedback
@@ -158,6 +173,8 @@ should say "support" or "sponsorship," not imply a charitable donation.
 5. Lead repository readers as practitioners. Put organizational depth where organizational
    readers actually look.
 6. Preserve whimsy in confirmation and invitation. Keep authority calm, precise, and unmistakable.
+7. Keep repository orientation fast: show the product, make installation findable immediately,
+   then explain deeper modes and organizational concerns.
 
 ## Follow-up evidence
 

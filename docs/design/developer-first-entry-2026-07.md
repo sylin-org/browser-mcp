@@ -1,6 +1,7 @@
 # Developer-first repository and installation entry, 2026-07
 
-Status: Content and journey proposal. No public page is changed by this document.
+Status: Implemented in the repository README and installation guide on 2026-07-14. Publication
+outside this repository remains separately gated.
 
 ## Goal
 
@@ -11,6 +12,12 @@ facts, but place them where they answer the reader's next question.
 This refines the public content contract in
 [the July documentation review](public-documentation-review-2026-07.md). It does not authorize a
 license change or publication outside this repository.
+
+The non-author reviewer named https://github.com/anomalyco/opencode as a positive reference. Its
+current repository order puts a short product promise and visual first, installation immediately
+afterward, then working modes, documentation, and contribution. Ghostlight adopts the fast
+orientation and install visibility, not the exact one-command shape: the extension remains an
+honest second step and the local trust explanation remains near the entrance.
 
 ## Reader order
 
@@ -169,7 +176,7 @@ Use `support` or `sponsorship`; do not imply tax-deductible charitable donation 
 
 ## Acceptance checks
 
-A future content implementation should not be considered done until:
+The repository content implementation is not considered done until:
 
 1. a new visitor can find the current extension artifact from the main entrance in one click;
 2. the complete four-stage install path is visible before opening the detailed guide;
