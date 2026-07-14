@@ -349,10 +349,14 @@ license expiry nothing about enforcement or audit changes; the only effect is th
 license-state notices appear in your own tooling and audit records until you renew, per the
 Continuity Promise.
 
+Run the license-expiry continuity proof:
+
+    cargo run -p ghostlight-lightbox -- run license-expiry-continuity
+
 See the [licensing guide](../guides/licensing.md),
 [ADR-0027](../adr/0027-open-core-business-model-and-licensing.md), and
 [ADR-0028](../adr/0028-tripwire-licensing-and-continuity-promise.md).
 
-Evidence: docs/guides/licensing.md; ADR-0027 (open-core split, source-available governance); ADR-0028 (expiry changes only the audit stamp).
+Evidence: docs/guides/licensing.md; ADR-0027 (open-core split, source-available governance); ADR-0028 (expiry changes only the audit stamp); lightbox scenario license-expiry-continuity (same governed decision and audit fields, with only the expired marker added).
 
-Last reviewed: 2026-07-13 against v0.5.7 | Contact: support@sylin.org
+Last reviewed: 2026-07-14 against v0.5.7 | Contact: support@sylin.org

@@ -4,12 +4,21 @@
 //! endpoint. Each returns `Ok(())` on pass. This is the executable spec that closes the ADR-0055
 //! Phase-4a owed live-e2e as one command.
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, ensure};
 
+use ghostlight_core::browser::polarity;
+use ghostlight_core::governance::audit::Recorder;
+use ghostlight_core::governance::dispatch::{Gate, Governance};
+use ghostlight_core::governance::enforcement::LocalPdp;
+use ghostlight_core::governance::license::{self, Claims, LicenseState};
 use ghostlight_core::governance::managed;
 use ghostlight_core::governance::managed::cache::{Freshness, StaleReason};
 use ghostlight_core::governance::managed::status;
+use ghostlight_core::governance::manifest::document::{Grant, HostRules};
 use ghostlight_core::governance::paths::GovernancePaths;
+use ghostlight_core::governance::ports::{AuditSink, Capability, EffectiveMode, GoverningResource};
 
 use crate::support::{self, BundleServer, TempRoot};
 
@@ -37,7 +46,107 @@ pub fn registry() -> Vec<Scenario> {
         ("no-clobber-on-reresolve", no_clobber_on_reresolve),
         ("sidecar-propagation", sidecar_propagation),
         ("passport-freshness", passport_freshness),
+        ("license-expiry-continuity", license_expiry_continuity),
     ]
+}
+
+/// License expiry changes only the audit marker: the same governed call remains allowed under the
+/// same grant, with every deterministic audit field unchanged (ADR-0028 Decisions 1 and 6).
+fn license_expiry_continuity() -> anyhow::Result<()> {
+    let claims = Claims {
+        id: "00000000-0000-4000-8000-000000000001".into(),
+        licensee: "Acme Security".into(),
+        org: "acme".into(),
+        tier: "community".into(),
+        seats: 5,
+        products: vec!["browser".into()],
+        issued: "2026-01-01".into(),
+        expires: "2026-12-31".into(),
+    };
+    let valid = LicenseState::Valid {
+        claims: claims.clone(),
+        keygen: 1,
+    };
+    let expired = LicenseState::Expired { claims, keygen: 1 };
+
+    let tmp = TempRoot::new("license-expiry")?;
+    let valid_record = governed_read_record(&tmp.path().join("valid.jsonl"), &valid)?;
+    let expired_record = governed_read_record(&tmp.path().join("expired.jsonl"), &expired)?;
+
+    ensure!(
+        valid_record.get("license").is_none(),
+        "an in-date production license must not add an audit marker: {valid_record}"
+    );
+    ensure!(
+        expired_record
+            .get("license")
+            .and_then(serde_json::Value::as_str)
+            == Some("expired"),
+        "an expired license must add exactly the expired marker: {expired_record}"
+    );
+
+    let stable = |mut record: serde_json::Value| -> anyhow::Result<serde_json::Value> {
+        let object = record
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("audit record is not an object"))?;
+        for field in ["event_id", "ts", "duration_ms", "license"] {
+            object.remove(field);
+        }
+        Ok(record)
+    };
+    ensure!(
+        stable(valid_record)? == stable(expired_record)?,
+        "license expiry changed a deterministic authorization or audit field"
+    );
+    Ok(())
+}
+
+/// Execute one real governed read and return its single audit record under `state`.
+fn governed_read_record(
+    audit_path: &std::path::Path,
+    state: &LicenseState,
+) -> anyhow::Result<serde_json::Value> {
+    static READ: &[Capability] = &[Capability::Read];
+
+    let recorder = Arc::new(Recorder::to_file(audit_path.to_path_buf()));
+    recorder.set_license_stamp(license::stamp_for(state));
+    let audit: Arc<dyn AuditSink> = recorder;
+    let grant = Grant {
+        id: "acme-read".into(),
+        hosts: HostRules {
+            allow: vec!["app.acme.example".into()],
+            deny: Vec::new(),
+        },
+        allowed: vec![Capability::Read],
+        description: None,
+        mode: None,
+    };
+    let governance = Governance::governed(
+        Box::new(LocalPdp::new(polarity::evaluate_host)),
+        audit,
+        vec![grant],
+        "license-expiry-continuity".into(),
+        None,
+    );
+    let mut call = governance.begin("read_page", None, Some(READ));
+    call.set_domain(Some("app.acme.example".into()));
+    let gate = governance.authorize(
+        &mut call,
+        Some(GoverningResource::Resource("app.acme.example".into())),
+        EffectiveMode::Enforce,
+    );
+    ensure!(
+        matches!(gate, Gate::Proceed),
+        "the governed read must remain authorized, got {gate:?}"
+    );
+    call.complete();
+
+    let line = std::fs::read_to_string(audit_path)?;
+    ensure!(
+        line.lines().count() == 1,
+        "expected exactly one audit record, got {line:?}"
+    );
+    Ok(serde_json::from_str(line.trim())?)
 }
 
 /// An org-signed bundle at a LOCAL path (the air-gap path) activates as the org's policy.

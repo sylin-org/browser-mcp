@@ -1,6 +1,6 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-13. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-14. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
@@ -167,12 +167,8 @@ manual when its API credentials or dashboard metadata are absent.
     (the action is currently disabled as the interim fix). Same design note; build pending.
   - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
     same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
-- **tabs_create prose leaks the un-encoded native tab id** (found in the ADR-0061 live
-  verify; pre-existing, non-regression). Small fix in the tabs_create response text.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real
   browser).
-- **FAQ Q17 follow-up**: no license-expiry scenario exists in lightbox; adding one would
-  let the trust-center FAQ point at exactly what it claims.
 - Parked (deliberately): audit TCP sink (UDP syslog is the standard; revisit only on ask);
   `socket.yml` capability acknowledgments for the npm package (draft-first, owner call).
 
