@@ -65,6 +65,19 @@ file does not restate them -- follow AGENTS.md.
 - **Debug observability is metadata-only.** MCP bodies and successful tool results can contain page
   text, form values, files, screenshots, or recordings. Never persist them in debug events; keep
   method/tool ids, states, counts, timings, and byte sizes only (ADR-0073).
+- **A native-port or extension-worker restart is not a browser restart.** Chrome storage.session
+  provides the process-generation proof used by ADR-0080 recovery. Do not clear an uncertain tab
+  merely because the native host reconnected; require the exact terminal command, tab destruction,
+  or a changed browser-process generation.
+- **A completed tab load is not proof that the current document can render extension UI.** An
+  extension reload can invalidate an unchanged page's content-script receiver without causing
+  navigation. Presentation delivery uses ADR-0081's content-script ready handshake plus exact
+  Chrome document/revision acknowledgement and packaged on-demand reinjection. Never restore a
+  direct fire-and-forget `tabs.sendMessage` path for Ghostlight page signage.
+- **Visible scope and visible activity are different promises.** The persistent sky border means a
+  tab is agent-reachable under ADR-0066's managed-tab boundary. Pills, scans, camera frames, and
+  pointer effects explain transient work inside that boundary. Do not make scope depend on a tool
+  happening to run or make an action effect establish reachability.
 
 ## Pointer index (where durable things live)
 

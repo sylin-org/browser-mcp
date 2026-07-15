@@ -15,6 +15,8 @@ pub mod proc;
 pub mod role;
 pub mod session_guid;
 pub mod supervisor;
+#[cfg(unix)]
+mod user_session;
 pub mod watchdog;
 
 pub use error::{Error, Result, ToolError};

@@ -5,7 +5,31 @@ All notable changes to Ghostlight are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-15
+
+Closed-loop browser actions, calmer visible feedback, local-only transport hardening, and
+resource-scoped command reliability.
+
+This release establishes Ghostlight's greenfield browser boundary: browser control is local to the
+interactive user's authenticated Chromium session. It does not preserve or replace the removed
+browser-control web transport.
+
+### Added
+
+- **Closed-loop browser core (ADR-0078).** The additive tool surface now includes semantic
+  `act_on`, explicit JavaScript dialog control, and exact owned-tab focus, reload, and close.
+  Bounded interaction receipts and ref-linked target resolution reduce read-act-read roundtrips.
+- **Resource-scoped scheduling (ADR-0080).** Browser work uses bounded fair queues per tab,
+  client topology, and browser. Same-tab commands serialize, different tabs remain parallel,
+  and single-surface compound operations retain a reentrant lease with a bounded yield quantum.
+- **Extension surface executor.** A bounded per-surface FIFO adds command deduplication,
+  acceptance and terminal acknowledgements, payload erasure, and exact unknown-outcome recovery.
+- **Document-aware Presentation Broker (ADR-0081).** Page signage now uses explicit content-script
+  readiness, exact document/revision acknowledgements, bounded state and event channels, on-demand
+  packaged-renderer activation, navigation replay, and browser-session-only active state.
+- **Linux user-session discovery (ADR-0082).** A relay launched without desktop environment
+  variables securely discovers the owning `/run/user/<uid>` session, restores the user bus, and
+  reaches the same local service endpoint as Chromium's native host.
 
 ### Removed
 
@@ -20,6 +44,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CycloneDX SBOM, packages the extension, creates a canonical `SHA256SUMS` manifest, and uploads
   one release bundle. The privileged publisher only downloads, verifies, attests, and releases
   those existing files.
+- **Developer-first entry.** The README and install journey lead with practitioner setup,
+  no-account and free-core facts, a read-only first proof, and the pre-release extension path.
+- **Calmer visible feedback (ADR-0079).** Isolated denials use a short non-modal sticker. Repeated
+  denials pause only the producing MCP session and offer explicit recovery controls. Narration,
+  screenshot, and recording cues share a quieter visual language.
+- **Persistent controlled-tab disclosure (ADR-0081 amendment).** Every Ghostlight-managed tab now
+  keeps a gently breathing sky border across idle time, navigation, detachment, and extension
+  worker restarts. Capture hides it only long enough to keep the returned image clean.
+- **Atomic execution authority.** Configuration and policy publish as one epoch-bound snapshot;
+  URL probes, authorization, dispatch, landing verification, post-processing, and audit use one
+  admitted execution context.
+- **Complete JavaScript release gates.** The operating-system matrix discovers every extension
+  test, parses every extension JavaScript file as a whole, and exercises the npm launcher's host,
+  hash, and platform-selection boundaries.
+
+### Fixed
+
+- Native-port and extension-worker reconnects no longer clear an uncertain tab. Recovery requires
+  the exact terminal command, confirmed tab destruction, or a changed browser-process generation.
+- Extension reload on an unchanged page no longer silently disables narration, denial notices, or
+  action feedback. The broker reinjects the packaged renderer into managed tabs and verifies the
+  current document accepted the presentation.
+- Retained compound intents no longer suppress their own later extension subrequests.
+- Tool completions and auxiliary asynchronous replies remain bound to the native connection that
+  accepted them, even when a replacement connection reuses the same numeric request id.
+- JavaScript dialogs block ref resolution, geometry reads, scroll probes, cursor movement, and
+  direct fallbacks before any page-dependent preparation can stall behind the dialog.
+- The Foundry demo explicitly negotiates current or legacy provenance through `tools/list`,
+  validates the full service-authored boundary, and fails closed on an unnegotiated contract.
 
 ## [0.5.7] - 2026-07-13
 

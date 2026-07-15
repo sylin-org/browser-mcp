@@ -1,6 +1,6 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-14. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-15. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
@@ -15,6 +15,11 @@ when they disagree**, and update it when you land something that changes the pic
   scoop/winget/homebrew manifests committed to main, trust footers restamped, and the sylin.org
   install-guide fallback refreshed. Release PR #48 merged at `96d1e02`; checksum fill is
   `49c4c5a` and the trust restamp is `4ddb5af`. v0.5.5 was prepared but never published.
+- **v0.6.0 is prepared on `dev`, not published.** The unpublished 0.5.8 draft was retargeted to a
+  minor release because removal of browser-control web ingress establishes an intentional
+  greenfield boundary. Crates, the unpacked extension, npm/MCP metadata, and package-manager
+  templates identify as 0.6.0. Release checksums still belong to the last published artifacts
+  until the owner runs the release workflow from `main`.
 - **v0.5.7 includes the expanded installer matrix**: Codex is a first-class lossless-TOML target
   (ADR-0067), and Windsurf, Zed, OpenCode, and Crush join Claude Code/Desktop, Cursor, and VS Code
   as explicit installer targets (ADR-0071). Strict JSON is merged idempotently. Commented JSONC is
@@ -53,11 +58,24 @@ when they disagree**, and update it when you land something that changes the pic
   focus/reload/close. Actionable observations, bounded interaction receipts, service-authored
   untrusted-output provenance, and final response budgets reduce model roundtrips without moving
   policy or page content into the extension. The 13 trained schemas remain byte-stable. All fast
-  gates and all 34 Lightbox scenarios pass. Visible-browser verification remains pending on the
-  Linux lifecycle host.
-- **The Linux lifecycle test recipe is ready.** `docs/testing/linux-live-lifecycle.md` pins Ubuntu
-  Desktop 24.04 LTS, visible Chrome Stable, VS Code first and Codex second, one ordinary OS user,
-  and clean install through uninstall evidence. The owner is preparing the host and SSH access.
+  gates and all 34 Lightbox scenarios pass. The visible Linux verification is complete: semantic
+  success and ambiguity, dialog blocking and recovery, owned-tab lifecycle, unowned-tab refusal,
+  provenance boundaries, and minimized audit records all passed in the ordinary Chrome profile.
+- **Linux user-session discovery is implemented and live-proven (ADR-0082).** A relay launched
+  with `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` absent securely found `/run/user/1000`,
+  started and reached the user service, and converged with Chrome's real native-host environment.
+  `doctor` found the extension, and Codex 0.144.4 completed browser actions in visible Chrome
+  150.0.7871.124. Linux-only imports and environment constants are now compile-gated away from
+  macOS and Windows, and the ownership regression reaches a real mismatched-owner directory rather
+  than passing on a missing path. The user-level candidate is 0.5.8; it is not a published release.
+- **The Foundry demo is compatible with ADR-0078 provenance boundaries.** Its machine-result
+  preprocessor validates structured page provenance plus matching origin and nonce markers before
+  unwrapping geometry JSON. Raw fallback is enabled only after `tools/list` advertises the legacy
+  contract; current, missing, and unnegotiated contracts fail closed. Consumers accept the ADR's
+  full lowercase even-length nonce range of at least 96 bits instead of pinning today's 128-bit
+  producer. A normal-paced visible run on 2026-07-15 completed the full story,
+  enforced the off-domain denial, exported a 100-frame 23,141,963-byte replay, confirmed page
+  receipt, and cleared the captured bytes. No trained schema or model-facing boundary changed.
 - **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
   the pinned SBOM, packages the extension, creates `SHA256SUMS`, and uploads one immutable bundle.
   The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.
@@ -80,11 +98,71 @@ when they disagree**, and update it when you land something that changes the pic
   the four-stage practitioner journey, no-account/free-core facts, pre-release extension path, and
   a read-only first proof. The full Rust suite, strict clippy, 93 extension tests, JS syntax checks,
   and formatting are green. Visible Linux/browser verification remains owed.
+- **Resource-scoped browser command scheduling is implemented (ADR-0080).** The service now owns
+  bounded fair queues for concrete tab surfaces, client topology, and browser-wide work. Same-tab
+  commands serialize while different tabs remain parallel. Configuration and policy publish as one
+  atomic authority epoch; URL probes, dispatch, landing verification, compound helpers, and audit
+  retain the admitted execution context. Static single-surface scripts and browser batches retain
+  the tab lease and yield at a 60-second step boundary; dynamic and multi-surface batches schedule
+  per step. The extension adds a bounded per-surface FIFO, command deduplication, acceptance and
+  terminal acknowledgements, payload erasure, and separate presentation/control bypass. Unknown
+  outcomes quarantine a tab until an exact terminal acknowledgement, confirmed tab destruction,
+  or a changed browser-process generation proves recovery. Every asynchronous reply now retains
+  the accepting native connection plus request and command identity, so a late completion cannot
+  cross into a replacement connection that reused its numeric request id. Dialog guarding also
+  precedes scroll ref resolution, page probes, cursor movement, and direct fallback. Strict clippy,
+  the full Rust workspace, all 34 Lightbox scenarios, and 108 extension tests pass. Visible
+  verification found and fixed a
+  retained-intent defect: extension execution identity now includes the internal request ID, so
+  separate subrequests under one retained lease cannot suppress each other. A live v0.5.8 Chrome
+  probe submitted
+  deliberately overlapping JSON-RPC calls through a raw relay: two same-tab waits completed at
+  4.41 and 8.41 seconds, two different-tab waits completed at 2.07 and 4.00 seconds, and narration
+  rendered in 19 ms while a 3.98-second page command remained active. One first-post-reload
+  `tabs_create_mcp` call lost its terminal acknowledgement and correctly returned
+  `outcome_unknown`; inspection proved no tab was created and a deliberate retry succeeded in
+  42 ms. Keep that transient in reconnect/reload reliability coverage.
+- **Node CI now enforces the complete JavaScript surface on all three operating systems.** The
+  extension job discovers every direct test file, parses every extension JavaScript file as a
+  whole, and runs the npm launcher's host-allowlist, SHA-256, and target-selection tests. The local
+  parity gate is 108 extension tests plus 4 launcher tests.
+- **The document-aware Presentation Broker is implemented (ADR-0081).** One policy-free extension
+  domain service now owns managed-tab document readiness, exact channel/revision/document
+  acknowledgements, on-demand packaged-renderer activation, timed state replacement and replay,
+  bounded document-local effects, browser-session-only restoration, and capture barriers. An
+  extension reload on an unchanged page no longer depends on navigation to reinstall signage.
+  Ready signals and activation are gated to Ghostlight-managed tabs. The prior narration and
+  attention stores are consolidated into the broker; the renderer keeps DOM/CSS ownership and
+  governance authority remains in the Rust service. Strict clippy, the full Rust workspace, all
+  34 Lightbox scenarios, extension syntax checks, and all 100 extension tests pass. A live Chrome
+  probe acknowledged narration on an unchanged managed document, acknowledged it again immediately
+  after navigation, and completed a screenshot capture. A raw-relay concurrency probe returned
+  narration in 4 ms while a same-tab page wait completed in 4,203 ms; the tool connector, not
+  Ghostlight, explained an initially serialized measurement. The owner then confirmed narration,
+  the navigation pill, screenshot border/camera/frame, and read scan in Chrome. That gate clarified
+  the border's semantics: it now follows managed-tab control scope as deadline-free replayable
+  state, with a gentle four-second breathing pulse, rather than fading after individual actions.
+  It remains across idle time, navigation, detachment, and worker restart; capture hides and
+  restores it. Strict clippy, the full Rust workspace, all 34 Lightbox scenarios, extension syntax
+  checks, and all 102 extension tests pass. Awaited delivery and readiness deadlines remain
+  referenced while background expiry remains unreferenced. A focused live probe delivered
+  narration in under one second while a same-tab page wait remained active for at least 3.5
+  seconds. The owner-visible local gate also passes: after an
+  explicit unpacked-extension reload, the idle Example Domain tab recovered its pulsing border
+  without another tool call; navigation kept the message, border, and pulse; and screenshot
+  capture showed its camera cue while suppressing and then restoring the border.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
   small free-surface candidates next -- ref-linked annotated screenshots and optional owned-tab
-  labels.
+  labels. Research 18 now defines deterministic journeys, payload boundaries, benefit thresholds,
+  and fail conditions. The opt-in real-stack baseline harness and four-layout local fixture are
+  ready under `tests/e2e`; its default smoke path and public schemas are unchanged. Annotated
+  screenshots are first; tab labels remain behind baseline evidence. The automated baseline waits
+  for the Linux host, while the documented model-run recipe can be used from any visible browser.
+  One Codex/Windows mechanical run confirmed two observations in each visual journey and 33
+  composite-id characters across three product tabs; it does not yet satisfy the repeated-model
+  acceptance gate.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -154,14 +232,15 @@ when its API credentials or dashboard metadata are absent.
   are now implemented. A late note naming OpenCode as a developer-friendly example is recorded and
   reflected as fast install orientation, without copying its one-command product shape. Next: run
   the revised journey on the Linux host and collect a consented, observed follow-up review.
-- **Public repository metadata is the next small distribution task.** Add a useful GitHub
-  description, homepage, and topics in one owner-confirmed outward-facing pass. Funding links stay
-  deferred until the owner chooses the recipient/entity, provider, and accounting/tax handling.
-- **ADR-0078 visible-browser verification is owed.** C1-C6 and the automated gates are complete.
-  Run `docs/tasks/closed-loop-core/LIVE-VERIFY.md` against the visible Linux Chrome host once SSH
-  access is available. Cross-origin frame refs remain deferred because they require a separate
-  multi-origin governance decision. Headless, isolated, cloud, and remote browser execution remain
-  out of scope.
+- **Public repository metadata is live.** The owner-confirmed outward-facing pass added a
+  practitioner-first GitHub description, the `https://sylin.org/ghostlight/` homepage, and ten
+  discovery topics spanning MCP, browser automation, Chromium, local-first operation, Rust,
+  developer tooling, and access control. Funding links stay deferred until the owner chooses the
+  recipient/entity, provider, and accounting/tax handling.
+- **ADR-0078 visible-browser verification is complete.** C1-C6, the automated gates, and the five
+  visible journeys in `docs/tasks/closed-loop-core/LIVE-VERIFY.md` passed on the Linux host.
+  Cross-origin frame refs remain deferred because they require a separate multi-origin governance
+  decision. Headless, isolated, cloud, and remote browser execution remain out of scope.
 - **Public documentation was rebalanced around responsible delight**: the applied review lives in
   `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
@@ -173,14 +252,22 @@ when its API credentials or dashboard metadata are absent.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
-  and choose a controlled experiment origin. ADR-0043's no-implementation stance remains intact.
+  and choose a controlled experiment origin. A 2026-07-14 recheck against the official Chrome 149
+  trial, security guidance, and current explainer found the draft still current; nothing was sent.
+  ADR-0043's no-implementation stance remains intact.
 - **Agent journey evaluation artifacts are proposed** (ADR-0069): local, minimized evidence for
   comparing models and clients across a browser journey. Acceptance requires concrete journeys, a
   data inventory and threat review, a versioned artifact schema, lightbox production, and evidence
-  from at least two client or model configurations.
+  from at least two client or model configurations. The v0 design now completes the first four
+  gates with three journeys, redacted-by-default field rules, an append-only directory format,
+  compatibility policy, and threat review. Lightbox production and two-configuration evidence
+  remain open; no capture tool or replay path is authorized.
 - **Bounded delegation needs scenario validation before an ADR**: the release-candidate triage
   journey in `docs/design/bounded-delegation-scenario.md` exercises the ADR-0060 session overlay and
-  identifies the unresolved approval, expiry, budget, intent, and digest questions.
+  identifies the unresolved approval, expiry, budget, intent, and digest questions. Personal travel
+  research and organization-managed incident triage now add the two missing postures, and a
+  six-state paper prototype plus rejection criteria is ready. Human comprehension evidence, client
+  elicitation capability, and enforceable consequence vocabulary remain open.
 - **Bidirectional installation handoff is released in v0.5.7** (ADR-0070): an explicit first
   `ghostlight install` opens the stable extension walkthrough once; `--no-open`, dry-run,
   CI, failed, and idempotent paths stay quiet. The canonical service-first page is live at

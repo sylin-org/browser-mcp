@@ -150,6 +150,29 @@ not a sanitizer, content filter, DLP system, or policy decision.
 This provenance ships in the permissively licensed engine. It never phones home, persists page
 content, or changes the local-only boundary.
 
+#### D5 amendment: machine consumers validate before unwrapping
+
+The text boundary is part of the model-facing MCP result. An in-repository machine consumer that
+must parse the enclosed value, such as the scripted demo's geometry helper, may remove only the
+outer control markers after validating that `structuredContent.provenance` marks the result as
+page-sourced and untrusted and that its origin and session nonce exactly match both text markers.
+It must reject malformed, missing, or mismatched provenance instead of deleting marker-shaped page
+text. Raw results remain accepted where compatibility with a pre-ADR-0078 service is intentional.
+This consumer rule does not change the trained tool schema or the service's model-facing output.
+
+#### D5 amendment: legacy parsing requires an advertised legacy contract
+
+A machine consumer does not infer "legacy" from a missing boundary. It first inspects the
+required tool in `tools/list`. Raw machine output is accepted only when that tool is explicitly
+advertised without the provenance property. If the advertisement includes provenance, a missing
+or malformed boundary fails closed. An unnegotiated contract or a missing required tool also fails
+closed. A fully verified bounded result may still be accepted under a legacy advertisement as a
+safe additive upgrade. The legacy state authorizes only the raw fallback.
+
+Consumers validate the nonce shape promised by this ADR: lowercase, even-length hexadecimal with
+at least 96 bits. They must not pin the producer's current 128-bit implementation. Exact agreement
+between structured provenance and both text markers remains mandatory at every supported length.
+
 ### D6. Record content-free target assurance in result and audit
 
 Each relevant interaction reports a target-assurance class: `semantic`, `ref`, `coordinate`, or
@@ -167,6 +190,15 @@ Add a `dialog` tool with `status`, `accept`, `dismiss`, and `respond` actions. S
 the other actions require Action. It is tab-scoped, reports whether a JavaScript dialog is blocking
 the tab, and includes that blocker in relevant interaction receipts. Browser mechanism remains in
 the extension; policy and classification remain in the service.
+
+#### D7 amendment: the blocker guard precedes page-dependent preparation
+
+A relevant interaction checks the extension's current dialog state before resolving a ref, reading
+page geometry, moving the cursor, or performing any other page-dependent preparation. The guard is
+not limited to the final input dispatch. This clarification was added after visible-Chrome
+verification showed that coordinate resolution could wait on a modal page and never reach the
+existing dispatch guard. It includes scroll target resolution, before/after probes, direct
+fallbacks, and every other preparatory page read, not only click and hover paths.
 
 Add a `tab_control` tool with `focus`, `reload`, and `close`. Reload and close require Action. Focus
 changes browser presentation but not page content and requires no RAWX capability. Every action
@@ -215,7 +247,8 @@ browser task.
 4. Existing mutating tools and `act_on` emit bounded receipts without adding unconditional latency
    to low-level calls.
 5. Page-sourced structured and text results carry consistent, service-authored provenance; tests
-   prove that page content cannot choose the session boundary nonce.
+   prove that page content cannot choose the session boundary nonce, and machine consumers validate
+   matching structured provenance before unwrapping an enclosed value.
 6. Audit tests prove target assurance is present while target and page payloads are absent.
 7. Dialog and tab controls prove tab ownership, sacred-tab defense, classification, cleanup, and
    corrective failure behavior.

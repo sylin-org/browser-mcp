@@ -21,8 +21,8 @@ courteous guest who narrates what they touch -- visible enough to trust, quiet e
   "sun"). Shapes are rounded: circles, pills, rounded rectangles.
 - **Spring motion.** Enters settle with `cubic-bezier(.22,1,.36,1)` (a gentle overshoot-free
   spring); exits fade with `ease-out`. Durations sit between roughly 500ms (a beat) and 1600ms
-  (a phrase). Nothing snaps, nothing loops forever except the deliberate "alive" pulses (active
-  glow, wait pulse).
+  (a phrase). Nothing snaps. The controlled-tab border alone breathes continuously because its
+  scope remains true; transient pulses stay bounded.
 - **Monospace chrome.** When an effect carries text (captions, keystroke lozenges, guardrails),
   it uses the `ui-monospace` stack -- instrument-panel text, distinct from the page's own type.
 
@@ -34,7 +34,7 @@ set in `agent-visual-indicator.js`.
 | Effect | Fires on | What it says | Shape |
 | --- | --- | --- | --- |
 | Phantom cursor | pointer moves | "the agent's hand is HERE" | sky arrow glyph, glides with a 150ms transition |
-| Active glow | any tool running | "the agent is present on this page" | soft pulsing inset vignette around the viewport |
+| Controlled-tab border | every Ghostlight-managed tab | "an agent can act inside this tab" | persistent inset sky border with a slow, low-amplitude breathing pulse |
 | Click ripple | left/middle click | "clicked, this many times" | expanding ring per click, staggered for double/triple; right-click ring is dashed |
 | Drag trail | click-drag path | "dragged along this path" | comet trail of fading radial dots |
 | Type shimmer | typing into the focused element | "typing into THIS field" | soft outline pulse on the focused element |
@@ -64,15 +64,17 @@ than merely pretty.
    its own reflection.
 2. **Untouchable by default.** Transient effects and stickers use `pointer-events:none`. The
    attention overlay's service-provided controls are real, keyboard-focusable `<button>` elements.
-3. **Ephemeral by default.** Effects are fire-and-fade confirmations (`addEphemeral`: removed on
+3. **Ephemeral by default.** Action effects are fire-and-fade confirmations (`addEphemeral`: removed on
    `animationend` with a timeout fallback). An isolated denial lasts three seconds. Narration is
    bounded state: one caption per tab until its timer expires or a new narration replaces it. The
-   attention overlay persists because its service-owned pause persists.
+   attention overlay persists because its service-owned pause persists. The controlled-tab border
+   persists because the tab remains agent-reachable.
 4. **Reduced motion respected.** Every animated effect has a `-rm` keyframe variant (plain fade,
    no travel/scale) selected via `prefers-reduced-motion`.
-5. **Optional, except governance.** The extension options' master switch (`ghostlight_effects`)
-   silences every decorative effect, including narration. Denial and attention presentation is
-   deliberately exempt because a guardrail explanation is substantive.
+5. **Optional decoration; mandatory scope and governance.** The extension options' master switch
+   (`ghostlight_effects`) silences decorative action effects and narration. The controlled-tab
+   border is exempt because agent reachability must remain visible. Denial and attention
+   presentation is exempt because a guardrail explanation is substantive.
 6. **Denials replace; they do not stack.** A new isolated denial replaces the active sticker. An
    open attention overlay supersedes stickers and remains until the service reports a disposition.
 7. **Wire text is text.** Any string that can carry page- or policy-influenced content (captions,
@@ -83,9 +85,12 @@ than merely pretty.
 
 ## Seams (how effects are triggered)
 
-- **Service-worker messages** (`chrome.tabs.sendMessage` -> the indicator's `onMessage` switch):
-  the normal path. The binary/service worker knows which tool ran and sends the matching
-  `AGENT_*` message, usually with viewport coordinates.
+- **Presentation Broker** (`extension/lib/presentation-broker.js`): the normal tool-level path.
+  The binary/service worker knows which tool ran and publishes the matching `AGENT_*` intent,
+  usually with viewport coordinates. The broker binds it to the current Chrome document,
+  activates the packaged renderer on demand, and requires an exact channel/revision/document
+  acknowledgement. Controlled scope, narration, notifications, and attention replay while their
+  state remains true. Transient action effects never cross a document change.
 - **The `GhostlightFx` same-world export** (bottom of `agent-visual-indicator.js`): for sibling
   content scripts that know the target ELEMENT (e.g. `content.js`'s form writers calling
   `fieldSplash`). Both scripts share the extension's isolated world, so this is a direct,
@@ -93,13 +98,19 @@ than merely pretty.
   this seam when the trigger's natural home is in-page and a rect would otherwise have to ride a
   wire message.
 
-Narration uses the service-worker seam but has a longer lifecycle than an action effect. Its
-memory-only worker record survives navigation only until the original deadline, then replays the
-remaining duration into the new document. It is commentary, never governance: sky accent, inset
-compact caption, optional under the effects switch, and always below the guardrail layer. Auto
-placement chooses top or bottom once from recent touched-control, pointer, and scroll signals, then
-stays put. Narration, stickers, and overlays use bounded viewport-responsive sizing. The attention
-overlay is central, visually stronger, and never truncates its security text or controls.
+The controlled-tab border uses a deadline-free broker state tied exactly to ADR-0066's
+`managedTabs` set. It survives navigation, detachment from the visible tab group, and a Manifest
+V3 worker restart. It is hidden only during capture and restored immediately afterward. A gentle
+four-second breathing cycle signals presence without resembling progress or urgency.
+
+Narration uses the broker's timed-state channel and has a longer lifecycle than an action effect.
+Its browser-session-only record survives navigation and a Manifest V3 worker restart only until
+the original deadline, then replays the remaining duration into the current acknowledged
+document. It is commentary, never governance: sky accent, inset compact caption, optional under
+the effects switch, and always below the guardrail layer. Auto placement chooses top or bottom
+once from recent touched-control, pointer, and scroll signals, then stays put. Narration, stickers,
+and overlays use bounded viewport-responsive sizing. The attention overlay is central, visually
+stronger, and never truncates its security text or controls.
 
 ## Adding a new effect
 
@@ -107,9 +118,10 @@ overlay is central, visually stronger, and never truncates its security text or 
    it does not join the vocabulary.
 2. Build it from the foundations: sky accent (unless it speaks with governance's authority),
    omnidirectional glow, rounded geometry, spring enter / ease-out exit, and a `-rm` variant.
-3. Wire it through the right seam (message for tool-level triggers, `GhostlightFx` for in-page
-   ones), gate it on `hiddenForTool`/`document.hidden`/`effectsEnabled`, give its element the
-   `ghostlight-` prefix, and route it through `addEphemeral` unless it is genuinely state.
+3. Wire it through the right seam (Presentation Broker for tool-level triggers, `GhostlightFx` for
+   in-page ones), gate it on `hiddenForTool`/`document.hidden` and, for decoration,
+   `effectsEnabled`; give its element the `ghostlight-` prefix, and route it through
+   `addEphemeral` unless it is genuinely state.
 4. Decide its replacement, timeout, and cleanup owner explicitly.
 5. Add its row to the vocabulary table above. The table and the code move together.
 
@@ -121,4 +133,5 @@ always-visible agent affordance follows the official Claude-in-Chrome extension 
 harvested, never code -- ADR-0050 D1). The denial severity taxonomy is SAPS PRES-HIGH-01. The
 field splash and this document were added when form filling joined the demo's visible repertoire
 (2026-07); the owner's directive: show the user what we're touching, and make it part of the
-visual language of the service.
+visual language of the service. The controlled-tab border was clarified during the ADR-0081 live
+gate: the border discloses agent-reachable scope, while the effects inside it explain activity.

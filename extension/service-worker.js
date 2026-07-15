@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/narration.js", "lib/attention.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/presentation-broker.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js", "lib/surface-executor.js", "lib/execution-response.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -40,6 +40,90 @@ const wireChunkStore = self.GhostlightWireChunks.createWireChunkStore({
   },
 });
 
+// ADR-0080: one worker generation owns the bounded resource executor. The service supplies the
+// execution class and resource identity; this mechanism only preserves FIFO and isolation.
+const EXECUTOR_GENERATION = typeof crypto.randomUUID === "function"
+  ? crypto.randomUUID()
+  : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+let executorBrowserSlot = null;
+const toolResponder = self.GhostlightExecutionResponse.createToolResponder(EXECUTOR_GENERATION);
+
+function executorPost(item, message) {
+  try { item.response.port.postMessage(message); } catch { /* connection generation is gone */ }
+}
+
+function wireCommandId(item) {
+  return item.response.commandId;
+}
+
+function postExecutorTerminal(item) {
+  executorPost(item, {
+    type: "tool_terminal",
+    id: item.response.requestId,
+    commandId: wireCommandId(item),
+    executorGeneration: EXECUTOR_GENERATION,
+    resource: item.resource,
+  });
+}
+
+const surfaceExecutor = self.GhostlightSurfaceExecutor.createSurfaceExecutor({
+  execute: async (item) => {
+    await dispatch(item);
+  },
+  onAccepted: (item, duplicate) => executorPost(item, {
+    type: "tool_accepted",
+    id: item.response.requestId,
+    commandId: wireCommandId(item),
+    executorGeneration: EXECUTOR_GENERATION,
+    duplicate: duplicate === true,
+  }),
+  onRejected: (item, reason) => {
+    if (!item) return;
+    fail(item.response, hopError("extension", `Command not executed: ${reason}`));
+    postExecutorTerminal(item);
+  },
+  onTerminal: postExecutorTerminal,
+});
+
+function requestBytes(msg) {
+  try { return new TextEncoder().encode(JSON.stringify(msg)).byteLength; } catch { return 0; }
+}
+
+function executionItem(msg, port, connectionGeneration) {
+  const execution = msg.execution || {};
+  const resource = execution.resource || null;
+  const wireId = execution.commandId === undefined ? msg.id : String(execution.commandId);
+  let key = "legacy:global";
+  if (resource && resource.kind === "surface") {
+    executorBrowserSlot = resource.browserSlot;
+    key = `surface:${resource.browserSlot}:${resource.nativeTab}`;
+  } else if (resource && resource.kind === "client_topology") {
+    key = `topology:${resource.browserSlot}:${resource.clientKey}`;
+  } else if (resource && resource.kind === "browser") {
+    key = `browser:${resource.browserSlot}`;
+  } else if (Number.isSafeInteger(msg.args && msg.args.tabId)) {
+    key = `legacy-surface:${msg.args.tabId}`;
+  }
+  const bypass = execution.class === "presentation" || execution.class === "local" ||
+    execution.class === "safety_protocol";
+  const response = self.GhostlightExecutionResponse.createResponseScope(msg.id, port, wireId);
+  return {
+    // A retained semantic intent sends several distinct extension requests under one service
+    // scheduler command. Deduplicate exact request deliveries, not the whole retained lease.
+    commandId: self.GhostlightSurfaceExecutor.executionIdentity(
+      connectionGeneration,
+      wireId,
+      msg.id
+    ),
+    request: msg,
+    resource,
+    key,
+    bypass,
+    bytes: requestBytes(msg),
+    response,
+  };
+}
+
 // Operational tunables (lib/constants.js), destructured once for use throughout this worker.
 const {
   MAX_SCREENSHOT_B64, JPEG_QUALITY, JPEG_QUALITY_FALLBACK, JPEG_QUALITY_FULL,
@@ -50,10 +134,14 @@ const {
 // (tests/extension/grouping.test.js), given an injected chrome so it never touches policy.
 const { groupSessionTabs, managedGroupIds, isManagedGroupId, pruneDeadGroups, reclaimGroupsByTitle } =
   self.GhostlightGrouping;
-// ADR-0072: pure, memory-only replacement and expiry state. The worker supplies tab routing;
-// this store contains no policy or page-content logic.
-const narrationStore = self.GhostlightNarration.createNarrationStore();
-const attentionStore = self.GhostlightAttention.createAttentionStore();
+// ADR-0081: one policy-free broker owns current-document readiness, presentation replacement,
+// expiry, replay, acknowledgements, and bounded transient events. Chrome APIs remain adapter
+// callbacks; the broker contains no policy or page-content interpretation.
+const presentationBroker = self.GhostlightPresentationBroker.createPresentationBroker({
+  deliver: deliverPresentation,
+  activate: activatePresentation,
+  onStateChange: persistPresentationSnapshot,
+});
 // ADR-0078 D7: the minimum current CDP dialog state per tab. It is mechanism-only, memory-only,
 // and never resolves anything without an explicit model-facing dialog action.
 const dialogStore = self.GhostlightDialog.createDialogStore();
@@ -64,12 +152,18 @@ const dialogStore = self.GhostlightDialog.createDialogStore();
 // that host (the installed release, or a fresh build a developer just started) serves everyone;
 // the extension never picks an engine.
 const NATIVE_HOST = "org.sylin.ghostlight";
+const BROWSER_GENERATION_KEY = "ghostlight_browser_generation";
+const PRESENTATION_STATE_KEY = "ghostlight_presentation_state";
+const VISUAL_SCRIPT_FILES = ["lib/narration-placement.js", "agent-visual-indicator.js"];
+const PRESENTATION_EVENT_TTL_MS = 2500;
+const NARRATION_DEFAULT_DURATION_MS = 5000;
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
 // name. The emoji is written as an escape so this source file stays ASCII; it renders as
 // the glyph at runtime.
 const GROUP_TITLE = "\u{1F47B}Ghostlight";
 
 let nativePort = null;
+let nativeConnectionSeq = 0;
 let groupId = null;
 // Extension-owned browser identity (ADR-0061): a UUID minted once and persisted in
 // chrome.storage.local, announced to the service as the opening frame of every native-messaging
@@ -95,6 +189,26 @@ const clientGroups = new Map();
 // browser restart, so a stale id must never survive one), and re-seeded on rehydrate from the live
 // members of every managed group. Pruned on tabs.onRemoved.
 const managedTabs = new Set();
+// ADR-0081 control-scope amendment: membership in `managedTabs` is also the exact lifecycle of
+// the persistent viewport border. The broker state replays into every eligible document and
+// survives a worker restart; it is not an action effect and has no deadline. Centralizing every
+// add here prevents reachability and its user-visible disclosure from drifting apart.
+function markTabManaged(tabId) {
+  if (!Number.isSafeInteger(tabId)) return false;
+  managedTabs.add(tabId);
+  const hasControlState = presentationBroker.states().some(
+    (state) => state.tabId === tabId && state.channel === "control"
+  );
+  if (!hasControlState) {
+    presentationBroker.publishState(tabId, "control", {
+      type: "SHOW_AGENT_INDICATORS",
+    }, {
+      clearMessage: { type: "HIDE_AGENT_INDICATORS" },
+      waitForDelivery: false,
+    });
+  }
+  return true;
+}
 // ADR-0066 D2/D4: the group title the service writes is the ghost glyph + a space + the clientKey
 // (session_title). This prefix is what rehydrate strips to reclaim a group by title after a
 // browser restart. Distinct from GROUP_TITLE (glyph + name, NO space) so the two never collide.
@@ -145,9 +259,14 @@ async function connect() {
   // ADR-0061: resolve the persistent browser id BEFORE opening the port, so it can be sent as the
   // very first frame (below) with no await interleaving another message ahead of it.
   const browserId = await browserIdentity.get();
+  const browserGeneration = await browserProcessGeneration();
   if (nativePort) return; // re-check after the await above
   try {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
+    const connectedPort = nativePort;
+    const connectedResponder = self.GhostlightExecutionResponse
+      .createConnectionResponder(connectedPort);
+    const connectionGeneration = `${EXECUTOR_GENERATION}:${++nativeConnectionSeq}`;
     // ADR-0061: announce identity FIRST, before any other frame. The relay forwards it verbatim, so
     // the service reads it as the extension's opening handshake frame (right after the relay's own
     // ROLE_BROWSER hello) and keys this browser's session by it. Fire-and-forget, mechanism only.
@@ -155,7 +274,9 @@ async function connect() {
       nativePort.postMessage({
         type: "browser_hello",
         browserId,
-        features: ["chunkedHostMessagesV1"],
+        browserGeneration,
+        features: ["chunkedHostMessagesV1", "surfaceExecutorV1"],
+        executorGeneration: EXECUTOR_GENERATION,
       });
     } catch { /* port gone */ }
     sendDebugEvent("connect_attempt");
@@ -163,16 +284,22 @@ async function connect() {
     const handleNativeMessage = (msg) => {
       if (msg && msg.type === "wire_chunk") {
         wireChunkStore.accept(msg, handleNativeMessage, (requestId, reason) => {
-          fail(requestId, hopError("extension", `Large request rejected: ${reason}`));
+          fail(
+            self.GhostlightExecutionResponse.createResponseScope(requestId, connectedPort),
+            hopError("extension", `Large request rejected: ${reason}`)
+          );
         });
         return;
       }
       if (msg && msg.type === "tool_request" && msg.id) {
         if (sessionKilled) {
-          fail(msg.id, hopError("extension", "The user ended the browser session (kill switch)"));
+          fail(
+            self.GhostlightExecutionResponse.createResponseScope(msg.id, connectedPort),
+            hopError("extension", "The user ended the browser session (kill switch)")
+          );
           return;
         }
-        dispatch(msg.id, msg.tool, msg.args || {}, msg.clientKey || msg.guid);
+        surfaceExecutor.submit(executionItem(msg, connectedPort, connectionGeneration));
         return;
       }
       // Tab-URL query (g13): mechanism only. Reports chrome.tabs.get(tabId).url verbatim (or
@@ -192,10 +319,18 @@ async function connect() {
             if (managed) {
               try { const tab = await chrome.tabs.get(msg.tabId); url = tab.url || null; } catch { url = null; }
             }
-            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url } }); } catch { /* port gone */ }
+            connectedResponder.post({
+              id: msg.id,
+              type: "tab_url_response",
+              result: { url },
+            });
           },
           () => {
-            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: null } }); } catch { /* port gone */ }
+            connectedResponder.post({
+              id: msg.id,
+              type: "tab_url_response",
+              result: { url: null },
+            });
           }
         );
         return;
@@ -211,14 +346,14 @@ async function connect() {
       const groupKey = (msg && (msg.clientKey || msg.guid)) || null;
       if (msg && msg.type === "group_request" && typeof groupKey === "string" && groupKey) {
         const tabIds = Array.isArray(msg.tabIds) ? msg.tabIds : [];
-        for (const t of tabIds) managedTabs.add(t);
+        for (const t of tabIds) markTabManaged(t);
         groupSessionTabs(chrome, clientGroups, groupKey, tabIds, msg.title || GROUP_TITLE)
           .then(() => persistSessionState())
           .then(() => {
-            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: true }); } catch { /* port gone */ }
+            connectedResponder.post({ type: "group_response", guid: msg.guid, ok: true });
           })
           .catch(() => {
-            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: false }); } catch { /* port gone */ }
+            connectedResponder.post({ type: "group_response", guid: msg.guid, ok: false });
           });
         return;
       }
@@ -227,26 +362,40 @@ async function connect() {
       // already decided everything (class/icon/title/description); this only relays it to the
       // named tab's content script for rendering -- no policy decision, no interpretation here.
       if (msg && msg.type === "notification" && typeof msg.tabId === "number") {
-        sendToTab(msg.tabId, {
-          type: "AGENT_NOTIFICATION",
-          class: msg.class,
-          icon: msg.icon,
-          title: msg.title,
-          description: msg.description,
-          durationMs: msg.durationMs,
-        });
+        presentationBroker.publishState(
+          msg.tabId,
+          "notification",
+          {
+            type: "AGENT_NOTIFICATION",
+            class: msg.class,
+            icon: msg.icon,
+            title: msg.title,
+            description: msg.description,
+            durationMs: msg.durationMs,
+          },
+          {
+            ttlMs: Math.max(500, Number(msg.durationMs) || 3000),
+            clearMessage: { type: "AGENT_NOTIFICATION_CLEAR" },
+            waitForDelivery: false,
+          }
+        );
         return;
       }
       if (msg && msg.type === "attention_required" && typeof msg.tabId === "number") {
-        const record = attentionStore.show(msg);
+        const record = normalizeAttention(msg);
         renderAttention(msg.tabId, record);
         refreshActionBadge();
         return;
       }
       if (msg && msg.type === "attention_resolved" && typeof msg.guid === "string") {
-        const prior = attentionStore.remove(msg.guid);
-        if (prior && Number.isSafeInteger(prior.tabId)) {
-          sendToTab(prior.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: msg.guid });
+        const prior = presentationBroker.states("attention:")
+          .find((state) => state.channel === `attention:${msg.guid}`);
+        if (prior) {
+          presentationBroker.clearState(
+            prior.tabId,
+            prior.channel,
+            { type: "AGENT_ATTENTION_CLEAR", guid: msg.guid }
+          );
         }
         refreshActionBadge();
         return;
@@ -254,9 +403,12 @@ async function connect() {
       // ADR-0072/0078 session cleanup: the binary names only this MCP session's owned tabs. The
       // extension clears transient narration and cached dialog mechanism state for each tab.
       if (msg && msg.type === "narration_clear" && typeof msg.tabId === "number") {
-        narrationStore.remove(msg.tabId);
         dialogStore.remove(msg.tabId);
-        sendToTab(msg.tabId, { type: "AGENT_NARRATION_CLEAR" });
+        presentationBroker.clearState(
+          msg.tabId,
+          "narration",
+          { type: "AGENT_NARRATION_CLEAR" }
+        );
         return;
       }
       if (msg && msg.type === "gif_lease_renew" && typeof msg.tabId === "number") {
@@ -310,7 +462,8 @@ async function connect() {
       // safety mechanism for a privacy-sensitive screencast.
       stopAllGifCasts();
       wireChunkStore.clear();
-      nativePort = null;
+      surfaceExecutor.clear();
+      if (nativePort === connectedPort) nativePort = null;
       updateHoldBadge(null); // state unknown without a session
       setTimeout(connect, RECONNECT_DELAY_MS);
     });
@@ -327,8 +480,47 @@ async function connect() {
   }
 }
 
-function reply(id, result) {
-  try { nativePort && nativePort.postMessage({ id, type: "tool_response", result }); } catch { /* port gone */ }
+async function browserProcessGeneration() {
+  const stored = await chrome.storage.session.get(BROWSER_GENERATION_KEY);
+  if (typeof stored[BROWSER_GENERATION_KEY] === "string" && stored[BROWSER_GENERATION_KEY]) {
+    return stored[BROWSER_GENERATION_KEY];
+  }
+  const generation = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await chrome.storage.session.set({ [BROWSER_GENERATION_KEY]: generation });
+  return generation;
+}
+
+// ADR-0081 adapter seams. Exact document targeting prevents a late message from landing in a
+// replacement document. Activation injects only this package's committed visual scripts and the
+// content script announces readiness after its listener exists.
+async function deliverPresentation(tabId, documentId, envelope) {
+  return chrome.tabs.sendMessage(tabId, envelope, { documentId });
+}
+
+async function activatePresentation(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: VISUAL_SCRIPT_FILES,
+    });
+    return { ready: true };
+  } catch (error) {
+    return {
+      ready: false,
+      reason: "the visual layer is unavailable on this page",
+      detail: (error && error.message) || String(error),
+    };
+  }
+}
+
+function persistPresentationSnapshot(snapshot) {
+  chrome.storage.session.set({ [PRESENTATION_STATE_KEY]: snapshot }).catch(() => {});
+}
+
+function reply(response, result) {
+  toolResponder.reply(response, result);
 }
 
 // --- Developer diagnostics (ADR-0059): mechanism only, fire-and-forget, the SAME posture as
@@ -432,9 +624,25 @@ function attentionRequest(payload) {
   });
 }
 
+function normalizeAttention(record) {
+  if (!record || typeof record.guid !== "string" || !record.guid) return null;
+  return {
+    guid: record.guid,
+    tabId: Number.isSafeInteger(record.tabId) ? record.tabId : null,
+    label: String(record.label || "MCP client").slice(0, 80),
+    category: record.category === "sacred" ? "sacred" : "policy",
+    origin: typeof record.origin === "string" ? record.origin : null,
+    threshold: record.threshold === "session" ? "session" : "matching",
+    count: Number.isInteger(record.count) ? record.count : 0,
+    title: String(record.title || "Agent browsing paused"),
+    description: String(record.description || "Repeated blocked actions need your attention."),
+    controls: Array.isArray(record.controls) ? record.controls.slice() : [],
+  };
+}
+
 function renderAttention(tabId, record) {
-  if (!record) return;
-  sendToTab(tabId, {
+  if (!record || !Number.isSafeInteger(tabId)) return;
+  presentationBroker.publishState(tabId, `attention:${record.guid}`, {
     type: "AGENT_ATTENTION_REQUIRED",
     guid: record.guid,
     label: record.label,
@@ -445,26 +653,33 @@ function renderAttention(tabId, record) {
     title: record.title,
     description: record.description,
     controls: record.controls,
-  });
+  }, { waitForDelivery: false });
 }
 
 function syncAttentionState(result) {
   if (!result) return;
-  const prior = attentionStore.clear();
-  for (const record of prior) {
-    if (Number.isSafeInteger(record.tabId)) {
-      sendToTab(record.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: record.guid });
+  const incoming = new Set((result.sessions || [])
+    .filter((record) => record && typeof record.guid === "string")
+    .map((record) => record.guid));
+  for (const state of presentationBroker.states("attention:")) {
+    const guid = state.message.guid;
+    if (!incoming.has(guid)) {
+      presentationBroker.clearState(
+        state.tabId,
+        state.channel,
+        { type: "AGENT_ATTENTION_CLEAR", guid }
+      );
     }
   }
   for (const raw of result.sessions || []) {
-    const record = attentionStore.show(raw);
+    const record = normalizeAttention(raw);
     if (record && Number.isSafeInteger(record.tabId)) renderAttention(record.tabId, record);
   }
   refreshActionBadge();
 }
 
 function refreshActionBadge() {
-  if (attentionStore.list().length > 0) {
+  if (presentationBroker.states("attention:").length > 0) {
     chrome.action.setBadgeText({ text: "!" });
     chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
   } else if (holdBadgeState === true) {
@@ -530,13 +745,17 @@ async function killSession() {
   stopAllGifCasts();
   await sweepDetachAll();
 
-  for (const tabId of narrationStore.clear()) {
-    sendToTab(tabId, { type: "AGENT_NARRATION_CLEAR" });
-  }
-  for (const record of attentionStore.clear()) {
-    if (Number.isSafeInteger(record.tabId)) {
-      sendToTab(record.tabId, { type: "AGENT_ATTENTION_CLEAR", guid: record.guid });
-    }
+  presentationBroker.clearPrefix("narration", { type: "AGENT_NARRATION_CLEAR" });
+  presentationBroker.clearPrefix(
+    "attention:",
+    (message) => ({ type: "AGENT_ATTENTION_CLEAR", guid: message.guid })
+  );
+  for (const state of presentationBroker.states("notification")) {
+    presentationBroker.clearState(
+      state.tabId,
+      state.channel,
+      { type: "AGENT_NOTIFICATION_CLEAR" }
+    );
   }
 
   attached.clear();
@@ -569,7 +788,22 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // Popup messages. Returns true to answer asynchronously; false for unrecognized types (the
 // popup treats a false/undefined response the same as "no active session").
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === "GHOSTLIGHT_PRESENTATION_READY") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    const documentId = sender && sender.documentId;
+    if (!Number.isSafeInteger(tabId) || sender.frameId !== 0 ||
+        typeof documentId !== "string" || !documentId) {
+      sendResponse({ accepted: false });
+      return false;
+    }
+    ready.then(() => {
+      const accepted = managedTabs.has(tabId) &&
+        presentationBroker.documentReady(tabId, documentId);
+      sendResponse({ accepted });
+    });
+    return true;
+  }
   if (msg && msg.type === "getHoldState") {
     holdRequest({ type: "get_hold" }).then((result) => {
       sendResponse(
@@ -641,11 +875,8 @@ function hopError(hop, message, detail) {
   if (detail) err.detail = String(detail);
   return err;
 }
-function fail(id, error) {
-  const msg = { id, type: "tool_error", error: (error && error.message) || String(error) };
-  if (error && error.hop) msg.hop = error.hop;
-  if (error && error.detail) msg.detail = error.detail;
-  try { nativePort && nativePort.postMessage(msg); } catch { /* port gone */ }
+function fail(response, error) {
+  toolResponder.fail(response, error);
 }
 
 // --- CDP ---
@@ -839,11 +1070,21 @@ function clearTabState(tabId) {
   tabUrl.delete(tabId);
   dialogStore.remove(tabId);
   managedTabs.delete(tabId); // ADR-0066 D5: a closed tab is no longer ours to reach
-  narrationStore.remove(tabId);
+  presentationBroker.destroyTab(tabId);
   persistSessionState();
 }
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTabState(tabId);
+  if (executorBrowserSlot !== null) {
+    surfaceExecutor.destroyKey(`surface:${executorBrowserSlot}:${tabId}`);
+  }
+  try {
+    nativePort && nativePort.postMessage({
+      type: "surface_destroyed",
+      tabId,
+      executorGeneration: EXECUTOR_GENERATION,
+    });
+  } catch { /* port gone */ }
 });
 chrome.debugger.onDetach.addListener((src) => {
   const cast = gifCast.get(src.tabId);
@@ -857,15 +1098,16 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "loading" && managedTabs.has(tabId)) {
+    presentationBroker.documentLoading(tabId);
+  }
   if (info.url !== undefined) {
     tabHost.set(tabId, hostOf(info.url));
     tabUrl.set(tabId, info.url);
     dialogStore.remove(tabId);
   }
-  if (info.status === "complete") {
-    const narration = narrationStore.current(tabId);
-    if (narration) renderNarration(tabId, narration);
-    for (const attention of attentionStore.forTab(tabId)) renderAttention(tabId, attention);
+  if (info.status === "complete" && managedTabs.has(tabId)) {
+    presentationBroker.activateTab(tabId);
   }
 });
 // Render an uncaught-exception CDP event as one single-line string: base message, then an
@@ -1006,7 +1248,7 @@ async function ensureGroup(create) {
   const gid = await chrome.tabs.group({ tabIds: [win.tabs[0].id] });
   await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: "blue" });
   groupId = gid;
-  managedTabs.add(win.tabs[0].id); // ADR-0066 D5: track the global group's tab too
+  markTabManaged(win.tabs[0].id); // ADR-0066 D5: track the global group's tab too
   await persistSessionState();
 }
 
@@ -1034,7 +1276,7 @@ async function createTabInSessionGroup(key) {
     await chrome.tabs.group({ tabIds: [tab.id], groupId: gid });
   }
   clientGroups.set(key, gid);
-  managedTabs.add(tab.id);
+  markTabManaged(tab.id);
   return { tab, gid };
 }
 async function groupTabs() {
@@ -1053,7 +1295,7 @@ async function groupTabs() {
 async function seedManagedTabsFromGroups() {
   for (const gid of managedGroupIds(groupId, clientGroups)) {
     try {
-      for (const t of await chrome.tabs.query({ groupId: gid })) managedTabs.add(t.id);
+      for (const t of await chrome.tabs.query({ groupId: gid })) markTabManaged(t.id);
     } catch { /* a vanished group contributes no tabs */ }
   }
 }
@@ -1085,7 +1327,9 @@ async function rehydrate() {
       "sessionState",
       "clientGroupsState",
       "managedTabsState",
+      PRESENTATION_STATE_KEY,
     ]);
+    presentationBroker.restore(stored && stored[PRESENTATION_STATE_KEY]);
     const sessionState = stored && stored.sessionState;
     // ADR-0066 D1: restore the client-group map independently of the legacy single-group
     // `sessionState` below -- a fresh install has neither, but either one being absent must not
@@ -1095,7 +1339,7 @@ async function rehydrate() {
     }
     // ADR-0066 D5: restore the managed-tab set (a service-worker restart keeps tab ids stable).
     if (Array.isArray(stored && stored.managedTabsState)) {
-      for (const id of stored.managedTabsState) managedTabs.add(id);
+      for (const id of stored.managedTabsState) markTabManaged(id);
     }
     // ADR-0047 D5: drop any restored groups whose Chrome group died while the worker was asleep,
     // so the managed surface never names a stale group id.
@@ -1109,6 +1353,9 @@ async function rehydrate() {
     await seedManagedTabsFromGroups();
     for (const id of Array.from(managedTabs)) {
       try { await chrome.tabs.get(id); } catch { managedTabs.delete(id); }
+    }
+    for (const state of presentationBroker.states()) {
+      if (!managedTabs.has(state.tabId)) presentationBroker.destroyTab(state.tabId);
     }
     // reclaim/prune/seed all mutate durable state; persist the reconciled maps unconditionally.
     await persistSessionState();
@@ -1307,7 +1554,7 @@ async function screenshot(tabId) {
   const { vpW, vpH, dpr, visible } = await probeViewport(tabId);
   const { w, h } = targetDims(vpW, vpH);
   // Hide the phantom cursor / glow so they never appear in the model's screenshot.
-  await sendToTab(tabId, { type: "HIDE_FOR_TOOL_USE" });
+  await presentationBroker.publishCapture(tabId, { type: "HIDE_FOR_TOOL_USE" });
   await sleep(CAPTURE_SETTLE_MS);
   let cap, note = "", clipMsg = null;
   try {
@@ -1340,7 +1587,7 @@ async function screenshot(tabId) {
       note = "Warning: this tab was not visible and direct background capture failed; the image was taken with the standard capture path and may be blank or stale.";
     }
   } finally {
-    sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+    await presentationBroker.publishCapture(tabId, { type: "SHOW_AFTER_TOOL_USE" });
   }
   // Default to the raw native capture (dims = CSS viewport * DPR) if canvas downscaling is unavailable.
   let base64 = cap.data, shotW = Math.round(vpW * dpr), shotH = Math.round(vpH * dpr);
@@ -1376,7 +1623,7 @@ async function zoomScreenshot(tabId, region) {
   const w = x1 - x0, h = y1 - y0;
   if (w < 1 || h < 1) return { error: "zoom region is empty or entirely outside the visible viewport." };
   const s = zoomScale(w, h);
-  await sendToTab(tabId, { type: "HIDE_FOR_TOOL_USE" });
+  await presentationBroker.publishCapture(tabId, { type: "HIDE_FOR_TOOL_USE" });
   await sleep(CAPTURE_SETTLE_MS);
   let cap;
   try {
@@ -1390,7 +1637,7 @@ async function zoomScreenshot(tabId, region) {
       captureBeyondViewport: true,
     });
   } finally {
-    sendToTab(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+    await presentationBroker.publishCapture(tabId, { type: "SHOW_AFTER_TOOL_USE" });
   }
   let shotW = Math.max(1, Math.round(w * s)), shotH = Math.max(1, Math.round(h * s));
   let base64 = cap.data;
@@ -1411,14 +1658,16 @@ function sleep(ms) {
 }
 // --- Visual indicator (best-effort; the content script is absent on chrome:// and similar pages) ---
 function sendToTab(tabId, msg) {
-  return chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+  return presentationBroker.publishEvent(tabId, msg, {
+    channel: "effect",
+    ttlMs: PRESENTATION_EVENT_TTL_MS,
+  });
 }
-function showActivity(tabId) { sendToTab(tabId, { type: "SHOW_AGENT_INDICATORS" }); }
 // Move the phantom cursor to a (rescaled, CSS-px) point and wait for it to settle, so the user sees
 // the pointer arrive before the action fires. Resolves immediately if no indicator is present.
 function moveCursor(tabId, x, y) { return sendToTab(tabId, { type: "UPDATE_PHANTOM_CURSOR", x, y }); }
 // Emit a click ripple: one expanding ring per click, so a double-click pings twice and a
-// triple-click three times. Fire-and-forget (visual only), like showActivity.
+// triple-click three times. Fire-and-forget (visual only).
 function clickRipple(tabId, x, y, count, button) { sendToTab(tabId, { type: "AGENT_CLICK_RIPPLE", x, y, count, button }); }
 // A comet-trail dot along a drag path, and a soft shimmer on the focused field when typing.
 function dragTrail(tabId, x, y) { sendToTab(tabId, { type: "AGENT_DRAG_TRAIL", x, y }); }
@@ -1436,16 +1685,18 @@ function navigatePill(tabId, url) { sendToTab(tabId, { type: "AGENT_NAVIGATE_PIL
 function screenshotFx(tabId) { sendToTab(tabId, { type: "AGENT_SCREENSHOT_FX" }); }
 function zoomFrameCue(tabId, x0, y0, x1, y1) { sendToTab(tabId, { type: "AGENT_ZOOM_FRAME", x0, y0, x1, y1 }); }
 function waitPulse(tabId) { sendToTab(tabId, { type: "AGENT_WAIT_PULSE" }); }
-// ADR-0072: render one active narration record. Replays pass the record's remaining duration;
-// an expired record is filtered by the pure store before this function is called.
+// ADR-0072/0081: publish one active narration state. The broker retains the absolute deadline,
+// filters expired restore/replay state, and reports exact current-document acknowledgement.
 function renderNarration(tabId, narration) {
-  const durationMs = Math.max(1, Math.round(narration.remainingMs || narration.durationMs));
-  return sendToTab(tabId, {
+  const durationMs = Math.max(1, Math.round(narration.durationMs));
+  return presentationBroker.publishState(tabId, "narration", {
     type: "AGENT_NARRATION",
-    generation: narration.generation,
     text: narration.text,
     position: narration.position,
     durationMs,
+  }, {
+    deadline: narration.deadline,
+    clearMessage: { type: "AGENT_NARRATION_CLEAR" },
   });
 }
 const { KEY_MAP, BUTTON_BITS, modifierBits, keyCode, VK_NAMED, VK_PUNCT, CODE_PUNCT, vkCode, SHIFT_BASE, charKeyInfo } = self.GhostlightKeys;
@@ -1590,8 +1841,6 @@ function waitForLoad(tabId) {
 async function computer(a) {
   const tabId = await effectiveTabId(a.tabId);
   const modifiers = modifierBits(a.modifiers);
-  showActivity(tabId); // best-effort "agent active" glow for the watching user
-
   switch (a.action) {
     case "screenshot": {
       const caption = "Screenshot captured (jpeg).";
@@ -1621,26 +1870,22 @@ async function computer(a) {
     case "double_click":
     case "triple_click":
     case "hover": {
-      const c = await resolveCoords(tabId, a);
-      if (!c) return text("coordinate or ref is required.");
-      await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
-      if (a.action === "hover") {
-        return withObservation(tabId, {
-          action: a.action,
-          ref: a.ref,
-          targetAssurance: a.ref ? "ref" : "coordinate",
-        }, async () => {
-          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
-          return text(`Hovered at (${c[0]}, ${c[1]}).`);
-        });
-      }
-      const button = a.action === "right_click" ? "right" : "left";
-      const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
       return withObservation(tabId, {
         action: a.action,
         ref: a.ref,
         targetAssurance: a.ref ? "ref" : "coordinate",
       }, async () => {
+        // Keep every page-dependent preparation behind the dialog guard. Resolving a ref or
+        // moving the visible cursor can otherwise wait forever on a page blocked by a modal.
+        const c = await resolveCoords(tabId, a);
+        if (!c) return text("coordinate or ref is required.");
+        await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
+        if (a.action === "hover") {
+          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
+          return text(`Hovered at (${c[0]}, ${c[1]}).`);
+        }
+        const button = a.action === "right_click" ? "right" : "left";
+        const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
         await click(tabId, c[0], c[1], { button, clickCount, modifiers });
         return text(`${a.action} at (${c[0]}, ${c[1]}).`);
       });
@@ -1687,51 +1932,57 @@ async function computer(a) {
       });
     }
     case "scroll": {
-      const c = (await resolveCoords(tabId, a)) || [0, 0];
-      const dir = a.scroll_direction || "down";
-      const amount = Math.min(a.scroll_amount || 3, 10);
-      const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
-      const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
-      const before = await probeScrollState(tabId, c[0], c[1]);
-      await moveCursor(tabId, c[0], c[1]);
-      scrollCue(tabId, dir);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
-      const scrolled = `Scrolled ${dir} by ${amount}.`;
-      if (before === null) {
-        // Verification unavailable (for example a mid-navigation page): same blind claim as before.
-        await sleep(250);
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      await sleep(200);
-      const after = await probeScrollState(tabId, c[0], c[1]);
-      // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
-      if (after === null) {
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      // 5px threshold matches the moved-more-than-5px verification contract.
-      const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
-      const elementMoved = before.hasEl && after.hasEl &&
-        (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
-      if (windowMoved || elementMoved) {
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
-      if (fb === null) {
-        const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`;
+      return withObservation(tabId, {
+        action: "scroll",
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
+        const c = (await resolveCoords(tabId, a)) || [0, 0];
+        const dir = a.scroll_direction || "down";
+        const amount = Math.min(a.scroll_amount || 3, 10);
+        const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
+        const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
+        const before = await probeScrollState(tabId, c[0], c[1]);
+        await moveCursor(tabId, c[0], c[1]);
+        scrollCue(tabId, dir);
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
+        const scrolled = `Scrolled ${dir} by ${amount}.`;
+        if (before === null) {
+          // Verification unavailable (for example a mid-navigation page): same blind claim as before.
+          await sleep(250);
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        await sleep(200);
+        const after = await probeScrollState(tabId, c[0], c[1]);
+        // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
+        if (after === null) {
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        // 5px threshold matches the moved-more-than-5px verification contract.
+        const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
+        const elementMoved = before.hasEl && after.hasEl &&
+          (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
+        if (windowMoved || elementMoved) {
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
+        if (fb === null) {
+          const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`;
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+        }
+        if (fb.moved) {
+          const caption = `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`;
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+        }
+        const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`;
         const shot = await screenshot(tabId);
         return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
-      }
-      if (fb.moved) {
-        const caption = `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`;
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
-      }
-      const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`;
-      const shot = await screenshot(tabId);
-      return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+      });
     }
     case "scroll_to": {
       return withObservation(tabId, {
@@ -1788,7 +2039,7 @@ async function tabsCreateLegacy() {
   await ensureGroup(true);
   const tab = await chrome.tabs.create({ active: true });
   await chrome.tabs.group({ tabIds: [tab.id], groupId });
-  managedTabs.add(tab.id); // ADR-0066 D5
+  markTabManaged(tab.id); // ADR-0066 D5
   await persistSessionState();
   const r = tabContext(await groupTabs());
   r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;
@@ -2312,14 +2563,17 @@ const handlers = {
       throw hopError("page", "duration_ms must be an integer from 1000 through 30000");
     }
 
-    const { record, replaced } = narrationStore.show(
-      tabId,
-      a.text,
-      a.position,
-      a.duration_ms
-    );
-    const response = await renderNarration(tabId, record);
-    setTimeout(() => narrationStore.remove(tabId, record.generation), record.durationMs + 50);
+    const durationMs = Number.isInteger(a.duration_ms)
+      ? a.duration_ms
+      : NARRATION_DEFAULT_DURATION_MS;
+    const record = {
+      text: a.text,
+      position: ["auto", "top", "bottom"].includes(a.position) ? a.position : "auto",
+      durationMs,
+      deadline: Date.now() + durationMs,
+    };
+    const publication = renderNarration(tabId, record);
+    const response = await publication.delivery;
 
     const shown = !!(response && response.shown === true);
     const reason = shown
@@ -2333,7 +2587,7 @@ const handlers = {
       shown,
       position: effectivePosition,
       duration_ms: record.durationMs,
-      replaced,
+      replaced: publication.replaced,
     };
     if (reason) out.structuredContent.reason = reason;
     return out;
@@ -2362,19 +2616,23 @@ const handlers = {
   },
 };
 
-async function dispatch(id, tool, args, key) {
+async function dispatch(item) {
   await ready; // never run a tool against un-rehydrated state
+  const request = item.request;
+  const tool = request.tool;
+  const args = request.args || {};
+  const key = request.clientKey || request.guid;
   const handler = handlers[tool];
-  if (!handler) return fail(id, `Unknown tool: ${tool}`);
+  if (!handler) return fail(item.response, `Unknown tool: ${tool}`);
   try {
     // ADR-0066: `key` is the client's clientKey (or a legacy guid); the grouping handlers use it
     // to reuse the client's durable tab group. Every other handler ignores its second argument.
-    reply(id, await handler(args, key));
+    reply(item.response, await handler(args, key));
   } catch (e) {
-    if (e instanceof TabAccessError) return reply(id, text(e.message));
+    if (e instanceof TabAccessError) return reply(item.response, text(e.message));
     // Hop-tagged errors (cdp/page) pass through as-is; untagged errors keep the tool-name prefix.
-    if (e && e.hop) fail(id, e);
-    else fail(id, `${tool} failed: ${(e && e.message) || e}`);
+    if (e && e.hop) fail(item.response, e);
+    else fail(item.response, `${tool} failed: ${(e && e.message) || e}`);
   }
 }
 
@@ -2383,6 +2641,7 @@ async function dispatch(id, tool, args, key) {
 // sweep -- and do NOT connect. Recovery is explicit; only RECONNECT_SESSION calls connect()
 // again. Otherwise, normal startup: connect as always.
 async function init() {
+  await ready;
   const s = await chrome.storage.session.get("session_killed");
   if (s.session_killed) {
     sessionKilled = true;

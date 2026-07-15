@@ -937,7 +937,7 @@ fn short_endpoint_hash(endpoint: &str) -> String {
 /// `-adapter` control socket and the bare extension socket hash to different names).
 #[cfg(unix)]
 pub fn socket_path(endpoint: &str) -> Result<std::path::PathBuf> {
-    let base = dirs::runtime_dir()
+    let base = crate::user_session::runtime_dir()
         .or_else(dirs::cache_dir)
         .ok_or_else(|| Error::Ipc("no user runtime/cache directory for the socket".into()))?;
     let dir = base.join("ghostlight");

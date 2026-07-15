@@ -4,8 +4,9 @@ Durable progress for ADR-0079 and the July 2026 non-author experience review.
 
 ## RESUME HERE
 
-E1-E5 are complete in the repository. Push `dev`, then resume only for visible Linux/browser
-verification or owner-approved public metadata/funding work.
+E1-E5 are complete in the repository. GitHub description, homepage, and topics are live. Resume
+for visible Linux/browser verification, consented follow-up review, or the measured free-surface
+candidate work in research 18.
 
 ## Work
 
@@ -62,5 +63,6 @@ verification or owner-approved public metadata/funding work.
 - Live Linux and browser verification: waiting for the owner-provided machine and SSH access.
 - Chrome Web Store and product-site publication: draftable here, publication remains owner gated.
 - Donations/funding: requires the owner's recipient, entity, tax, and provider decision.
-- GitHub repository description, homepage, and topics: owner-approved next-work item, but changing
-  public repository metadata remains a separate outward-facing action.
+- GitHub repository description, homepage, and topics: completed 2026-07-14 after owner approval.
+  A practitioner-first description, `https://sylin.org/ghostlight/` homepage, and ten discovery
+  topics are live on `sylin-org/ghostlight`.

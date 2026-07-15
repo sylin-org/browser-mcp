@@ -63,6 +63,8 @@ cited-sources discipline but are not part of the pre-Phase 0 discovery above.
 | [14-post-evaluation-2026-07.md](14-post-evaluation-2026-07.md) | Post-evaluation (2026-07-07): Ghostlight state capture, how every tracked player moved (first-party Claude Code + Chrome, Microsoft Agent Governance Toolkit, browser-use's Rust core, MCP 2026-07-28, WebMCP origin trial), positioning re-test, and the ranked P1-P10 proposal list. |
 | [15-webmcp-governance-participation.md](15-webmcp-governance-participation.md) | WebMCP origin-trial participation brief: runtime consequence classification, origin/frame identity, dynamic-registration races, private reads, prepare-versus-commit, provenance, a bounded experiment, and a draft standards response. No product implementation. |
 | [16-denial-burst-circuit-breaker.md](16-denial-burst-circuit-breaker.md) | Prior art and ADR input for quiet isolated denials plus a real session-scoped pause after a denial burst. Defines counter scope, recovery semantics, threat boundary, audit facts, and evaluation gates. No implementation. |
+| [17-agent-browser-overlap-2026-07.md](17-agent-browser-overlap-2026-07.md) | Mutual capability map against agent-browser v0.31.2 and strategic opportunities through model, user, and governance delight. |
+| [18-free-surface-evaluation-plan-2026-07.md](18-free-surface-evaluation-plan-2026-07.md) | Measurement plan and acceptance gates for ref-linked annotated screenshots and optional owned-tab labels. No public schema change. |
 
 ## Status
 

@@ -199,7 +199,9 @@ pub fn start_service() {
             tracing::debug!("no OS supervisor mechanism on this platform; nothing to start");
             return;
         };
-        match std::process::Command::new(&program).args(&args).status() {
+        let mut command = std::process::Command::new(&program);
+        crate::user_session::complete_command_environment(&mut command);
+        match command.args(&args).status() {
             Ok(status) if status.success() => {
                 tracing::info!(
                     program,
