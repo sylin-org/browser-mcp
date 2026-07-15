@@ -10,16 +10,16 @@ class Ghostlight < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/sylin-org/ghostlight/releases/download/v#{version}/ghostlight-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "76f2a28cb30b06975df493dcc3bd36f7c41efce6cb623331a2c627df9d1d75b5"
+      sha256 "04e7b0328d7919e0769bd7e38947e35b37121e03fb4c70cd9c25a234372c7f78"
     else
       url "https://github.com/sylin-org/ghostlight/releases/download/v#{version}/ghostlight-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "c26a38aa42cb57ea9a36570e3e81534691b12fc6af20b41f324f6fde3f4e84b4"
+      sha256 "2c357227edb8793daab469f4000d986fc96dc99430ab331241ccccfa5dde68ca"
     end
   end
 
   on_linux do
     url "https://github.com/sylin-org/ghostlight/releases/download/v#{version}/ghostlight-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "b5dd1524ea022ebd5f061017bc291f07d76c1ab81d1938819be9bdb8e4bf72f4"
+    sha256 "2d054f0fb85d93af319a22de5671f94649a8651276a60305bcd1ee3e9cf05963"
   end
 
   def install
