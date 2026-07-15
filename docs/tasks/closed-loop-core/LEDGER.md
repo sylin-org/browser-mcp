@@ -8,6 +8,8 @@ Durable progress. One task equals one commit. Update this file before and after 
 - Automated gates and public inventory synchronization are complete.
 - `LIVE-VERIFY.md` passed on the ordinary Linux desktop profile on 2026-07-15.
 - The live run found and fixed retained-intent subrequest deduplication and pre-guard dialog work.
+- The Windows handoff review closed cross-platform CI, provenance negotiation, reconnect response
+  scoping, and scroll's remaining pre-guard preparation gaps.
 - Cross-origin frame refs are out of scope and require a separate ADR.
 
 ## Task log
@@ -21,13 +23,18 @@ Durable progress. One task equals one commit. Update this file before and after 
 | C5 dialog control | 105c4d0 | DONE | Explicit status/accept/dismiss/respond, CDP lifecycle cleanup, blocker propagation, minimized audit; all gates green |
 | C6 tab control | b14b636 | DONE | Explicit focus/reload/close, exact ownership release, group preservation, content-free receipts and audit; all gates green |
 | Visible Linux verification | 08786c2, 78487af | DONE | Five live journeys passed; two visible-only defects fixed with regression coverage |
+| Cross-platform session gate | 520b324 | DONE | Linux-only imports are cfg-gated; ownership mismatch test reaches the intended branch |
+| Demo provenance negotiation | b30026d | DONE | Explicit current/legacy contract negotiation, fail-closed unnegotiated state, full nonce grammar |
+| Connection-scoped replies | 6d00b23 | DONE | Tool and auxiliary async replies retain their accepting port under request-ID reuse |
+| Scroll dialog guard | b3be776 | DONE | Ref resolution, probes, cursor movement, dispatch, and fallback all follow the blocker check |
+| Complete JavaScript CI | fdb4dde | DONE | Full extension discovery and syntax plus npm launcher tests on the OS matrix |
 
 ## Batch checks
 
 | Check | Status | Evidence |
 |-------|--------|----------|
 | Rust format, clippy, workspace tests | PASS | 679 core unit tests plus workspace integration/doc tests |
-| Extension syntax and tests | PASS | 102 Node tests; all extension JS passes `node --check` |
+| Extension syntax and tests | PASS | 108 extension tests; whole-file syntax gate; 4 npm launcher tests |
 | Lightbox all scenarios | PASS | 34 of 34 scenarios through the isolated `target-check-closed-loop` runner |
 | Visible-browser verification | PASS | Ordinary profile, visible Chrome 150.0.7871.124, real Codex 0.144.4 and raw MCP client |
 | Tool count and public docs synchronized | PASS | README and STATUS name the additive 25-tool surface |

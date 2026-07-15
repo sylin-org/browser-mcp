@@ -63,11 +63,15 @@ when they disagree**, and update it when you land something that changes the pic
   with `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` absent securely found `/run/user/1000`,
   started and reached the user service, and converged with Chrome's real native-host environment.
   `doctor` found the extension, and Codex 0.144.4 completed browser actions in visible Chrome
-  150.0.7871.124. The user-level candidate is 0.5.8; it is not a published release.
+  150.0.7871.124. Linux-only imports and environment constants are now compile-gated away from
+  macOS and Windows, and the ownership regression reaches a real mismatched-owner directory rather
+  than passing on a missing path. The user-level candidate is 0.5.8; it is not a published release.
 - **The Foundry demo is compatible with ADR-0078 provenance boundaries.** Its machine-result
   preprocessor validates structured page provenance plus matching origin and nonce markers before
-  unwrapping geometry JSON; it refuses missing or mismatched control data and remains compatible
-  with raw pre-ADR-0078 services. A normal-paced visible run on 2026-07-15 completed the full story,
+  unwrapping geometry JSON. Raw fallback is enabled only after `tools/list` advertises the legacy
+  contract; current, missing, and unnegotiated contracts fail closed. Consumers accept the ADR's
+  full lowercase even-length nonce range of at least 96 bits instead of pinning today's 128-bit
+  producer. A normal-paced visible run on 2026-07-15 completed the full story,
   enforced the off-domain denial, exported a 100-frame 23,141,963-byte replay, confirmed page
   receipt, and cleared the captured bytes. No trained schema or model-facing boundary changed.
 - **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
@@ -101,8 +105,12 @@ when they disagree**, and update it when you land something that changes the pic
   per step. The extension adds a bounded per-surface FIFO, command deduplication, acceptance and
   terminal acknowledgements, payload erasure, and separate presentation/control bypass. Unknown
   outcomes quarantine a tab until an exact terminal acknowledgement, confirmed tab destruction,
-  or a changed browser-process generation proves recovery. Strict clippy, the full Rust workspace,
-  all 34 Lightbox scenarios, and 102 extension tests pass. Visible verification found and fixed a
+  or a changed browser-process generation proves recovery. Every asynchronous reply now retains
+  the accepting native connection plus request and command identity, so a late completion cannot
+  cross into a replacement connection that reused its numeric request id. Dialog guarding also
+  precedes scroll ref resolution, page probes, cursor movement, and direct fallback. Strict clippy,
+  the full Rust workspace, all 34 Lightbox scenarios, and 108 extension tests pass. Visible
+  verification found and fixed a
   retained-intent defect: extension execution identity now includes the internal request ID, so
   separate subrequests under one retained lease cannot suppress each other. A live v0.5.8 Chrome
   probe submitted
@@ -112,6 +120,10 @@ when they disagree**, and update it when you land something that changes the pic
   `tabs_create_mcp` call lost its terminal acknowledgement and correctly returned
   `outcome_unknown`; inspection proved no tab was created and a deliberate retry succeeded in
   42 ms. Keep that transient in reconnect/reload reliability coverage.
+- **Node CI now enforces the complete JavaScript surface on all three operating systems.** The
+  extension job discovers every direct test file, parses every extension JavaScript file as a
+  whole, and runs the npm launcher's host-allowlist, SHA-256, and target-selection tests. The local
+  parity gate is 108 extension tests plus 4 launcher tests.
 - **The document-aware Presentation Broker is implemented (ADR-0081).** One policy-free extension
   domain service now owns managed-tab document readiness, exact channel/revision/document
   acknowledgements, on-demand packaged-renderer activation, timed state replacement and replay,
