@@ -1932,51 +1932,57 @@ async function computer(a) {
       });
     }
     case "scroll": {
-      const c = (await resolveCoords(tabId, a)) || [0, 0];
-      const dir = a.scroll_direction || "down";
-      const amount = Math.min(a.scroll_amount || 3, 10);
-      const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
-      const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
-      const before = await probeScrollState(tabId, c[0], c[1]);
-      await moveCursor(tabId, c[0], c[1]);
-      scrollCue(tabId, dir);
-      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
-      const scrolled = `Scrolled ${dir} by ${amount}.`;
-      if (before === null) {
-        // Verification unavailable (for example a mid-navigation page): same blind claim as before.
-        await sleep(250);
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      await sleep(200);
-      const after = await probeScrollState(tabId, c[0], c[1]);
-      // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
-      if (after === null) {
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      // 5px threshold matches the moved-more-than-5px verification contract.
-      const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
-      const elementMoved = before.hasEl && after.hasEl &&
-        (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
-      if (windowMoved || elementMoved) {
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
-      }
-      const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
-      if (fb === null) {
-        const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`;
+      return withObservation(tabId, {
+        action: "scroll",
+        ref: a.ref,
+        targetAssurance: a.ref ? "ref" : "coordinate",
+      }, async () => {
+        const c = (await resolveCoords(tabId, a)) || [0, 0];
+        const dir = a.scroll_direction || "down";
+        const amount = Math.min(a.scroll_amount || 3, 10);
+        const deltaX = dir === "left" ? -amount * 100 : dir === "right" ? amount * 100 : 0;
+        const deltaY = dir === "up" ? -amount * 100 : dir === "down" ? amount * 100 : 0;
+        const before = await probeScrollState(tabId, c[0], c[1]);
+        await moveCursor(tabId, c[0], c[1]);
+        scrollCue(tabId, dir);
+        await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: c[0], y: c[1], deltaX, deltaY, modifiers });
+        const scrolled = `Scrolled ${dir} by ${amount}.`;
+        if (before === null) {
+          // Verification unavailable (for example a mid-navigation page): same blind claim as before.
+          await sleep(250);
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        await sleep(200);
+        const after = await probeScrollState(tabId, c[0], c[1]);
+        // Re-read failed: do not run the fallback, a blind fallback risks double-scrolling.
+        if (after === null) {
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        // 5px threshold matches the moved-more-than-5px verification contract.
+        const windowMoved = Math.abs(after.winX - before.winX) > 5 || Math.abs(after.winY - before.winY) > 5;
+        const elementMoved = before.hasEl && after.hasEl &&
+          (Math.abs((after.elX || 0) - (before.elX || 0)) > 5 || Math.abs((after.elY || 0) - (before.elY || 0)) > 5);
+        if (windowMoved || elementMoved) {
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? scrolled + " " + shot.note : scrolled, shot.base64);
+        }
+        const fb = await directScrollFallback(tabId, c[0], c[1], deltaX, deltaY);
+        if (fb === null) {
+          const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the direct scroll fallback could not run.`;
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+        }
+        if (fb.moved) {
+          const caption = `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`;
+          const shot = await screenshot(tabId);
+          return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+        }
+        const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`;
         const shot = await screenshot(tabId);
         return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
-      }
-      if (fb.moved) {
-        const caption = `Scrolled ${dir} by ${amount} (mouse wheel had no effect; used direct scroll fallback).`;
-        const shot = await screenshot(tabId);
-        return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
-      }
-      const caption = `Scroll ${dir} had no effect at (${c[0]}, ${c[1]}); the page did not move at that position.`;
-      const shot = await screenshot(tabId);
-      return textImage(shot.note ? caption + " " + shot.note : caption, shot.base64);
+      });
     }
     case "scroll_to": {
       return withObservation(tabId, {
