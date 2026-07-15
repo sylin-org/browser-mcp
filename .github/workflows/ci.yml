@@ -110,6 +110,7 @@ jobs:
       - run: cargo build --locked --workspace
       - run: npm ci --prefix tests/e2e || npm install --prefix tests/e2e
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
+      - run: node --test tests/e2e/free-surface-baseline.test.mjs
       - run: node tests/e2e/run-smoke.mjs
 
   audit:

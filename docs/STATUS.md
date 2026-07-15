@@ -126,7 +126,14 @@ when they disagree**, and update it when you land something that changes the pic
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two
   small free-surface candidates next -- ref-linked annotated screenshots and optional owned-tab
-  labels.
+  labels. Research 18 now defines deterministic journeys, payload boundaries, benefit thresholds,
+  and fail conditions. The opt-in real-stack baseline harness and four-layout local fixture are
+  ready under `tests/e2e`; its default smoke path and public schemas are unchanged. Annotated
+  screenshots are first; tab labels remain behind baseline evidence. The automated baseline waits
+  for the Linux host, while the documented model-run recipe can be used from any visible browser.
+  One Codex/Windows mechanical run confirmed two observations in each visual journey and 33
+  composite-id characters across three product tabs; it does not yet satisfy the repeated-model
+  acceptance gate.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 

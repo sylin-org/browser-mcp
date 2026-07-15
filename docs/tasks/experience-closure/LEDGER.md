@@ -4,8 +4,9 @@ Durable progress for ADR-0079 and the July 2026 non-author experience review.
 
 ## RESUME HERE
 
-E1-E5 are complete in the repository. Push `dev`, then resume only for visible Linux/browser
-verification or owner-approved public metadata/funding work.
+E1-E5 are complete in the repository. GitHub description, homepage, and topics are live. Resume
+for visible Linux/browser verification, consented follow-up review, or the measured free-surface
+candidate work in research 18.
 
 ## Work
 

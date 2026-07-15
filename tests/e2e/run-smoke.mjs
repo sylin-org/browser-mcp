@@ -30,8 +30,10 @@ const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 const EXTENSION_DIR = path.join(REPO_ROOT, "extension");
 const FIXTURE_PATH = path.join(SCRIPT_DIR, "fixture.html");
+const FREE_SURFACE_FIXTURE_PATH = path.join(SCRIPT_DIR, "free-surface-fixture.html");
 const EXTENSION_ID = "cjcmhepmagomefjggkcohdbfemacojoa";
 const DRY_RUN = process.argv.includes("--dry-run");
+const FREE_SURFACE_BASELINE = process.argv.includes("--free-surface-baseline");
 const HEADED_RETRY = process.env.GHOSTLIGHT_E2E_HEADED_RETRY === "1";
 
 function fail(reason, code) {
@@ -59,9 +61,9 @@ function siblingBin(binaryPath, name) {
   return path.join(path.dirname(binaryPath), exe);
 }
 
-// Step 4: a plain static server for the one fixture page, on an OS-assigned loopback port.
-function startFixtureServer() {
-  const body = readFileSync(FIXTURE_PATH);
+// Step 4: a plain static server for one fixture page, on an OS-assigned loopback port.
+function startFixtureServer(fixturePath = FIXTURE_PATH) {
+  const body = readFileSync(fixturePath);
   const server = createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(body);
@@ -193,6 +195,151 @@ function extractRef(text, accessibleName) {
   return m[1];
 }
 
+function createdTabId(response, label) {
+  const text = toolResultText(response, label);
+  const match = /Created tab (\d+)\./.exec(text);
+  if (!match) {
+    throw new Error(`could not parse a tab id from ${label} output: ${text}`);
+  }
+  return Number(match[1]);
+}
+
+function imageCharacters(response, label) {
+  const content = response && response.result && response.result.content;
+  const image = Array.isArray(content) && content.find((item) => item.type === "image");
+  if (!image || typeof image.data !== "string") {
+    throw new Error(`${label}: screenshot result has no image data`);
+  }
+  return image.data.length;
+}
+
+function fixtureUrl(baseUrl, parameters) {
+  const url = new URL(baseUrl);
+  for (const [key, value] of Object.entries(parameters)) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+async function checkedToolCall(rpc, name, argumentsValue, label = name) {
+  const started = Date.now();
+  const response = await rpc.call("tools/call", { name, arguments: argumentsValue });
+  const text = toolResultText(response, label);
+  return { response, text, elapsedMs: Date.now() - started };
+}
+
+// Research 18 baseline only. This measures the current two-observation shape and numeric tab-id
+// payload before either candidate exists. It deliberately does not simulate model judgment or
+// claim that deterministic call arithmetic is a user study.
+async function runFreeSurfaceBaseline(rpc, baseUrl, firstTabId, version) {
+  const visualJourneys = [
+    { id: "dense-toolbar", query: "toolbar", expected: "Review changes" },
+    { id: "repeated-form", query: "form", expected: "Approved invoice" },
+    { id: "mixed-viewport", query: "viewport", expected: "Review visible summary" },
+  ];
+  const visualResults = [];
+
+  for (const journey of visualJourneys) {
+    const navigate = await checkedToolCall(
+      rpc,
+      "navigate",
+      { tabId: firstTabId, url: fixtureUrl(baseUrl, { journey: journey.query }) },
+      `navigate (${journey.id})`
+    );
+    const screenshot = await checkedToolCall(
+      rpc,
+      "computer",
+      { tabId: firstTabId, action: "screenshot" },
+      `computer screenshot (${journey.id})`
+    );
+    const observation = await checkedToolCall(
+      rpc,
+      "read_page",
+      { tabId: firstTabId },
+      `read_page (${journey.id})`
+    );
+    if (!observation.text.includes(journey.expected)) {
+      throw new Error(
+        `${journey.id}: read_page did not contain ${JSON.stringify(journey.expected)}:\n` +
+          observation.text
+      );
+    }
+    visualResults.push({
+      journey: journey.id,
+      setupCalls: 1,
+      observationCalls: 2,
+      setupTextCharacters: navigate.text.length,
+      observationTextCharacters: screenshot.text.length + observation.text.length,
+      imageBase64Characters: imageCharacters(screenshot.response, journey.id),
+      elapsedMs: navigate.elapsedMs + screenshot.elapsedMs + observation.elapsedMs,
+    });
+  }
+
+  const products = ["alpha", "beta", "gamma"];
+  const productTabs = [firstTabId];
+  for (let index = 1; index < products.length; index += 1) {
+    const created = await checkedToolCall(
+      rpc,
+      "tabs_create_mcp",
+      {},
+      `tabs_create_mcp (${products[index]})`
+    );
+    productTabs.push(createdTabId(created.response, `tabs_create_mcp (${products[index]})`));
+  }
+  for (let index = 0; index < products.length; index += 1) {
+    await checkedToolCall(
+      rpc,
+      "navigate",
+      {
+        tabId: productTabs[index],
+        url: fixtureUrl(baseUrl, { journey: "product", product: products[index] }),
+      },
+      `navigate (product-${products[index]})`
+    );
+  }
+  const context = await checkedToolCall(rpc, "tabs_context_mcp", {}, "tabs_context_mcp");
+  const tabs =
+    context.response &&
+    context.response.result &&
+    context.response.result.structuredContent &&
+    context.response.result.structuredContent.tabs;
+  if (!Array.isArray(tabs)) {
+    throw new Error(`tabs_context_mcp returned no structured tab list: ${context.text}`);
+  }
+  const measuredIds = tabs
+    .map((tab) => tab && tab.tabId)
+    .filter((tabId) => Number.isSafeInteger(tabId));
+
+  return {
+    schema: 1,
+    mode: "free-surface-baseline",
+    ghostlightVersion: version || "unknown",
+    platform: process.platform,
+    measuredAt: new Date().toISOString(),
+    candidateA: {
+      currentShape: "computer screenshot plus read_page",
+      journeys: visualResults,
+    },
+    candidateB: {
+      currentShape: "numeric composite tab ids",
+      setupCalls: 5,
+      contextCalls: 1,
+      ownedTabsObserved: measuredIds.length,
+      tabIds: measuredIds,
+      tabReferenceCharacters: measuredIds.reduce(
+        (total, tabId) => total + String(tabId).length,
+        0
+      ),
+      contextTextCharacters: context.text.length,
+      contextElapsedMs: context.elapsedMs,
+    },
+    limits: [
+      "This is deterministic call and payload measurement, not a model-behavior study.",
+      "Candidate benefit still requires repeated runs in at least two client or model configurations.",
+    ],
+  };
+}
+
 async function waitForServiceWorker(context, timeoutMs) {
   const existing = context.serviceWorkers();
   if (existing.length) return existing[0];
@@ -233,13 +380,15 @@ async function runDryRun(binaryPath, endpoint) {
   // Chrome launches the native host, so the manifest/wrapper wraps ghostlight-relay; the browser
   // role auto-detects from the chrome-extension:// origin Chrome passes (ADR-0051 Phase 3).
   const browserBin = siblingBin(binaryPath, "ghostlight-relay");
-  const { server, url: fixtureUrl } = await startFixtureServer();
+  const selectedFixture = FREE_SURFACE_BASELINE ? FREE_SURFACE_FIXTURE_PATH : FIXTURE_PATH;
+  const { server, url: fixtureUrl } = await startFixtureServer(selectedFixture);
   const { userDataDir, wrapperPath, manifestPath } = buildProfile(endpoint, browserBin);
   const plan = {
     repoRoot: REPO_ROOT,
     binaryPath,
     endpoint,
     fixtureUrl,
+    mode: FREE_SURFACE_BASELINE ? "free-surface-baseline" : "smoke",
     extensionDir: EXTENSION_DIR,
     extensionId: EXTENSION_ID,
     userDataDir,
@@ -259,7 +408,8 @@ async function runLive(binaryPath, endpoint) {
   // the separate `ghostlight` bin.
   const browserBin = siblingBin(binaryPath, "ghostlight-relay");
   const agentBin = siblingBin(binaryPath, "ghostlight-relay");
-  const { server, url: fixtureUrl } = await startFixtureServer();
+  const selectedFixture = FREE_SURFACE_BASELINE ? FREE_SURFACE_FIXTURE_PATH : FIXTURE_PATH;
+  const { server, url: fixtureUrl } = await startFixtureServer(selectedFixture);
   const { userDataDir } = buildProfile(endpoint, browserBin);
 
   // The hub model (ADR-0030): a standalone SERVICE owns the browser link, and both the
@@ -346,7 +496,9 @@ async function runLive(binaryPath, endpoint) {
 
     const list = await rpc.call("tools/list", {});
     const names = (list.result && list.result.tools ? list.result.tools : []).map((t) => t.name);
-    for (const required of ["navigate", "read_page", "computer", "form_input"]) {
+    const requiredTools = ["navigate", "read_page", "computer", "form_input"];
+    if (FREE_SURFACE_BASELINE) requiredTools.push("tabs_context_mcp", "tabs_create_mcp");
+    for (const required of requiredTools) {
       if (!names.includes(required)) {
         throw new Error(`tools/list missing "${required}"; got: ${names.join(", ")}`);
       }
@@ -358,12 +510,16 @@ async function runLive(binaryPath, endpoint) {
       name: "tabs_create_mcp",
       arguments: {},
     });
-    const createdText = toolResultText(created, "tabs_create_mcp");
-    const tabIdMatch = /Created tab (\d+)\./.exec(createdText);
-    if (!tabIdMatch) {
-      throw new Error(`could not parse a tab id from tabs_create_mcp output: ${createdText}`);
+    const tabId = createdTabId(created, "tabs_create_mcp");
+
+    if (FREE_SURFACE_BASELINE) {
+      const version =
+        init.result && init.result.serverInfo && init.result.serverInfo.version;
+      const report = await runFreeSurfaceBaseline(rpc, fixtureUrl, tabId, version);
+      await cleanup();
+      console.log(JSON.stringify(report, null, 2));
+      process.exit(0);
     }
-    const tabId = Number(tabIdMatch[1]);
 
     await rpc.call("tools/call", {
       name: "navigate",
