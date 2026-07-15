@@ -30,13 +30,8 @@ start, obvious while it acts, clear when it stops, and honest about what it can 
 
 <p align="center"><a href="#try-it"><strong>Install and try it</strong></a> | <a href="docs/guides/installation.md">Every install path</a> | <a href="docs/COMPARISON.md">Compare alternatives</a></p>
 
-<!-- HERO DEMO SLOT: a short session GIF captured from Ghostlight's launch-brief story
-     (persistent sky border, page scan, field glows, click rings, and action labels). Record
-     `ghostlight demo-brief`,
-     export a GIF under ~5 MB, then uncomment:
 <p align="center"><img src="docs/assets/demo.gif" alt="Ghostlight reading and completing a launch brief in a real browser with visible page, field, and click feedback"></p>
 <p align="center"><sub>Ghostlight reading, filling, and completing a brief in the user's visible browser.</sub></p>
--->
 
 ## Is this your problem?
 

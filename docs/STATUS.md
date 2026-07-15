@@ -7,15 +7,15 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Now
 
-- **The README hero story is implemented and ready for live capture.** `ghostlight demo-brief`
+- **The README hero story is implemented, captured, and enabled.** `ghostlight demo-brief`
   drives `https://sylin.org/ghostlight/demo/brief/` through the ordinary relay: one visible page
   read, five exact paced ref writes, submit, and a held local completion state. The stage is
   warm-dark with no native blue or ambient motion, so Ghostlight's persistent
   border, scan, field, and click effects own the visual language. Its contract and recording recipe
   live in `docs/design/demo-brief.md`. A real-stack run against public website revision
   `20f2ce0a259b` completed in 8.44 seconds with a shortened 0.5-second final hold; the default
-  three-second hold puts the active story at about 10.9 seconds. The remaining owner-side step is
-  the final Chrome-visible recording and `docs/assets/demo.gif` export.
+  three-second hold puts the active story at about 10.9 seconds. The final Chrome-visible capture
+  is committed as `docs/assets/demo.gif`: 838 x 766, 11.63 seconds, 382 frames, and 3,111,002 bytes.
 
 - **Branches**: `main` = releases, `dev` = trunk. Work lands on `dev`; the owner reviews
   `dev -> main` PRs and cuts releases.
@@ -332,9 +332,6 @@ remains manual when its API credentials or dashboard metadata are absent.
   - SEC-HIGH-02 is closed by removal: ADR-0077 deletes the browser-control web listener, remote
     policy keys, remote-enable route, and WebSocket machinery. There is no remote browser-control
     transport to authenticate. Future remote work requires a new threat model and ADR.
-  - A1 demo GIF for the README hero slot (README has a commented placeholder): record
-    `ghostlight demo-brief` with visible Chrome using `docs/design/demo-brief.md`, then write
-    `docs/assets/demo.gif` and enable the slot.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real
   browser).
 - Parked (deliberately): audit TCP sink (UDP syslog is the standard; revisit only on ask);
