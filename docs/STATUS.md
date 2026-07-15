@@ -196,9 +196,11 @@ when its API credentials or dashboard metadata are absent.
   are now implemented. A late note naming OpenCode as a developer-friendly example is recorded and
   reflected as fast install orientation, without copying its one-command product shape. Next: run
   the revised journey on the Linux host and collect a consented, observed follow-up review.
-- **Public repository metadata is the next small distribution task.** Add a useful GitHub
-  description, homepage, and topics in one owner-confirmed outward-facing pass. Funding links stay
-  deferred until the owner chooses the recipient/entity, provider, and accounting/tax handling.
+- **Public repository metadata is live.** The owner-confirmed outward-facing pass added a
+  practitioner-first GitHub description, the `https://sylin.org/ghostlight/` homepage, and ten
+  discovery topics spanning MCP, browser automation, Chromium, local-first operation, Rust,
+  developer tooling, and access control. Funding links stay deferred until the owner chooses the
+  recipient/entity, provider, and accounting/tax handling.
 - **ADR-0078 visible-browser verification is owed.** C1-C6 and the automated gates are complete.
   Run `docs/tasks/closed-loop-core/LIVE-VERIFY.md` against the visible Linux Chrome host once SSH
   access is available. Cross-origin frame refs remain deferred because they require a separate
