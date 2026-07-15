@@ -32,9 +32,9 @@
     let nextRevision = 1;
     let retainedBytes = 0;
 
-    function schedule(callback, delayMs) {
+    function schedule(callback, delayMs, keepAlive) {
       const timer = setTimer(callback, delayMs);
-      if (timer && typeof timer.unref === "function") timer.unref();
+      if (!keepAlive && timer && typeof timer.unref === "function") timer.unref();
       return timer;
     }
 
@@ -88,7 +88,7 @@
           const index = record.waiters.indexOf(waiter);
           if (index >= 0) record.waiters.splice(index, 1);
           resolve({ shown: false, reason: "visual delivery was not acknowledged" });
-        }, waitMs || deliveryWaitMs);
+        }, waitMs || deliveryWaitMs, true);
         record.waiters.push(waiter);
       });
     }
@@ -163,7 +163,7 @@
           const index = tab.readyWaiters.indexOf(waiter);
           if (index >= 0) tab.readyWaiters.splice(index, 1);
           resolve(false);
-        }, deliveryWaitMs);
+        }, deliveryWaitMs, true);
         tab.readyWaiters.push(waiter);
       });
       requestActivation(tabId, tab);

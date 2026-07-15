@@ -164,6 +164,50 @@ test("expired state is not restored or replayed", async () => {
   assert.equal(restored.broker.stats().states, 0);
 });
 
+test("awaited deadlines stay referenced while background deadlines may unref", async () => {
+  function timerSeam() {
+    const timers = [];
+    return {
+      timers,
+      setTimer: (callback, delayMs) => {
+        const timer = {
+          callback,
+          delayMs,
+          unreferenced: false,
+          unref() { this.unreferenced = true; },
+        };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimer: () => {},
+    };
+  }
+
+  const deliveryTimers = timerSeam();
+  const deliveryHarness = harness(deliveryTimers);
+  const published = deliveryHarness.broker.publishState(
+    12,
+    "narration",
+    { type: "AGENT_NARRATION", text: "Working" },
+    { ttlMs: 5000 }
+  );
+  assert.deepEqual(
+    deliveryTimers.timers.map((timer) => timer.unreferenced),
+    [true, false]
+  );
+  deliveryHarness.broker.destroyTab(12);
+  assert.match((await published.delivery).reason, /tab closed/);
+
+  const readyTimers = timerSeam();
+  const readyHarness = harness(readyTimers);
+  const capture = readyHarness.broker.publishCapture(13, { type: "HIDE_FOR_TOOL_USE" });
+  await settle();
+  assert.equal(readyTimers.timers.length, 1);
+  assert.equal(readyTimers.timers[0].unreferenced, false);
+  readyTimers.timers[0].callback();
+  assert.equal((await capture).unavailable, true);
+});
+
 test("capture bypasses the effect queue and activates a missing renderer before degrading", async () => {
   let releaseEffect;
   const effectGate = new Promise((resolve) => { releaseEffect = resolve; });
