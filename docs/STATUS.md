@@ -1,6 +1,6 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-14. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-15. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
@@ -56,11 +56,14 @@ when they disagree**, and update it when you land something that changes the pic
   focus/reload/close. Actionable observations, bounded interaction receipts, service-authored
   untrusted-output provenance, and final response budgets reduce model roundtrips without moving
   policy or page content into the extension. The 13 trained schemas remain byte-stable. All fast
-  gates and all 34 Lightbox scenarios pass. Visible-browser verification remains pending on the
-  Linux lifecycle host.
-- **The Linux lifecycle test recipe is ready.** `docs/testing/linux-live-lifecycle.md` pins Ubuntu
-  Desktop 24.04 LTS, visible Chrome Stable, VS Code first and Codex second, one ordinary OS user,
-  and clean install through uninstall evidence. The owner is preparing the host and SSH access.
+  gates and all 34 Lightbox scenarios pass. The visible Linux verification is complete: semantic
+  success and ambiguity, dialog blocking and recovery, owned-tab lifecycle, unowned-tab refusal,
+  provenance boundaries, and minimized audit records all passed in the ordinary Chrome profile.
+- **Linux user-session discovery is implemented and live-proven (ADR-0082).** A relay launched
+  with `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` absent securely found `/run/user/1000`,
+  started and reached the user service, and converged with Chrome's real native-host environment.
+  `doctor` found the extension, and Codex 0.144.4 completed browser actions in visible Chrome
+  150.0.7871.124. The user-level candidate is 0.5.8; it is not a published release.
 - **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
   the pinned SBOM, packages the extension, creates `SHA256SUMS`, and uploads one immutable bundle.
   The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.
@@ -93,7 +96,10 @@ when they disagree**, and update it when you land something that changes the pic
   terminal acknowledgements, payload erasure, and separate presentation/control bypass. Unknown
   outcomes quarantine a tab until an exact terminal acknowledgement, confirmed tab destruction,
   or a changed browser-process generation proves recovery. Strict clippy, the full Rust workspace,
-  all 34 Lightbox scenarios, and 100 extension tests pass. A live v0.5.8 Chrome probe submitted
+  all 34 Lightbox scenarios, and 102 extension tests pass. Visible verification found and fixed a
+  retained-intent defect: extension execution identity now includes the internal request ID, so
+  separate subrequests under one retained lease cannot suppress each other. A live v0.5.8 Chrome
+  probe submitted
   deliberately overlapping JSON-RPC calls through a raw relay: two same-tab waits completed at
   4.41 and 8.41 seconds, two different-tab waits completed at 2.07 and 4.00 seconds, and narration
   rendered in 19 ms while a 3.98-second page command remained active. One first-post-reload
@@ -118,7 +124,10 @@ when they disagree**, and update it when you land something that changes the pic
   state, with a gentle four-second breathing pulse, rather than fading after individual actions.
   It remains across idle time, navigation, detachment, and worker restart; capture hides and
   restores it. Strict clippy, the full Rust workspace, all 34 Lightbox scenarios, extension syntax
-  checks, and all 100 extension tests pass. The owner-visible local gate also passes: after an
+  checks, and all 102 extension tests pass. Awaited delivery and readiness deadlines remain
+  referenced while background expiry remains unreferenced. A focused live probe delivered
+  narration in under one second while a same-tab page wait remained active for at least 3.5
+  seconds. The owner-visible local gate also passes: after an
   explicit unpacked-extension reload, the idle Example Domain tab recovered its pulsing border
   without another tool call; navigation kept the message, border, and pulse; and screenshot
   capture showed its camera cue while suppressing and then restoring the border.
@@ -208,11 +217,10 @@ when its API credentials or dashboard metadata are absent.
   discovery topics spanning MCP, browser automation, Chromium, local-first operation, Rust,
   developer tooling, and access control. Funding links stay deferred until the owner chooses the
   recipient/entity, provider, and accounting/tax handling.
-- **ADR-0078 visible-browser verification is owed.** C1-C6 and the automated gates are complete.
-  Run `docs/tasks/closed-loop-core/LIVE-VERIFY.md` against the visible Linux Chrome host once SSH
-  access is available. Cross-origin frame refs remain deferred because they require a separate
-  multi-origin governance decision. Headless, isolated, cloud, and remote browser execution remain
-  out of scope.
+- **ADR-0078 visible-browser verification is complete.** C1-C6, the automated gates, and the five
+  visible journeys in `docs/tasks/closed-loop-core/LIVE-VERIFY.md` passed on the Linux host.
+  Cross-origin frame refs remain deferred because they require a separate multi-origin governance
+  decision. Headless, isolated, cloud, and remote browser execution remain out of scope.
 - **Public documentation was rebalanced around responsible delight**: the applied review lives in
   `docs/design/public-documentation-review-2026-07.md`. The README now leads with the real-session
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
