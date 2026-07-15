@@ -236,7 +236,10 @@ when its API credentials or dashboard metadata are absent.
   remain open; no capture tool or replay path is authorized.
 - **Bounded delegation needs scenario validation before an ADR**: the release-candidate triage
   journey in `docs/design/bounded-delegation-scenario.md` exercises the ADR-0060 session overlay and
-  identifies the unresolved approval, expiry, budget, intent, and digest questions.
+  identifies the unresolved approval, expiry, budget, intent, and digest questions. Personal travel
+  research and organization-managed incident triage now add the two missing postures, and a
+  six-state paper prototype plus rejection criteria is ready. Human comprehension evidence, client
+  elicitation capability, and enforceable consequence vocabulary remain open.
 - **Bidirectional installation handoff is released in v0.5.7** (ADR-0070): an explicit first
   `ghostlight install` opens the stable extension walkthrough once; `--no-open`, dry-run,
   CI, failed, and idempotent paths stay quiet. The canonical service-first page is live at
