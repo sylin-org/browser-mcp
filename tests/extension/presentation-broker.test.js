@@ -97,6 +97,13 @@ test("navigation replays state but retires old-document events", async () => {
   h.broker.documentReady(9, "doc-a");
   h.broker.publishState(
     9,
+    "control",
+    { type: "SHOW_AGENT_INDICATORS" },
+    { waitForDelivery: false }
+  );
+  await settle();
+  h.broker.publishState(
+    9,
     "attention:g1",
     { type: "AGENT_ATTENTION_REQUIRED", guid: "g1" },
     { waitForDelivery: false }
@@ -104,6 +111,7 @@ test("navigation replays state but retires old-document events", async () => {
   h.broker.publishEvent(9, { type: "AGENT_READ_SCAN" }, { waitForDelivery: false });
   await settle();
   assert.deepEqual(h.delivered.map((entry) => entry.envelope.type), [
+    "SHOW_AGENT_INDICATORS",
     "AGENT_ATTENTION_REQUIRED",
     "AGENT_READ_SCAN",
   ]);
@@ -116,11 +124,12 @@ test("navigation replays state but retires old-document events", async () => {
   );
   h.broker.documentReady(9, "doc-b");
   await settle();
-  assert.deepEqual(h.delivered.slice(2).map((entry) => entry.envelope.type), [
+  assert.deepEqual(h.delivered.slice(3).map((entry) => entry.envelope.type), [
     "AGENT_ATTENTION_REQUIRED",
+    "SHOW_AGENT_INDICATORS",
     "AGENT_NAVIGATE_PILL",
   ]);
-  assert.equal(h.delivered.slice(2).every((entry) => entry.documentId === "doc-b"), true);
+  assert.equal(h.delivered.slice(3).every((entry) => entry.documentId === "doc-b"), true);
 });
 
 test("a ready message for a new document retires queued effects when loading was missed", async () => {
@@ -256,6 +265,11 @@ test("renderer recovery clears stale roots while preserving visual trust invaria
   assert.match(indicatorSource, /if \(attentionLayer\) attentionLayer\.style\.display = v \? "none" : ""/);
   assert.match(indicatorSource, /attachShadow\(\{ mode: "closed" \}\)/);
   assert.match(indicatorSource, /backdrop-filter:blur\(5px\)/);
+  assert.match(indicatorSource, /let controlActive = false/);
+  assert.match(indicatorSource, /function showControlBorder\(\)/);
+  assert.match(indicatorSource, /ghostlight-control-breathe 4s ease-in-out infinite/);
+  assert.match(indicatorSource, /visibilitychange/);
+  assert.doesNotMatch(indicatorSource, /FADE_MS|fadeTimer|setTimeout\(hideControlBorder/);
   assert.doesNotMatch(indicatorSource, /ghostlight-narration-progress/);
 });
 
@@ -263,6 +277,10 @@ test("worker routes visual effects, state, and capture barriers through one brok
   assert.match(workerSource, /presentationBroker\.publishEvent\(tabId, msg/);
   assert.match(workerSource, /presentationBroker\.publishState\(tabId, "narration"/);
   assert.match(workerSource, /presentationBroker\.publishState\(tabId, `attention:/);
+  assert.match(workerSource, /function markTabManaged\(tabId\)/);
+  assert.match(workerSource, /presentationBroker\.publishState\(tabId, "control"/);
+  assert.match(workerSource, /clearMessage: \{ type: "HIDE_AGENT_INDICATORS" \}/);
+  assert.equal((workerSource.match(/managedTabs\.add\(/g) || []).length, 1);
   assert.match(workerSource, /presentationBroker\.publishCapture\(tabId, \{ type: "HIDE_FOR_TOOL_USE" \}\)/);
   assert.doesNotMatch(workerSource, /const narrationStore/);
   assert.doesNotMatch(workerSource, /const attentionStore/);

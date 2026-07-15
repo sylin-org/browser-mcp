@@ -196,6 +196,26 @@ const clientGroups = new Map();
 // browser restart, so a stale id must never survive one), and re-seeded on rehydrate from the live
 // members of every managed group. Pruned on tabs.onRemoved.
 const managedTabs = new Set();
+// ADR-0081 control-scope amendment: membership in `managedTabs` is also the exact lifecycle of
+// the persistent viewport border. The broker state replays into every eligible document and
+// survives a worker restart; it is not an action effect and has no deadline. Centralizing every
+// add here prevents reachability and its user-visible disclosure from drifting apart.
+function markTabManaged(tabId) {
+  if (!Number.isSafeInteger(tabId)) return false;
+  managedTabs.add(tabId);
+  const hasControlState = presentationBroker.states().some(
+    (state) => state.tabId === tabId && state.channel === "control"
+  );
+  if (!hasControlState) {
+    presentationBroker.publishState(tabId, "control", {
+      type: "SHOW_AGENT_INDICATORS",
+    }, {
+      clearMessage: { type: "HIDE_AGENT_INDICATORS" },
+      waitForDelivery: false,
+    });
+  }
+  return true;
+}
 // ADR-0066 D2/D4: the group title the service writes is the ghost glyph + a space + the clientKey
 // (session_title). This prefix is what rehydrate strips to reclaim a group by title after a
 // browser restart. Distinct from GROUP_TITLE (glyph + name, NO space) so the two never collide.
@@ -317,7 +337,7 @@ async function connect() {
       const groupKey = (msg && (msg.clientKey || msg.guid)) || null;
       if (msg && msg.type === "group_request" && typeof groupKey === "string" && groupKey) {
         const tabIds = Array.isArray(msg.tabIds) ? msg.tabIds : [];
-        for (const t of tabIds) managedTabs.add(t);
+        for (const t of tabIds) markTabManaged(t);
         groupSessionTabs(chrome, clientGroups, groupKey, tabIds, msg.title || GROUP_TITLE)
           .then(() => persistSessionState())
           .then(() => {
@@ -1239,7 +1259,7 @@ async function ensureGroup(create) {
   const gid = await chrome.tabs.group({ tabIds: [win.tabs[0].id] });
   await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: "blue" });
   groupId = gid;
-  managedTabs.add(win.tabs[0].id); // ADR-0066 D5: track the global group's tab too
+  markTabManaged(win.tabs[0].id); // ADR-0066 D5: track the global group's tab too
   await persistSessionState();
 }
 
@@ -1267,7 +1287,7 @@ async function createTabInSessionGroup(key) {
     await chrome.tabs.group({ tabIds: [tab.id], groupId: gid });
   }
   clientGroups.set(key, gid);
-  managedTabs.add(tab.id);
+  markTabManaged(tab.id);
   return { tab, gid };
 }
 async function groupTabs() {
@@ -1286,7 +1306,7 @@ async function groupTabs() {
 async function seedManagedTabsFromGroups() {
   for (const gid of managedGroupIds(groupId, clientGroups)) {
     try {
-      for (const t of await chrome.tabs.query({ groupId: gid })) managedTabs.add(t.id);
+      for (const t of await chrome.tabs.query({ groupId: gid })) markTabManaged(t.id);
     } catch { /* a vanished group contributes no tabs */ }
   }
 }
@@ -1330,7 +1350,7 @@ async function rehydrate() {
     }
     // ADR-0066 D5: restore the managed-tab set (a service-worker restart keeps tab ids stable).
     if (Array.isArray(stored && stored.managedTabsState)) {
-      for (const id of stored.managedTabsState) managedTabs.add(id);
+      for (const id of stored.managedTabsState) markTabManaged(id);
     }
     // ADR-0047 D5: drop any restored groups whose Chrome group died while the worker was asleep,
     // so the managed surface never names a stale group id.
@@ -1654,12 +1674,11 @@ function sendToTab(tabId, msg) {
     ttlMs: PRESENTATION_EVENT_TTL_MS,
   });
 }
-function showActivity(tabId) { sendToTab(tabId, { type: "SHOW_AGENT_INDICATORS" }); }
 // Move the phantom cursor to a (rescaled, CSS-px) point and wait for it to settle, so the user sees
 // the pointer arrive before the action fires. Resolves immediately if no indicator is present.
 function moveCursor(tabId, x, y) { return sendToTab(tabId, { type: "UPDATE_PHANTOM_CURSOR", x, y }); }
 // Emit a click ripple: one expanding ring per click, so a double-click pings twice and a
-// triple-click three times. Fire-and-forget (visual only), like showActivity.
+// triple-click three times. Fire-and-forget (visual only).
 function clickRipple(tabId, x, y, count, button) { sendToTab(tabId, { type: "AGENT_CLICK_RIPPLE", x, y, count, button }); }
 // A comet-trail dot along a drag path, and a soft shimmer on the focused field when typing.
 function dragTrail(tabId, x, y) { sendToTab(tabId, { type: "AGENT_DRAG_TRAIL", x, y }); }
@@ -1833,8 +1852,6 @@ function waitForLoad(tabId) {
 async function computer(a) {
   const tabId = await effectiveTabId(a.tabId);
   const modifiers = modifierBits(a.modifiers);
-  showActivity(tabId); // best-effort "agent active" glow for the watching user
-
   switch (a.action) {
     case "screenshot": {
       const caption = "Screenshot captured (jpeg).";
@@ -2031,7 +2048,7 @@ async function tabsCreateLegacy() {
   await ensureGroup(true);
   const tab = await chrome.tabs.create({ active: true });
   await chrome.tabs.group({ tabIds: [tab.id], groupId });
-  managedTabs.add(tab.id); // ADR-0066 D5
+  markTabManaged(tab.id); // ADR-0066 D5
   await persistSessionState();
   const r = tabContext(await groupTabs());
   r.content[0].text = `Created tab ${tab.id}.\n` + r.content[0].text;

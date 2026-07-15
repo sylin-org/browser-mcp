@@ -264,6 +264,27 @@ handshake. The new renderer removes stale roots during activation, then acknowle
 barrier. Restricted pages still degrade truthfully after the bounded attempt. No capture waits on
 an unbounded retry loop.
 
+## Amendment: managed control scope is durable presentation state
+
+Live verification clarified that the sky-blue viewport border does not mean "a tool just ran."
+It means "this tab is inside Ghostlight's agent-reachable surface." The border therefore follows
+ADR-0066's `managedTabs` lifecycle as a deadline-free `control` broker state. Every adoption path
+publishes it, navigation and worker restart replay it into the current acknowledged document, and
+tab destruction erases it. A tab detached from its Chrome group remains controlled under
+ADR-0066 D5, so its border remains too.
+
+The renderer treats control scope separately from transient action effects. The border uses a
+slow, low-amplitude breathing pulse and remains present between commands and client sessions. It
+is not silenced by the decorative-effects preference because it discloses agent reachability.
+Capture barriers hide it briefly so screenshots and zooms remain clean, then restore it before
+ordinary presentation resumes. A background document may defer DOM creation until visible while
+retaining the acknowledged control state. Restricted browser pages that cannot host content
+scripts cannot draw an in-page border; their managed Chrome tab-group treatment remains visible.
+
+Navigation pills, read scans, camera frames, cursor effects, and other action feedback remain
+document-local events. They explain what happened inside the durable controlled boundary; they do
+not establish or extend that boundary.
+
 ## Provenance
 
 On 2026-07-14, live testing proved that browser commands still worked while all page signage could

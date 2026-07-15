@@ -3,7 +3,7 @@
 //
 // User-facing "watching" affordance (mechanism, not policy):
 //   - a phantom cursor showing where the agent's pointer is about to act,
-//   - a subtle "agent active" glow while a tool runs,
+//   - a subtle breathing border while the tab remains agent-reachable,
 //   - a sky-blue click ripple (one ring per click; a right-click ring is dashed),
 //   - a comet-trail along a click-drag path,
 //   - a soft shimmer on the focused field when the agent types.
@@ -67,7 +67,6 @@
   // and the ambient glow. A stable chrome reads calmer than four saturated full-bleed colors
   // competing across a session, and the badge + glow still carry the color-coded urgency.
   const NOTIF_RIBBON_BG = "#0c0f14";
-  const FADE_MS = 4000;
   const RIPPLE_MS = 620; // one click ring's expand-and-fade duration
   const RIPPLE_STAGGER_MS = 140; // gap between rings of a multi-click, so 2/3 read as a rhythm
   const FIELD_SPLASH_MS = 700; // form-write splash hugging the field just set
@@ -87,9 +86,8 @@
   let cursorEl = null;
   let glowEl = null;
   let fxLayer = null;
-  let fadeTimer = null;
   let fxSeq = 0;
-  let glowActive = false; // whether the glow should be visible (independent of capture-hiding)
+  let controlActive = false; // durable managed-tab scope, independent of capture-hiding
   let hiddenForTool = false; // suppressed during a screenshot capture
   let notifLayer = null; // transient sticker container, separate from disposable action FX
   let activeNotifEl = null; // the currently shown sticker, tracked for replacement and expiry
@@ -134,8 +132,8 @@
     const s = document.createElement("style");
     s.id = STYLE_ID;
     s.textContent =
-      "@keyframes ghostlight-pulse{0%,100%{opacity:.5}50%{opacity:.9}}" +
-      "#" + GLOW_ID + "{animation:ghostlight-pulse 2s ease-in-out infinite}" +
+      "@keyframes ghostlight-control-breathe{0%,100%{opacity:.58}50%{opacity:.82}}" +
+      "#" + GLOW_ID + "{animation:ghostlight-control-breathe 4s ease-in-out infinite}" +
       "@keyframes ghostlight-ripple{0%{opacity:.85;transform:translate(-50%,-50%) scale(.3)}" +
       "100%{opacity:0;transform:translate(-50%,-50%) scale(2.8)}}" +
       "@keyframes ghostlight-ripple-rm{0%{opacity:.7;transform:translate(-50%,-50%) scale(1)}" +
@@ -402,27 +400,29 @@
     caption("Filling a field");
   }
 
-  function showGlow() {
-    glowActive = true;
-    if (fadeTimer) clearTimeout(fadeTimer);
-    fadeTimer = setTimeout(hideGlow, FADE_MS);
-    if (hiddenForTool || document.hidden) return;
+  function renderControlBorder() {
+    if (!controlActive || hiddenForTool || document.hidden) return;
     ensureStyles();
     if (!glowEl) { glowEl = makeGlow(); (document.body || document.documentElement).appendChild(glowEl); }
     glowEl.style.display = "";
-    requestAnimationFrame(() => { if (glowEl && glowActive && !hiddenForTool) glowEl.style.opacity = "1"; });
+    requestAnimationFrame(() => {
+      if (glowEl && controlActive && !hiddenForTool && !document.hidden) glowEl.style.opacity = "1";
+    });
   }
 
-  function hideGlow() {
-    glowActive = false;
-    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
+  function showControlBorder() {
+    controlActive = true;
+    renderControlBorder();
+  }
+
+  function hideControlBorder() {
+    controlActive = false;
     if (glowEl) glowEl.style.opacity = "0";
   }
 
   function moveCursor(x, y) {
     return new Promise((resolve) => {
       recentPointer = { x: Number(x), y: Number(y), at: Date.now() };
-      showGlow();
       if (hiddenForTool || document.hidden) return resolve();
       ensureStyles();
       if (!cursorEl) { cursorEl = makeCursor(); (document.body || document.documentElement).appendChild(cursorEl); }
@@ -445,10 +445,8 @@
     if (cursorEl) cursorEl.style.display = v ? "none" : "";
     if (captionEl) captionEl.style.display = v ? "none" : ""; // keep the subtitle out of the agent's own capture
 
-    if (glowEl) {
-      if (v) glowEl.style.display = "none";
-      else if (glowActive) { glowEl.style.display = ""; glowEl.style.opacity = "1"; }
-    }
+    if (v && glowEl) glowEl.style.display = "none";
+    else if (!v && controlActive) renderControlBorder();
     if (fxLayer) {
       if (v) { fxLayer.style.display = "none"; fxLayer.replaceChildren(); } // clear in-flight effects for a clean capture
       else fxLayer.style.display = "";
@@ -1004,7 +1002,6 @@
         case "AGENT_SCREENSHOT_FX":
         case "AGENT_ZOOM_FRAME":
         case "AGENT_WAIT_PULSE":
-        case "SHOW_AGENT_INDICATORS":
           sendResponse({ success: true });
           return true;
       }
@@ -1052,9 +1049,9 @@
       case "SET_CAPTIONS":
         captionsEnabled = !!msg.enabled; sendResponse({ success: true }); return true;
       case "SHOW_AGENT_INDICATORS":
-        showGlow(); sendResponse({ success: true }); return true;
+        showControlBorder(); sendResponse({ success: true }); return true;
       case "HIDE_AGENT_INDICATORS":
-        hideGlow(); sendResponse({ success: true }); return true;
+        hideControlBorder(); sendResponse({ success: true }); return true;
       case "HIDE_FOR_TOOL_USE":
         setHiddenForTool(true); sendResponse({ success: true }); return true;
       case "SHOW_AFTER_TOOL_USE":
@@ -1114,6 +1111,12 @@
     }
   }, { capture: true, passive: true });
 
+  // A broker state may arrive while the tab is in the background. The exact document has still
+  // acknowledged control scope, but DOM work is deferred until the person can actually see it.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) renderControlBorder();
+  });
+
   // Same-isolated-world seam for sibling content scripts (content.js): a form write calls
   // fieldSplash directly with the element it just set -- the writer is the one place that knows
   // the target, so no service-worker hop needs to carry a rect. Page scripts can never reach this
@@ -1126,5 +1129,5 @@
     },
   };
 
-  window.addEventListener("beforeunload", () => { hideGlow(); clearNarration(); clearAttention(); });
+  window.addEventListener("beforeunload", () => { hideControlBorder(); clearNarration(); clearAttention(); });
 })();

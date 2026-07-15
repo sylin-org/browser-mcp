@@ -112,8 +112,14 @@ when they disagree**, and update it when you land something that changes the pic
   probe acknowledged narration on an unchanged managed document, acknowledged it again immediately
   after navigation, and completed a screenshot capture. A raw-relay concurrency probe returned
   narration in 4 ms while a same-tab page wait completed in 4,203 ms; the tool connector, not
-  Ghostlight, explained an initially serialized measurement. Owner-visible confirmation of the
-  camera and navigation styling is the remaining local gate.
+  Ghostlight, explained an initially serialized measurement. The owner then confirmed narration,
+  the navigation pill, screenshot border/camera/frame, and read scan in Chrome. That gate clarified
+  the border's semantics: it now follows managed-tab control scope as deadline-free replayable
+  state, with a gentle four-second breathing pulse, rather than fading after individual actions.
+  It remains across idle time, navigation, detachment, and worker restart; capture hides and
+  restores it. Strict clippy, the full Rust workspace, all 34 Lightbox scenarios, extension syntax
+  checks, and all 100 extension tests pass. An explicit extension reload and owner-visible
+  persistent-border confirmation is the remaining local gate.
 - **The agent-browser overlap map is current through v0.31.2 (2026-07-13).** Research 17 contains
   the requested one-to-one table. The recommendation is deliberate non-parity: retain the local
   live-user-context boundary, compose with testing runtimes for specialist breadth, and measure two

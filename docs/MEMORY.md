@@ -74,6 +74,10 @@ file does not restate them -- follow AGENTS.md.
   navigation. Presentation delivery uses ADR-0081's content-script ready handshake plus exact
   Chrome document/revision acknowledgement and packaged on-demand reinjection. Never restore a
   direct fire-and-forget `tabs.sendMessage` path for Ghostlight page signage.
+- **Visible scope and visible activity are different promises.** The persistent sky border means a
+  tab is agent-reachable under ADR-0066's managed-tab boundary. Pills, scans, camera frames, and
+  pointer effects explain transient work inside that boundary. Do not make scope depend on a tool
+  happening to run or make an action effect establish reachability.
 
 ## Pointer index (where durable things live)
 

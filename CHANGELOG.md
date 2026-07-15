@@ -42,6 +42,9 @@ resource-scoped command reliability.
 - **Calmer visible feedback (ADR-0079).** Isolated denials use a short non-modal sticker. Repeated
   denials pause only the producing MCP session and offer explicit recovery controls. Narration,
   screenshot, and recording cues share a quieter visual language.
+- **Persistent controlled-tab disclosure (ADR-0081 amendment).** Every Ghostlight-managed tab now
+  keeps a gently breathing sky border across idle time, navigation, detachment, and extension
+  worker restarts. Capture hides it only long enough to keep the returned image clean.
 - **Atomic execution authority.** Configuration and policy publish as one epoch-bound snapshot;
   URL probes, authorization, dispatch, landing verification, post-processing, and audit use one
   admitted execution context.
