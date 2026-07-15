@@ -224,7 +224,9 @@ when its API credentials or dashboard metadata are absent.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
-  and choose a controlled experiment origin. ADR-0043's no-implementation stance remains intact.
+  and choose a controlled experiment origin. A 2026-07-14 recheck against the official Chrome 149
+  trial, security guidance, and current explainer found the draft still current; nothing was sent.
+  ADR-0043's no-implementation stance remains intact.
 - **Agent journey evaluation artifacts are proposed** (ADR-0069): local, minimized evidence for
   comparing models and clients across a browser journey. Acceptance requires concrete journeys, a
   data inventory and threat review, a versioned artifact schema, lightbox production, and evidence

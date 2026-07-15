@@ -21,6 +21,13 @@ Primary sources reviewed 2026-07-12:
 - https://developer.chrome.com/docs/ai/webmcp/evals
 - https://github.com/webmachinelearning/webmcp
 
+Rechecked 2026-07-14 against the same official sources. Chrome documents the origin trial for
+Chrome 149, `readOnlyHint`, `untrustedContentHint`, `exposedTo`, tool-output character budgets, and
+the `tools` Permissions Policy for frame exposure. The public explainer still treats user prompting,
+output schemas, and related agent integration as active design work. The recheck found no public
+consumer contract for a stable registration generation, an independent runtime consequence
+verdict, or the audit/provenance event proposed below. The draft remains current; nothing was sent.
+
 ## Where Ghostlight can contribute
 
 ### A declaration is a claim, not a verdict
