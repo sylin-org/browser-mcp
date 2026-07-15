@@ -51,6 +51,17 @@ const REPLAY_FILENAME: &str = "aurora-qa-replay.gif";
 /// drag and zoom coordinates stay aligned with ADR-0010 if the source constants change.
 const EXTENSION_CONSTANTS: &str = include_str!("../extension/lib/constants.js");
 
+/// The machine-result tool whose advertised output schema negotiates the ADR-0078 page
+/// provenance contract for this client.
+const JAVASCRIPT_TOOL: &str = "javascript_tool";
+
+/// Prefix shared by the service-authored opening marker and the consumer's marker detection.
+const PAGE_CONTENT_PREFIX: &str = "--- GHOSTLIGHT PAGE CONTENT ";
+
+/// ADR-0078 requires at least 96 bits of service-chosen nonce material. Two lowercase hex
+/// characters encode one byte, so the minimum wire representation is 24 characters.
+const MIN_PAGE_NONCE_HEX_LEN: usize = 24;
+
 /// The demo's three watchability rhythms, all operator-tunable: a short beat after each visible
 /// step, a long hold right after the tab opens (time to resize/position the window before the
 /// tour starts), and a breather between sections so each "test" reads as its own scene.
@@ -72,6 +83,43 @@ pub fn run(base_url: &str, pacing: Pacing) -> Result<()> {
     rt.block_on(drive(base, pacing))
 }
 
+/// The page-provenance contract established from `javascript_tool` in `tools/list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageProvenanceContract {
+    /// The handshake has not yet inspected the server's advertised tool schema.
+    Unnegotiated,
+    /// A pre-ADR-0078 service advertises `javascript_tool` without requiring page provenance.
+    /// Raw results remain compatible; a fully verified bounded result is a safe additive upgrade.
+    Legacy,
+    /// The service advertises page provenance and every machine result must prove it.
+    Required,
+}
+
+impl PageProvenanceContract {
+    /// Detect the contract from the service's explicit `tools/list` advertisement. Absence of the
+    /// required demo tool is an incompatible service or policy, not evidence of a legacy server.
+    fn from_tools_list(result: &Value) -> Result<Self> {
+        let tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("tools/list did not return a tools array"))?;
+        let javascript = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(Value::as_str) == Some(JAVASCRIPT_TOOL))
+            .ok_or_else(|| anyhow!("tools/list did not advertise the demo's javascript_tool"))?;
+        Ok(
+            if javascript
+                .pointer("/outputSchema/properties/provenance")
+                .is_some()
+            {
+                Self::Required
+            } else {
+                Self::Legacy
+            },
+        )
+    }
+}
+
 /// A minimal MCP client speaking JSON-RPC over a spawned `ghostlight-relay --role agent`.
 struct Client {
     child: Child,
@@ -79,6 +127,7 @@ struct Client {
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: i64,
     pause: Duration,
+    page_provenance: PageProvenanceContract,
 }
 
 impl Client {
@@ -109,6 +158,7 @@ impl Client {
             stdout: BufReader::new(stdout).lines(),
             next_id: 0,
             pause,
+            page_provenance: PageProvenanceContract::Unnegotiated,
         })
     }
 
@@ -178,6 +228,17 @@ impl Client {
     async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String> {
         let result = self.call_tool_result(name, arguments).await?;
         Ok(first_text(&result))
+    }
+
+    /// Read the advertised `javascript_tool` output contract after initialization. Only an
+    /// explicit legacy advertisement permits unwrapped machine JSON later in the demo.
+    async fn negotiate_page_provenance(&mut self) -> Result<()> {
+        let tools = self
+            .request("tools/list", json!({}))
+            .await
+            .context("negotiate page provenance through tools/list")?;
+        self.page_provenance = PageProvenanceContract::from_tools_list(&tools)?;
+        Ok(())
     }
 
     async fn pause(&self) {
@@ -293,6 +354,7 @@ async fn drive(base: String, pacing: Pacing) -> Result<()> {
     .await
     .context("initialize (is a Ghostlight service running with the extension attached? run `ghostlight doctor`)")?;
     c.notify("notifications/initialized", json!({})).await?;
+    c.negotiate_page_provenance().await?;
 
     step("Open a fresh tab in the Ghostlight group");
     let created = c.call_tool("tabs_create_mcp", json!({})).await?;
@@ -656,11 +718,11 @@ async fn model_rect(c: &mut Client, tab_id: i64, selector: &str, padding: f64) -
     );
     let result = c
         .call_tool_result(
-            "javascript_tool",
+            JAVASCRIPT_TOOL,
             json!({ "action": "javascript_exec", "tabId": tab_id, "text": script }),
         )
         .await?;
-    let text = page_content_payload(&result)?;
+    let text = page_content_payload(&result, c.page_provenance)?;
     parse_number_array(&text, 4).with_context(|| format!("project zoom rectangle for {selector}"))
 }
 
@@ -676,26 +738,37 @@ async fn model_centers(c: &mut Client, tab_id: i64, selectors: &[&str; 2]) -> Re
     );
     let result = c
         .call_tool_result(
-            "javascript_tool",
+            JAVASCRIPT_TOOL,
             json!({ "action": "javascript_exec", "tabId": tab_id, "text": script }),
         )
         .await?;
-    let text = page_content_payload(&result)?;
+    let text = page_content_payload(&result, c.page_provenance)?;
     parse_number_array(&text, 4).context("project Foundry drag centers")
 }
 
 /// Return the payload inside a service-authored page-content boundary for a machine consumer.
 ///
 /// Current services provide the same nonce in structured provenance and both text markers. The
-/// demo validates all three before removing the control text. A raw result remains accepted for
-/// compatibility with services from before ADR-0078. Marker-shaped text without matching
-/// structured provenance is never stripped.
-fn page_content_payload(result: &Value) -> Result<String> {
-    const PREFIX: &str = "--- GHOSTLIGHT PAGE CONTENT ";
+/// demo validates all three before removing the control text. Raw results are accepted only when
+/// `tools/list` explicitly established compatibility with a service from before ADR-0078. Such a
+/// legacy advertisement may still return a fully verified boundary as an additive upgrade, which
+/// is safe to unwrap. Unnegotiated calls fail before inspecting either result shape. Marker-shaped
+/// text without matching structured provenance is never stripped.
+fn page_content_payload(result: &Value, contract: PageProvenanceContract) -> Result<String> {
+    let provenance_required = match contract {
+        PageProvenanceContract::Unnegotiated => {
+            bail!("page provenance was not negotiated through tools/list")
+        }
+        PageProvenanceContract::Legacy => false,
+        PageProvenanceContract::Required => true,
+    };
     let text = first_text(result);
     let Some(provenance) = result.pointer("/structuredContent/provenance") else {
-        if text.starts_with(PREFIX) {
+        if text.starts_with(PAGE_CONTENT_PREFIX) {
             bail!("page-content boundary is missing structured provenance");
+        }
+        if provenance_required {
+            bail!("javascript_tool advertised page provenance but its result omitted it");
         }
         return Ok(text);
     };
@@ -708,7 +781,8 @@ fn page_content_payload(result: &Value) -> Result<String> {
         .get("sessionNonce")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("page-content provenance has no session nonce"))?;
-    if nonce.len() != 32
+    if nonce.len() < MIN_PAGE_NONCE_HEX_LEN
+        || nonce.len() % 2 != 0
         || !nonce
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -719,7 +793,7 @@ fn page_content_payload(result: &Value) -> Result<String> {
         .get("topOrigin")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("page-content provenance has no top origin"))?;
-    let opening = format!("{PREFIX}{nonce} origin={origin} UNTRUSTED ---\n");
+    let opening = format!("{PAGE_CONTENT_PREFIX}{nonce} origin={origin} UNTRUSTED ---\n");
     let closing = format!("\n--- END GHOSTLIGHT PAGE CONTENT {nonce} ---");
     let payload = text
         .strip_prefix(&opening)
@@ -892,10 +966,28 @@ mod tests {
         assert!(parse_number_array("[1,2]", 4).is_err());
     }
 
-    #[test]
-    fn unwraps_a_provenance_bound_machine_result() {
-        let nonce = "00112233445566778899aabbccddeeff";
-        let result = json!({
+    fn produced_machine_result() -> Value {
+        let mut result = json!({
+            "content": [{ "type": "text", "text": "[10,20.5,30,40]" }],
+            "structuredContent": { "page": { "origin": "https://example.com" } }
+        });
+        ghostlight::mcp::provenance::apply(
+            &mut result,
+            ghostlight::browser::directory::PageOutput::Text,
+            "00112233-4455-4677-8899-aabbccddeeff",
+        );
+        result
+    }
+
+    fn legacy_machine_result() -> Value {
+        json!({
+            "content": [{ "type": "text", "text": "[1,2,3,4]" }],
+            "structuredContent": { "page": { "origin": "https://example.com" } }
+        })
+    }
+
+    fn bounded_result(nonce: &str) -> Value {
+        json!({
             "content": [{
                 "type": "text",
                 "text": format!(
@@ -912,8 +1004,35 @@ mod tests {
                     "sessionNonce": nonce
                 }
             }
+        })
+    }
+
+    #[test]
+    fn negotiates_current_and_legacy_provenance_contracts_from_tools_list() {
+        let current = ghostlight::browser::directory::advertised_tools_json();
+        assert_eq!(
+            PageProvenanceContract::from_tools_list(&current).unwrap(),
+            PageProvenanceContract::Required
+        );
+
+        let legacy = json!({
+            "tools": [{
+                "name": JAVASCRIPT_TOOL,
+                "description": "legacy JavaScript tool",
+                "inputSchema": { "type": "object" }
+            }]
         });
-        let payload = page_content_payload(&result).unwrap();
+        assert_eq!(
+            PageProvenanceContract::from_tools_list(&legacy).unwrap(),
+            PageProvenanceContract::Legacy
+        );
+        assert!(PageProvenanceContract::from_tools_list(&json!({ "tools": [] })).is_err());
+    }
+
+    #[test]
+    fn unwraps_the_real_producer_consumer_provenance_contract() {
+        let result = produced_machine_result();
+        let payload = page_content_payload(&result, PageProvenanceContract::Required).unwrap();
         assert_eq!(payload, "[10,20.5,30,40]");
         assert_eq!(
             parse_number_array(&payload, 4).unwrap(),
@@ -922,33 +1041,83 @@ mod tests {
     }
 
     #[test]
-    fn preserves_raw_machine_results_from_older_services() {
-        let result = json!({ "content": [{ "type": "text", "text": "[1,2,3,4]" }] });
-        assert_eq!(page_content_payload(&result).unwrap(), "[1,2,3,4]");
+    fn legacy_contract_accepts_raw_and_verified_additive_upgrade_results() {
+        let raw = legacy_machine_result();
+        assert_eq!(
+            page_content_payload(&raw, PageProvenanceContract::Legacy).unwrap(),
+            "[1,2,3,4]"
+        );
+        assert!(page_content_payload(&raw, PageProvenanceContract::Required).is_err());
+
+        let bounded = produced_machine_result();
+        assert_eq!(
+            page_content_payload(&bounded, PageProvenanceContract::Legacy).unwrap(),
+            "[10,20.5,30,40]"
+        );
     }
 
     #[test]
-    fn refuses_to_strip_unverified_or_mismatched_boundaries() {
-        let nonce = "00112233445566778899aabbccddeeff";
-        let wrapped = format!(
-            "--- GHOSTLIGHT PAGE CONTENT {nonce} origin=https://example.com UNTRUSTED ---\n\
-             [1,2,3,4]\n\
-             --- END GHOSTLIGHT PAGE CONTENT {nonce} ---"
-        );
-        let unverified = json!({ "content": [{ "type": "text", "text": wrapped }] });
-        assert!(page_content_payload(&unverified).is_err());
+    fn unnegotiated_contract_rejects_raw_and_verified_bounded_results() {
+        let raw = legacy_machine_result();
+        assert!(page_content_payload(&raw, PageProvenanceContract::Unnegotiated).is_err());
 
-        let mismatched = json!({
-            "content": [{ "type": "text", "text": wrapped }],
-            "structuredContent": {
-                "provenance": {
-                    "pageSourced": true,
-                    "untrusted": true,
-                    "topOrigin": "https://example.com",
-                    "sessionNonce": "ffeeddccbbaa99887766554433221100"
-                }
-            }
-        });
-        assert!(page_content_payload(&mismatched).is_err());
+        let bounded = produced_machine_result();
+        assert!(page_content_payload(&bounded, PageProvenanceContract::Unnegotiated).is_err());
+    }
+
+    #[test]
+    fn accepts_the_96_bit_nonce_minimum_and_rejects_invalid_hex() {
+        let minimum = bounded_result("00112233445566778899aabb");
+        assert_eq!(
+            page_content_payload(&minimum, PageProvenanceContract::Required).unwrap(),
+            "[10,20.5,30,40]"
+        );
+        let longer_even = bounded_result("00112233445566778899aabbcc");
+        assert_eq!(
+            page_content_payload(&longer_even, PageProvenanceContract::Required).unwrap(),
+            "[10,20.5,30,40]"
+        );
+
+        for nonce in [
+            "00112233445566778899aa",
+            "00112233445566778899aabbc",
+            "00112233445566778899AABB",
+        ] {
+            let invalid = bounded_result(nonce);
+            assert!(page_content_payload(&invalid, PageProvenanceContract::Required).is_err());
+        }
+    }
+
+    #[test]
+    fn refuses_origin_flag_and_marker_mismatches() {
+        let mut wrong_origin = produced_machine_result();
+        wrong_origin["structuredContent"]["provenance"]["topOrigin"] =
+            json!("https://other.example");
+        assert!(page_content_payload(&wrong_origin, PageProvenanceContract::Required).is_err());
+
+        for flag in ["pageSourced", "untrusted"] {
+            let mut wrong_flag = produced_machine_result();
+            wrong_flag["structuredContent"]["provenance"][flag] = json!(false);
+            assert!(page_content_payload(&wrong_flag, PageProvenanceContract::Required).is_err());
+        }
+
+        let mut unverified = produced_machine_result();
+        unverified["structuredContent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("provenance");
+        assert!(page_content_payload(&unverified, PageProvenanceContract::Legacy).is_err());
+
+        let mut wrong_closing = produced_machine_result();
+        let nonce = wrong_closing["structuredContent"]["provenance"]["sessionNonce"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let wrong_text = wrong_closing["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .replace(&nonce, "ffeeddccbbaa99887766554433221100");
+        wrong_closing["content"][0]["text"] = Value::String(wrong_text);
+        assert!(page_content_payload(&wrong_closing, PageProvenanceContract::Required).is_err());
     }
 }

@@ -61,7 +61,8 @@ semantic controls and observable completion states.
 - Machine-shaped JavaScript results retain Ghostlight's model-facing provenance boundary on the
   wire. Before parsing geometry, the runner validates the structured page-sourced marker, origin,
   and matching session nonce in both control markers, then unwraps only that verified outer layer.
-  It accepts raw values only for compatibility with services from before ADR-0078.
+  It accepts raw values only after `tools/list` explicitly advertises a pre-ADR-0078 tool contract;
+  a capable or unnegotiated service that omits provenance fails closed.
 - Long transitions expose text states such as `Revision B ready` and `Replay ready`; the runner
   waits for those outcomes instead of relying on optimistic sleeps.
 - A failed policy assertion terminates the run. The demo cannot call itself complete if the
