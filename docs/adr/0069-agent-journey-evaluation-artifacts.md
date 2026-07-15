@@ -116,6 +116,11 @@ Before acceptance, the implementation design must provide:
 5. A lightbox path that produces useful artifacts without a live personal browser.
 6. Evidence from at least two MCP clients or model configurations that the comparison is useful.
 
+Design gates 1-4 are specified in `docs/design/agent-journey-artifact-v0.md`: three concrete
+journeys, field-level capture and retention rules, the v0 manifest/event format plus compatibility
+policy, and the threat review. Gates 5-6 remain open. This ADR stays Proposed; the design document
+does not authorize capture commands, a public tool, or replay.
+
 ## Consequences
 
 - Developers gain a reason to use the flight recorder even without organizational governance.

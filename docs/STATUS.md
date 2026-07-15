@@ -230,7 +230,10 @@ when its API credentials or dashboard metadata are absent.
 - **Agent journey evaluation artifacts are proposed** (ADR-0069): local, minimized evidence for
   comparing models and clients across a browser journey. Acceptance requires concrete journeys, a
   data inventory and threat review, a versioned artifact schema, lightbox production, and evidence
-  from at least two client or model configurations.
+  from at least two client or model configurations. The v0 design now completes the first four
+  gates with three journeys, redacted-by-default field rules, an append-only directory format,
+  compatibility policy, and threat review. Lightbox production and two-configuration evidence
+  remain open; no capture tool or replay path is authorized.
 - **Bounded delegation needs scenario validation before an ADR**: the release-candidate triage
   journey in `docs/design/bounded-delegation-scenario.md` exercises the ADR-0060 session overlay and
   identifies the unresolved approval, expiry, budget, intent, and digest questions.
