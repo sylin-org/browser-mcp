@@ -2,7 +2,10 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { createSurfaceExecutor } = require("../../extension/lib/surface-executor.js");
+const {
+  createSurfaceExecutor,
+  executionIdentity,
+} = require("../../extension/lib/surface-executor.js");
 
 function deferred() {
   let resolve;
@@ -95,6 +98,25 @@ test("duplicate commands are not executed twice", async () => {
   h.submit("surface:1", false, 10, "same");
   assert.deepStrictEqual(h.terminal, ["same", "same"]);
   assert.deepStrictEqual(h.started, ["same"]);
+});
+
+test("separate requests in one retained command each execute once", async () => {
+  const h = harness();
+  const first = executionIdentity("connection", "lease", "request-1");
+  const second = executionIdentity("connection", "lease", "request-2");
+  assert.notStrictEqual(first, second);
+
+  h.submit("surface:1", false, 10, first);
+  h.submit("surface:1", false, 10, second);
+  await settle();
+  assert.deepStrictEqual(h.started, [first]);
+
+  h.gates.get(first).resolve();
+  await settle();
+  assert.deepStrictEqual(h.started, [first, second]);
+
+  h.submit("surface:1", false, 10, second);
+  assert.deepStrictEqual(h.accepted.at(-1), [second, true]);
 });
 
 test("queued expiry rejects and erases the retained payload", async () => {

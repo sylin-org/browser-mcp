@@ -4,6 +4,10 @@
 (function initSurfaceExecutor(root) {
   "use strict";
 
+  function executionIdentity(connectionGeneration, commandId, requestId) {
+    return `${connectionGeneration}:${commandId}:${requestId}`;
+  }
+
   function createSurfaceExecutor(options) {
     const execute = options.execute;
     const onAccepted = options.onAccepted || (() => {});
@@ -179,7 +183,7 @@
     };
   }
 
-  const GhostlightSurfaceExecutor = { createSurfaceExecutor };
+  const GhostlightSurfaceExecutor = { createSurfaceExecutor, executionIdentity };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = GhostlightSurfaceExecutor;
   } else {

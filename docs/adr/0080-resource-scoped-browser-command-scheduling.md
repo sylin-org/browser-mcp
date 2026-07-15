@@ -238,6 +238,15 @@ The service scheduler remains authoritative. An older extension without the exec
 to the degree that the service has one definitely reconciled in-flight command; uncertain recovery
 requires the negotiated executor and resynchronization protocol.
 
+#### D7 amendment: executor identity is per extension request
+
+One scheduled command may issue several extension requests while retaining its surface lease under
+D8. The executor therefore deduplicates the tuple of connection generation, scheduled command id,
+and extension request id. It does not deduplicate the scheduled command id alone. Acceptance and
+terminal messages continue to report the scheduled command id so the service can reconcile the
+lease. This clarification was added after visible-Chrome verification found that command-only
+deduplication completed the first `act_on` helper request and suppressed every later helper request.
+
 ### D8. One semantic intent may retain a reentrant surface lease
 
 `act_on` and `form_fill` retain one reentrant surface lease from resolution through mutation and

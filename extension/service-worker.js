@@ -119,7 +119,13 @@ function executionItem(msg, port, connectionGeneration) {
   const bypass = execution.class === "presentation" || execution.class === "local" ||
     execution.class === "safety_protocol";
   return {
-    commandId: `${connectionGeneration}:${wireId}`,
+    // A retained semantic intent sends several distinct extension requests under one service
+    // scheduler command. Deduplicate exact request deliveries, not the whole retained lease.
+    commandId: self.GhostlightSurfaceExecutor.executionIdentity(
+      connectionGeneration,
+      wireId,
+      msg.id
+    ),
     wireCommandId: wireId,
     requestId: msg.id,
     request: msg,
