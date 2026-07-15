@@ -64,6 +64,12 @@ when they disagree**, and update it when you land something that changes the pic
   started and reached the user service, and converged with Chrome's real native-host environment.
   `doctor` found the extension, and Codex 0.144.4 completed browser actions in visible Chrome
   150.0.7871.124. The user-level candidate is 0.5.8; it is not a published release.
+- **The Foundry demo is compatible with ADR-0078 provenance boundaries.** Its machine-result
+  preprocessor validates structured page provenance plus matching origin and nonce markers before
+  unwrapping geometry JSON; it refuses missing or mismatched control data and remains compatible
+  with raw pre-ADR-0078 services. A normal-paced visible run on 2026-07-15 completed the full story,
+  enforced the off-domain denial, exported a 100-frame 23,141,963-byte replay, confirmed page
+  receipt, and cleared the captured bytes. No trained schema or model-facing boundary changed.
 - **Release publication now has a narrow privileged boundary.** A read-only assembly job generates
   the pinned SBOM, packages the extension, creates `SHA256SUMS`, and uploads one immutable bundle.
   The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.

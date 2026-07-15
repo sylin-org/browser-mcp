@@ -150,6 +150,16 @@ not a sanitizer, content filter, DLP system, or policy decision.
 This provenance ships in the permissively licensed engine. It never phones home, persists page
 content, or changes the local-only boundary.
 
+#### D5 amendment: machine consumers validate before unwrapping
+
+The text boundary is part of the model-facing MCP result. An in-repository machine consumer that
+must parse the enclosed value, such as the scripted demo's geometry helper, may remove only the
+outer control markers after validating that `structuredContent.provenance` marks the result as
+page-sourced and untrusted and that its origin and session nonce exactly match both text markers.
+It must reject malformed, missing, or mismatched provenance instead of deleting marker-shaped page
+text. Raw results remain accepted where compatibility with a pre-ADR-0078 service is intentional.
+This consumer rule does not change the trained tool schema or the service's model-facing output.
+
 ### D6. Record content-free target assurance in result and audit
 
 Each relevant interaction reports a target-assurance class: `semantic`, `ref`, `coordinate`, or
@@ -223,7 +233,8 @@ browser task.
 4. Existing mutating tools and `act_on` emit bounded receipts without adding unconditional latency
    to low-level calls.
 5. Page-sourced structured and text results carry consistent, service-authored provenance; tests
-   prove that page content cannot choose the session boundary nonce.
+   prove that page content cannot choose the session boundary nonce, and machine consumers validate
+   matching structured provenance before unwrapping an enclosed value.
 6. Audit tests prove target assurance is present while target and page payloads are absent.
 7. Dialog and tab controls prove tab ownership, sacred-tab defense, classification, cleanup, and
    corrective failure behavior.

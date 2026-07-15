@@ -58,6 +58,10 @@ semantic controls and observable completion states.
 - Screenshots establish the current viewport before coordinate interactions.
 - Drag coordinates are derived from the live page and transformed with the same canonical geometry
   constants used by the extension. Resizing the browser does not invalidate the script.
+- Machine-shaped JavaScript results retain Ghostlight's model-facing provenance boundary on the
+  wire. Before parsing geometry, the runner validates the structured page-sourced marker, origin,
+  and matching session nonce in both control markers, then unwraps only that verified outer layer.
+  It accepts raw values only for compatibility with services from before ADR-0078.
 - Long transitions expose text states such as `Revision B ready` and `Replay ready`; the runner
   waits for those outcomes instead of relying on optimistic sleeps.
 - A failed policy assertion terminates the run. The demo cannot call itself complete if the
@@ -91,14 +95,18 @@ A final normal-paced local rehearsal on 2026-07-13 completed inside the hard lif
 frames as a 21,466,581-byte GIF, verified `Replay ready` in the page, cleared the recording, and
 observed the real off-domain denial. The enclosing build-and-run command took 113.3 seconds,
 including a 3.98-second build and work before recording began. A compressed rehearsal of the same
-two-scan flow also passed. Any future story expansion must repeat the normal-paced end-to-end check
-rather than assuming that individual tool calls imply a reliable demo.
+two-scan flow also passed. On 2026-07-15, after adding ADR-0078 boundary-aware machine parsing, a
+second normal-paced visible run completed the same story, exported 100 frames as a 23,141,963-byte
+GIF, verified page receipt, cleared the recording, and observed the off-domain denial. Any future
+story expansion must repeat the normal-paced end-to-end check rather than assuming that individual
+tool calls imply a reliable demo.
 
 ## Acceptance checks
 
 - The generated site validates and the Foundry route has no broken internal references.
 - The page fits 1280 x 720 and a 390-pixel-wide viewport without horizontal overflow.
-- The Rust demo parser and geometry helpers pass their unit tests.
+- The Rust demo parser and geometry helpers pass their unit tests, including verified boundary
+  unwrapping and refusal of missing or mismatched provenance.
 - The full Rust workspace and strict clippy gates pass in an isolated target directory.
 - A live run reaches `Replay ready`, clears recording state, and proves the policy denial.
 - No trained tool-schema field or extension policy boundary changes for this presentation layer.

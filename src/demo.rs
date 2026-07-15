@@ -654,12 +654,13 @@ async fn model_rect(c: &mut Client, tab_id: i64, selector: &str, padding: f64) -
          const r=el.getBoundingClientRect(),a=project(Math.max(0,r.left-{padding}),Math.max(0,r.top-{padding})),\
          b=project(Math.min(vpW,r.right+{padding}),Math.min(vpH,r.bottom+{padding}));return[a[0],a[1],b[0],b[1]];}})()"
     );
-    let text = c
-        .call_tool(
+    let result = c
+        .call_tool_result(
             "javascript_tool",
             json!({ "action": "javascript_exec", "tabId": tab_id, "text": script }),
         )
         .await?;
+    let text = page_content_payload(&result)?;
     parse_number_array(&text, 4).with_context(|| format!("project zoom rectangle for {selector}"))
 }
 
@@ -673,13 +674,58 @@ async fn model_centers(c: &mut Client, tab_id: i64, selectors: &[&str; 2]) -> Re
          const points=els.map(e=>{{const r=e.getBoundingClientRect();return project(r.left+r.width/2,r.top+r.height/2);}});\
          return[points[0][0],points[0][1],points[1][0],points[1][1]];}})()"
     );
-    let text = c
-        .call_tool(
+    let result = c
+        .call_tool_result(
             "javascript_tool",
             json!({ "action": "javascript_exec", "tabId": tab_id, "text": script }),
         )
         .await?;
+    let text = page_content_payload(&result)?;
     parse_number_array(&text, 4).context("project Foundry drag centers")
+}
+
+/// Return the payload inside a service-authored page-content boundary for a machine consumer.
+///
+/// Current services provide the same nonce in structured provenance and both text markers. The
+/// demo validates all three before removing the control text. A raw result remains accepted for
+/// compatibility with services from before ADR-0078. Marker-shaped text without matching
+/// structured provenance is never stripped.
+fn page_content_payload(result: &Value) -> Result<String> {
+    const PREFIX: &str = "--- GHOSTLIGHT PAGE CONTENT ";
+    let text = first_text(result);
+    let Some(provenance) = result.pointer("/structuredContent/provenance") else {
+        if text.starts_with(PREFIX) {
+            bail!("page-content boundary is missing structured provenance");
+        }
+        return Ok(text);
+    };
+    if provenance.get("pageSourced").and_then(Value::as_bool) != Some(true)
+        || provenance.get("untrusted").and_then(Value::as_bool) != Some(true)
+    {
+        bail!("page-content provenance is missing its untrusted page marker");
+    }
+    let nonce = provenance
+        .get("sessionNonce")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("page-content provenance has no session nonce"))?;
+    if nonce.len() != 32
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("page-content provenance has an invalid session nonce");
+    }
+    let origin = provenance
+        .get("topOrigin")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("page-content provenance has no top origin"))?;
+    let opening = format!("{PREFIX}{nonce} origin={origin} UNTRUSTED ---\n");
+    let closing = format!("\n--- END GHOSTLIGHT PAGE CONTENT {nonce} ---");
+    let payload = text
+        .strip_prefix(&opening)
+        .and_then(|body| body.strip_suffix(&closing))
+        .ok_or_else(|| anyhow!("page-content boundary does not match structured provenance"))?;
+    Ok(payload.to_string())
 }
 
 /// Parse a JSON number array returned by `javascript_tool` and pin its expected length.
@@ -844,5 +890,65 @@ mod tests {
             vec![10.0, 20.5, 30.0, 40.0]
         );
         assert!(parse_number_array("[1,2]", 4).is_err());
+    }
+
+    #[test]
+    fn unwraps_a_provenance_bound_machine_result() {
+        let nonce = "00112233445566778899aabbccddeeff";
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "--- GHOSTLIGHT PAGE CONTENT {nonce} origin=https://example.com UNTRUSTED ---\n\
+                     [10,20.5,30,40]\n\
+                     --- END GHOSTLIGHT PAGE CONTENT {nonce} ---"
+                )
+            }],
+            "structuredContent": {
+                "provenance": {
+                    "pageSourced": true,
+                    "untrusted": true,
+                    "topOrigin": "https://example.com",
+                    "sessionNonce": nonce
+                }
+            }
+        });
+        let payload = page_content_payload(&result).unwrap();
+        assert_eq!(payload, "[10,20.5,30,40]");
+        assert_eq!(
+            parse_number_array(&payload, 4).unwrap(),
+            vec![10.0, 20.5, 30.0, 40.0]
+        );
+    }
+
+    #[test]
+    fn preserves_raw_machine_results_from_older_services() {
+        let result = json!({ "content": [{ "type": "text", "text": "[1,2,3,4]" }] });
+        assert_eq!(page_content_payload(&result).unwrap(), "[1,2,3,4]");
+    }
+
+    #[test]
+    fn refuses_to_strip_unverified_or_mismatched_boundaries() {
+        let nonce = "00112233445566778899aabbccddeeff";
+        let wrapped = format!(
+            "--- GHOSTLIGHT PAGE CONTENT {nonce} origin=https://example.com UNTRUSTED ---\n\
+             [1,2,3,4]\n\
+             --- END GHOSTLIGHT PAGE CONTENT {nonce} ---"
+        );
+        let unverified = json!({ "content": [{ "type": "text", "text": wrapped }] });
+        assert!(page_content_payload(&unverified).is_err());
+
+        let mismatched = json!({
+            "content": [{ "type": "text", "text": wrapped }],
+            "structuredContent": {
+                "provenance": {
+                    "pageSourced": true,
+                    "untrusted": true,
+                    "topOrigin": "https://example.com",
+                    "sessionNonce": "ffeeddccbbaa99887766554433221100"
+                }
+            }
+        });
+        assert!(page_content_payload(&mismatched).is_err());
     }
 }
