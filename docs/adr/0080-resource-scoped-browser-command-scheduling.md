@@ -247,6 +247,21 @@ terminal messages continue to report the scheduled command id so the service can
 lease. This clarification was added after visible-Chrome verification found that command-only
 deduplication completed the first `act_on` helper request and suppressed every later helper request.
 
+#### D7 amendment: response delivery remains bound to the accepting connection
+
+An active extension request may finish after its native port disconnects and a replacement service
+connection reuses the same numeric request id. The extension therefore captures an immutable
+response scope at admission: request id, scheduled command id when present, and the exact accepting
+port. Success, error, acceptance, and terminal messages use that scope directly. They never recover
+delivery state from a map keyed only by request id and never fall through to the current native
+port. The same rule applies to auxiliary asynchronous replies created by that connection,
+including tab URL probes and group responses.
+
+A completion whose original port is gone is dropped at that dead connection boundary. It must not
+be relabeled with a later command or delivered to a replacement service. Deterministic tests reuse
+one request id across two ports, complete the older request last, and prove that each result keeps
+its original port and command metadata.
+
 ### D8. One semantic intent may retain a reentrant surface lease
 
 `act_on` and `form_fill` retain one reentrant surface lease from resolution through mutation and
@@ -323,8 +338,8 @@ scheduling metric phones home.
 8. Timeout tests independently exercise queue, response, execution, and quarantine boundaries. A
    caller cannot release an executing lease, and only the three D6 proofs clear uncertainty.
 9. Extension tests prove per-surface ordering, different-surface concurrency, command-id
-   deduplication, count/byte overflow, payload erasure, generation recovery, and
-   safety/protocol-control and presentation bypass.
+   deduplication, count/byte overflow, payload erasure, generation recovery, connection-scoped
+   response delivery under request-id reuse, and safety/protocol-control and presentation bypass.
 10. Architecture tests prove every browser-bound send owns an `ExecutionContext` or uses one of the
     explicitly typed bypass paths.
 11. Composition tests prove descriptor-gated reentrancy, bounded single-surface retention, per-step

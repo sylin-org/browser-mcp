@@ -19,7 +19,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/presentation-broker.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js", "lib/surface-executor.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/presentation-broker.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js", "lib/surface-executor.js", "lib/execution-response.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -46,20 +46,20 @@ const EXECUTOR_GENERATION = typeof crypto.randomUUID === "function"
   ? crypto.randomUUID()
   : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let executorBrowserSlot = null;
-const executionByRequest = new Map();
+const toolResponder = self.GhostlightExecutionResponse.createToolResponder(EXECUTOR_GENERATION);
 
 function executorPost(item, message) {
-  try { item.port.postMessage(message); } catch { /* connection generation is gone */ }
+  try { item.response.port.postMessage(message); } catch { /* connection generation is gone */ }
 }
 
 function wireCommandId(item) {
-  return item.wireCommandId;
+  return item.response.commandId;
 }
 
 function postExecutorTerminal(item) {
   executorPost(item, {
     type: "tool_terminal",
-    id: item.requestId,
+    id: item.response.requestId,
     commandId: wireCommandId(item),
     executorGeneration: EXECUTOR_GENERATION,
     resource: item.resource,
@@ -68,30 +68,18 @@ function postExecutorTerminal(item) {
 
 const surfaceExecutor = self.GhostlightSurfaceExecutor.createSurfaceExecutor({
   execute: async (item) => {
-    executionByRequest.set(item.requestId, item);
-    try {
-      await dispatch(
-        item.requestId,
-        item.request.tool,
-        item.request.args || {},
-        item.request.clientKey || item.request.guid
-      );
-    } finally {
-      executionByRequest.delete(item.requestId);
-    }
+    await dispatch(item);
   },
   onAccepted: (item, duplicate) => executorPost(item, {
     type: "tool_accepted",
-    id: item.requestId,
+    id: item.response.requestId,
     commandId: wireCommandId(item),
     executorGeneration: EXECUTOR_GENERATION,
     duplicate: duplicate === true,
   }),
   onRejected: (item, reason) => {
     if (!item) return;
-    executionByRequest.set(item.requestId, item);
-    fail(item.requestId, hopError("extension", `Command not executed: ${reason}`));
-    executionByRequest.delete(item.requestId);
+    fail(item.response, hopError("extension", `Command not executed: ${reason}`));
     postExecutorTerminal(item);
   },
   onTerminal: postExecutorTerminal,
@@ -118,6 +106,7 @@ function executionItem(msg, port, connectionGeneration) {
   }
   const bypass = execution.class === "presentation" || execution.class === "local" ||
     execution.class === "safety_protocol";
+  const response = self.GhostlightExecutionResponse.createResponseScope(msg.id, port, wireId);
   return {
     // A retained semantic intent sends several distinct extension requests under one service
     // scheduler command. Deduplicate exact request deliveries, not the whole retained lease.
@@ -126,14 +115,12 @@ function executionItem(msg, port, connectionGeneration) {
       wireId,
       msg.id
     ),
-    wireCommandId: wireId,
-    requestId: msg.id,
     request: msg,
     resource,
     key,
     bypass,
     bytes: requestBytes(msg),
-    port,
+    response,
   };
 }
 
@@ -277,6 +264,8 @@ async function connect() {
   try {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
     const connectedPort = nativePort;
+    const connectedResponder = self.GhostlightExecutionResponse
+      .createConnectionResponder(connectedPort);
     const connectionGeneration = `${EXECUTOR_GENERATION}:${++nativeConnectionSeq}`;
     // ADR-0061: announce identity FIRST, before any other frame. The relay forwards it verbatim, so
     // the service reads it as the extension's opening handshake frame (right after the relay's own
@@ -295,13 +284,19 @@ async function connect() {
     const handleNativeMessage = (msg) => {
       if (msg && msg.type === "wire_chunk") {
         wireChunkStore.accept(msg, handleNativeMessage, (requestId, reason) => {
-          fail(requestId, hopError("extension", `Large request rejected: ${reason}`));
+          fail(
+            self.GhostlightExecutionResponse.createResponseScope(requestId, connectedPort),
+            hopError("extension", `Large request rejected: ${reason}`)
+          );
         });
         return;
       }
       if (msg && msg.type === "tool_request" && msg.id) {
         if (sessionKilled) {
-          fail(msg.id, hopError("extension", "The user ended the browser session (kill switch)"));
+          fail(
+            self.GhostlightExecutionResponse.createResponseScope(msg.id, connectedPort),
+            hopError("extension", "The user ended the browser session (kill switch)")
+          );
           return;
         }
         surfaceExecutor.submit(executionItem(msg, connectedPort, connectionGeneration));
@@ -324,10 +319,18 @@ async function connect() {
             if (managed) {
               try { const tab = await chrome.tabs.get(msg.tabId); url = tab.url || null; } catch { url = null; }
             }
-            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url } }); } catch { /* port gone */ }
+            connectedResponder.post({
+              id: msg.id,
+              type: "tab_url_response",
+              result: { url },
+            });
           },
           () => {
-            try { nativePort && nativePort.postMessage({ id: msg.id, type: "tab_url_response", result: { url: null } }); } catch { /* port gone */ }
+            connectedResponder.post({
+              id: msg.id,
+              type: "tab_url_response",
+              result: { url: null },
+            });
           }
         );
         return;
@@ -347,10 +350,10 @@ async function connect() {
         groupSessionTabs(chrome, clientGroups, groupKey, tabIds, msg.title || GROUP_TITLE)
           .then(() => persistSessionState())
           .then(() => {
-            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: true }); } catch { /* port gone */ }
+            connectedResponder.post({ type: "group_response", guid: msg.guid, ok: true });
           })
           .catch(() => {
-            try { nativePort && nativePort.postMessage({ type: "group_response", guid: msg.guid, ok: false }); } catch { /* port gone */ }
+            connectedResponder.post({ type: "group_response", guid: msg.guid, ok: false });
           });
         return;
       }
@@ -516,17 +519,8 @@ function persistPresentationSnapshot(snapshot) {
   chrome.storage.session.set({ [PRESENTATION_STATE_KEY]: snapshot }).catch(() => {});
 }
 
-function reply(id, result) {
-  const execution = executionByRequest.get(id);
-  const message = { id, type: "tool_response", result };
-  if (execution) {
-    message.commandId = wireCommandId(execution);
-    message.executorGeneration = EXECUTOR_GENERATION;
-  }
-  try {
-    const port = execution ? execution.port : nativePort;
-    port && port.postMessage(message);
-  } catch { /* port gone */ }
+function reply(response, result) {
+  toolResponder.reply(response, result);
 }
 
 // --- Developer diagnostics (ADR-0059): mechanism only, fire-and-forget, the SAME posture as
@@ -881,19 +875,8 @@ function hopError(hop, message, detail) {
   if (detail) err.detail = String(detail);
   return err;
 }
-function fail(id, error) {
-  const msg = { id, type: "tool_error", error: (error && error.message) || String(error) };
-  if (error && error.hop) msg.hop = error.hop;
-  if (error && error.detail) msg.detail = error.detail;
-  const execution = executionByRequest.get(id);
-  if (execution) {
-    msg.commandId = wireCommandId(execution);
-    msg.executorGeneration = EXECUTOR_GENERATION;
-  }
-  try {
-    const port = execution ? execution.port : nativePort;
-    port && port.postMessage(msg);
-  } catch { /* port gone */ }
+function fail(response, error) {
+  toolResponder.fail(response, error);
 }
 
 // --- CDP ---
@@ -2627,19 +2610,23 @@ const handlers = {
   },
 };
 
-async function dispatch(id, tool, args, key) {
+async function dispatch(item) {
   await ready; // never run a tool against un-rehydrated state
+  const request = item.request;
+  const tool = request.tool;
+  const args = request.args || {};
+  const key = request.clientKey || request.guid;
   const handler = handlers[tool];
-  if (!handler) return fail(id, `Unknown tool: ${tool}`);
+  if (!handler) return fail(item.response, `Unknown tool: ${tool}`);
   try {
     // ADR-0066: `key` is the client's clientKey (or a legacy guid); the grouping handlers use it
     // to reuse the client's durable tab group. Every other handler ignores its second argument.
-    reply(id, await handler(args, key));
+    reply(item.response, await handler(args, key));
   } catch (e) {
-    if (e instanceof TabAccessError) return reply(id, text(e.message));
+    if (e instanceof TabAccessError) return reply(item.response, text(e.message));
     // Hop-tagged errors (cdp/page) pass through as-is; untagged errors keep the tool-name prefix.
-    if (e && e.hop) fail(id, e);
-    else fail(id, `${tool} failed: ${(e && e.message) || e}`);
+    if (e && e.hop) fail(item.response, e);
+    else fail(item.response, `${tool} failed: ${(e && e.message) || e}`);
   }
 }
 
