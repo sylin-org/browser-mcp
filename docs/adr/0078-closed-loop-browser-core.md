@@ -168,6 +168,14 @@ the other actions require Action. It is tab-scoped, reports whether a JavaScript
 the tab, and includes that blocker in relevant interaction receipts. Browser mechanism remains in
 the extension; policy and classification remain in the service.
 
+#### D7 amendment: the blocker guard precedes page-dependent preparation
+
+A relevant interaction checks the extension's current dialog state before resolving a ref, reading
+page geometry, moving the cursor, or performing any other page-dependent preparation. The guard is
+not limited to the final input dispatch. This clarification was added after visible-Chrome
+verification showed that coordinate resolution could wait on a modal page and never reach the
+existing dispatch guard.
+
 Add a `tab_control` tool with `focus`, `reload`, and `close`. Reload and close require Action. Focus
 changes browser presentation but not page content and requires no RAWX capability. Every action
 enforces the existing session ownership boundary. Close is an explicit request for one

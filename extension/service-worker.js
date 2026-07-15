@@ -1887,26 +1887,22 @@ async function computer(a) {
     case "double_click":
     case "triple_click":
     case "hover": {
-      const c = await resolveCoords(tabId, a);
-      if (!c) return text("coordinate or ref is required.");
-      await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
-      if (a.action === "hover") {
-        return withObservation(tabId, {
-          action: a.action,
-          ref: a.ref,
-          targetAssurance: a.ref ? "ref" : "coordinate",
-        }, async () => {
-          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
-          return text(`Hovered at (${c[0]}, ${c[1]}).`);
-        });
-      }
-      const button = a.action === "right_click" ? "right" : "left";
-      const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
       return withObservation(tabId, {
         action: a.action,
         ref: a.ref,
         targetAssurance: a.ref ? "ref" : "coordinate",
       }, async () => {
+        // Keep every page-dependent preparation behind the dialog guard. Resolving a ref or
+        // moving the visible cursor can otherwise wait forever on a page blocked by a modal.
+        const c = await resolveCoords(tabId, a);
+        if (!c) return text("coordinate or ref is required.");
+        await moveCursor(tabId, c[0], c[1]); // show the pointer arrive before acting
+        if (a.action === "hover") {
+          await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1], modifiers });
+          return text(`Hovered at (${c[0]}, ${c[1]}).`);
+        }
+        const button = a.action === "right_click" ? "right" : "left";
+        const clickCount = a.action === "double_click" ? 2 : a.action === "triple_click" ? 3 : 1;
         await click(tabId, c[0], c[1], { button, clickCount, modifiers });
         return text(`${a.action} at (${c[0]}, ${c[1]}).`);
       });

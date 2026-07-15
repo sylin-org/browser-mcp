@@ -61,6 +61,11 @@ test("worker observes and resolves dialogs without automatic acceptance", () => 
   const guard = source.indexOf("if (dialogStore.current(tabId))", source.indexOf("async function withObservation"));
   const mutation = source.indexOf("const result = await run()", guard);
   assert.ok(guard > 0 && mutation > guard, "an unresolved dialog blocks before mutation dispatch");
+  assert.match(
+    source,
+    /case "hover": \{\s*return withObservation\([^]*?const c = await resolveCoords\(tabId, a\)/,
+    "click and hover ref resolution must run behind the dialog guard"
+  );
   assert.match(source, /msg\.type === "narration_clear"[^]*dialogStore\.remove\(msg\.tabId\)/);
   assert.match(source, /async function killSession\(\)[^]*dialogStore\.clear\(\)/);
 });
