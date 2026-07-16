@@ -33,6 +33,23 @@ fn install_plan(instance: Option<&str>) -> String {
 }
 
 #[test]
+fn install_help_names_every_registered_client() {
+    let out = Command::new(bin())
+        .args(["install", "--help"])
+        .output()
+        .expect("run ghostlight install --help");
+    assert!(out.status.success(), "install help exits successfully");
+    let help = String::from_utf8_lossy(&out.stdout);
+    for client in ghostlight::install::clients::CLIENTS {
+        assert!(
+            help.contains(client.cli_id),
+            "install help omits registered client {}: {help}",
+            client.cli_id
+        );
+    }
+}
+
+#[test]
 fn default_install_plan_is_byte_identical_and_places_no_copy() {
     let plan = install_plan(None);
     assert!(
