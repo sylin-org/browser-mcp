@@ -27,6 +27,10 @@ fixture server. Its JSON report contains:
 - current numeric owned-tab ids and their character count; and
 - explicit limits on what the measurement proves.
 
+The blocking Linux `e2e-smoke` CI job runs this mode after the ordinary browser smoke. A passing
+job proves the mechanical baseline still works across the real process and extension boundary. It
+does not replace the visible-browser or repeated model-behavior gates below.
+
 Candidate A's mechanical baseline is deliberately `computer screenshot` plus `read_page`: two
 complementary observations. Candidate B records the current composite ids and `tabs_context_mcp`
 payload. The report is a lower-level payload baseline. It does not simulate model judgment.
