@@ -62,7 +62,8 @@ What it can do, on instruction from that local application:
 - Place files and captured screenshots into a page's file inputs and drop targets, using data the
   local application supplies (the extension never reads your disk).
 - Inspect console messages and network request metadata.
-- Open, navigate, group, and manage tabs in a dedicated, clearly labeled automation window.
+- Open, navigate, group, and manage tabs in a clearly labeled automation group inside the browser
+  window the user most recently attended.
 
 Governed by design:
 - The native application is the policy and audit layer. It classifies every action (read, act,

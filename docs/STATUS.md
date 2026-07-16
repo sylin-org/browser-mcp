@@ -1,23 +1,39 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-15. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-16. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
 
 ## Now
 
-- **Browser-window attention routing and multi-instance ergonomics are accepted for v2 in
-  ADR-0084.** New
+- **Window-placed Chromium workspaces are implemented on `dev` (ADR-0085).** The first
+  unaddressed tab-context, tab-create, or navigation call reuses Chrome's last-focused eligible
+  normal window and pins that browser/window for the MCP session. A new window is created only
+  when no eligible normal window exists. Groups are keyed by browser window plus client, moved
+  tabs and groups stay where the user put them, and private native-window metadata never enters
+  the MCP result. The visible group is organization, not the authority boundary; service tab
+  ownership and the extension managed-surface guard remain intact. Extension tests and focused
+  Rust pin/wire tests pass. Formatting, strict workspace clippy, the full Rust workspace suite,
+  all 126 extension tests, JavaScript syntax, and every Lightbox process scenario pass. The
+  fallback now distinguishes unknown inventory from a proven empty browser, consults live focus
+  plus a validated browser-local MRU, and cannot create a window after an inventory failure.
+  Visible Windows verification passed: first-touch work reused the last-clicked window, later
+  work stayed pinned there after focus moved elsewhere, and the JavaScript workwheel remained
+  visible during a two-second page-local operation. Visible Linux verification remains in
+  progress.
+
+- **Complete browser-window attention routing and multi-instance ergonomics remain accepted for
+  v2 in ADR-0084.** New
   unaddressed work follows a service-owned move-to-front queue of eligible browser windows; focus
   carries the window ID, while connection and reconnect no longer count as attention. Tab owners,
   pinned workflows, and explicit selection remain stronger than recent attention, and ambiguity or
   capability mismatch never silently moves work into another authenticated browser context. The
   model-facing vocabulary separates `browserRef`, `browserName`, `engine`, `displayName`,
   `adapterMode`, and `state`, with compact browser provenance and a connected-browser directory.
-  The complete implementation is deliberately parked for v2. The v1 service still promotes on
-  attach, stores browser-only focus, discards `windowId`, and has no browser directory or explicit
-  selection surface; no partial v1 retrofit is planned.
+  The complete implementation is deliberately parked for v2. The current narrow Chromium slice
+  still uses the existing coarse browser-profile selector, has no global window MRU, browser
+  directory, or explicit selection surface, and does not expose browser provenance.
 
 - **Firefox and browser adapters now have a research baseline.** Research 19 maps all 25 current
   tools across Firefox extension-only and hybrid extension plus Marionette/WebDriver BiDi modes,
