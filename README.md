@@ -14,6 +14,11 @@
   <a href="https://github.com/sylin-org/homebrew-tap"><img src="https://img.shields.io/badge/Homebrew-sylin--org%2Ftap-38BDF8" alt="Homebrew tap"></a>
 </p>
 
+<p align="center"><img src="docs/assets/demo.gif" alt="Ghostlight reading and completing a launch brief in a real browser with visible page, field, and click feedback" width="838" height="766"></p>
+<p align="center"><sub>Ghostlight reading, filling, and completing a brief in the user's visible browser.</sub></p>
+
+<p align="center"><a href="#try-it"><strong>Install and try it</strong></a> | <a href="docs/guides/installation.md">Every install path</a> | <a href="docs/COMPARISON.md">Compare alternatives</a></p>
+
 Ghostlight lets an AI agent use the Chromium profile where you are already signed in, inside a
 dedicated tab group that stays separate from your ordinary tabs. Actions happen in front of you. It
 works wide open for personal use or under inspectable policy when stronger boundaries are useful.
@@ -27,11 +32,6 @@ small teams, and unrestricted all-open operation remain free under the exact ter
 
 Responsibility is part of the experience, not a brake on it. A good agent tool should be easy to
 start, obvious while it acts, clear when it stops, and honest about what it can and cannot control.
-
-<p align="center"><a href="#try-it"><strong>Install and try it</strong></a> | <a href="docs/guides/installation.md">Every install path</a> | <a href="docs/COMPARISON.md">Compare alternatives</a></p>
-
-<p align="center"><img src="docs/assets/demo.gif" alt="Ghostlight reading and completing a launch brief in a real browser with visible page, field, and click feedback"></p>
-<p align="center"><sub>Ghostlight reading, filling, and completing a brief in the user's visible browser.</sub></p>
 
 ## Is this your problem?
 
