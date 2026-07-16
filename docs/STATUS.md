@@ -7,6 +7,16 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Now
 
+- **Browser-window attention routing and multi-instance ergonomics are accepted in ADR-0084.** New
+  unaddressed work follows a service-owned move-to-front queue of eligible browser windows; focus
+  carries the window ID, while connection and reconnect no longer count as attention. Tab owners,
+  pinned workflows, and explicit selection remain stronger than recent attention, and ambiguity or
+  capability mismatch never silently moves work into another authenticated browser context. The
+  model-facing vocabulary separates `browserRef`, `browserName`, `engine`, `displayName`,
+  `adapterMode`, and `state`, with compact browser provenance and a connected-browser directory.
+  Implementation is pending: the current service still promotes on attach, stores browser-only
+  focus, discards `windowId`, and has no browser directory or explicit selection surface.
+
 - **Firefox and browser adapters now have a research baseline.** Research 19 maps all 25 current
   tools across Firefox extension-only and hybrid extension plus Marionette/WebDriver BiDi modes,
   inventories useful Firefox capabilities beyond Ghostlight, and identifies the pairing, trusted
