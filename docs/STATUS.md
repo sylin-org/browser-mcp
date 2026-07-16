@@ -7,24 +7,25 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Now
 
-- **Browser-window attention routing and multi-instance ergonomics are accepted in ADR-0084.** New
+- **Browser-window attention routing and multi-instance ergonomics are accepted for v2 in
+  ADR-0084.** New
   unaddressed work follows a service-owned move-to-front queue of eligible browser windows; focus
   carries the window ID, while connection and reconnect no longer count as attention. Tab owners,
   pinned workflows, and explicit selection remain stronger than recent attention, and ambiguity or
   capability mismatch never silently moves work into another authenticated browser context. The
   model-facing vocabulary separates `browserRef`, `browserName`, `engine`, `displayName`,
   `adapterMode`, and `state`, with compact browser provenance and a connected-browser directory.
-  Implementation is pending: the current service still promotes on attach, stores browser-only
-  focus, discards `windowId`, and has no browser directory or explicit selection surface.
+  The complete implementation is deliberately parked for v2. The v1 service still promotes on
+  attach, stores browser-only focus, discards `windowId`, and has no browser directory or explicit
+  selection surface; no partial v1 retrofit is planned.
 
 - **Firefox and browser adapters now have a research baseline.** Research 19 maps all 25 current
   tools across Firefox extension-only and hybrid extension plus Marionette/WebDriver BiDi modes,
   inventories useful Firefox capabilities beyond Ghostlight, and identifies the pairing, trusted
   input, instrumentation, recording, and launch-security gaps. It proposes a typed semantic
   operation seam, connection-time capability negotiation, stable schemas plus dynamic adapter
-  guidance, and tab-owner/session-affinity/focus/disambiguation routing. No Firefox support or
-  adapter refactor is authorized yet; the next gate is a two-track, unshipped Linux proof of
-  concept followed by an owner-reviewed ADR.
+  guidance, and tab-owner/session-affinity/focus/disambiguation routing. Firefox support, adapter
+  refactoring, the proof of concept, and multi-browser selection are one deferred v2 workstream.
 
 - **Unified action signature medallions are implemented on `dev` (ADR-0083).** One
   policy-free, signal-aware renderer now gives non-spatial work a consistent corner badge while
@@ -65,7 +66,8 @@ when they disagree**, and update it when you land something that changes the pic
   (ADR-0067), and Windsurf, Zed, OpenCode, and Crush join Claude Code/Desktop, Cursor, and VS Code
   as explicit installer targets (ADR-0071). Strict JSON is merged idempotently. Commented JSONC is
   left intact and receives a copyable manual entry; `doctor` uses a tolerant registration check.
-  The browser extension remains a separate user-visible install step.
+  The browser extension remains a separate user-visible install step. The current CLI help names
+  all nine registered clients, with a registry-derived regression preventing future help drift.
 - **MCP registry publishing is now automated** in `release.ps1` (the `registry` step, after `npm`):
   `mcp-publisher` DNS-auth publish, gated on `MCP_DNS_PRIVATE_KEY`. The one-time DNS proof is DONE
   (apex TXT `v=MCPv1; k=ed25519; p=...` on sylin.org via Cloudflare; ed25519 key in the env file;
@@ -137,7 +139,8 @@ when they disagree**, and update it when you land something that changes the pic
   Attention transitions are content-free audit records. The README and install guide now expose
   the four-stage practitioner journey, no-account/free-core facts, pre-release extension path, and
   a read-only first proof. The full Rust suite, strict clippy, 93 extension tests, JS syntax checks,
-  and formatting are green. Visible Linux/browser verification remains owed.
+  and formatting are green. Repository-actionable work is complete; a consented follow-up human
+  review remains an owner-side evidence gate.
 - **Resource-scoped browser command scheduling is implemented (ADR-0080).** The service now owns
   bounded fair queues for concrete tab surfaces, client topology, and browser-wide work. Same-tab
   commands serialize while different tabs remain parallel. Configuration and policy publish as one
@@ -198,11 +201,12 @@ when they disagree**, and update it when you land something that changes the pic
   labels. Research 18 now defines deterministic journeys, payload boundaries, benefit thresholds,
   and fail conditions. The opt-in real-stack baseline harness and four-layout local fixture are
   ready under `tests/e2e`; its default smoke path and public schemas are unchanged. Annotated
-  screenshots are first; tab labels remain behind baseline evidence. The automated baseline waits
-  for the Linux host, while the documented model-run recipe can be used from any visible browser.
-  One Codex/Windows mechanical run confirmed two observations in each visual journey and 33
-  composite-id characters across three product tabs; it does not yet satisfy the repeated-model
-  acceptance gate.
+  screenshots are first; tab labels remain behind baseline evidence. The blocking Linux e2e job
+  now executes the mechanical baseline after its ordinary browser smoke; the first CI result and a
+  visible local repetition remain pending. The documented model-run recipe can be used from any
+  visible browser. One Codex/Windows mechanical run confirmed two observations in each visual
+  journey and 33 composite-id characters across three product tabs; it does not yet satisfy the
+  repeated-model acceptance gate.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -291,9 +295,9 @@ remains manual when its API credentials or dashboard metadata are absent.
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
   A follow-up four-phase freshness pass aligns trust commitments, distribution state, topology,
   tool count, recording privacy, roadmap, current guides, website copy, machine-readable surfaces,
-  mobile hierarchy, and public links. Remaining high-value work: macOS/Linux live verification and
-  the outcome of the pending CWS review. The optional hero GIF remains intentionally deferred until
-  a proper capture is worth publishing.
+  mobile hierarchy, and public links. Linux live verification is complete, and the README now uses
+  the captured Ghostlight hero. Remaining high-value external evidence is macOS live verification
+  and the outcome of the pending CWS review.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
