@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(path.join(directory, "free-surface-fixture.html"), "utf8");
 const runner = readFileSync(path.join(directory, "run-smoke.mjs"), "utf8");
+const workflow = readFileSync(path.join(directory, "..", "..", ".github", "workflows", "ci.yml"), "utf8");
 
 test("free-surface fixture is ASCII and exposes every pinned journey", () => {
   assert.doesNotMatch(fixture, /[^\x00-\x7F]/);
@@ -37,4 +38,11 @@ test("baseline mode is opt-in and reports both candidate baselines", () => {
   assert.match(runner, /candidateB:/);
   assert.match(runner, /currentShape: "computer screenshot plus read_page"/);
   assert.match(runner, /currentShape: "numeric composite tab ids"/);
+});
+
+test("blocking Linux smoke executes the mechanical baseline", () => {
+  const job = /\n  e2e-smoke:[\s\S]*?\n  audit:/.exec(workflow);
+  assert.ok(job, "e2e-smoke job is present");
+  assert.match(job[0], /node tests\/e2e\/run-smoke\.mjs --free-surface-baseline/);
+  assert.doesNotMatch(job[0], /^\s+continue-on-error:/m);
 });

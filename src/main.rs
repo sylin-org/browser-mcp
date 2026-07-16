@@ -26,6 +26,8 @@ use ghostlight::hub::manage::doctor::DoctorOptions;
 use ghostlight::install::{InstallOptions, Selection, UninstallOptions};
 
 mod demo;
+mod demo_brief;
+mod demo_client;
 
 /// Ghostlight -- the user's own authenticated browser, for AI agents.
 #[derive(Debug, Parser)]
@@ -80,6 +82,8 @@ enum Command {
     Service,
     /// Drive the scripted Sylin Card Foundry story (sylin.org/ghostlight/demo/foundry).
     Demo(DemoArgs),
+    /// Drive the short launch-brief story for a README hero recording.
+    DemoBrief(DemoBriefArgs),
     /// Show or install a Ghostlight license (state never affects behavior; ADR-0028).
     License(LicenseArgs),
 }
@@ -100,6 +104,22 @@ struct DemoArgs {
     /// Seconds to breathe between the Foundry's inspection, revision, and release phases. Default 5.
     #[arg(long, default_value_t = 5.0)]
     section_pause: f64,
+}
+
+#[derive(Debug, Args)]
+struct DemoBriefArgs {
+    /// The public demo base URL. Override for a local website preview.
+    #[arg(long, default_value = "https://sylin.org/ghostlight/demo")]
+    base_url: String,
+    /// Seconds between the visible field, selection, and submit steps. Default 0.25.
+    #[arg(long, default_value_t = 0.25)]
+    pause: f64,
+    /// Seconds to hold the loaded stage before the story begins. Default 2.
+    #[arg(long, default_value_t = 2.0)]
+    setup_pause: f64,
+    /// Seconds to hold the completed brief before exiting. Default 3.
+    #[arg(long, default_value_t = 3.0)]
+    success_pause: f64,
 }
 
 #[derive(Debug, Args)]
@@ -365,7 +385,8 @@ struct InstallArgs {
     /// Add to every known client, not just detected ones.
     #[arg(long)]
     all_clients: bool,
-    /// Add only to this client id (repeatable): claude-code, claude-desktop, cursor, vscode, codex.
+    /// Add only to this client id (repeatable): claude-code, claude-desktop, cursor, vscode,
+    /// codex, windsurf, zed, opencode, crush.
     #[arg(long = "client", value_name = "ID", conflicts_with = "all_clients")]
     clients: Vec<String>,
     /// Register the server to run in debug mode (sets GHOSTLIGHT_DEBUG=1 in its env).
@@ -611,6 +632,17 @@ fn main() -> Result<()> {
                 step_secs: args.pause,
                 setup_secs: args.setup_pause,
                 section_secs: args.section_pause,
+            },
+        )?,
+        Cli {
+            command: Some(Command::DemoBrief(args)),
+            ..
+        } => demo_brief::run(
+            &args.base_url,
+            demo_brief::Pacing {
+                step_secs: args.pause,
+                setup_secs: args.setup_pause,
+                success_secs: args.success_pause,
             },
         )?,
         Cli {

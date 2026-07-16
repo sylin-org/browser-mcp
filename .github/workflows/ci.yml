@@ -1,9 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -114,6 +114,10 @@ jobs:
       - run: npx --prefix tests/e2e playwright install --with-deps chromium
       - run: node --test tests/e2e/free-surface-baseline.test.mjs
       - run: node tests/e2e/run-smoke.mjs
+      # Research 18: execute the current two-observation and numeric-tab-id baseline against the
+      # same real Linux service, relay, extension, and Chromium boundary. This measures mechanics;
+      # it does not enable either candidate or claim model-behavior benefit.
+      - run: node tests/e2e/run-smoke.mjs --free-surface-baseline
 
   audit:
     runs-on: ubuntu-latest

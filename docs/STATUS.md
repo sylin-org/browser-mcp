@@ -7,6 +7,47 @@ when they disagree**, and update it when you land something that changes the pic
 
 ## Now
 
+- **Browser-window attention routing and multi-instance ergonomics are accepted for v2 in
+  ADR-0084.** New
+  unaddressed work follows a service-owned move-to-front queue of eligible browser windows; focus
+  carries the window ID, while connection and reconnect no longer count as attention. Tab owners,
+  pinned workflows, and explicit selection remain stronger than recent attention, and ambiguity or
+  capability mismatch never silently moves work into another authenticated browser context. The
+  model-facing vocabulary separates `browserRef`, `browserName`, `engine`, `displayName`,
+  `adapterMode`, and `state`, with compact browser provenance and a connected-browser directory.
+  The complete implementation is deliberately parked for v2. The v1 service still promotes on
+  attach, stores browser-only focus, discards `windowId`, and has no browser directory or explicit
+  selection surface; no partial v1 retrofit is planned.
+
+- **Firefox and browser adapters now have a research baseline.** Research 19 maps all 25 current
+  tools across Firefox extension-only and hybrid extension plus Marionette/WebDriver BiDi modes,
+  inventories useful Firefox capabilities beyond Ghostlight, and identifies the pairing, trusted
+  input, instrumentation, recording, and launch-security gaps. It proposes a typed semantic
+  operation seam, connection-time capability negotiation, stable schemas plus dynamic adapter
+  guidance, and tab-owner/session-affinity/focus/disambiguation routing. Firefox support, adapter
+  refactoring, the proof of concept, and multi-browser selection are one deferred v2 workstream.
+
+- **Unified action signature medallions are implemented on `dev` (ADR-0083).** One
+  policy-free, signal-aware renderer now gives non-spatial work a consistent corner badge while
+  avoiding the recent pointer, focused and touched regions, scroll direction, and active
+  narration. JavaScript gets an active workwheel with light particles, typing gets a glowing
+  keyboard without exposing typed values, waits show three calm dots for their real duration, and
+  screenshots end with a camera confirmation alongside the capture frame. Start and finish events
+  use the document-aware Presentation Broker and cannot replay into a later document. The complete
+  25-tool coverage and review queue live in `docs/design/tool-visual-signatures.md`. Strict clippy,
+  the full Rust workspace, 112 extension tests, 4 npm launcher tests, JavaScript syntax checks, and
+  formatting pass. Visible browser verification remains owed.
+
+- **The README hero story is implemented, captured, and enabled.** `ghostlight demo-brief`
+  drives `https://sylin.org/ghostlight/demo/brief/` through the ordinary relay: one visible page
+  read, five exact paced ref writes, submit, and a held local completion state. The stage is
+  warm-dark with no native blue or ambient motion, so Ghostlight's persistent
+  border, scan, field, and click effects own the visual language. Its contract and recording recipe
+  live in `docs/design/demo-brief.md`. A real-stack run against public website revision
+  `20f2ce0a259b` completed in 8.44 seconds with a shortened 0.5-second final hold; the default
+  three-second hold puts the active story at about 10.9 seconds. The final Chrome-visible capture
+  is committed as `docs/assets/demo.gif`: 838 x 766, 11.63 seconds, 382 frames, and 3,111,002 bytes.
+
 - **Branches**: `main` = releases, `dev` = trunk. Work lands on `dev`; the owner reviews
   `dev -> main` PRs and cuts releases.
 - **Latest published release: v0.6.0** (2026-07-15), cut with `scripts/release.ps1 0.6.0`.
@@ -25,7 +66,8 @@ when they disagree**, and update it when you land something that changes the pic
   (ADR-0067), and Windsurf, Zed, OpenCode, and Crush join Claude Code/Desktop, Cursor, and VS Code
   as explicit installer targets (ADR-0071). Strict JSON is merged idempotently. Commented JSONC is
   left intact and receives a copyable manual entry; `doctor` uses a tolerant registration check.
-  The browser extension remains a separate user-visible install step.
+  The browser extension remains a separate user-visible install step. The current CLI help names
+  all nine registered clients, with a registry-derived regression preventing future help drift.
 - **MCP registry publishing is now automated** in `release.ps1` (the `registry` step, after `npm`):
   `mcp-publisher` DNS-auth publish, gated on `MCP_DNS_PRIVATE_KEY`. The one-time DNS proof is DONE
   (apex TXT `v=MCPv1; k=ed25519; p=...` on sylin.org via Cloudflare; ed25519 key in the env file;
@@ -97,7 +139,8 @@ when they disagree**, and update it when you land something that changes the pic
   Attention transitions are content-free audit records. The README and install guide now expose
   the four-stage practitioner journey, no-account/free-core facts, pre-release extension path, and
   a read-only first proof. The full Rust suite, strict clippy, 93 extension tests, JS syntax checks,
-  and formatting are green. Visible Linux/browser verification remains owed.
+  and formatting are green. Repository-actionable work is complete; a consented follow-up human
+  review remains an owner-side evidence gate.
 - **Resource-scoped browser command scheduling is implemented (ADR-0080).** The service now owns
   bounded fair queues for concrete tab surfaces, client topology, and browser-wide work. Same-tab
   commands serialize while different tabs remain parallel. Configuration and policy publish as one
@@ -158,11 +201,12 @@ when they disagree**, and update it when you land something that changes the pic
   labels. Research 18 now defines deterministic journeys, payload boundaries, benefit thresholds,
   and fail conditions. The opt-in real-stack baseline harness and four-layout local fixture are
   ready under `tests/e2e`; its default smoke path and public schemas are unchanged. Annotated
-  screenshots are first; tab labels remain behind baseline evidence. The automated baseline waits
-  for the Linux host, while the documented model-run recipe can be used from any visible browser.
-  One Codex/Windows mechanical run confirmed two observations in each visual journey and 33
-  composite-id characters across three product tabs; it does not yet satisfy the repeated-model
-  acceptance gate.
+  screenshots are first; tab labels remain behind baseline evidence. The blocking Linux e2e job
+  now executes the mechanical baseline after its ordinary browser smoke; the first CI result and a
+  visible local repetition remain pending. The documented model-run recipe can be used from any
+  visible browser. One Codex/Windows mechanical run confirmed two observations in each visual
+  journey and 33 composite-id characters across three product tabs; it does not yet satisfy the
+  repeated-model acceptance gate.
 
 ## Released in v0.5.7: reliable ephemeral GIF recording
 
@@ -251,9 +295,9 @@ remains manual when its API credentials or dashboard metadata are absent.
   problem, fit and anti-fit, visible experience, one install journey, and candid platform state.
   A follow-up four-phase freshness pass aligns trust commitments, distribution state, topology,
   tool count, recording privacy, roadmap, current guides, website copy, machine-readable surfaces,
-  mobile hierarchy, and public links. Remaining high-value work: macOS/Linux live verification and
-  the outcome of the pending CWS review. The optional hero GIF remains intentionally deferred until
-  a proper capture is worth publishing.
+  mobile hierarchy, and public links. Linux live verification is complete, and the README now uses
+  the captured Ghostlight hero. Remaining high-value external evidence is macOS live verification
+  and the outcome of the pending CWS review.
 - **WebMCP participation can begin without product support**: research 15 records the current
   governance gaps, a bounded non-shipping origin-trial experiment, and a draft response for the
   WebMCP explainer. Owner actions: approve the outbound text, join Chrome's early preview program,
@@ -322,8 +366,6 @@ remains manual when its API credentials or dashboard metadata are absent.
   - SEC-HIGH-02 is closed by removal: ADR-0077 deletes the browser-control web listener, remote
     policy keys, remote-enable route, and WebSocket machinery. There is no remote browser-control
     transport to authenticate. Future remote work requires a new threat model and ADR.
-  - A1 demo GIF for the README hero slot (README has a commented placeholder): export it from the
-    same `ghostlight demo` OBS recording used for the Store video, then write `docs/assets/demo.gif`.
 - **ADR-0047 stage-2 user-supervised e2e re-run** still owed (needs the owner at a real
   browser).
 - Parked (deliberately): audit TCP sink (UDP syslog is the standard; revisit only on ask);

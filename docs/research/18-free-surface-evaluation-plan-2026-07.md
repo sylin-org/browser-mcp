@@ -1,7 +1,8 @@
 # Free-surface candidate evaluation plan, 2026-07
 
-Status: Baseline harness implemented; automated Linux/macOS and repeated model runs are pending.
-No product surface is accepted by this document.
+Status: Baseline harness implemented and wired into blocking Linux CI; the first CI result,
+visible-browser repetition, macOS, and repeated model runs are pending. No product surface is
+accepted by this document.
 
 ## Purpose
 
@@ -16,8 +17,9 @@ the evidence each candidate must produce before an ADR or implementation can be 
 
 ## Common rules
 
-- Compare against Ghostlight v0.5.8 with the same client, model, prompt, page fixture, viewport,
-  and policy posture.
+- Compare against the current released Ghostlight baseline with the same client, model, prompt,
+  page fixture, viewport, and policy posture. Record the exact version and commit with every run;
+  the current baseline is v0.6.0.
 - Record tool-call count, model-visible text characters, screenshot count, recovery turns,
   elapsed time, terminal result, and any wrong-target action.
 - Run each journey at least three times per configuration. Report raw observations as well as the
@@ -118,9 +120,9 @@ labels.
 
 ## Execution order
 
-1. Add deterministic fixture definitions and capture the v0.5.8 baseline. The fixture and opt-in
-   full-stack runner are implemented; see `docs/testing/free-surface-baseline.md`. The automated
-   run remains pending on the visible Linux host.
+1. Add deterministic fixture definitions and capture the released baseline. The fixture and opt-in
+   full-stack runner are implemented; see `docs/testing/free-surface-baseline.md`. Blocking Linux
+   CI now executes the mechanical baseline. A visible local-browser repetition remains pending.
 2. Prototype annotated screenshots behind a non-default test seam, not the public schema.
 3. Measure Candidate A and decide whether an ADR amendment is warranted.
 4. Measure the tab-label baseline before writing Candidate B production code.
