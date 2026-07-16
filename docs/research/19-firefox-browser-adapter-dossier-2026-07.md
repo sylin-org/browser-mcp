@@ -1,6 +1,6 @@
 # Firefox browser-adapter dossier
 
-**Status:** research and architecture input, not a decision
+**Status:** research complete; product implementation deferred to v2
 
 **Date:** 2026-07-15
 
@@ -52,10 +52,12 @@ For multiple connected browsers, focus is useful but not sufficient. The recomme
 Ghostlight must never silently move an operation to a different browser merely because that
 browser supports it. Authentication state and page context differ between browsers.
 
-The recommended next step is a bounded Firefox proof of concept, not a general adapter refactor.
-The proof should establish the semantic operation seam, test extension-only and hybrid modes on
-the Linux host, and answer the unresolved pairing, trusted-input, recording, and live-session
-instrumentation questions before an ADR commits the product.
+The recommended v2 entry step is a bounded Firefox proof of concept, not a general adapter
+refactor. The proof should establish the semantic operation seam, test extension-only and hybrid
+modes on the Linux host, and answer the unresolved pairing, trusted-input, recording, and
+live-session instrumentation questions before an ADR commits the product. The owner explicitly
+deferred Firefox, browser adapters, multi-instance selection, and attention routing from the v1
+release line on 2026-07-15.
 
 ## Research posture
 
@@ -687,7 +689,7 @@ This dossier does not decide:
 
 ## Final recommendation
 
-Proceed to a two-track Firefox proof of concept after current release work settles.
+In v2, proceed to a two-track Firefox proof of concept before any product implementation.
 
 Do not begin by generalizing every Chromium call. First prove five load-bearing seams in real
 Firefox:

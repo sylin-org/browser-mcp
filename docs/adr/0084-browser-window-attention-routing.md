@@ -4,6 +4,9 @@ Status: Accepted
 
 Date: 2026-07-15
 
+Implementation target: v2. The routing contract is accepted, but no production implementation is
+part of the v1 release line.
+
 Amends: ADR-0058 Decision 3 (focus routing and ambiguity fallback)
 
 Builds on: ADR-0061 (extension-owned browser identity and service-assigned slots)
@@ -340,6 +343,9 @@ service before adapter dispatch, exactly as before.
 
 ## Explicitly deferred
 
+- Production implementation of this ADR's attention queue, browser directory, explicit selection,
+  and browser provenance behavior. These are one coherent v2 workstream rather than incremental v1
+  surface changes.
 - The vendor-neutral typed `BrowserOperation` and `BrowserAdapter` interfaces.
 - Universal service-minted surface handles for adapters whose native context IDs are strings.
 - Firefox extension-only versus hybrid product support.
