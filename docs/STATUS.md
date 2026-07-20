@@ -1,11 +1,37 @@
 # STATUS -- where the project stands
 
-Last updated: 2026-07-16. This file is a point-in-time snapshot maintained by whoever
+Last updated: 2026-07-20. This file is a point-in-time snapshot maintained by whoever
 finishes significant work. It exists so a fresh agent (or human) can orient without any
 prior session context. **Trust the tree, `git log`, and the batch LEDGERs over this file
 when they disagree**, and update it when you land something that changes the picture.
 
 ## Now
+
+- **The repository-controlled OSS adoption readiness repairs are complete in the working tree.**
+  `docs/public-status.json` now owns the release, platform, and extension-store truth used by the
+  README and the website fallback. CI and release preflight reject local drift; the website
+  publisher refreshes both install and status fallbacks, and an optional online check verifies the
+  deployed site, GitHub release, npm, install guide, decision aid, and privacy route. Structured
+  bug and install forms, a PR template, root support/governance routers, the README decision-aid
+  path, a 1280x640 social preview, a greenfield cohort contract, and an honest OSPS Baseline
+  2026.02.19 self-assessment are prepared. Website deployment, social-preview upload, Chrome Web
+  Store review, non-author cohort evidence, and macOS live proof remain external gates. The OSPS
+  review also records that direct pushes are not blocked, GitHub secret scanning/push protection
+  are disabled, and privileged-account MFA still needs owner verification; no compliance badge is
+  claimed.
+
+- **Open-source publication-path research and a draft Ghostlight awareness plan are complete.**
+  Research 20 establishes that GitHub Trending and social trend bots are downstream amplifiers,
+  not submission channels, and traces six projects through creator audiences, problem communities,
+  host ecosystems, MCP directories, technical media, and category-level demand. The draft plan in
+  `docs/design/public-awareness-plan-2026-07.md` separates conversion readiness, targeted proof
+  users, ecosystem seeding, a founder-present anchor launch, audience-native follow-ons, earned
+  amplification, and privacy-compatible measurement. The derived project-agnostic guide at
+  `docs/guides/open-source-publication.md` covers 14 project archetypes, repository and release
+  readiness, proof, trust, community, channel strategy, measurement, funding, maintainer capacity,
+  reusable templates, decision trees, and three risk-scaled publication tracks. Broad Ghostlight
+  publication should wait for the Chrome Web Store path and clean greenfield install to be
+  verified. No external publication is authorized by these documents.
 
 - **Window-placed Chromium workspaces are implemented on `dev` (ADR-0085).** The first
   unaddressed tab-context, tab-create, or navigation call reuses Chrome's last-focused eligible
@@ -42,6 +68,30 @@ when they disagree**, and update it when you land something that changes the pic
   operation seam, connection-time capability negotiation, stable schemas plus dynamic adapter
   guidance, and tab-owner/session-affinity/focus/disambiguation routing. Firefox support, adapter
   refactoring, the proof of concept, and multi-browser selection are one deferred v2 workstream.
+
+- **Target-aware privacy-safe key presentation is implemented in the working tree (ADR-0087).**
+  `computer.key` observes only the structural class of each actual trusted keydown target after
+  focus resolution. Ordinary printable keys remain literal; native password and platform-marked
+  sensitive fields use an unlabeled glowing keycap. Unobservable targets fail private. Named
+  navigation keys and real command shortcuts remain readable, and multi-chord sequences retain
+  their distinct groups. The raw fallback token, event key, target element, and field value never
+  enter the content observer or presentation message. Initial live verification passed the
+  distinct ordinary and protected cues. Browser event execution is being reverified under
+  ADR-0088.
+
+- **Browser input event fidelity is repaired in the working tree (ADR-0088).** Pure keyboard and
+  pointer domains now own complete CDP packets. Printable `computer.key` calls insert text while
+  protected-field cues remain private; function keys and standalone modifiers carry correct
+  identity; `computer.type` counts Unicode code points after CRLF normalization. Drag execution is
+  dual-lane: ordinary pointer gestures stay on complete held-button packets, while native HTML
+  drag and drop uses a bounded per-tab CDP interception/replay session. Content observation retains
+  only trusted dragstart/cancellation booleans, and opaque drag data never leaves the worker. Empty
+  `scroll_to` calls fail, and coordinate image placement distinguishes dispatch from page-signaled
+  handling. All 160 extension tests, JavaScript syntax, Rust formatting, and diff checks pass. The
+  keyboard, typing, click, hover, and shortcut live matrix passes. Native HTML drag live proof
+  preserved the page-authored payload and observed dragstart, dragenter, dragover, drop, and
+  dragend. Pointer-only proof moved a range from 10 to 84 through ten input events with a complete
+  held-button sequence and no additional native drag lifecycle.
 
 - **Unified action signature medallions are implemented on `dev` (ADR-0083).** One
   policy-free, signal-aware renderer now gives non-spatial work a consistent corner badge while
@@ -394,7 +444,8 @@ remains manual when its API credentials or dashboard metadata are absent.
 - Trust center legal: vendor entity name in the MSA (blocked on forming the LLC), the
   cyber-insurance yes/no line, counsel skim of MSA/DPA/LICENSE-GOVERNANCE before first
   EXECUTION (publication already happened by design; drafts are marked as drafts).
-- Key backup + a second npm publisher; one non-author human through the install flow.
+- Key backup + a second npm publisher; five to ten non-author humans through the tracked clean
+  first-success cohort.
 
 ## Standing context worth knowing
 

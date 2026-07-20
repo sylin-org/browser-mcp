@@ -3,7 +3,7 @@
 This is the coverage ledger for Ghostlight's complete tool surface. The normative shapes, colors,
 motion, and safety invariants live in [visual-language.md](visual-language.md). ADR-0083 defines the
 classification and shared signature-medallion architecture. ADR-0086 defines the composed find
-treatment.
+treatment. ADR-0087 defines privacy-safe key presentation.
 
 The question is not "can this tool have an animation?" It is "what does a person need to know while
 this action touches their browser?" Quiet is an intentional answer.
@@ -31,7 +31,7 @@ this action touches their browser?" Quiet is an intentional answer.
 | `computer.hover` | Spatial | cursor glide | Keep |
 | `computer.left_click_drag` | Spatial | cursor and comet trail | Keep |
 | `computer.type` | Spatial + signature | field shimmer plus keyboard medallion | Never render the typed value |
-| `computer.key` | Content | named key-chord lozenge | Keep; review printable-key masking separately |
+| `computer.key` | Content | target-aware privacy-safe key lozenge | Ordinary printable keys stay literal; protected or unobservable targets use an unlabeled keycap |
 | `computer.scroll` | Spatial | cursor and directional chevrons | Keep |
 | `computer.scroll_to` | Native | visible page movement | Candidate: chevrons settling into a target halo |
 | `computer.screenshot` | Spatial + signature | capture frame plus camera medallion after capture | Shared confirmation signature |
@@ -69,10 +69,9 @@ this action touches their browser?" Quiet is an intentional answer.
 
 These remain proposals, not promised effects:
 
-1. Mask printable `computer.key` input while retaining named shortcuts and navigation keys.
-2. Give direct `scroll_to` a destination treatment without duplicating visible page motion.
-3. Give coordinate image placement a recognizable photo-drop treatment.
-4. Decide whether console and network inspection need one shared backstage diagnostic signature or
+1. Give direct `scroll_to` a destination treatment without duplicating visible page motion.
+2. Give coordinate image placement a recognizable photo-drop treatment.
+3. Decide whether console and network inspection need one shared backstage diagnostic signature or
    are better left quiet for ordinary users.
 
 Any accepted item must update this ledger and the normative visual vocabulary with its code.

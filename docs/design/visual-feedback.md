@@ -26,11 +26,12 @@ consistent on-page treatment: a small visual "dictionary" the phantom cursor spe
 | drag | a comet trail along the path |
 | hover | the cursor glides in with a soft glow, no ring |
 | type | the focused field shimmers, plus a signal-aware glowing keyboard medallion; typed text is never shown |
-| key / shortcut | a keystroke lozenge, e.g. `Ctrl` + `A` |
+| key / shortcut | a target-aware lozenge: ordinary printable keys stay literal; protected or unobservable targets use an unlabeled glowing keycap |
 | scroll | directional chevrons cascading the way the page moves |
 | screenshot | a sky shutter flash, a filing frame, and a signal-aware camera confirmation medallion |
 | zoom | a magnifier frame closes on the captured region |
-| read_page / find / get_page_text | a scan-line sweeps down the page ("the agent is reading") |
+| read_page / get_page_text | a scan-line sweeps down the page ("the agent is reading") |
+| find | a lens badge plus ranked highlights and top/bottom horizon glows |
 | wait / wait_for | three fading lights for the actual wait lifetime |
 | javascript_tool | a rotating workwheel with three light particles for the actual evaluation lifetime |
 | narrate | a timed, responsive sky-accent Agent ribbon that explains a meaningful workflow phase |

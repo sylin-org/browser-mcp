@@ -67,6 +67,7 @@
     : "AGENT_ACTION_SIGNATURE";
   const findVisual = window.GhostlightFindVisual;
   const FIND_VISUAL_TYPE = findVisual ? findVisual.TYPE : "AGENT_FIND_VISUAL";
+  const keyPresentation = window.GhostlightKeys;
   // Ghostlight brand accent: a luminous sky blue. SKY_RGB is the same color for rgba() shadows.
   const SKY = "#38bdf8";
   const SKY_RGB = "56,189,248";
@@ -330,7 +331,7 @@
       "width:clamp(28px,4.5vh,38px);height:clamp(28px,4.5vh,38px);border-radius:50%;transition:background-color 120ms ease-out}" +
       ".ghostlight-notif-close:hover{background:rgba(255,255,255,.16)}" +
       ".ghostlight-notif-close:focus-visible{outline:2px solid " + NOTIF_TEXT + ";outline-offset:2px;background:rgba(255,255,255,.16)}" +
-      ".ghostlight-cap{color:" + SKY + "}.ghostlight-arrow{color:" + SKY + ";margin-right:7px}" +
+      ".ghostlight-cap{color:" + SKY + "}.ghostlight-private-keycap{display:inline-block;box-sizing:border-box;width:16px;height:14px;border:1px solid rgba(" + SKY_RGB + ",.72);border-radius:4px;background:rgba(" + SKY_RGB + ",.12);box-shadow:0 0 9px rgba(" + SKY_RGB + ",.56),inset 0 -2px 0 rgba(" + SKY_RGB + ",.18)}.ghostlight-arrow{color:" + SKY + ";margin-right:7px}" +
       // ADR-0079: compact captions, transient centered denial stickers, and a true pause overlay.
       "@keyframes ghostlight-dots{0%,20%{opacity:.25}50%{opacity:1}80%,100%{opacity:.25}}" +
       ".ghostlight-narration-card{width:auto;max-width:min(84vw,900px);min-height:0;padding:10px 16px;border-radius:12px;" +
@@ -1052,20 +1053,53 @@
     caption(labels[action] || "Action target");
   }
 
-  // Named key chords remain useful content. Ordinary typing uses ADR-0083's content-free keyboard
-  // medallion instead, so a visual effect can never disclose a password or masked form value.
-  function keystrokeLozenge(textStr, kind) {
+  // ADR-0087: the worker supplies only target-classified chord labels. Ordinary targets may carry
+  // one printable key; protected or unobservable targets carry an unlabeled keycap token instead.
+  // Distinct chord groups stay visually distinct.
+  function keystrokeLozenge(cue) {
     if (hiddenForTool || document.hidden) return;
     ensureStyles();
-    if (kind !== "key") return;
-    const html = String(textStr).split(/[+ ]/).filter(Boolean)
-      .map(function (k) { return "<span class='ghostlight-cap'>" + escapeHtml(k) + "</span>"; }).join(" + ");
+    if (!keyPresentation || !keyPresentation.isKeyCuePresentation(cue) || !cue.chords.length) return;
     const el = document.createElement("div");
     el.id = FX_LAYER_ID + "-k" + fxSeq++;
     el.setAttribute("aria-hidden", "true");
-    el.innerHTML = html;
+    cue.chords.forEach(function (chord, chordIndex) {
+      if (chordIndex > 0) {
+        const sequenceSeparator = document.createElement("span");
+        sequenceSeparator.textContent = "then";
+        sequenceSeparator.style.cssText = "color:#94a3b8;font-weight:500;font-size:11px";
+        el.appendChild(sequenceSeparator);
+      }
+      const group = document.createElement("span");
+      group.style.cssText = "display:inline-flex;align-items:center;gap:5px";
+      const safeTokens = chord.tokens.slice(0, 5);
+      safeTokens.forEach(function (token, tokenIndex) {
+        if (tokenIndex > 0) {
+          const plus = document.createElement("span");
+          plus.textContent = "+";
+          plus.style.color = "#94a3b8";
+          group.appendChild(plus);
+        }
+        const cap = document.createElement("span");
+        if (token === keyPresentation.KEY_CUE_PRIVATE_TOKEN) {
+          cap.className = "ghostlight-private-keycap";
+        } else {
+          cap.className = "ghostlight-cap";
+          cap.textContent = String(token).slice(0, 16);
+        }
+        group.appendChild(cap);
+      });
+      el.appendChild(group);
+    });
+    if (cue.more) {
+      const remainder = document.createElement("span");
+      remainder.textContent = "...";
+      remainder.style.color = "#94a3b8";
+      el.appendChild(remainder);
+    }
     el.style.cssText =
       "position:fixed;left:50%;bottom:64px;z-index:2147483645;pointer-events:none;white-space:nowrap;" +
+      "display:flex;align-items:center;gap:10px;" +
       "font:600 14px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#eaf6ff;" +
       "padding:8px 14px;border-radius:10px;background:rgba(12,20,32,.9);border:1px solid rgba(" + SKY_RGB + ",.55);" +
       "box-shadow:0 10px 30px -12px rgba(" + SKY_RGB + ",.8);" +
@@ -1533,7 +1567,7 @@
       case "AGENT_SEMANTIC_TARGET":
         semanticTarget(msg.x, msg.y, msg.action); sendResponse({ success: true }); return true;
       case "AGENT_KEYSTROKE":
-        keystrokeLozenge(msg.text, msg.kind); sendResponse({ success: true }); return true;
+        keystrokeLozenge(msg.cue); sendResponse({ success: true }); return true;
       case "AGENT_SCROLL_CUE":
         scrollCue(msg.direction); sendResponse({ success: true }); return true;
       case "AGENT_READ_SCAN":

@@ -48,13 +48,13 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/settle.js", "lib/observation.js", "lib/receipt.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "content.js"],
+      "js": ["lib/settle.js", "lib/observation.js", "lib/receipt.js", "lib/treediff.js", "lib/fileset.js", "lib/actionable.js", "lib/keys.js", "lib/drag-session.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/presentation-placement.js", "lib/action-signature.js", "lib/find-visual.js", "agent-visual-indicator.js"],
+      "js": ["lib/presentation-placement.js", "lib/action-signature.js", "lib/find-visual.js", "lib/keys.js", "agent-visual-indicator.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
