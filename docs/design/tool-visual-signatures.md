@@ -2,7 +2,8 @@
 
 This is the coverage ledger for Ghostlight's complete tool surface. The normative shapes, colors,
 motion, and safety invariants live in [visual-language.md](visual-language.md). ADR-0083 defines the
-classification and shared signature-medallion architecture.
+classification and shared signature-medallion architecture. ADR-0086 defines the composed find
+treatment.
 
 The question is not "can this tool have an animation?" It is "what does a person need to know while
 this action touches their browser?" Quiet is an intentional answer.
@@ -36,7 +37,7 @@ this action touches their browser?" Quiet is an intentional answer.
 | `computer.screenshot` | Spatial + signature | capture frame plus camera medallion after capture | Shared confirmation signature |
 | `computer.zoom` | Spatial | converging region frame | Keep |
 | `computer.wait` | Signature | three fading lights for the actual wait lifetime | Replaces the fixed-duration pulse |
-| `find` | Spatial | page scan | Keep; finding is inspection, not mutation |
+| `find` | Spatial + signature | lens medallion, ranked highlights, and offscreen horizon glows | Fixed badge payload; matched content stays in the tab |
 | `form_input` | Spatial | field-shaped splash | Keep |
 | `get_page_text` | Spatial | page scan | Keep |
 | `javascript_tool` | Signature | workwheel for the actual evaluation lifetime | Fixed, content-free signature |

@@ -520,10 +520,93 @@
     return result;
   }
 
-  function find(query) {
+  const FIND_VISUAL_RANGES_PER_RESULT = 8;
+  const FIND_VISUAL_TOTAL_RANGES = 80;
+
+  function findVisualTextNodes(root) {
+    const nodes = [];
+    const visit = (scope) => {
+      const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const parent = node.parentElement;
+        if (!parent || !node.nodeValue) continue;
+        if (parent.closest && parent.closest('[id^="ghostlight-"]')) continue;
+        if (["script", "style", "noscript", "template"].includes(parent.tagName.toLowerCase())) continue;
+        nodes.push(node);
+      }
+      const elements = scope.querySelectorAll ? scope.querySelectorAll("*") : [];
+      for (const element of elements) {
+        if (element.shadowRoot) visit(element.shadowRoot);
+      }
+    };
+    visit(root);
+    return nodes;
+  }
+
+  function findVisualRanges(element, needles, seen, remaining) {
+    const ranges = [];
+    for (const rawNeedle of needles) {
+      const needle = String(rawNeedle || "").trim().toLocaleLowerCase();
+      if (!needle) continue;
+      for (const node of findVisualTextNodes(element)) {
+        const source = node.nodeValue || "";
+        const haystack = source.toLocaleLowerCase();
+        let start = 0;
+        while (ranges.length < FIND_VISUAL_RANGES_PER_RESULT && ranges.length < remaining) {
+          const index = haystack.indexOf(needle, start);
+          if (index < 0) break;
+          start = index + Math.max(needle.length, 1);
+          let offsets = seen.get(node);
+          if (!offsets) { offsets = new Set(); seen.set(node, offsets); }
+          const key = `${index}:${index + needle.length}`;
+          if (offsets.has(key)) continue;
+          try {
+            const range = document.createRange();
+            range.setStart(node, index);
+            range.setEnd(node, index + needle.length);
+            if (Array.from(range.getClientRects()).some((rect) => rect.width > 0 && rect.height > 0)) {
+              offsets.add(key);
+              ranges.push(range);
+            }
+          } catch (_error) { /* a live page changed between ranking and presentation */ }
+        }
+        if (ranges.length >= FIND_VISUAL_RANGES_PER_RESULT || ranges.length >= remaining) break;
+      }
+      if (ranges.length) break;
+    }
+    return ranges;
+  }
+
+  function presentFindResults(selected, query, more) {
+    if (!self.GhostlightFx || typeof self.GhostlightFx.findResults !== "function") return;
+    try {
+      const seen = new WeakMap();
+      let rangeCount = 0;
+      const entries = selected.map((candidate, index) => {
+        const element = deref(candidate.ref);
+        if (!element) return null;
+        const ranges = findVisualRanges(
+          element,
+          [query, candidate.name],
+          seen,
+          FIND_VISUAL_TOTAL_RANGES - rangeCount
+        );
+        rangeCount += ranges.length;
+        return { element, ranges, strongest: index === 0 };
+      }).filter(Boolean);
+      self.GhostlightFx.findResults(entries, { more: !!more });
+    } catch (_error) {
+      // Presentation is best-effort and must never alter the find result.
+    }
+  }
+
+  function find(query, present) {
     const ranked = (self.GhostlightActionable || GhostlightActionable).rankCandidates(query, actionableCandidates());
     const more = ranked.length > 20;
-    const results = ranked.slice(0, 20).map(publicCandidate);
+    const selected = ranked.slice(0, 20);
+    const results = selected.map(publicCandidate);
+    if (present) presentFindResults(selected, query, more);
     return { results, more };
   }
 
@@ -1026,7 +1109,7 @@
         return true;
       }
       case "pageText": sendResponse({ result: pageText(msg.max_chars) }); return true;
-      case "find": sendResponse({ result: find(msg.query) }); return true;
+      case "find": sendResponse({ result: find(msg.query, msg.present === true) }); return true;
       case "resolveActionable": sendResponse({ result: resolveActionable(msg.target || {}) }); return true;
       case "pageMeta": sendResponse({ result: currentPageMeta() }); return true;
       case "setFormValue": sendResponse({ result: setFormValue(msg.ref, msg.value) }); return true;

@@ -47,6 +47,7 @@ domain modules.
 | Target glow | ref/coordinate click | "THIS element was the target" | brief radial halo at the point (Playwright-highlight lineage) |
 | Scroll cue | scroll | "scrolled this direction" | cascading chevrons |
 | Read scan | `read_page` / `get_page_text` | "the agent is reading, not touching" | a luminous scan line sweeping down the page |
+| Find | `find` | "the agent is searching; these are its ranked results" | signal-aware lens badge, native text highlights, shape fallback, and top/bottom horizon glows |
 | Navigate pill | `navigate` | "leaving for this destination" | top-center pill naming the host/path |
 | Screenshot frame | screenshot taken | "this page was captured" | frame flashes and files itself into the corner |
 | Zoom frame | `zoom` | "the agent is inspecting this region" | rectangle converging onto the region |

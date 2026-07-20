@@ -20,7 +20,7 @@
 // this worker calls on receipt, ADDITIVE to (never replacing) the existing single-group
 // ensureGroup/groupTabs/inGroup access-control mechanism below, which this path never touches.
 
-importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/workspace.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/presentation-broker.js", "lib/action-signature.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js", "lib/surface-executor.js", "lib/execution-response.js");
+importScripts("lib/constants.js", "lib/geometry.js", "lib/keys.js", "lib/workspace.js", "lib/grouping.js", "lib/debug.js", "lib/identity.js", "lib/presentation-broker.js", "lib/action-signature.js", "lib/find-visual.js", "lib/dialog.js", "lib/tab-control.js", "lib/wire-chunks.js", "lib/surface-executor.js", "lib/execution-response.js");
 
 // gif_creator capture relay (ADR-0053 D2): the BINARY owns recording state, frames, and the GIF
 // pipeline; this worker only drives the Chrome APIs -- start/stop the tab's screencast, ack every
@@ -164,10 +164,12 @@ const dialogStore = self.GhostlightDialog.createDialogStore();
 const NATIVE_HOST = "org.sylin.ghostlight";
 const BROWSER_GENERATION_KEY = "ghostlight_browser_generation";
 const PRESENTATION_STATE_KEY = "ghostlight_presentation_state";
-const VISUAL_SCRIPT_FILES = ["lib/presentation-placement.js", "lib/action-signature.js", "agent-visual-indicator.js"];
+const VISUAL_SCRIPT_FILES = ["lib/presentation-placement.js", "lib/action-signature.js", "lib/find-visual.js", "agent-visual-indicator.js"];
 const PRESENTATION_EVENT_TTL_MS = 2500;
 const SIGNATURE_EVENT_TTL_MS = 1500;
 const SIGNATURE_DELIVERY_WAIT_MS = 250;
+const FIND_EVENT_TTL_MS = 3500;
+const FIND_DELIVERY_WAIT_MS = 250;
 const NARRATION_DEFAULT_DURATION_MS = 5000;
 // The MCP tab group label shown in Chrome: a ghost emoji (U+1F47B) followed by the brand
 // name. The emoji is written as an escape so this source file stays ASCII; it renders as
@@ -1801,6 +1803,49 @@ function confirmActionSignature(tabId, kind) {
     }
   );
 }
+// ADR-0086: find uses its own broker channel. The start cue waits only long enough to make the
+// agent's intent visible before DOM work begins. Result events carry only an aggregate count;
+// matched text and geometry never leave the isolated page world for presentation.
+async function startFindVisual(tabId) {
+  try {
+    return await presentationBroker.publishEvent(
+      tabId,
+      self.GhostlightFindVisual.message(self.GhostlightFindVisual.PHASES.START),
+      {
+        channel: self.GhostlightFindVisual.CHANNEL,
+        ttlMs: FIND_EVENT_TTL_MS,
+        deliveryWaitMs: FIND_DELIVERY_WAIT_MS,
+      }
+    );
+  } catch {
+    return { shown: false, reason: "find visual unavailable" };
+  }
+}
+function finishFindVisual(tabId, count, more) {
+  const phase = count > 0
+    ? self.GhostlightFindVisual.PHASES.FOUND
+    : self.GhostlightFindVisual.PHASES.EMPTY;
+  presentationBroker.publishEvent(
+    tabId,
+    self.GhostlightFindVisual.message(phase, count, more),
+    {
+      channel: self.GhostlightFindVisual.CHANNEL,
+      ttlMs: FIND_EVENT_TTL_MS,
+      waitForDelivery: false,
+    }
+  );
+}
+function cancelFindVisual(tabId) {
+  presentationBroker.publishEvent(
+    tabId,
+    self.GhostlightFindVisual.message(self.GhostlightFindVisual.PHASES.CANCEL),
+    {
+      channel: self.GhostlightFindVisual.CHANNEL,
+      ttlMs: FIND_EVENT_TTL_MS,
+      waitForDelivery: false,
+    }
+  );
+}
 // Move the phantom cursor to a (rescaled, CSS-px) point and wait for it to settle, so the user sees
 // the pointer arrive before the action fires. Resolves immediately if no indicator is present.
 function moveCursor(tabId, x, y) { return sendToTab(tabId, { type: "UPDATE_PHANTOM_CURSOR", x, y }); }
@@ -2373,11 +2418,18 @@ const handlers = {
   },
   async find(a) {
     const tabId = await effectiveTabId(a.tabId);
-    readScan(tabId);
-    const r = await content(tabId, { type: "find", query: a.query });
+    await startFindVisual(tabId);
+    let r;
+    try {
+      r = await content(tabId, { type: "find", query: a.query, present: true });
+    } catch (error) {
+      cancelFindVisual(tabId);
+      throw error;
+    }
     const data = (r && r.result) || { results: [] };
     const results = data.results || [];
     const more = !!data.more;
+    finishFindVisual(tabId, results.length, more);
     let out;
     if (!results.length) {
       out = text(`No elements matching "${a.query}".`);
