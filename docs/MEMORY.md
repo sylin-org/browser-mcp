@@ -63,6 +63,11 @@ file does not restate them -- follow AGENTS.md.
 - **Distribution is automated and credential-gated** in `scripts/release.ps1`; the MCP registry
   publish is DNS-authed on the sylin.org apex; canonical URLs are `sylin.org` (the github.io site
   is retired, redirect-stubbed). Off-tree/secret change history is in `local/AUDIT-LOG.md`.
+- **Public release and platform truth is product-owned.** `docs/public-status.json` is the
+  canonical machine-readable release fallback, live-platform statement, and extension-store
+  statement. The README must contain its exact public claims; the website consumes a synchronized
+  fallback through `scripts/publish-website.ps1`. Run `scripts/check-public-surfaces.ps1` locally
+  and with `-Online` after deployment instead of repairing either surface independently.
 - **Remote-code claims distinguish extension logic from page automation.** All extension logic
   ships in the reviewed package, but `javascript_tool` carries an explicit local MCP-client
   instruction to CDP `Runtime.evaluate` in the attached page. Never collapse those two facts into

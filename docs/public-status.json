@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "release": "0.6.0",
+  "platformSummary": "Windows and Linux are verified end to end against live browsers. macOS builds and passes the full test suite in CI; its live-browser verification is still owed.",
+  "extensionSummary": "The Chrome Web Store listing is submitted at v0.6.0 and pending compliance review; the install guide provides the current extension path.",
+  "lastVerified": "2026-07-18"
+}
