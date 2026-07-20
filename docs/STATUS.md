@@ -17,9 +17,12 @@ when they disagree**, and update it when you land something that changes the pic
   extension tests, JavaScript syntax, and diff hygiene pass. Visible Windows verification passed
   both new treatments on the public decision-aid page; the existing Windows signature matrix had
   already passed border, navigation, read, find, field, typing, key privacy, JavaScript, wait,
-  screenshot, and dual-lane drag treatments. Linux candidate verification remains owed.
+  screenshot, and dual-lane drag treatments. The Linux candidate also passed the automated gate
+  (164 extension tests, 4 launcher tests, strict clippy, and the full Rust workspace including 683
+  core tests) and the owner's manual visible-browser acceptance pass. The Linux environment is
+  release-ready.
 
-- **The repository-controlled OSS adoption readiness repairs are complete in the working tree.**
+- **The repository-controlled OSS adoption readiness repairs are complete on `dev`.**
   `docs/public-status.json` now owns the release, platform, and extension-store truth used by the
   README and the website fallback. CI and release preflight reject local drift; the website
   publisher refreshes both install and status fallbacks, and an optional online check verifies the
@@ -86,7 +89,7 @@ when they disagree**, and update it when you land something that changes the pic
   guidance, and tab-owner/session-affinity/focus/disambiguation routing. Firefox support, adapter
   refactoring, the proof of concept, and multi-browser selection are one deferred v2 workstream.
 
-- **Target-aware privacy-safe key presentation is implemented in the working tree (ADR-0087).**
+- **Target-aware privacy-safe key presentation is implemented on `dev` (ADR-0087).**
   `computer.key` observes only the structural class of each actual trusted keydown target after
   focus resolution. Ordinary printable keys remain literal; native password and platform-marked
   sensitive fields use an unlabeled glowing keycap. Unobservable targets fail private. Named
@@ -96,7 +99,7 @@ when they disagree**, and update it when you land something that changes the pic
   distinct ordinary and protected cues. Browser event execution is being reverified under
   ADR-0088.
 
-- **Browser input event fidelity is repaired in the working tree (ADR-0088).** Pure keyboard and
+- **Browser input event fidelity is repaired on `dev` (ADR-0088).** Pure keyboard and
   pointer domains now own complete CDP packets. Printable `computer.key` calls insert text while
   protected-field cues remain private; function keys and standalone modifiers carry correct
   identity; `computer.type` counts Unicode code points after CRLF normalization. Drag execution is
@@ -119,7 +122,8 @@ when they disagree**, and update it when you land something that changes the pic
   use the document-aware Presentation Broker and cannot replay into a later document. The complete
   25-tool coverage and review queue live in `docs/design/tool-visual-signatures.md`. Strict clippy,
   the full Rust workspace, 112 extension tests, 4 npm launcher tests, JavaScript syntax checks, and
-  formatting pass. Visible browser verification remains owed.
+  formatting pass. The full Windows visible matrix passed, and the owner accepted the final Linux
+  visible candidate.
 
 - **The README hero story is implemented, captured, and enabled.** `ghostlight demo-brief`
   drives `https://sylin.org/ghostlight/demo/brief/` through the ordinary relay: one visible page
@@ -133,6 +137,12 @@ when they disagree**, and update it when you land something that changes the pic
 
 - **Branches**: `main` = releases, `dev` = trunk. Work lands on `dev`; the owner reviews
   `dev -> main` PRs and cuts releases.
+- **v0.7.0 is prepared on `dev`, not published.** Crates, the unpacked extension, npm/MCP metadata,
+  canonical public status, and package-manager templates identify as 0.7.0. The release is minor
+  because it adds window-placement behavior and a complete visible action language while keeping
+  the trained tool schemas unchanged. Package-manager hashes and npm binary checksums still belong
+  to v0.6.0 until the release workflow builds and verifies the v0.7.0 artifacts. The current Chrome
+  Web Store submission remains under review; the v0.7.0 extension package is not submitted yet.
 - **Latest published release: v0.6.0** (2026-07-15), cut with `scripts/release.ps1 0.6.0`.
   Shipped and LIVE: GitHub Release (28 files: 27 payloads including the CycloneDX SBOM, plus the
   canonical hash manifest and Sigstore attestations), npm `ghostlight@0.6.0`, Homebrew tap,
@@ -206,7 +216,7 @@ when they disagree**, and update it when you land something that changes the pic
   The privileged job only downloads, verifies the exact file set and hashes, attests, and releases.
 - **The public vulnerability-disclosure endpoint is live.** `https://sylin.org/.well-known/security.txt`
   publishes the contact, expiry, canonical URL, and Ghostlight security-policy link.
-- **The four-phase public documentation freshness pass is complete in the working tree.** Trust
+- **The four-phase public documentation freshness pass is complete on `dev`.** Trust
   material now follows SECURITY.md's best-effort solo-maintainer targets and names only live
   distribution channels. Present-facing guides use the current service/relay topology, 25-tool
   inventory, one-stack dev loop, shipped licensing behavior, and managed-tab boundary. The original
